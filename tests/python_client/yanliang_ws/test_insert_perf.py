@@ -1,5 +1,6 @@
 import datetime
 import time
+import sys
 
 import pytest
 import threading
@@ -19,7 +20,7 @@ rounds = 2
 shardNum = 2
 
 
-def insert(self):
+def insert(entities):
 
     for nb in nbs:
         # create
@@ -51,4 +52,8 @@ def insert(self):
         collection.drop()
         log.info("collection dropped.")
         sleep(10)
+
+
+if __name__ == '__main__':
+    entities = sys.argv[1]
 
