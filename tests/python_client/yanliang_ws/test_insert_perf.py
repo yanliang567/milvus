@@ -17,9 +17,8 @@ shardNum = 2
 dim = 128
 
 
-def insert(nb1, total_entities1, threads_num):
+def insert(nb1, total_entities1, threads_num, name):
 
-    name = f"insert_nb{nb1}_total{total_entities1}_threads{threads_num}"
     # create
     nb = int(nb1)
     total_entities = int(total_entities1)
@@ -67,14 +66,15 @@ if __name__ == '__main__':
     nb1 = sys.argv[1]
     entities1 = sys.argv[2]
     threads = sys.argv[3]
-    logging.basicConfig(filename=f"insert_nb{nb1}_total{entities1}_threads{threads}.log",
+    logging.basicConfig(filename=f"/tmp/insert_nb{nb1}_total{entities1}_threads{threads}.log",
                         level=logging.INFO, format=LOG_FORMAT, datefmt=DATE_FORMAT)
 
     logging.info(f"input: nb={nb1}, entities={entities1}, threads={threads}")
     host = "10.98.0.20"
     port = 19530
     conn = connections.connect('default', host=host, port=port)
+    collection_name = f"insert_nb{nb1}_total{entities1}_threads{threads}"
     t1 = time.time()
-    insert(nb1, entities1, threads)
+    insert(nb1, entities1, threads, collection_name)
     t2 = time.time() - t1
-    logging.info(f"Insert cost {t2}, nb{nb1}, entities{entities1}, concurrent{threads}")
+    logging.info(f"Insert cost {t2}, {collection_name}")
