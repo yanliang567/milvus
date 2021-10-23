@@ -9,6 +9,7 @@ import utils
 
 
 def parse_server_tag(server_tag):
+    """ paser server tag from server config"""
     # tag format: "8c"/"8c16m"/"8c16m1g"
     if server_tag[-1] == "c":
         p = r"(\d+)c"
@@ -16,6 +17,8 @@ def parse_server_tag(server_tag):
         p = r"(\d+)c(\d+)m"
     elif server_tag[-1] == "g":
         p = r"(\d+)c(\d+)m(\d+)g"
+    else:
+        raise Exception("Unable to parse server tag")
     m = re.match(p, server_tag)
     cpus = int(m.groups()[0])
     mems = None

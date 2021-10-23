@@ -369,6 +369,8 @@ func (lct *loadCollectionTask) execute(ctx context.Context) error {
 				CollectionID: collectionID,
 				BinlogPaths:  segmentBingLog.FieldBinlogs,
 				NumOfRows:    segmentBingLog.NumOfRows,
+				Statslogs:    segmentBingLog.Statslogs,
+				Deltalogs:    segmentBingLog.Deltalogs,
 			}
 
 			msgBase := proto.Clone(lct.Base).(*commonpb.MsgBase)
@@ -695,6 +697,8 @@ func (lpt *loadPartitionTask) execute(ctx context.Context) error {
 				CollectionID: collectionID,
 				BinlogPaths:  segmentBingLog.FieldBinlogs,
 				NumOfRows:    segmentBingLog.NumOfRows,
+				Statslogs:    segmentBingLog.Statslogs,
+				Deltalogs:    segmentBingLog.Deltalogs,
 			}
 
 			msgBase := proto.Clone(lpt.Base).(*commonpb.MsgBase)
@@ -938,7 +942,7 @@ func (lst *loadSegmentTask) marshal() ([]byte, error) {
 }
 
 func (lst *loadSegmentTask) isValid() bool {
-	online, err := lst.cluster.isOnline(lst.NodeID)
+	online, err := lst.cluster.isOnline(lst.DstNodeID)
 	if err != nil {
 		return false
 	}
@@ -971,7 +975,7 @@ func (lst *loadSegmentTask) preExecute(context.Context) error {
 	lst.setResultInfo(nil)
 	log.Debug("start do loadSegmentTask",
 		zap.Int64s("segmentIDs", segmentIDs),
-		zap.Int64("loaded nodeID", lst.NodeID),
+		zap.Int64("loaded nodeID", lst.DstNodeID),
 		zap.Int64("taskID", lst.getTaskID()))
 	return nil
 }
@@ -981,7 +985,7 @@ func (lst *loadSegmentTask) execute(ctx context.Context) error {
 		lst.retryCount--
 	}()
 
-	err := lst.cluster.loadSegments(ctx, lst.NodeID, lst.LoadSegmentsRequest)
+	err := lst.cluster.loadSegments(ctx, lst.DstNodeID, lst.LoadSegmentsRequest)
 	if err != nil {
 		log.Warn("loadSegmentTask: loadSegment occur error", zap.Int64("taskID", lst.getTaskID()))
 		lst.setResultInfo(err)
@@ -1006,7 +1010,7 @@ func (lst *loadSegmentTask) reschedule(ctx context.Context) ([]task, error) {
 	for _, info := range lst.Infos {
 		segmentIDs = append(segmentIDs, info.SegmentID)
 	}
-	lst.excludeNodeIDs = append(lst.excludeNodeIDs, lst.NodeID)
+	lst.excludeNodeIDs = append(lst.excludeNodeIDs, lst.DstNodeID)
 	segment2Nodes, err := shuffleSegmentsToQueryNode(segmentIDs, lst.cluster, false, lst.excludeNodeIDs)
 	if err != nil {
 		log.Error("loadSegment reschedule failed", zap.Int64s("excludeNodes", lst.excludeNodeIDs), zap.Error(err))
@@ -1028,7 +1032,7 @@ func (lst *loadSegmentTask) reschedule(ctx context.Context) ([]task, error) {
 			baseTask: loadSegmentBaseTask,
 			LoadSegmentsRequest: &querypb.LoadSegmentsRequest{
 				Base:          lst.Base,
-				NodeID:        nodeID,
+				DstNodeID:     nodeID,
 				Infos:         infos,
 				Schema:        lst.Schema,
 				LoadCondition: lst.LoadCondition,
@@ -1042,7 +1046,7 @@ func (lst *loadSegmentTask) reschedule(ctx context.Context) ([]task, error) {
 
 		hasWatchQueryChannel := lst.cluster.hasWatchedQueryChannel(lst.ctx, nodeID, collectionID)
 		if !hasWatchQueryChannel {
-			queryChannel, queryResultChannel, err := lst.meta.getQueryChannel(collectionID)
+			queryChannelInfo, err := lst.meta.getQueryChannelInfoByID(collectionID)
 			if err != nil {
 				return nil, err
 			}
@@ -1050,11 +1054,13 @@ func (lst *loadSegmentTask) reschedule(ctx context.Context) ([]task, error) {
 			msgBase := proto.Clone(lst.Base).(*commonpb.MsgBase)
 			msgBase.MsgType = commonpb.MsgType_WatchQueryChannels
 			addQueryChannelRequest := &querypb.AddQueryChannelRequest{
-				Base:             msgBase,
-				NodeID:           nodeID,
-				CollectionID:     collectionID,
-				RequestChannelID: queryChannel,
-				ResultChannelID:  queryResultChannel,
+				Base:                 msgBase,
+				NodeID:               nodeID,
+				CollectionID:         collectionID,
+				RequestChannelID:     queryChannelInfo.QueryChannelID,
+				ResultChannelID:      queryChannelInfo.QueryResultChannelID,
+				GlobalSealedSegments: queryChannelInfo.GlobalSealedSegments,
+				SeekPosition:         queryChannelInfo.SeekPosition,
 			}
 			watchQueryChannelBaseTask := newBaseTask(ctx, lst.getTriggerCondition())
 			watchQueryChannelBaseTask.setParentTask(lst.getParentTask())
@@ -1261,7 +1267,7 @@ func (wdt *watchDmChannelTask) reschedule(ctx context.Context) ([]task, error) {
 
 		hasWatchQueryChannel := wdt.cluster.hasWatchedQueryChannel(wdt.ctx, nodeID, collectionID)
 		if !hasWatchQueryChannel {
-			queryChannel, queryResultChannel, err := wdt.meta.getQueryChannel(collectionID)
+			queryChannelInfo, err := wdt.meta.getQueryChannelInfoByID(collectionID)
 			if err != nil {
 				return nil, err
 			}
@@ -1269,11 +1275,13 @@ func (wdt *watchDmChannelTask) reschedule(ctx context.Context) ([]task, error) {
 			msgBase := proto.Clone(wdt.Base).(*commonpb.MsgBase)
 			msgBase.MsgType = commonpb.MsgType_WatchQueryChannels
 			addQueryChannelRequest := &querypb.AddQueryChannelRequest{
-				Base:             msgBase,
-				NodeID:           nodeID,
-				CollectionID:     collectionID,
-				RequestChannelID: queryChannel,
-				ResultChannelID:  queryResultChannel,
+				Base:                 msgBase,
+				NodeID:               nodeID,
+				CollectionID:         collectionID,
+				RequestChannelID:     queryChannelInfo.QueryChannelID,
+				ResultChannelID:      queryChannelInfo.QueryResultChannelID,
+				GlobalSealedSegments: queryChannelInfo.GlobalSealedSegments,
+				SeekPosition:         queryChannelInfo.SeekPosition,
 			}
 			watchQueryChannelBaseTask := newBaseTask(ctx, wdt.getTriggerCondition())
 			watchQueryChannelBaseTask.setParentTask(wdt.getParentTask())
@@ -1460,6 +1468,8 @@ func (lbt *loadBalanceTask) execute(ctx context.Context) error {
 							CollectionID: collectionID,
 							BinlogPaths:  segmentBingLog.FieldBinlogs,
 							NumOfRows:    segmentBingLog.NumOfRows,
+							Statslogs:    segmentBingLog.Statslogs,
+							Deltalogs:    segmentBingLog.Deltalogs,
 						}
 
 						msgBase := proto.Clone(lbt.Base).(*commonpb.MsgBase)
@@ -1469,6 +1479,7 @@ func (lbt *loadBalanceTask) execute(ctx context.Context) error {
 							Infos:         []*querypb.SegmentLoadInfo{segmentLoadInfo},
 							Schema:        schema,
 							LoadCondition: querypb.TriggerCondition_nodeDown,
+							SourceNodeID:  nodeID,
 						}
 
 						segmentsToLoad = append(segmentsToLoad, segmentID)
@@ -1548,10 +1559,6 @@ func (lbt *loadBalanceTask) postExecute(context.Context) error {
 			err := lbt.cluster.removeNodeInfo(id)
 			if err != nil {
 				log.Error("loadBalanceTask: occur error when removing node info from cluster", zap.Int64("nodeID", id))
-			}
-			err = lbt.meta.deleteSegmentInfoByNodeID(id)
-			if err != nil {
-				log.Error("loadBalanceTask: occur error when removing node info from meta", zap.Int64("nodeID", id))
 			}
 		}
 	} else {
@@ -1802,7 +1809,7 @@ func assignInternalTask(ctx context.Context,
 	for nodeID, loadSegmentsReqs := range node2Segments {
 		for _, req := range loadSegmentsReqs {
 			ctx = opentracing.ContextWithSpan(context.Background(), sp)
-			req.NodeID = nodeID
+			req.DstNodeID = nodeID
 			baseTask := newBaseTask(ctx, parentTask.getTriggerCondition())
 			baseTask.setParentTask(parentTask)
 			loadSegmentTask := &loadSegmentTask{
@@ -1837,7 +1844,7 @@ func assignInternalTask(ctx context.Context,
 	for nodeID, watched := range watchQueryChannelInfo {
 		if !watched {
 			ctx = opentracing.ContextWithSpan(context.Background(), sp)
-			queryChannel, queryResultChannel, err := meta.getQueryChannel(collectionID)
+			queryChannelInfo, err := meta.getQueryChannelInfoByID(collectionID)
 			if err != nil {
 				return err
 			}
@@ -1845,11 +1852,13 @@ func assignInternalTask(ctx context.Context,
 			msgBase := proto.Clone(parentTask.msgBase()).(*commonpb.MsgBase)
 			msgBase.MsgType = commonpb.MsgType_WatchQueryChannels
 			addQueryChannelRequest := &querypb.AddQueryChannelRequest{
-				Base:             msgBase,
-				NodeID:           nodeID,
-				CollectionID:     collectionID,
-				RequestChannelID: queryChannel,
-				ResultChannelID:  queryResultChannel,
+				Base:                 msgBase,
+				NodeID:               nodeID,
+				CollectionID:         collectionID,
+				RequestChannelID:     queryChannelInfo.QueryChannelID,
+				ResultChannelID:      queryChannelInfo.QueryResultChannelID,
+				GlobalSealedSegments: queryChannelInfo.GlobalSealedSegments,
+				SeekPosition:         queryChannelInfo.SeekPosition,
 			}
 			baseTask := newBaseTask(ctx, parentTask.getTriggerCondition())
 			baseTask.setParentTask(parentTask)

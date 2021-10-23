@@ -9,36 +9,29 @@
 // is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 // or implied. See the License for the specific language governing permissions and limitations under the License.
 
-#pragma once
+package metricsinfo
 
-#include <memory>
-#include <string>
+import (
+	"testing"
 
-#include "cache/CacheMgr.h"
-#include "cache/DataObj.h"
-#include "value/config/ConfigMgr.h"
+	"github.com/stretchr/testify/assert"
+)
 
-namespace milvus {
-namespace cache {
+func TestInContainer(t *testing.T) {
+	_, err := InContainer()
+	assert.NoError(t, err)
+}
 
-class CpuCacheMgr : public CacheMgr<DataObjPtr>, public ConfigObserver {
- public:
-    static CpuCacheMgr&
-    GetInstance();
+func TestGetContainerMemLimit(t *testing.T) {
+	limit, err := GetContainerMemLimit()
+	assert.NoError(t, err)
+	assert.True(t, limit > 0)
+	t.Log("limit memory:", limit)
+}
 
- private:
-    CpuCacheMgr();
-
-    ~CpuCacheMgr();
-
- public:
-    DataObjPtr
-    GetItem(const std::string& key) override;
-
- public:
-    void
-    ConfigUpdate(const std::string& name) override;
-};
-
-}  // namespace cache
-}  // namespace milvus
+func TestGetContainerMemUsed(t *testing.T) {
+	used, err := GetContainerMemUsed()
+	assert.NoError(t, err)
+	assert.True(t, used > 0)
+	t.Log("used memory:", used)
+}

@@ -25,10 +25,12 @@ import "C"
 import (
 	"errors"
 	"fmt"
-	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
-	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"strconv"
 	"sync"
+
+	"github.com/milvus-io/milvus/internal/common"
+	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
+	"github.com/milvus-io/milvus/internal/proto/datapb"
 
 	"go.uber.org/zap"
 
@@ -37,14 +39,9 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
 )
 
-/*
- * collectionReplica contains a in-memory local copy of persistent collections.
- * In common cases, the system has multiple query nodes. Data of a collection will be
- * distributed across all the available query nodes, and each query node's collectionReplica
- * will maintain its own share (only part of the collection).
- * Every replica tracks a value called tSafe which is the maximum timestamp that the replica
- * is up-to-date.
- */
+// ReplicaInterface specifies all the methods that the Collection object needs to implement in QueryNode.
+// In common cases, the system has multiple query nodes. The full data of a collection will be distributed
+// across multiple query nodes, and each query node's collectionReplica will maintain its own part.
 type ReplicaInterface interface {
 	// collection
 	getCollectionIDs() []UniqueID
@@ -55,6 +52,7 @@ type ReplicaInterface interface {
 	getCollectionNum() int
 	getPartitionIDs(collectionID UniqueID) ([]UniqueID, error)
 	getVecFieldIDsByCollectionID(collectionID UniqueID) ([]FieldID, error)
+	getPKFieldIDByCollectionID(collectionID UniqueID) (FieldID, error)
 
 	// partition
 	addPartition(collectionID UniqueID, partitionID UniqueID) error
@@ -240,6 +238,24 @@ func (colReplica *collectionReplica) getVecFieldIDsByCollectionID(collectionID U
 		}
 	}
 	return vecFields, nil
+}
+
+// getPKFieldIDsByCollectionID returns vector field ids of collection
+func (colReplica *collectionReplica) getPKFieldIDByCollectionID(collectionID UniqueID) (FieldID, error) {
+	colReplica.mu.RLock()
+	defer colReplica.mu.RUnlock()
+
+	fields, err := colReplica.getFieldsByCollectionIDPrivate(collectionID)
+	if err != nil {
+		return common.InvalidFieldID, err
+	}
+
+	for _, field := range fields {
+		if field.IsPrimaryKey {
+			return field.FieldID, nil
+		}
+	}
+	return common.InvalidFieldID, nil
 }
 
 // getFieldsByCollectionIDPrivate is the private function in collectionReplica, to return vector field ids of collection
@@ -479,11 +495,13 @@ func (colReplica *collectionReplica) hasSegment(segmentID UniqueID) bool {
 	return colReplica.hasSegmentPrivate(segmentID)
 }
 
+// hasSegmentPrivate is private function in collectionReplica, to check if collectionReplica has the segment
 func (colReplica *collectionReplica) hasSegmentPrivate(segmentID UniqueID) bool {
 	_, ok := colReplica.segments[segmentID]
 	return ok
 }
 
+// getSegmentNum returns num of segments in collectionReplica
 func (colReplica *collectionReplica) getSegmentNum() int {
 	colReplica.mu.RLock()
 	defer colReplica.mu.RUnlock()
@@ -516,6 +534,7 @@ func (colReplica *collectionReplica) getSegmentStatistics() []*internalpb.Segmen
 	return statisticData
 }
 
+//  removeExcludedSegments will remove excludedSegments from collectionReplica
 func (colReplica *collectionReplica) removeExcludedSegments(collectionID UniqueID) {
 	colReplica.mu.Lock()
 	defer colReplica.mu.Unlock()
@@ -523,6 +542,7 @@ func (colReplica *collectionReplica) removeExcludedSegments(collectionID UniqueI
 	delete(colReplica.excludedSegments, collectionID)
 }
 
+// addExcludedSegments will add excludedSegments to collectionReplica
 func (colReplica *collectionReplica) addExcludedSegments(collectionID UniqueID, segmentInfos []*datapb.SegmentInfo) {
 	colReplica.mu.Lock()
 	defer colReplica.mu.Unlock()
@@ -534,6 +554,7 @@ func (colReplica *collectionReplica) addExcludedSegments(collectionID UniqueID, 
 	colReplica.excludedSegments[collectionID] = append(colReplica.excludedSegments[collectionID], segmentInfos...)
 }
 
+// getExcludedSegments returns excludedSegments of collectionReplica
 func (colReplica *collectionReplica) getExcludedSegments(collectionID UniqueID) ([]*datapb.SegmentInfo, error) {
 	colReplica.mu.RLock()
 	defer colReplica.mu.RUnlock()

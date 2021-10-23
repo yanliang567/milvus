@@ -23,6 +23,10 @@ def gen_str_by_length(length=8):
     return "".join(random.choice(string.ascii_letters + string.digits) for _ in range(length))
 
 
+def gen_digits_by_length(length=8):
+    return "".join(random.choice(string.digits) for _ in range(length))
+
+
 def gen_bool_field(name=ct.default_bool_field_name, description=ct.default_desc, is_primary=False, **kwargs):
     bool_field, _ = ApiFieldSchemaWrapper().init_field_schema(name=name, dtype=DataType.BOOL, description=description,
                                                               is_primary=is_primary, **kwargs)
@@ -513,8 +517,6 @@ def insert_data(collection_w, nb=3000, is_binary=False, is_all_data_type=False,
         insert_ids.extend(insert_res.primary_keys)
         vectors.append(default_data)
         start = start + nb // num
-    log.info("insert_data: inserted data into collection %s (num_entities: %s)"
-             % (collection_w.name, nb))
     return collection_w, vectors, binary_raw_vectors, insert_ids, time_stamp
 
 

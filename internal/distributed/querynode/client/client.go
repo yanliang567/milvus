@@ -1,13 +1,18 @@
-// Copyright (C) 2019-2020 Zilliz. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
 // with the License. You may obtain a copy of the License at
 //
-// http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// Unless required by applicable law or agreed to in writing, software distributed under the License
-// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
-// or implied. See the License for the specific language governing permissions and limitations under the License.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package grpcquerynodeclient
 
@@ -188,6 +193,7 @@ func (c *Client) Register() error {
 	return nil
 }
 
+// GetComponentStates gets the component states of QueryNode.
 func (c *Client) GetComponentStates(ctx context.Context) (*internalpb.ComponentStates, error) {
 	ret, err := c.recall(func() (interface{}, error) {
 		client, err := c.getGrpcClient()
@@ -203,6 +209,7 @@ func (c *Client) GetComponentStates(ctx context.Context) (*internalpb.ComponentS
 	return ret.(*internalpb.ComponentStates), err
 }
 
+// GetTimeTickChannel gets the time tick channel of QueryNode.
 func (c *Client) GetTimeTickChannel(ctx context.Context) (*milvuspb.StringResponse, error) {
 	ret, err := c.recall(func() (interface{}, error) {
 		client, err := c.getGrpcClient()
@@ -218,6 +225,7 @@ func (c *Client) GetTimeTickChannel(ctx context.Context) (*milvuspb.StringRespon
 	return ret.(*milvuspb.StringResponse), err
 }
 
+// GetStatisticsChannel gets the statistics channel of QueryNode.
 func (c *Client) GetStatisticsChannel(ctx context.Context) (*milvuspb.StringResponse, error) {
 	ret, err := c.recall(func() (interface{}, error) {
 		client, err := c.getGrpcClient()
@@ -233,6 +241,7 @@ func (c *Client) GetStatisticsChannel(ctx context.Context) (*milvuspb.StringResp
 	return ret.(*milvuspb.StringResponse), err
 }
 
+// AddQueryChannel adds query channel for QueryNode component.
 func (c *Client) AddQueryChannel(ctx context.Context, req *querypb.AddQueryChannelRequest) (*commonpb.Status, error) {
 	ret, err := c.recall(func() (interface{}, error) {
 		client, err := c.getGrpcClient()
@@ -248,6 +257,7 @@ func (c *Client) AddQueryChannel(ctx context.Context, req *querypb.AddQueryChann
 	return ret.(*commonpb.Status), err
 }
 
+// RemoveQueryChannel removes the query channel for QueryNode component.
 func (c *Client) RemoveQueryChannel(ctx context.Context, req *querypb.RemoveQueryChannelRequest) (*commonpb.Status, error) {
 	ret, err := c.recall(func() (interface{}, error) {
 		client, err := c.getGrpcClient()
@@ -263,6 +273,7 @@ func (c *Client) RemoveQueryChannel(ctx context.Context, req *querypb.RemoveQuer
 	return ret.(*commonpb.Status), err
 }
 
+// WatchDmChannels watches the channels about data manipulation.
 func (c *Client) WatchDmChannels(ctx context.Context, req *querypb.WatchDmChannelsRequest) (*commonpb.Status, error) {
 	ret, err := c.recall(func() (interface{}, error) {
 		client, err := c.getGrpcClient()
