@@ -13,15 +13,14 @@ DATE_FORMAT = "%m/%d/%Y %H:%M:%S %p"
 prefix = "ins_"
 nbs = [100, 1000, 10*1000, 20*1000, 40*1000, 60*1000, 100*1000]
 # threads_num = 10
-shardNum = 2
+# shardNum = 2
 dim = 128
 
 
-def insert(nb1, total_entities1, threads_num, name):
+def insert(nb1, shard_num, threads_num, name):
 
     # create
     nb = int(nb1)
-    total_entities = int(total_entities1)
     threads_num = int(threads_num)
     t0 = time.time()
     auto_id = FieldSchema(name="auto_id", dtype=DataType.INT64, description="auto primary id")
@@ -30,7 +29,7 @@ def insert(nb1, total_entities1, threads_num, name):
     schema = CollectionSchema(fields=[auto_id, age_field, embedding_field],
                               auto_id=True, primary_field=auto_id.name,
                               description="collection of insert perf")
-    collection = Collection(name=name, schema=schema, shards_num=shardNum)
+    collection = Collection(name=name, schema=schema, shards_num=shard_num)
     tt = time.time() - t0
     logging.info(f"assert create nb{nb} collection: {tt}")
 
@@ -47,34 +46,44 @@ def insert(nb1, total_entities1, threads_num, name):
 
     # insert
     threads = []
-    ins_times = total_entities / nb
-    ins_per_thread = ins_times / threads_num
-    logging.info(f"ready to insert {total_entities} entities by {ins_times} insert times "
-                 f"divided in {threads_num} threads, and {ins_per_thread} rounds per thread")
-    for i in range(threads_num):
-        t = threading.Thread(target=insert_th, args=(collection, data, int(ins_per_thread), i))
-        threads.append(t)
-        t.start()
-    for t in threads:
-        t.join()
+    ins_time_per_thread = 10
+    logging.info(f"ready to insert {name}, insert {ins_time_per_thread} times per thread")
+    if threads_num > 1:
+        for i in range(threads_num):
+            t = threading.Thread(target=insert_th, args=(collection, data, int(ins_time_per_thread), i))
+            threads.append(t)
+            t.start()
+        for t in threads:
+            t.join()
+    else:
+        for r in range(ins_time_per_thread):
+            t1 = time.time()
+            res = collection.insert(data)
+            t2 = time.time() - t1
+            logging.info(f"assert insert thread0 round{r}: {t2}")
 
+    return collection
     # collection.drop()
     # log.info("collection dropped.")
 
 
 if __name__ == '__main__':
-    nb1 = sys.argv[1]
-    entities1 = sys.argv[2]
-    threads = sys.argv[3]
-    logging.basicConfig(filename=f"/tmp/insert_nb{nb1}_total{entities1}_threads{threads}.log",
-                        level=logging.INFO, format=LOG_FORMAT, datefmt=DATE_FORMAT)
-
-    logging.info(f"input: nb={nb1}, entities={entities1}, threads={threads}")
+    nb1 = int(sys.argv[1])      # insert nb
+    shards = int(sys.argv[2])   # shards number
+    th = int(sys.argv[3])       # insert thread num
+    x = int(sys.argv[4])        # x times insert with thread num
     host = "10.98.0.20"
     port = 19530
     conn = connections.connect('default', host=host, port=port)
-    collection_name = f"insert_nb{nb1}_total{entities1}_threads{threads}"
-    t1 = time.time()
-    insert(nb1, entities1, threads, collection_name)
-    t2 = time.time() - t1
-    logging.info(f"Insert cost {t2}, {collection_name}")
+    logging.basicConfig(filename=f"/tmp/insert_nb{nb1}_shards{shards}_threads{th}.log",
+                        level=logging.INFO, format=LOG_FORMAT, datefmt=DATE_FORMAT)
+
+    for i in range(x):
+        nb1 = nb1 * 2
+        collection_name = f"insert_nb{nb1}_shards{shards}_threads{th}"
+        t1 = time.time()
+        collection = insert(nb1, shards, th, collection_name)
+        t2 = time.time() - t1
+        logging.info(f"Insert cost {t2}, {collection_name}")
+
+
