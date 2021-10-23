@@ -85,6 +85,6 @@ if __name__ == '__main__':
         t1 = time.time()
         collection = insert(nb1, shards, th, per_thread, collection_name)
         t2 = time.time() - t1
-        logging.info(f"Insert cost {t2}, {collection_name}")
+        logging.info(f"Insert cost per thread per insert {t2/per_thread/th}, {collection_name}")
 
 
