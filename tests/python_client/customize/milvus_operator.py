@@ -111,12 +111,13 @@ class MilvusOperator(object):
 if __name__ == '__main__':
 
     namespace = 'chaos-testing'
-    name = 'milvus-9350'
+    name = 'milvus-9350-2'
     cus_configs = {'spec.components.image': 'milvusdb/milvus-dev:master-20211023-6949350',
                    'metadata.namespace': namespace,
                    'metadata.name': name,
                    'apiVersion': 'milvus.io/v1alpha1',
                    'kind': 'MilvusCluster',
+                   'spec.components.proxy.replicas': 2,
                    'spec.components.proxy.serviceType': 'LoadBalancer'
                    }
 
