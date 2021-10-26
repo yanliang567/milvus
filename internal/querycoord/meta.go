@@ -410,6 +410,13 @@ func (m *MetaReplica) saveGlobalSealedSegInfos(saves col2SegmentInfos) (col2Seal
 		if !ok || len(messageIDs) == 0 {
 			return col2SegmentChangeInfos, errors.New("updateGlobalSealedSegmentInfos: send sealed segment change info failed")
 		}
+
+		if queryChannelInfo.SeekPosition == nil {
+			queryChannelInfo.SeekPosition = &internalpb.MsgPosition{
+				ChannelName: queryChannelInfo.QueryChannelID,
+			}
+		}
+
 		queryChannelInfo.SeekPosition.MsgID = messageIDs[0].Serialize()
 
 		// update segmentInfo, queryChannelInfo meta to cache and etcd
@@ -521,6 +528,12 @@ func (m *MetaReplica) removeGlobalSealedSegInfos(collectionID UniqueID, partitio
 	messageIDs, ok := messageIDInfos[queryChannelInfo.QueryChannelID]
 	if !ok || len(messageIDs) == 0 {
 		return col2SealedSegmentChangeInfos{collectionID: segmentChangeInfos}, errors.New("updateGlobalSealedSegmentInfos: send sealed segment change info failed")
+	}
+
+	if queryChannelInfo.SeekPosition == nil {
+		queryChannelInfo.SeekPosition = &internalpb.MsgPosition{
+			ChannelName: queryChannelInfo.QueryChannelID,
+		}
 	}
 	queryChannelInfo.SeekPosition.MsgID = messageIDs[0].Serialize()
 
@@ -861,18 +874,21 @@ func (m *MetaReplica) getQueryChannelInfoByID(collectionID UniqueID) (*querypb.Q
 	m.channelMu.Lock()
 	defer m.channelMu.Unlock()
 
-	//TODO::to remove
-	collectionID = 0
 	if info, ok := m.queryChannelInfos[collectionID]; ok {
 		return proto.Clone(info).(*querypb.QueryChannelInfo), nil
 	}
 
-	info := createQueryChannel(collectionID)
+	// TODO::to remove
+	// all collection use the same query channel
+	colIDForAssignChannel := UniqueID(0)
+	info := createQueryChannel(colIDForAssignChannel)
 	err := saveQueryChannelInfo(collectionID, info, m.client)
 	if err != nil {
 		log.Error("getQueryChannel: save channel to etcd error", zap.Error(err))
 		return nil, err
 	}
+	// set info.collectionID from 0 to realID
+	info.CollectionID = collectionID
 	m.queryChannelInfos[collectionID] = info
 	return proto.Clone(info).(*querypb.QueryChannelInfo), nil
 }
