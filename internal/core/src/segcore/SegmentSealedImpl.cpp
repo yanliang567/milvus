@@ -9,10 +9,11 @@
 // is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
-#include "segcore/SegmentSealedImpl.h"
+#include "common/Consts.h"
+#include "query/SearchBruteForce.h"
 #include "query/SearchOnSealed.h"
 #include "query/ScalarIndex.h"
-#include "query/SearchBruteForce.h"
+#include "segcore/SegmentSealedImpl.h"
 
 namespace milvus::segcore {
 
@@ -24,6 +25,12 @@ set_bit(boost::dynamic_bitset<>& bitset, FieldOffset field_offset, bool flag = t
 static inline bool
 get_bit(const boost::dynamic_bitset<>& bitset, FieldOffset field_offset) {
     return bitset[field_offset.get()];
+}
+
+int64_t
+SegmentSealedImpl::PreDelete(int64_t size) {
+    auto reserved_begin = deleted_record_.reserved.fetch_add(size);
+    return reserved_begin;
 }
 
 void
@@ -170,6 +177,7 @@ SegmentSealedImpl::LoadDeletedRecord(const LoadDeletedRecordInfo& info) {
     deleted_record_.uids_.set_data(0, primary_keys, size);
     deleted_record_.timestamps_.set_data(0, timestamps, size);
     deleted_record_.ack_responder_.AddSegment(0, size);
+    deleted_record_.reserved.fetch_add(size);
     deleted_record_.record_size_ = size;
 }
 
@@ -246,7 +254,7 @@ SegmentSealedImpl::get_deleted_bitmap(int64_t del_barrier,
     // Sealed segment only has one chunk with chunk_id 0
     auto span = deleted_record_.uids_.get_span_base(0);
     auto uids_ptr = reinterpret_cast<const idx_t*>(span.data());
-    auto del_size = deleted_record_.record_size_;
+    auto del_size = deleted_record_.reserved.load();
     std::vector<idx_t> ids(del_size);
     std::copy_n(uids_ptr, del_size, ids.data());
 
@@ -255,7 +263,7 @@ SegmentSealedImpl::get_deleted_bitmap(int64_t del_barrier,
     if (del_barrier < old->del_barrier) {
         for (auto del_index = del_barrier; del_index < old->del_barrier; ++del_index) {
             int64_t the_offset = seg_offsets[del_index].get();
-            AssertInfo(the_offset > 0, "Seg offset is invalid");
+            AssertInfo(the_offset >= 0, "Seg offset is invalid");
             if (deleted_record_.timestamps_[del_index] < query_timestamp) {
                 bitmap->clear(the_offset);
             }
@@ -264,7 +272,7 @@ SegmentSealedImpl::get_deleted_bitmap(int64_t del_barrier,
     } else {
         for (auto del_index = old->del_barrier; del_index < del_barrier; ++del_index) {
             int64_t the_offset = seg_offsets[del_index].get();
-            AssertInfo(the_offset > 0, "Seg offset is invalid");
+            AssertInfo(the_offset >= 0, "Seg offset is invalid");
             if (deleted_record_.timestamps_[del_index] < query_timestamp) {
                 bitmap->set(the_offset);
             }
@@ -437,7 +445,7 @@ SegmentSealedImpl::bulk_subscript_impl(const void* src_raw, const int64_t* seg_o
     auto dst = reinterpret_cast<T*>(dst_raw);
     for (int64_t i = 0; i < count; ++i) {
         auto offset = seg_offsets[i];
-        dst[i] = offset == -1 ? -1 : src[offset];
+        dst[i] = (offset == INVALID_SEG_OFFSET ? INVALID_ID : src[offset]);
     }
 }
 
@@ -451,12 +459,7 @@ SegmentSealedImpl::bulk_subscript_impl(
     for (int64_t i = 0; i < count; ++i) {
         auto offset = seg_offsets[i];
         auto dst = dst_vec + i * element_sizeof;
-        const char* src;
-        if (offset != -1) {
-            src = src_vec + element_sizeof * offset;
-        } else {
-            src = none.data();
-        }
+        const char* src = (offset == INVALID_SEG_OFFSET ? none.data() : (src_vec + element_sizeof * offset));
         memcpy(dst, src, element_sizeof);
     }
 }
@@ -542,8 +545,11 @@ SegmentSealedImpl::search_ids(const IdArray& id_array, Timestamp timestamp) cons
     return primary_key_index_->do_search_ids(id_array);
 }
 
-void
-SegmentSealedImpl::Delete(int64_t row_count, const int64_t* uids_raw, const Timestamp* timestamps_raw) {
+Status
+SegmentSealedImpl::Delete(int64_t reserved_offset,
+                          int64_t row_count,
+                          const int64_t* uids_raw,
+                          const Timestamp* timestamps_raw) {
     std::vector<std::tuple<Timestamp, idx_t>> ordering(row_count);
     for (int i = 0; i < row_count; i++) {
         ordering[i] = std::make_tuple(timestamps_raw[i], uids_raw[i]);
@@ -558,10 +564,10 @@ SegmentSealedImpl::Delete(int64_t row_count, const int64_t* uids_raw, const Time
         src_uids[i] = uid;
     }
     auto current_size = deleted_record_.record_size_;
-    deleted_record_.timestamps_.set_data(current_size, src_timestamps.data(), row_count);
-    deleted_record_.uids_.set_data(current_size, src_uids.data(), row_count);
-    deleted_record_.ack_responder_.AddSegment(current_size, row_count);
-    return;
+    deleted_record_.timestamps_.set_data(reserved_offset, src_timestamps.data(), row_count);
+    deleted_record_.uids_.set_data(reserved_offset, src_uids.data(), row_count);
+    deleted_record_.ack_responder_.AddSegment(reserved_offset, row_count);
+    return Status::OK();
 }
 
 std::vector<SegOffset>

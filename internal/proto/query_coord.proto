@@ -162,6 +162,8 @@ message SegmentInfo {
   int64 indexID = 8;
   string channelID = 9;
   SegmentState segment_state = 10;
+  repeated int64 compactionFrom = 11;
+  bool createdByCompaction = 12;
 }
 
 message GetSegmentInfoResponse {
@@ -292,11 +294,6 @@ message CollectionInfo {
   int64 inMemory_percentage = 8;
 }
 
-message HandoffSegments {
-  common.MsgBase base = 1;
-  repeated SegmentLoadInfo infos = 2;
-}
-
 message LoadBalanceSegmentInfo {
   int64 segmentID = 1;
   int64 partitionID = 2;
@@ -308,6 +305,11 @@ message LoadBalanceSegmentInfo {
   bool valid_info = 8;
 }
 
+message HandoffSegmentsRequest {
+  common.MsgBase base = 1;
+  repeated SegmentInfo segmentInfos = 2;
+}
+
 message LoadBalanceRequest {
   common.MsgBase base = 1;
   repeated int64 source_nodeIDs = 2;
@@ -315,10 +317,14 @@ message LoadBalanceRequest {
 }
 
 //---------------- common query proto -----------------
+message SegmentChangeInfo {
+  int64 online_nodeID = 1;
+  repeated SegmentInfo online_segments = 2;
+  int64 offline_nodeID = 3;
+  repeated SegmentInfo offline_segments = 4;
+}
+
 message SealedSegmentsChangeInfo {
   common.MsgBase base = 1;
-  int64 online_nodeID = 2;
-  repeated SegmentInfo online_segments = 3;
-  int64 offline_nodeID = 4;
-  repeated SegmentInfo offline_segments = 5;
+  repeated SegmentChangeInfo infos = 2;
 }

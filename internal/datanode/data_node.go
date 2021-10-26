@@ -56,16 +56,16 @@ import (
 )
 
 const (
-	// RPCConnectionTimeout used to set the timeout for rpc request
+	// RPCConnectionTimeout is used to set the timeout for rpc request
 	RPCConnectionTimeout = 30 * time.Second
 
-	// MetricRequestsTotal used to count the num of total requests
+	// MetricRequestsTotal is used to count the num of total requests
 	MetricRequestsTotal = "total"
 
-	// MetricRequestsSuccess used to count the num of successful requests
+	// MetricRequestsSuccess is used to count the num of successful requests
 	MetricRequestsSuccess = "success"
 
-	// ConnectEtcdMaxRetryTime used to limit the max retry time for connection etcd
+	// ConnectEtcdMaxRetryTime is used to limit the max retry time for connection etcd
 	ConnectEtcdMaxRetryTime = 1000
 )
 
@@ -494,7 +494,7 @@ func (node *DataNode) getChannelNamebySegmentID(segID UniqueID) string {
 	node.chanMut.RLock()
 	defer node.chanMut.RUnlock()
 	for name, dataSync := range node.vchan2SyncService {
-		if dataSync.replica.hasSegment(segID, false) {
+		if dataSync.replica.hasSegment(segID, true) {
 			return name
 		}
 	}

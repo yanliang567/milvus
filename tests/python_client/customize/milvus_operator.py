@@ -38,6 +38,7 @@ class MilvusOperator(object):
         return d_configs._dict if d_configs._dict is not None else d_configs
 
     def install(self, configs, template=None):
+        """apply new custom resource object to install milvus """
         new_configs = self._update_configs(configs, template)
         print(new_configs)
         namespace = new_configs['metadata'].get('namespace', 'default')
@@ -48,7 +49,14 @@ class MilvusOperator(object):
         return cus_res.create(new_configs)
 
     def uninstall(self, release_name, namespace='default', delete_depends=True, delete_pvc=True):
-        # delete custom resource object to uninstall milvus
+        """
+        Method: delete custom resource object to uninstall milvus
+        Params:
+            release_name: release name of milvus
+            namespace: namespace that the milvus is running in
+            delete_depends: whether to delete the dependent etcd, pulsar and minio services. default: True
+            delete_pvc: whether to delete the data persistent pvc volumes. default: True
+        """
         cus_res = CusResource(kind=self.plural, group=self.group,
                               version=self.version, namespace=namespace)
         del_configs = {}
@@ -98,6 +106,10 @@ class MilvusOperator(object):
         return False
 
     def endpoint(self, release_name, namespace='default'):
+        """
+        Method: get Milvus endpoint by name and namespace
+        Return: a string type endpoint. e.g: host:port
+        """
         endpoint = None
         cus_res = CusResource(kind=self.plural, group=self.group,
                               version=self.version, namespace=namespace)

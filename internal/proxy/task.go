@@ -20,7 +20,6 @@ import (
 	"math"
 	"reflect"
 	"regexp"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -584,7 +583,7 @@ func (it *insertTask) transferColumnBasedRequestToRowBasedData() error {
 	return nil
 }
 
-func (it *insertTask) checkFieldAutoID() error {
+func (it *insertTask) checkFieldAutoIDAndHashPK() error {
 	// TODO(dragondriver): in fact, NumRows is not trustable, we should check all input fields
 	if it.req.NumRows <= 0 {
 		return errNumRowsLessThanOrEqualToZero(it.req.NumRows)
@@ -695,30 +694,16 @@ func (it *insertTask) checkFieldAutoID() error {
 			},
 		}
 
-		// TODO(dragondriver): in this case, should we directly overwrite the hash?
-
-		if len(it.HashValues) != 0 && len(it.HashValues) != len(it.BaseInsertTask.RowIDs) {
-			return fmt.Errorf("invalid length of input hash values")
-		}
-		if it.HashValues == nil || len(it.HashValues) <= 0 {
-			it.HashValues = make([]uint32, 0, len(it.BaseInsertTask.RowIDs))
-			for _, rowID := range it.BaseInsertTask.RowIDs {
-				hash, _ := typeutil.Hash32Int64(rowID)
-				it.HashValues = append(it.HashValues, hash)
-			}
+		it.HashValues = make([]uint32, 0, len(it.BaseInsertTask.RowIDs))
+		for _, rowID := range it.BaseInsertTask.RowIDs {
+			hash, _ := typeutil.Hash32Int64(rowID)
+			it.HashValues = append(it.HashValues, hash)
 		}
 	} else {
-		// use primary keys as hash if hash is not provided
-		// in this case, primary field is required, we have already checked this
-		if uint32(len(it.HashValues)) != 0 && uint32(len(it.HashValues)) != rowNums {
-			return fmt.Errorf("invalid length of input hash values")
-		}
-		if it.HashValues == nil || len(it.HashValues) <= 0 {
-			it.HashValues = make([]uint32, 0, len(primaryData))
-			for _, pk := range primaryData {
-				hash, _ := typeutil.Hash32Int64(pk)
-				it.HashValues = append(it.HashValues, hash)
-			}
+		it.HashValues = make([]uint32, 0, len(primaryData))
+		for _, pk := range primaryData {
+			hash, _ := typeutil.Hash32Int64(pk)
+			it.HashValues = append(it.HashValues, hash)
 		}
 	}
 
@@ -748,12 +733,12 @@ func (it *insertTask) PreExecute(ctx context.Context) error {
 	}
 
 	collectionName := it.BaseInsertTask.CollectionName
-	if err := ValidateCollectionName(collectionName); err != nil {
+	if err := validateCollectionName(collectionName); err != nil {
 		return err
 	}
 
 	partitionTag := it.BaseInsertTask.PartitionName
-	if err := ValidatePartitionTag(partitionTag, true); err != nil {
+	if err := validatePartitionTag(partitionTag, true); err != nil {
 		return err
 	}
 
@@ -769,7 +754,7 @@ func (it *insertTask) PreExecute(ctx context.Context) error {
 		return err
 	}
 
-	err = it.checkFieldAutoID()
+	err = it.checkFieldAutoIDAndHashPK()
 	if err != nil {
 		return err
 	}
@@ -825,7 +810,6 @@ func (it *insertTask) _assignSegmentID(stream msgstream.MsgStream, pack *msgstre
 		if keysLen != timestampLen || keysLen != rowIDLen || keysLen != rowDataLen {
 			return nil, fmt.Errorf("the length of hashValue, timestamps, rowIDs, RowData are not equal")
 		}
-
 		for idx, channelID := range keys {
 			channelCountMap[channelID]++
 			if _, ok := channelMaxTSMap[channelID]; !ok {
@@ -907,8 +891,7 @@ func (it *insertTask) _assignSegmentID(stream msgstream.MsgStream, pack *msgstre
 		return 0
 	}
 
-	factor := 10
-	threshold := Params.PulsarMaxMessageSize / factor
+	threshold := Params.PulsarMaxMessageSize
 	log.Debug("Proxy", zap.Int("threshold of message size: ", threshold))
 	// not accurate
 	/* #nosec G103 */
@@ -1154,15 +1137,15 @@ func (cct *createCollectionTask) PreExecute(ctx context.Context) error {
 	}
 
 	// validate collection name
-	if err := ValidateCollectionName(cct.schema.Name); err != nil {
+	if err := validateCollectionName(cct.schema.Name); err != nil {
 		return err
 	}
 
-	if err := ValidateDuplicatedFieldName(cct.schema.Fields); err != nil {
+	if err := validateDuplicatedFieldName(cct.schema.Fields); err != nil {
 		return err
 	}
 
-	if err := ValidatePrimaryKey(cct.schema); err != nil {
+	if err := validatePrimaryKey(cct.schema); err != nil {
 		return err
 	}
 
@@ -1172,7 +1155,7 @@ func (cct *createCollectionTask) PreExecute(ctx context.Context) error {
 
 	// validate field name
 	for _, field := range cct.schema.Fields {
-		if err := ValidateFieldName(field.Name); err != nil {
+		if err := validateFieldName(field.Name); err != nil {
 			return err
 		}
 		if field.DataType == schemapb.DataType_FloatVector || field.DataType == schemapb.DataType_BinaryVector {
@@ -1193,11 +1176,11 @@ func (cct *createCollectionTask) PreExecute(ctx context.Context) error {
 				return errors.New("dimension is not defined in field type params, check type param `dim` for vector field")
 			}
 			if field.DataType == schemapb.DataType_FloatVector {
-				if err := ValidateDimension(dim, false); err != nil {
+				if err := validateDimension(dim, false); err != nil {
 					return err
 				}
 			} else {
-				if err := ValidateDimension(dim, true); err != nil {
+				if err := validateDimension(dim, true); err != nil {
 					return err
 				}
 			}
@@ -1268,7 +1251,7 @@ func (dct *dropCollectionTask) PreExecute(ctx context.Context) error {
 	dct.Base.MsgType = commonpb.MsgType_DropCollection
 	dct.Base.SourceID = Params.ProxyID
 
-	if err := ValidateCollectionName(dct.CollectionName); err != nil {
+	if err := validateCollectionName(dct.CollectionName); err != nil {
 		return err
 	}
 	return nil
@@ -1453,12 +1436,12 @@ func (st *searchTask) PreExecute(ctx context.Context) error {
 		return err
 	}
 
-	if err := ValidateCollectionName(st.query.CollectionName); err != nil {
+	if err := validateCollectionName(st.query.CollectionName); err != nil {
 		return err
 	}
 
 	for _, tag := range st.query.PartitionNames {
-		if err := ValidatePartitionTag(tag, false); err != nil {
+		if err := validatePartitionTag(tag, false); err != nil {
 			return err
 		}
 	}
@@ -1752,19 +1735,19 @@ func checkSearchResultData(data *schemapb.SearchResultData, nq int64, topk int64
 	return nil
 }
 
-func selectSearchResultData(dataArray []*schemapb.SearchResultData, offsets []int64, topk int64, idx int64) int {
+func selectSearchResultData(dataArray []*schemapb.SearchResultData, offsets []int64, topk int64, qi int64) int {
 	sel := -1
 	maxDistance := minFloat32
-	for q, loc := range offsets { // query num, the number of ways to merge
-		if loc >= topk {
+	for i, offset := range offsets { // query num, the number of ways to merge
+		if offset >= topk {
 			continue
 		}
-		offset := idx*topk + loc
-		id := dataArray[q].Ids.GetIntId().Data[offset]
+		idx := qi*topk + offset
+		id := dataArray[i].Ids.GetIntId().Data[idx]
 		if id != -1 {
-			distance := dataArray[q].Scores[offset]
+			distance := dataArray[i].Scores[idx]
 			if distance > maxDistance {
-				sel = q
+				sel = i
 				maxDistance = distance
 			}
 		}
@@ -1905,14 +1888,18 @@ func copySearchResultData(dst *schemapb.SearchResultData, src *schemapb.SearchRe
 //	}
 //}
 
-func reduceSearchResultDataParallel(searchResultData []*schemapb.SearchResultData, availableQueryNodeNum int64,
-	nq int64, topk int64, metricType string, maxParallel int) (*milvuspb.SearchResults, error) {
+func reduceSearchResultData(searchResultData []*schemapb.SearchResultData, availableQueryNodeNum int64,
+	nq int64, topk int64, metricType string) (*milvuspb.SearchResults, error) {
 
-	log.Debug("reduceSearchResultDataParallel",
+	tr := timerecord.NewTimeRecorder("reduceSearchResultData")
+	defer func() {
+		tr.Elapse("done")
+	}()
+
+	log.Debug("reduceSearchResultData",
 		zap.Int("len(searchResultData)", len(searchResultData)),
 		zap.Int64("availableQueryNodeNum", availableQueryNodeNum),
-		zap.Int64("nq", nq), zap.Int64("topk", topk), zap.String("metricType", metricType),
-		zap.Int("maxParallel", maxParallel))
+		zap.Int64("nq", nq), zap.Int64("topk", topk), zap.String("metricType", metricType))
 
 	ret := &milvuspb.SearchResults{
 		Status: &commonpb.Status{
@@ -1935,7 +1922,7 @@ func reduceSearchResultDataParallel(searchResultData []*schemapb.SearchResultDat
 	}
 
 	for i, sData := range searchResultData {
-		log.Debug("reduceSearchResultDataParallel",
+		log.Debug("reduceSearchResultData",
 			zap.Int("i", i),
 			zap.Int64("nq", sData.NumQueries),
 			zap.Int64("topk", sData.TopK),
@@ -1946,15 +1933,14 @@ func reduceSearchResultDataParallel(searchResultData []*schemapb.SearchResultDat
 		//printSearchResultData(sData, strconv.FormatInt(int64(i), 10))
 	}
 
-	// TODO(yukun): Use parallel function
 	var realTopK int64 = -1
 	for i := int64(0); i < nq; i++ {
 		offsets := make([]int64, availableQueryNodeNum)
 
 		var prevIDSet = make(map[int64]struct{})
 		var prevScore float32 = math.MaxFloat32
-		var loc int64
-		for loc = 0; loc < topk; {
+		var j int64
+		for j = 0; j < topk; {
 			sel := selectSearchResultData(searchResultData, offsets, topk, i)
 			if sel == -1 {
 				break
@@ -1975,7 +1961,7 @@ func reduceSearchResultDataParallel(searchResultData []*schemapb.SearchResultDat
 				ret.Results.Scores = append(ret.Results.Scores, score)
 				prevScore = score
 				prevIDSet = map[int64]struct{}{id: {}}
-				loc++
+				j++
 			} else {
 				// To handle this case:
 				//    e1: [100, 0.99]
@@ -1986,7 +1972,7 @@ func reduceSearchResultDataParallel(searchResultData []*schemapb.SearchResultDat
 					ret.Results.Ids.GetIntId().Data = append(ret.Results.Ids.GetIntId().Data, id)
 					ret.Results.Scores = append(ret.Results.Scores, score)
 					prevIDSet[id] = struct{}{}
-					loc++
+					j++
 				} else {
 					// entity with same id and same score must be duplicated
 					log.Debug("skip duplicated search result",
@@ -1997,11 +1983,11 @@ func reduceSearchResultDataParallel(searchResultData []*schemapb.SearchResultDat
 			}
 			offsets[sel]++
 		}
-		if realTopK != -1 && realTopK != loc {
+		if realTopK != -1 && realTopK != j {
 			log.Warn("Proxy Reduce Search Result", zap.Error(errors.New("the length (topk) between all result of query is different")))
 			// return nil, errors.New("the length (topk) between all result of query is different")
 		}
-		realTopK = loc
+		realTopK = j
 		ret.Results.Topks = append(ret.Results.Topks, realTopK)
 	}
 
@@ -2014,14 +2000,6 @@ func reduceSearchResultDataParallel(searchResultData []*schemapb.SearchResultDat
 	}
 
 	return ret, nil
-}
-
-func reduceSearchResultData(searchResultData []*schemapb.SearchResultData, availableQueryNodeNum int64,
-	nq int64, topk int64, metricType string) (res *milvuspb.SearchResults, err error) {
-	tr := timerecord.NewTimeRecorder("reduceSearchResults")
-	res, err = reduceSearchResultDataParallel(searchResultData, availableQueryNodeNum, nq, topk, metricType, runtime.NumCPU())
-	tr.Elapse("done")
-	return
 }
 
 //func printSearchResult(partialSearchResult *internalpb.SearchResults) {
@@ -2231,7 +2209,7 @@ func (qt *queryTask) PreExecute(ctx context.Context) error {
 
 	collectionName := qt.query.CollectionName
 
-	if err := ValidateCollectionName(qt.query.CollectionName); err != nil {
+	if err := validateCollectionName(qt.query.CollectionName); err != nil {
 		log.Debug("Invalid collection name.", zap.Any("collectionName", collectionName),
 			zap.Any("requestID", qt.Base.MsgID), zap.Any("requestType", "query"))
 		return err
@@ -2249,7 +2227,7 @@ func (qt *queryTask) PreExecute(ctx context.Context) error {
 		zap.Any("requestID", qt.Base.MsgID), zap.Any("requestType", "query"))
 
 	for _, tag := range qt.query.PartitionNames {
-		if err := ValidatePartitionTag(tag, false); err != nil {
+		if err := validatePartitionTag(tag, false); err != nil {
 			log.Debug("Invalid partition name.", zap.Any("partitionName", tag),
 				zap.Any("requestID", qt.Base.MsgID), zap.Any("requestType", "query"))
 			return err
@@ -2628,7 +2606,7 @@ func (hct *hasCollectionTask) PreExecute(ctx context.Context) error {
 	hct.Base.MsgType = commonpb.MsgType_HasCollection
 	hct.Base.SourceID = Params.ProxyID
 
-	if err := ValidateCollectionName(hct.CollectionName); err != nil {
+	if err := validateCollectionName(hct.CollectionName); err != nil {
 		return err
 	}
 	return nil
@@ -2703,7 +2681,7 @@ func (dct *describeCollectionTask) PreExecute(ctx context.Context) error {
 		return nil
 	}
 
-	return ValidateCollectionName(dct.CollectionName)
+	return validateCollectionName(dct.CollectionName)
 }
 
 func (dct *describeCollectionTask) Execute(ctx context.Context) error {
@@ -2993,7 +2971,7 @@ func (sct *showCollectionsTask) PreExecute(ctx context.Context) error {
 	sct.Base.SourceID = Params.ProxyID
 	if sct.GetType() == milvuspb.ShowType_InMemory {
 		for _, collectionName := range sct.CollectionNames {
-			if err := ValidateCollectionName(collectionName); err != nil {
+			if err := validateCollectionName(collectionName); err != nil {
 				return err
 			}
 		}
@@ -3148,11 +3126,11 @@ func (cpt *createPartitionTask) PreExecute(ctx context.Context) error {
 
 	collName, partitionTag := cpt.CollectionName, cpt.PartitionName
 
-	if err := ValidateCollectionName(collName); err != nil {
+	if err := validateCollectionName(collName); err != nil {
 		return err
 	}
 
-	if err := ValidatePartitionTag(partitionTag, true); err != nil {
+	if err := validatePartitionTag(partitionTag, true); err != nil {
 		return err
 	}
 
@@ -3225,11 +3203,11 @@ func (dpt *dropPartitionTask) PreExecute(ctx context.Context) error {
 
 	collName, partitionTag := dpt.CollectionName, dpt.PartitionName
 
-	if err := ValidateCollectionName(collName); err != nil {
+	if err := validateCollectionName(collName); err != nil {
 		return err
 	}
 
-	if err := ValidatePartitionTag(partitionTag, true); err != nil {
+	if err := validatePartitionTag(partitionTag, true); err != nil {
 		return err
 	}
 
@@ -3302,11 +3280,11 @@ func (hpt *hasPartitionTask) PreExecute(ctx context.Context) error {
 
 	collName, partitionTag := hpt.CollectionName, hpt.PartitionName
 
-	if err := ValidateCollectionName(collName); err != nil {
+	if err := validateCollectionName(collName); err != nil {
 		return err
 	}
 
-	if err := ValidatePartitionTag(partitionTag, true); err != nil {
+	if err := validatePartitionTag(partitionTag, true); err != nil {
 		return err
 	}
 	return nil
@@ -3377,13 +3355,13 @@ func (spt *showPartitionsTask) PreExecute(ctx context.Context) error {
 	spt.Base.MsgType = commonpb.MsgType_ShowPartitions
 	spt.Base.SourceID = Params.ProxyID
 
-	if err := ValidateCollectionName(spt.CollectionName); err != nil {
+	if err := validateCollectionName(spt.CollectionName); err != nil {
 		return err
 	}
 
 	if spt.GetType() == milvuspb.ShowType_InMemory {
 		for _, partitionName := range spt.PartitionNames {
-			if err := ValidatePartitionTag(partitionName, true); err != nil {
+			if err := validatePartitionTag(partitionName, true); err != nil {
 				return err
 			}
 		}
@@ -3543,11 +3521,11 @@ func (cit *createIndexTask) PreExecute(ctx context.Context) error {
 
 	collName, fieldName := cit.CollectionName, cit.FieldName
 
-	if err := ValidateCollectionName(collName); err != nil {
+	if err := validateCollectionName(collName); err != nil {
 		return err
 	}
 
-	if err := ValidateFieldName(fieldName); err != nil {
+	if err := validateFieldName(fieldName); err != nil {
 		return err
 	}
 
@@ -3655,7 +3633,7 @@ func (dit *describeIndexTask) PreExecute(ctx context.Context) error {
 	dit.Base.MsgType = commonpb.MsgType_DescribeIndex
 	dit.Base.SourceID = Params.ProxyID
 
-	if err := ValidateCollectionName(dit.CollectionName); err != nil {
+	if err := validateCollectionName(dit.CollectionName); err != nil {
 		return err
 	}
 
@@ -3734,11 +3712,11 @@ func (dit *dropIndexTask) PreExecute(ctx context.Context) error {
 
 	collName, fieldName := dit.CollectionName, dit.FieldName
 
-	if err := ValidateCollectionName(collName); err != nil {
+	if err := validateCollectionName(collName); err != nil {
 		return err
 	}
 
-	if err := ValidateFieldName(fieldName); err != nil {
+	if err := validateFieldName(fieldName); err != nil {
 		return err
 	}
 
@@ -3816,7 +3794,7 @@ func (gibpt *getIndexBuildProgressTask) PreExecute(ctx context.Context) error {
 	gibpt.Base.MsgType = commonpb.MsgType_GetIndexBuildProgress
 	gibpt.Base.SourceID = Params.ProxyID
 
-	if err := ValidateCollectionName(gibpt.CollectionName); err != nil {
+	if err := validateCollectionName(gibpt.CollectionName); err != nil {
 		return err
 	}
 
@@ -4037,7 +4015,7 @@ func (gist *getIndexStateTask) PreExecute(ctx context.Context) error {
 	gist.Base.MsgType = commonpb.MsgType_GetIndexState
 	gist.Base.SourceID = Params.ProxyID
 
-	if err := ValidateCollectionName(gist.CollectionName); err != nil {
+	if err := validateCollectionName(gist.CollectionName); err != nil {
 		return err
 	}
 
@@ -4338,7 +4316,7 @@ func (lct *loadCollectionTask) PreExecute(ctx context.Context) error {
 
 	collName := lct.CollectionName
 
-	if err := ValidateCollectionName(collName); err != nil {
+	if err := validateCollectionName(collName); err != nil {
 		return err
 	}
 
@@ -4433,7 +4411,7 @@ func (rct *releaseCollectionTask) PreExecute(ctx context.Context) error {
 
 	collName := rct.CollectionName
 
-	if err := ValidateCollectionName(collName); err != nil {
+	if err := validateCollectionName(collName); err != nil {
 		return err
 	}
 
@@ -4518,7 +4496,7 @@ func (lpt *loadPartitionsTask) PreExecute(ctx context.Context) error {
 
 	collName := lpt.CollectionName
 
-	if err := ValidateCollectionName(collName); err != nil {
+	if err := validateCollectionName(collName); err != nil {
 		return err
 	}
 
@@ -4613,7 +4591,7 @@ func (rpt *releasePartitionsTask) PreExecute(ctx context.Context) error {
 
 	collName := rpt.CollectionName
 
-	if err := ValidateCollectionName(collName); err != nil {
+	if err := validateCollectionName(collName); err != nil {
 		return err
 	}
 
@@ -4652,9 +4630,11 @@ func (rpt *releasePartitionsTask) PostExecute(ctx context.Context) error {
 	return nil
 }
 
+type BaseDeleteTask = msgstream.DeleteMsg
+
 type deleteTask struct {
 	Condition
-	*internalpb.DeleteRequest
+	BaseDeleteTask
 	ctx       context.Context
 	req       *milvuspb.DeleteRequest
 	result    *milvuspb.MutationResult
@@ -4740,7 +4720,7 @@ func (dt *deleteTask) PreExecute(ctx context.Context) error {
 	}
 
 	collName := dt.req.CollectionName
-	if err := ValidateCollectionName(collName); err != nil {
+	if err := validateCollectionName(collName); err != nil {
 		log.Error("Invalid collection name", zap.String("collectionName", collName))
 		return err
 	}
@@ -4754,7 +4734,7 @@ func (dt *deleteTask) PreExecute(ctx context.Context) error {
 	// If partitionName is not empty, partitionID will be set.
 	if len(dt.req.PartitionName) > 0 {
 		partName := dt.req.PartitionName
-		if err := ValidatePartitionTag(partName, true); err != nil {
+		if err := validatePartitionTag(partName, true); err != nil {
 			log.Error("Invalid partition name", zap.String("partitionName", partName))
 			return err
 		}
@@ -4779,7 +4759,7 @@ func (dt *deleteTask) PreExecute(ctx context.Context) error {
 		log.Error("Failed to get primary keys from expr", zap.Error(err))
 		return err
 	}
-	log.Debug("get primary keys from expr", zap.Any("primary keys", dt.DeleteRequest.PrimaryKeys))
+	log.Debug("get primary keys from expr", zap.Any("primary keys", primaryKeys))
 	dt.DeleteRequest.PrimaryKeys = primaryKeys
 
 	// set result
@@ -4789,6 +4769,8 @@ func (dt *deleteTask) PreExecute(ctx context.Context) error {
 		},
 	}
 	dt.result.DeleteCnt = int64(len(primaryKeys))
+
+	dt.HashPK(primaryKeys)
 
 	rowNum := len(primaryKeys)
 	dt.Timestamps = make([]uint64, rowNum)
@@ -4803,15 +4785,7 @@ func (dt *deleteTask) Execute(ctx context.Context) (err error) {
 	sp, ctx := trace.StartSpanFromContextWithOperationName(dt.ctx, "Proxy-Delete-Execute")
 	defer sp.Finish()
 
-	var tsMsg msgstream.TsMsg = &msgstream.DeleteMsg{
-		DeleteRequest: *dt.DeleteRequest,
-		BaseMsg: msgstream.BaseMsg{
-			Ctx:            ctx,
-			HashValues:     []uint32{uint32(Params.ProxyID)},
-			BeginTimestamp: dt.BeginTs(),
-			EndTimestamp:   dt.EndTs(),
-		},
-	}
+	var tsMsg msgstream.TsMsg = &dt.BaseDeleteTask
 	msgPack := msgstream.MsgPack{
 		BeginTs: dt.BeginTs(),
 		EndTs:   dt.EndTs(),
@@ -4846,8 +4820,64 @@ func (dt *deleteTask) Execute(ctx context.Context) (err error) {
 			return err
 		}
 	}
+	result := make(map[int32]msgstream.TsMsg)
+	hashKeys := stream.ComputeProduceChannelIndexes(msgPack.Msgs)
+	// For each msg, assign PK to different message buckets by hash value of PK.
+	for i, request := range msgPack.Msgs {
+		deleteRequest := request.(*msgstream.DeleteMsg)
+		keys := hashKeys[i]
+		collectionName := deleteRequest.CollectionName
+		collectionID := deleteRequest.CollectionID
+		partitionID := deleteRequest.PartitionID
+		partitionName := deleteRequest.PartitionName
+		proxyID := deleteRequest.Base.SourceID
+		for index, key := range keys {
+			ts := deleteRequest.Timestamps[index]
+			pks := deleteRequest.PrimaryKeys[index]
+			_, ok := result[key]
+			if !ok {
+				sliceRequest := internalpb.DeleteRequest{
+					Base: &commonpb.MsgBase{
+						MsgType:   commonpb.MsgType_Delete,
+						MsgID:     dt.Base.MsgID,
+						Timestamp: ts,
+						SourceID:  proxyID,
+					},
+					CollectionID:   collectionID,
+					PartitionID:    partitionID,
+					CollectionName: collectionName,
+					PartitionName:  partitionName,
+				}
+				deleteMsg := &msgstream.DeleteMsg{
+					BaseMsg: msgstream.BaseMsg{
+						Ctx: ctx,
+					},
+					DeleteRequest: sliceRequest,
+				}
+				result[key] = deleteMsg
+			}
+			curMsg := result[key].(*msgstream.DeleteMsg)
+			curMsg.HashValues = append(curMsg.HashValues, deleteRequest.HashValues[index])
+			curMsg.Timestamps = append(curMsg.Timestamps, ts)
+			curMsg.PrimaryKeys = append(curMsg.PrimaryKeys, pks)
+		}
+	}
 
-	err = stream.Produce(&msgPack)
+	newPack := &msgstream.MsgPack{
+		BeginTs:        msgPack.BeginTs,
+		EndTs:          msgPack.EndTs,
+		StartPositions: msgPack.StartPositions,
+		EndPositions:   msgPack.EndPositions,
+		Msgs:           make([]msgstream.TsMsg, 0),
+	}
+
+	for _, msg := range result {
+		if msg != nil {
+			newPack.Msgs = append(newPack.Msgs, msg)
+		}
+	}
+
+	err = stream.Produce(newPack)
 	if err != nil {
 		dt.result.Status.ErrorCode = commonpb.ErrorCode_UnexpectedError
 		dt.result.Status.Reason = err.Error()
@@ -4858,6 +4888,14 @@ func (dt *deleteTask) Execute(ctx context.Context) (err error) {
 
 func (dt *deleteTask) PostExecute(ctx context.Context) error {
 	return nil
+}
+
+func (dt *deleteTask) HashPK(pks []int64) {
+	dt.HashValues = make([]uint32, 0, len(pks))
+	for _, pk := range pks {
+		hash, _ := typeutil.Hash32Int64(pk)
+		dt.HashValues = append(dt.HashValues, hash)
+	}
 }
 
 type CreateAliasTask struct {
@@ -4916,7 +4954,7 @@ func (c *CreateAliasTask) PreExecute(ctx context.Context) error {
 	}
 
 	collName := c.CollectionName
-	if err := ValidateCollectionName(collName); err != nil {
+	if err := validateCollectionName(collName); err != nil {
 		return err
 	}
 	return nil
@@ -5053,7 +5091,7 @@ func (a *AlterAliasTask) PreExecute(ctx context.Context) error {
 	}
 
 	collName := a.CollectionName
-	if err := ValidateCollectionName(collName); err != nil {
+	if err := validateCollectionName(collName); err != nil {
 		return err
 	}
 

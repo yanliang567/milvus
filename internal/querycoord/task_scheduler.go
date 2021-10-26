@@ -387,6 +387,20 @@ func (scheduler *TaskScheduler) unmarshalTask(taskID UniqueID, t string) (task, 
 			meta:               scheduler.meta,
 		}
 		newTask = loadBalanceTask
+	case commonpb.MsgType_HandoffSegments:
+		handoffReq := querypb.HandoffSegmentsRequest{}
+		err = proto.Unmarshal([]byte(t), &handoffReq)
+		if err != nil {
+			return nil, err
+		}
+		handoffTask := &handoffTask{
+			baseTask:               baseTask,
+			HandoffSegmentsRequest: &handoffReq,
+			dataCoord:              scheduler.dataCoord,
+			cluster:                scheduler.cluster,
+			meta:                   scheduler.meta,
+		}
+		newTask = handoffTask
 	default:
 		err = errors.New("inValid msg type when unMarshal task")
 		log.Error(err.Error())
@@ -917,22 +931,25 @@ func updateSegmentInfoFromTask(ctx context.Context, triggerTask task, meta Meta)
 	return nil
 }
 
-func reverseSealedSegmentChangeInfo(changeInfosMap map[UniqueID][]*querypb.SealedSegmentsChangeInfo) map[UniqueID][]*querypb.SealedSegmentsChangeInfo {
-	result := make(map[UniqueID][]*querypb.SealedSegmentsChangeInfo)
+func reverseSealedSegmentChangeInfo(changeInfosMap map[UniqueID]*querypb.SealedSegmentsChangeInfo) map[UniqueID]*querypb.SealedSegmentsChangeInfo {
+	result := make(map[UniqueID]*querypb.SealedSegmentsChangeInfo)
 	for collectionID, changeInfos := range changeInfosMap {
-		result[collectionID] = []*querypb.SealedSegmentsChangeInfo{}
-		for _, info := range changeInfos {
-			segmentChangeInfo := &querypb.SealedSegmentsChangeInfo{
-				Base: &commonpb.MsgBase{
-					MsgType: commonpb.MsgType_SealedSegmentsChangeInfo,
-				},
+		segmentChangeInfos := &querypb.SealedSegmentsChangeInfo{
+			Base: &commonpb.MsgBase{
+				MsgType: commonpb.MsgType_SealedSegmentsChangeInfo,
+			},
+			Infos: []*querypb.SegmentChangeInfo{},
+		}
+		for _, info := range changeInfos.Infos {
+			changeInfo := &querypb.SegmentChangeInfo{
 				OnlineNodeID:    info.OfflineNodeID,
 				OnlineSegments:  info.OfflineSegments,
 				OfflineNodeID:   info.OnlineNodeID,
 				OfflineSegments: info.OnlineSegments,
 			}
-			result[collectionID] = append(result[collectionID], segmentChangeInfo)
+			segmentChangeInfos.Infos = append(segmentChangeInfos.Infos, changeInfo)
 		}
+		result[collectionID] = segmentChangeInfos
 	}
 
 	return result

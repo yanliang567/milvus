@@ -978,7 +978,7 @@ func TestCreateCollectionTask(t *testing.T) {
 
 		task.CreateCollectionRequest = reqBackup
 
-		// ValidateCollectionName
+		// validateCollectionName
 
 		schema.Name = " " // empty
 		emptyNameSchema, err := proto.Marshal(schema)
@@ -1004,7 +1004,7 @@ func TestCreateCollectionTask(t *testing.T) {
 		err = task.PreExecute(ctx)
 		assert.Error(t, err)
 
-		// ValidateDuplicatedFieldName
+		// validateDuplicatedFieldName
 		schema = proto.Clone(schemaBackup).(*schemapb.CollectionSchema)
 		schema.Fields = append(schema.Fields, schema.Fields[0])
 		duplicatedFieldsSchema, err := proto.Marshal(schema)
@@ -1013,7 +1013,7 @@ func TestCreateCollectionTask(t *testing.T) {
 		err = task.PreExecute(ctx)
 		assert.Error(t, err)
 
-		// ValidatePrimaryKey
+		// validatePrimaryKey
 		schema = proto.Clone(schemaBackup).(*schemapb.CollectionSchema)
 		for idx := range schema.Fields {
 			schema.Fields[idx].IsPrimaryKey = false
@@ -1024,7 +1024,7 @@ func TestCreateCollectionTask(t *testing.T) {
 		err = task.PreExecute(ctx)
 		assert.Error(t, err)
 
-		// ValidateFieldName
+		// validateFieldName
 		schema = proto.Clone(schemaBackup).(*schemapb.CollectionSchema)
 		for idx := range schema.Fields {
 			schema.Fields[idx].Name = "$"
@@ -2422,7 +2422,7 @@ func TestSearchTask_PreExecute(t *testing.T) {
 
 	collectionID, _ := globalMetaCache.GetCollectionID(ctx, collectionName)
 
-	// ValidateCollectionName
+	// validateCollectionName
 	task.query.CollectionName = "$"
 	assert.Error(t, task.PreExecute(ctx))
 	task.query.CollectionName = collectionName
@@ -3345,15 +3345,18 @@ func TestTask_all(t *testing.T) {
 	t.Run("delete", func(t *testing.T) {
 		task := &deleteTask{
 			Condition: NewTaskCondition(ctx),
-			DeleteRequest: &internalpb.DeleteRequest{
-				Base: &commonpb.MsgBase{
-					MsgType:   commonpb.MsgType_Delete,
-					MsgID:     0,
-					Timestamp: 0,
-					SourceID:  Params.ProxyID,
+			BaseDeleteTask: msgstream.DeleteMsg{
+				BaseMsg: msgstream.BaseMsg{},
+				DeleteRequest: internalpb.DeleteRequest{
+					Base: &commonpb.MsgBase{
+						MsgType:   commonpb.MsgType_Delete,
+						MsgID:     0,
+						Timestamp: 0,
+						SourceID:  Params.ProxyID,
+					},
+					CollectionName: collectionName,
+					PartitionName:  partitionName,
 				},
-				CollectionName: collectionName,
-				PartitionName:  partitionName,
 			},
 			req: &milvuspb.DeleteRequest{
 				Base: &commonpb.MsgBase{

@@ -14,6 +14,7 @@ supported_simd_types = ["sse4_2", "avx", "avx2", "avx512"]
 
 
 # TODO: implement simd config after supported
+# TODO: not support running concurrently with different simd_types. need improvement
 @pytest.mark.skip(reason='simd config is not supported yet')
 class TestSimdCompatibility:
     """
@@ -41,14 +42,15 @@ class TestSimdCompatibility:
                        'spec.components.queryNode.replicas': 2
                        }
         milvus_op = MilvusOperator()
+        log.info(f"install milvus with configs: {cus_configs}")
         milvus_op.install(cus_configs)
         healthy = milvus_op.wait_for_healthy(release_name, namespace)
         log.info(f"milvus healthy: {healthy}")
         assert healthy
-        endpoint = milvus_op.endpoint(release_name, namespace)
+        endpoint = milvus_op.endpoint(release_name, namespace).split(':')
         log.info(f"milvus endpoint: {endpoint}")
-        host = endpoint.split(':')[0]
-        port = endpoint.split(':')[1]
+        host = endpoint[0]
+        port = endpoint[1]
         conn = connections.connect(simd, host=host, port=port)
         assert conn is not None
         mil = MilvusSys(alias=simd)
