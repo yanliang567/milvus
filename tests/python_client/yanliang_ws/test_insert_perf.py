@@ -17,22 +17,12 @@ nbs = [100, 1000, 10*1000, 20*1000, 40*1000, 60*1000, 100*1000]
 dim = 128
 
 
-def insert(nb1, shard_num, threads_num, ins_times_per_thread, name):
+def insert(nb1, threads_num, ins_times_per_thread, collection):
 
     # create
     nb = int(nb1)
     threads_num = int(threads_num)
     ins_times_per_thread = int(ins_times_per_thread)
-    t0 = time.time()
-    auto_id = FieldSchema(name="auto_id", dtype=DataType.INT64, description="auto primary id")
-    age_field = FieldSchema(name="age", dtype=DataType.INT64, description="age")
-    embedding_field = FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim)
-    schema = CollectionSchema(fields=[auto_id, age_field, embedding_field],
-                              auto_id=True, primary_field=auto_id.name,
-                              description="collection of insert perf")
-    collection = Collection(name=name, schema=schema, shards_num=shard_num)
-    tt = time.time() - t0
-    logging.info(f"assert create nb{nb} collection: {tt}")
 
     ages = [random.randint(1, 100) for i in range(nb)]
     embeddings = [[random.random() for _ in range(dim)] for _ in range(nb)]
@@ -47,7 +37,7 @@ def insert(nb1, shard_num, threads_num, ins_times_per_thread, name):
 
     # insert
     threads = []
-    logging.info(f"ready to insert {name}, insert {ins_times_per_thread} times per thread")
+    logging.info(f"ready to insert {collection.name}, insert {ins_times_per_thread} times per thread")
     if threads_num > 1:
         for i in range(threads_num):
             t = threading.Thread(target=insert_th, args=(collection, data, int(ins_times_per_thread), i))
@@ -73,18 +63,35 @@ if __name__ == '__main__':
     th = int(sys.argv[3])       # insert thread num
     per_thread = int(sys.argv[4])     # insert times per thread
     x = int(sys.argv[5])        # x times insert with thread num
-    host = "10.98.0.20"
+
+    host = "10.98.0.17"
     port = 19530
     conn = connections.connect('default', host=host, port=port)
-    logging.basicConfig(filename=f"/tmp/insert_nb{nb1}_shards{shards}_threads{th}_per{per_thread}.log",
+    collection_name = f"insert_nb{nb1}_shards{shards}_threads{th}_per{per_thread}"
+
+    logging.basicConfig(filename=f"/tmp/{collection_name}.log",
                         level=logging.INFO, format=LOG_FORMAT, datefmt=DATE_FORMAT)
+
+    t0 = time.time()
+    auto_id = FieldSchema(name="auto_id", dtype=DataType.INT64, description="auto primary id")
+    age_field = FieldSchema(name="age", dtype=DataType.INT64, description="age")
+    embedding_field = FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim)
+    schema = CollectionSchema(fields=[auto_id, age_field, embedding_field],
+                              auto_id=True, primary_field=auto_id.name,
+                              description="collection of insert perf")
+    collection = Collection(name=collection_name, schema=schema, shards_num=shards)
+    tt = time.time() - t0
+    logging.info(f"assert create nb{nb1} collection: {tt}")
 
     for i in range(x):
         nb1 = nb1 * 2
-        collection_name = f"insert_nb{nb1}_shards{shards}_threads{th}_per{per_thread}"
         t1 = time.time()
-        collection = insert(nb1, shards, th, per_thread, collection_name)
+        collection = insert(nb1, th, per_thread, collection)
         t2 = time.time() - t1
         logging.info(f"Insert cost per thread per insert {t2/per_thread/th}, {collection_name}")
+    t0 = time.time()
+    logging.info(f"collection {collection_name}, num_entities: {collection.num_entities}")
+    tt = time.time() - t0
+    logging.info(f"assert flush: {tt}")
 
 
