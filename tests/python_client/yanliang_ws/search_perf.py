@@ -61,19 +61,20 @@ def search(collection, search_vectors, topk, threads_num, times_per_thread):
 if __name__ == '__main__':
 
     collection_name = sys.argv[1]       # collection mame
-    th = int(sys.argv[2])               # insert thread num
+    th = int(sys.argv[2])               # search thread num
     per_thread = int(sys.argv[3])       # times per thread
-    host = "10.98.0.8"
+    host = "10.98.0.7"
     port = 19530
     conn = connections.connect('default', host=host, port=port)
-    logging.basicConfig(filename=f"/tmp/search_threads{th}_per{per_thread}.log",
-                        level=logging.INFO, format=LOG_FORMAT, datefmt=DATE_FORMAT)
 
-    # collection_name = f"insert_nb80000_shards4_threads10_per10"   #8M
+    collection_name = f"search_{collection_name}_threads{th}_per{per_thread}"
+    logging.basicConfig(filename=f"/tmp/{collection_name}.log",
+                        level=logging.INFO, format=LOG_FORMAT, datefmt=DATE_FORMAT)
 
     # build index
     collection = Collection(name=collection_name)
-    logging.info(f"index param: {index_params}, search_param: {search_params}")
+    logging.info(f"index param: {index_params}")
+    logging.info(f"search_param: {search_params}")
 
     t1 = time.time()
     collection.create_index(field_name=field_name, index_params=index_params)
@@ -89,10 +90,12 @@ if __name__ == '__main__':
     for nq in nqs:
         for topk in topks:
             search_vectors = [[random.random() for _ in range(dim)] for _ in range(nq)]
+
+            logging.info(f"Start search nq{nq}_top{topk}_threads{per_thread}")
             t1 = time.time()
             search(collection, search_vectors, topk, th, per_thread)
             t2 = time.time() - t1
-            logging.info(f"Compete search nq{nq}_top{topk}_threads{per_thread}, cost {t2}")
+            logging.info(f"Compete search nq{nq}_top{topk}_{th}threads_per{per_thread}, cost {t2}, QPS: {th * per_thread / t2}")
 
     # collection.release()
     # collection.index().drop()
