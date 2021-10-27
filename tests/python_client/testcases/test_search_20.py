@@ -649,7 +649,7 @@ class TestCollectionSearchInvalid(TestcaseBase):
                             default_search_exp, output_fields=["int63"],
                             check_task=CheckTasks.err_res,
                             check_items={ct.err_code: 1,
-                                         ct.err_msg: 'Field int63 not exist'})
+                                         ct.err_msg: "Field int63 not exist"})
 
     @pytest.mark.tags(CaseLabel.L1)
     @pytest.mark.parametrize("output_fields", [[default_search_field], ["%"]])
@@ -1079,9 +1079,9 @@ class TestCollectionSearch(TestcaseBase):
     def test_search_load_flush_load(self, nb, nq, dim, auto_id, _async):
         """
         target: test search when load before flush
-        method: 1. search the collection
-                2. insert data and load
-                3. flush, and load
+        method: 1. insert data and load
+                2. flush, and load
+                3. search the collection
         expected: search success with limit(topK)
         """
         # 1. initialize with data
@@ -1093,7 +1093,7 @@ class TestCollectionSearch(TestcaseBase):
         # 4. flush and load
         collection_w.num_entities
         collection_w.load()
-        # 5. search for new data without load
+        # 5. search
         vectors = [[random.random() for _ in range(dim)] for _ in range(nq)]
         collection_w.search(vectors[:nq], default_search_field,
                             default_search_params, default_limit,
