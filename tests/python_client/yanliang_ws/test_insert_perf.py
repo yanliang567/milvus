@@ -64,31 +64,36 @@ if __name__ == '__main__':
     per_thread = int(sys.argv[4])     # insert times per thread
     x = int(sys.argv[5])        # x times insert with thread num
 
-    host = "10.98.0.17"
+    host = "10.98.0.7"
     port = 19530
     conn = connections.connect('default', host=host, port=port)
     collection_name = f"insert_nb{nb1}_shards{shards}_threads{th}_per{per_thread}"
 
     logging.basicConfig(filename=f"/tmp/{collection_name}.log",
                         level=logging.INFO, format=LOG_FORMAT, datefmt=DATE_FORMAT)
-
-    t0 = time.time()
-    auto_id = FieldSchema(name="auto_id", dtype=DataType.INT64, description="auto primary id")
-    age_field = FieldSchema(name="age", dtype=DataType.INT64, description="age")
-    embedding_field = FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim)
-    schema = CollectionSchema(fields=[auto_id, age_field, embedding_field],
-                              auto_id=True, primary_field=auto_id.name,
-                              description="collection of insert perf")
-    collection = Collection(name=collection_name, schema=schema, shards_num=shards)
-    tt = time.time() - t0
-    logging.info(f"assert create nb{nb1} collection: {tt}")
+    logging.info("Insert perf ... ...")
 
     for i in range(x):
         nb1 = nb1 * 2
+        t0 = time.time()
+        auto_id = FieldSchema(name="auto_id", dtype=DataType.INT64, description="auto primary id")
+        age_field = FieldSchema(name="age", dtype=DataType.INT64, description="age")
+        embedding_field = FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim)
+        schema = CollectionSchema(fields=[auto_id, age_field, embedding_field],
+                                  auto_id=True, primary_field=auto_id.name,
+                                  description="collection of insert perf")
+        collection = Collection(name=collection_name, schema=schema, shards_num=shards)
+        tt = time.time() - t0
+        logging.info(f"assert create {collection_name}: {tt}")
+
         t1 = time.time()
         collection = insert(nb1, th, per_thread, collection)
         t2 = time.time() - t1
-        logging.info(f"Insert cost per thread per insert {t2/per_thread/th}, {collection_name}")
+        req_per_sec = per_thread * th / t2              # how many insert requests response per second
+        entities_throughput = nb1 * req_per_sec         # how many entities inserted per second
+        logging.info(f"Insert  {collection_name} cost {t2}, "
+                     f"req_per_second {req_per_sec}, entities_throughput {entities_throughput}")
+
     t0 = time.time()
     logging.info(f"collection {collection_name}, num_entities: {collection.num_entities}")
     tt = time.time() - t0

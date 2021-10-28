@@ -35,8 +35,6 @@ def search(collection, search_vectors, topk, threads_num, times_per_thread):
             logging.info(f"assert search thread{thread_no} round{r}: {t2}")
 
     threads = []
-    logging.info("threads start")
-    search_t1 = time.time()
     if threads_num > 1:
         for i in range(threads_num):
             t = threading.Thread(target=search_th, args=(collection, int(times_per_thread), i))
@@ -51,8 +49,6 @@ def search(collection, search_vectors, topk, threads_num, times_per_thread):
                               param=search_params, limit=topk)
             t2 = time.time() - t1
             logging.info(f"assert search thread0 round{r}: {t2}")
-    search_t2 = time.time() - search_t1
-    logging.info(f"threads done: {search_t2}")
 
     # collection.drop()
     # log.info("collection dropped.")
@@ -67,9 +63,10 @@ if __name__ == '__main__':
     port = 19530
     conn = connections.connect('default', host=host, port=port)
 
-    collection_name = f"search_{collection_name}_threads{th}_per{per_thread}"
+    collection_name = "perf_50m1"    # f"search_{collection_name}_threads{th}_per{per_thread}"
     logging.basicConfig(filename=f"/tmp/{collection_name}.log",
                         level=logging.INFO, format=LOG_FORMAT, datefmt=DATE_FORMAT)
+    logging.info("search perf test....")
 
     # build index
     collection = Collection(name=collection_name)
@@ -91,11 +88,14 @@ if __name__ == '__main__':
         for topk in topks:
             search_vectors = [[random.random() for _ in range(dim)] for _ in range(nq)]
 
-            logging.info(f"Start search nq{nq}_top{topk}_threads{per_thread}")
+            logging.info(f"Start search nq{nq}_top{topk}_{th}threads_per{per_thread}")
             t1 = time.time()
             search(collection, search_vectors, topk, th, per_thread)
             t2 = time.time() - t1
-            logging.info(f"Compete search nq{nq}_top{topk}_{th}threads_per{per_thread}, cost {t2}, QPS: {th * per_thread / t2}")
+            query_per_sec = th * per_thread / t2        # how many search requests response per second
+            vectors_throughput = nq * query_per_sec     # how many vectors be searched per second
+            logging.info(f"Compete search nq{nq}_top{topk}_{th}threads_per{per_thread}, "
+                         f"cost {t2}, QPS: {query_per_sec}, vectors_throughput: {vectors_throughput}")
 
     # collection.release()
     # collection.index().drop()
