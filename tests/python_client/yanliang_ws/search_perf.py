@@ -11,10 +11,11 @@ LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 DATE_FORMAT = "%m/%d/%Y %H:%M:%S %p"
 
 field_name = "embedding"
-search_params = {"metric_type": "L2", "params": {"nprobe": 16}}
-index_params = {"index_type": "IVF_SQ8", "params": {"nlist": 1024}, "metric_type": "L2"}
-nqs = [10, 100]
-topks = [50]
+search_params_sq8_flat = {"metric_type": "L2", "params": {"nprobe": 8}}
+index_params_sq8 = {"index_type": "IVF_SQ8", "params": {"nlist": 1024}, "metric_type": "L2"}
+index_params_ivfflat = {"index_type": "IVF_FLAT", "params": {"nlist": 2048}, "metric_type": "L2"}
+nqs = [1]
+topks = [1]
 dim = 128
 
 
@@ -30,8 +31,8 @@ def search(collection, search_vectors, topk, threads_num, times_per_thread):
         for r in range(rounds):
             t1 = time.time()
             col.search(data=search_vectors, anns_field=field_name,
-                       param=search_params, limit=topk)
-            t2 = time.time() - t1
+                       param=search_params_sq8_flat, limit=topk)
+            t2 = round(time.time() - t1, 3)
             logging.info(f"assert search thread{thread_no} round{r}: {t2}")
 
     threads = []
@@ -46,8 +47,8 @@ def search(collection, search_vectors, topk, threads_num, times_per_thread):
         for r in range(times_per_thread):
             t1 = time.time()
             collection.search(data=search_vectors, anns_field=field_name,
-                              param=search_params, limit=topk)
-            t2 = time.time() - t1
+                              param=search_params_sq8_flat, limit=topk)
+            t2 = round(time.time() - t1, 3)
             logging.info(f"assert search thread0 round{r}: {t2}")
 
     # collection.drop()
@@ -70,18 +71,18 @@ if __name__ == '__main__':
 
     # build index
     collection = Collection(name=collection_name)
-    logging.info(f"index param: {index_params}")
-    logging.info(f"search_param: {search_params}")
+    logging.info(f"index param: {index_params_ivfflat}")
+    logging.info(f"search_param: {search_params_sq8_flat}")
 
     t1 = time.time()
-    collection.create_index(field_name=field_name, index_params=index_params)
-    t2 = time.time() - t1
+    collection.create_index(field_name=field_name, index_params=index_params_ivfflat)
+    t2 = round(time.time() - t1, 3)
     logging.info(f"assert build index {collection_name}: {t2}")
 
     # load collection
     t1 = time.time()
     collection.load()
-    t2 = time.time() - t1
+    t2 = round(time.time() - t1, 3)
     logging.info(f"assert load {collection_name}: {t2}")
 
     for nq in nqs:
@@ -92,8 +93,8 @@ if __name__ == '__main__':
             t1 = time.time()
             search(collection, search_vectors, topk, th, per_thread)
             t2 = time.time() - t1
-            query_per_sec = th * per_thread / t2        # how many search requests response per second
-            vectors_throughput = nq * query_per_sec     # how many vectors be searched per second
+            query_per_sec = round(th * per_thread / t2, 3)       # how many search requests response per second
+            vectors_throughput = round(nq * query_per_sec, 3)    # how many vectors be searched per second
             logging.info(f"Compete search nq{nq}_top{topk}_{th}threads_per{per_thread}, "
                          f"cost {t2}, QPS: {query_per_sec}, vectors_throughput: {vectors_throughput}")
 

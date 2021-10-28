@@ -123,9 +123,9 @@ class MilvusOperator(object):
 if __name__ == '__main__':
 
     namespace = 'chaos-testing'
-    image = "master-20211027-c51155a"
+    image = "master-20211028-c019e80"
     name = f'milvus-{image.split("-")[2]}'
-    cus_configs = {'spec.components.image': f'milvusdb/milvus-dev:{name}',
+    cus_configs = {'spec.components.image': f'harbor.zilliz.cc/milvus/milvus:{image}',
                    'metadata.namespace': namespace,
                    'metadata.name': name,
                    'apiVersion': 'milvus.io/v1alpha1',
@@ -135,11 +135,11 @@ if __name__ == '__main__':
                    }
 
     milvusOp = MilvusOperator()
-    milvus_instance = milvusOp.install(cus_configs, template=None)
-    result = milvusOp.wait_for_healthy(name, namespace=namespace)
-    endpoint = milvusOp.endpoint(name, namespace=namespace)
-    print(endpoint)
-    log.info(f"install milvus healthy: {result}")
+    # milvus_instance = milvusOp.install(cus_configs, template=None)
+    # result = milvusOp.wait_for_healthy(name, namespace=namespace)
+    # endpoint = milvusOp.endpoint(name, namespace=namespace)
+    # print(endpoint)
+    # log.info(f"install milvus healthy: {result}")
 
     # n_configs = {'spec.components.queryNode.replicas': 1,
     #              'spec.components.proxy.serviceType': 'LoadBalancer'
@@ -150,6 +150,6 @@ if __name__ == '__main__':
     # endpoint = milvusOp.endpoint(name, namespace=namespace)
     # print(endpoint)
 
-    # milvusOp.uninstall(name, namespace=namespace, delete_depends=False, delete_pvc=False)
+    # milvusOp.uninstall(name, namespace=namespace, delete_depends=True, delete_pvc=True)
 
 
