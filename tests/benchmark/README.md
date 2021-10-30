@@ -82,7 +82,7 @@ insert_performance:
    - The field `ni_per` means the batch size
    - The filed `build_index` means that whether to create index during inserting
 
-While using argo workflow as benchmark pipeline, the test suite is made of both `client` and `server` configmap, an example will be like this:
+While using argo workflow as benchmark pipeline, the test suite is made of both `client` and `server` configmap, an example:
 
 `server`
 ```yaml
@@ -267,4 +267,4 @@ After the execution of the above query is complete, we will get its charts:
 
  <img src="assets/dash.png" />
 
-In this chart, we will found there has an improvement from 2.0.0-RC3 to 2.0.0-RC5.
+In this chart, we could find an improvement from 2.0.0-RC3 to 2.0.0-RC5.

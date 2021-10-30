@@ -20,6 +20,13 @@ class MilvusOperator(object):
 
     @staticmethod
     def _update_configs(configs, template=None):
+        """
+        Method: update the template with customized configs
+        Params:
+            configs: a dict type of configurations that describe the properties of milvus to be deployed
+            template: Optional. Pass the template file location if there is a template to apply
+        Return: a dict type customized configs
+        """
         if not isinstance(configs, dict):
             log.error("customize configurations must be in dict type")
             return None
@@ -81,6 +88,13 @@ class MilvusOperator(object):
         cus_res.delete(release_name)
 
     def upgrade(self, release_name, configs, namespace='default'):
+        """
+        Method: patch custom resource object to upgrade milvus
+        Params:
+            release_name: release name of milvus
+            configs: a dict type like configurations to be upgrade milvus
+            namespace: namespace that the milvus is running in
+        """
         if not isinstance(configs, dict):
             log.error("customize configurations must be in dict type")
             return None

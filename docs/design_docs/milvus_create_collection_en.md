@@ -1,6 +1,7 @@
 # Create Collection
 
-`Milvus 2.0` uses `Collection` to represent a set of data, like `Table` in a traditional database. User can create or drop `Collection`. Altering the `Schema` of `Collection` is not supported yet. This article introduces the execution path of `CreateCollection`, at the end of this article, you should know which components are involved in `CreateCollection`.
+`Milvus 2.0` uses `Collection` to represent a set of data, like `Table` in a traditional database. User can create or drop `Collection`. 
+This article introduces the execution path of `CreateCollection`, at the end of this article, you should know which components are involved in `CreateCollection`.
 
 The execution flow of `CreateCollection` is shown in the following figure:
 
@@ -105,7 +106,7 @@ type CreateCollectionReqTask struct {
 
 4. `CreateCollectionReqTask.Execute` would alloc `CollecitonID` and default `PartitionID`, and set `Virtual Channel` and `Physical Channel`, which are used by `MsgStream`, then write the `Collection`'s meta into `metaTable`
 
-5. After `Collection`'s meta writing into `metaTable`, `Milvus` would consider this collection has been created successfully.
+5. After `Collection`'s meta written into `metaTable`, `Milvus` would consider this collection has been created successfully.
 
 6. `RootCoord` would alloc a timestamp from `TSO` before writing `Collection`'s meta into `metaTable`, and this timestamp is considered as the point when the collection was created
 
@@ -132,6 +133,8 @@ message CreateCollectionRequest {
 
 _Notes:_
 
-1. In the `Proxy`, all `DDL` requests will be wrapped into `task`, and push the `task` into `DdTaskQueue`, the background service will read a new `task` from `DdTaskQueue` only when the previous one is finished. So all the `DDL` requests are executed serially on the `Proxy`
+1. In `Proxy`, all `DDL` requests will be wrapped into `task`, and push the `task` into `DdTaskQueue`. 
+   A background service will read a new `task` from `DdTaskQueue` only when the previous one is finished. 
+   So all the `DDL` requests are executed serially on the `Proxy`
 
-2. In the `RootCoord`, all `DDL` requests will be wrapped into `reqTask`, but there is no task queue, so the `DDL` requests will be executed in parallel on `RootCoord`.
+2. In `RootCoord`, all `DDL` requests will be wrapped into `reqTask`, but there is no task queue, so the `DDL` requests will be executed in parallel on `RootCoord`.
