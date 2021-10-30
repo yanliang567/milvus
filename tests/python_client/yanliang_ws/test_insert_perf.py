@@ -11,22 +11,11 @@ LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 DATE_FORMAT = "%m/%d/%Y %H:%M:%S %p"
 
 prefix = "ins_"
-nbs = [100, 1000, 10*1000, 20*1000, 40*1000, 60*1000, 100*1000]
-# threads_num = 10
-# shardNum = 2
+nbs = [1, 100, 1000, 10*1000, 20*1000, 40*1000]
 dim = 128
 
 
-def insert(nb1, threads_num, ins_times_per_thread, collection):
-
-    # create
-    nb = int(nb1)
-    threads_num = int(threads_num)
-    ins_times_per_thread = int(ins_times_per_thread)
-
-    ages = [random.randint(1, 100) for i in range(nb)]
-    embeddings = [[random.random() for _ in range(dim)] for _ in range(nb)]
-    data = [ages, embeddings]
+def insert(data, threads_num, ins_times_per_thread, collection):
 
     def insert_th(col_w, data, rounds, thread_no):
         for r in range(rounds):
@@ -58,23 +47,21 @@ def insert(nb1, threads_num, ins_times_per_thread, collection):
 
 
 if __name__ == '__main__':
-    nb1 = int(sys.argv[1])      # insert nb
-    shards = int(sys.argv[2])   # shards number
-    th = int(sys.argv[3])       # insert thread num
-    per_thread = int(sys.argv[4])     # insert times per thread
-    x = int(sys.argv[5])        # x times insert with thread num
+    shards = int(sys.argv[1])   # shards number
+    th = int(sys.argv[2])       # insert thread num
+    per_thread = int(sys.argv[3])     # insert times per thread
 
-    host = "10.98.0.7"
+    host = "10.98.0.8"
     port = 19530
     conn = connections.connect('default', host=host, port=port)
-    collection_name = f"insert_nb{nb1}_shards{shards}_threads{th}_per{per_thread}"
+    log_name = f"insert_shards{shards}_threads{th}_per{per_thread}"
 
-    logging.basicConfig(filename=f"/tmp/{collection_name}.log",
+    logging.basicConfig(filename=f"/tmp/{log_name}.log",
                         level=logging.INFO, format=LOG_FORMAT, datefmt=DATE_FORMAT)
     logging.info("Insert perf ... ...")
 
-    for i in range(x):
-        nb1 = nb1 * 2
+    for nb1 in nbs:
+        collection_name = f"insert_nb{nb1}_shards{shards}_threads{th}_per{per_thread}"
         t0 = time.time()
         auto_id = FieldSchema(name="auto_id", dtype=DataType.INT64, description="auto primary id")
         age_field = FieldSchema(name="age", dtype=DataType.INT64, description="age")
@@ -86,17 +73,22 @@ if __name__ == '__main__':
         tt = time.time() - t0
         logging.info(f"assert create {collection_name}: {tt}")
 
+        # prepare data
+        ages = [random.randint(1, 100) for i in range(nb1)]
+        embeddings = [[random.random() for _ in range(dim)] for _ in range(nb1)]
+        data = [ages, embeddings]
+
         t1 = time.time()
-        collection = insert(nb1, th, per_thread, collection)
+        collection = insert(data, th, per_thread, collection)
         t2 = time.time() - t1
         req_per_sec = per_thread * th / t2              # how many insert requests response per second
         entities_throughput = nb1 * req_per_sec         # how many entities inserted per second
         logging.info(f"Insert  {collection_name} cost {t2}, "
                      f"req_per_second {req_per_sec}, entities_throughput {entities_throughput}")
 
-    t0 = time.time()
-    logging.info(f"collection {collection_name}, num_entities: {collection.num_entities}")
-    tt = time.time() - t0
-    logging.info(f"assert flush: {tt}")
+        # t0 = time.time()
+        # logging.info(f"collection {collection_name}, num_entities: {collection.num_entities}")
+        # tt = time.time() - t0
+        # logging.info(f"assert flush: {tt}")
 
 
