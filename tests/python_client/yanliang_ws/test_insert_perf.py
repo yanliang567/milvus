@@ -96,7 +96,7 @@ if __name__ == '__main__':
             ids = [i for i in range(nb1)]
             ages = [random.randint(1, 100) for i in range(nb1)]
             embeddings = [[random.random() for _ in range(dim)] for _ in range(nb1)]
-            data = [ages, embeddings]
+            data = [ids, ages, embeddings]
 
         t1 = time.time()
         collection = insert(data, th, per_thread, collection)
