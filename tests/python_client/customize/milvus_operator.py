@@ -168,3 +168,4 @@ if __name__ == '__main__':
     # print(endpoint)
 
     # milvusOp.uninstall(name, namespace=namespace, delete_depends=True, delete_pvc=True)
+

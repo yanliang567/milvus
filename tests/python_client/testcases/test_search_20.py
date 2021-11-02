@@ -1175,6 +1175,7 @@ class TestCollectionSearch(TestcaseBase):
                                          "_async": _async})
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.skip(reason="debug")
     def test_search_max_dim(self, auto_id, _async):
         """
         target: test search with max configuration
@@ -2257,7 +2258,7 @@ class TestSearchBase:
     @pytest.mark.tags(CaseLabel.L2)
     def test_search_index_partitions(self, connect, collection, get_simple_index, get_top_k):
         """
-        target: test basic search function, all the search params is correct, test all index params, and build
+        target: test basic search function, all the search params are correct, test all index params, and build
         method: search collection with the given vectors and tags, check the result
         expected: the length of the result is top_k
         """
@@ -2292,7 +2293,7 @@ class TestSearchBase:
     @pytest.mark.tags(CaseLabel.L2)
     def test_search_ip_flat(self, connect, collection, get_simple_index, get_top_k, get_nq):
         """
-        target: test basic search function, all the search params is correct, change top-k value
+        target: test basic search function, all the search params are correct, change top-k value
         method: search with the given vectors, check the result
         expected: the length of the result is top_k
         """
@@ -2309,7 +2310,7 @@ class TestSearchBase:
     @pytest.mark.tags(CaseLabel.L2)
     def test_search_ip_after_index(self, connect, collection, get_simple_index, get_top_k, get_nq):
         """
-        target: test basic search function, all the search params is correct, test all index params, and build
+        target: test basic search function, all the search params are correct, test all index params, and build
         method: search with the given vectors, check the result
         expected: the length of the result is top_k
         """
@@ -2335,7 +2336,7 @@ class TestSearchBase:
     @pytest.mark.tags(CaseLabel.L2)
     def test_search_ip_index_empty_partition(self, connect, collection, get_simple_index, get_top_k, get_nq):
         """
-        target: test basic search function, all the search params is correct, test all index params, and build
+        target: test basic search function, all the search params are correct, test all index params, and build
         method: add vectors into collection, search with the given vectors, check the result
         expected: the length of the result is top_k, search collection with partition tag return empty
         """
@@ -2368,7 +2369,7 @@ class TestSearchBase:
     @pytest.mark.tags(CaseLabel.L2)
     def test_search_ip_index_partitions(self, connect, collection, get_simple_index, get_top_k):
         """
-        target: test basic search function, all the search params is correct, test all index params, and build
+        target: test basic search function, all the search params are correct, test all index params, and build
         method: search collection with the given vectors and tags, check the result
         expected: the length of the result is top_k
         """
@@ -2538,7 +2539,8 @@ class TestSearchBase:
         query_int_vectors, query_entities, tmp_ids = init_binary_data(connect, binary_collection, nb=1, insert=False)
         distance_0 = jaccard(query_int_vectors[0], int_vectors[0])
         distance_1 = jaccard(query_int_vectors[0], int_vectors[1])
-        query, vecs = gen_search_vectors_params(binary_field_name, query_entities, default_top_k, nq, metric_type="JACCARD")
+        query, vecs = gen_search_vectors_params(binary_field_name, query_entities,
+                                                default_top_k, nq, metric_type="JACCARD")
         connect.load_collection(binary_collection)
         res = connect.search(binary_collection, **query)
         assert abs(res[0]._distances[0] - min(distance_0, distance_1)) <= epsilon
@@ -2569,7 +2571,8 @@ class TestSearchBase:
         query_int_vectors, query_entities, tmp_ids = init_binary_data(connect, binary_collection, nb=1, insert=False)
         distance_0 = hamming(query_int_vectors[0], int_vectors[0])
         distance_1 = hamming(query_int_vectors[0], int_vectors[1])
-        query, vecs = gen_search_vectors_params(binary_field_name, query_entities, default_top_k, nq, metric_type="HAMMING")
+        query, vecs = gen_search_vectors_params(binary_field_name, query_entities,
+                                                default_top_k, nq, metric_type="HAMMING")
         connect.load_collection(binary_collection)
         res = connect.search(binary_collection, **query)
         assert abs(res[0][0].distance - min(distance_0, distance_1).astype(float)) <= epsilon
@@ -2662,7 +2665,8 @@ class TestSearchBase:
         query_int_vectors, query_entities, tmp_ids = init_binary_data(connect, binary_collection, nb=1, insert=False)
         distance_0 = tanimoto(query_int_vectors[0], int_vectors[0])
         distance_1 = tanimoto(query_int_vectors[0], int_vectors[1])
-        query, vecs = gen_search_vectors_params(binary_field_name, query_entities, default_top_k, nq, metric_type="TANIMOTO")
+        query, vecs = gen_search_vectors_params(binary_field_name, query_entities,
+                                                default_top_k, nq, metric_type="TANIMOTO")
         connect.load_collection(binary_collection)
         res = connect.search(binary_collection, **query)
         assert abs(res[0][0].distance - min(distance_0, distance_1)) <= epsilon

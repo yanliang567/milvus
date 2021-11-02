@@ -15,6 +15,8 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/milvus-io/milvus/internal/common"
+
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 
 	"github.com/milvus-io/milvus/internal/util/distance"
@@ -591,7 +593,7 @@ func TestProxy(t *testing.T) {
 			for j := 0; j < dim; j++ {
 				var buffer bytes.Buffer
 				f := rand.Float32()
-				err := binary.Write(&buffer, binary.LittleEndian, f)
+				err := binary.Write(&buffer, common.Endian, f)
 				assert.NoError(t, err)
 				bs = append(bs, buffer.Bytes()...)
 			}
@@ -865,7 +867,7 @@ func TestProxy(t *testing.T) {
 		})
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
-		assert.Equal(t, 1, len(resp.CollectionNames))
+		assert.Equal(t, 1, len(resp.CollectionNames), resp.CollectionNames)
 	})
 
 	wg.Add(1)

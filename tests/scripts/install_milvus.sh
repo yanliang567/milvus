@@ -54,6 +54,8 @@ if [[ "${MILVUS_CLUSTER_ENABLED}" == "true" ]]; then
                                --set image.all.tag="${MILVUS_IMAGE_TAG}" \
                                --set image.all.pullPolicy="${MILVUS_PULL_POLICY:-Always}" \
                                --set cluster.enabled="${MILVUS_CLUSTER_ENABLED}" \
+                               --set etcd.nodeSelector."node-role\\.kubernetes\\.io/etcd"="etcd" \
+                               --set etcd.global.storageClass="local-path" \
                                --set service.type="${MILVUS_SERVICE_TYPE}" \
                                --namespace "${MILVUS_HELM_NAMESPACE}" \
                                "${MILVUS_HELM_RELEASE_NAME}" \
@@ -67,6 +69,8 @@ else
                                --set pulsar.enabled=false \
                                --set minio.mode=standalone \
                                --set etcd.replicaCount=1 \
+                               --set etcd.nodeSelector."node-role\\.kubernetes\\.io/etcd"="etcd" \
+                               --set etcd.global.storageClass="local-path" \
                                --set service.type="${MILVUS_SERVICE_TYPE}" \
                                --namespace "${MILVUS_HELM_NAMESPACE}" \
                                "${MILVUS_HELM_RELEASE_NAME}" \

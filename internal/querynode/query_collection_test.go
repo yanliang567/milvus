@@ -1,3 +1,14 @@
+// Copyright (C) 2019-2020 Zilliz. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software distributed under the License
+// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+// or implied. See the License for the specific language governing permissions and limitations under the License.
+
 package querynode
 
 import (
@@ -163,12 +174,12 @@ func TestQueryCollection_withoutVChannel(t *testing.T) {
 	var searchRawData2 []byte
 	for i, ele := range vec {
 		buf := make([]byte, 4)
-		binary.LittleEndian.PutUint32(buf, math.Float32bits(ele+float32(i*2)))
+		common.Endian.PutUint32(buf, math.Float32bits(ele+float32(i*2)))
 		searchRawData1 = append(searchRawData1, buf...)
 	}
 	for i, ele := range vec {
 		buf := make([]byte, 4)
-		binary.LittleEndian.PutUint32(buf, math.Float32bits(ele+float32(i*4)))
+		common.Endian.PutUint32(buf, math.Float32bits(ele+float32(i*4)))
 		searchRawData2 = append(searchRawData2, buf...)
 	}
 
@@ -320,49 +331,49 @@ func TestQueryCollection_TranslateHits(t *testing.T) {
 		case schemapb.DataType_Bool:
 			var buf bytes.Buffer
 			for i := 0; i < defaultMsgLength; i++ {
-				err := binary.Write(&buf, binary.LittleEndian, true)
+				err := binary.Write(&buf, common.Endian, true)
 				assert.NoError(t, err)
 			}
 			rawData = append(rawData, buf.Bytes())
 		case schemapb.DataType_Int8:
 			var buf bytes.Buffer
 			for i := 0; i < defaultMsgLength; i++ {
-				err := binary.Write(&buf, binary.LittleEndian, int8(i))
+				err := binary.Write(&buf, common.Endian, int8(i))
 				assert.NoError(t, err)
 			}
 			rawData = append(rawData, buf.Bytes())
 		case schemapb.DataType_Int16:
 			var buf bytes.Buffer
 			for i := 0; i < defaultMsgLength; i++ {
-				err := binary.Write(&buf, binary.LittleEndian, int16(i))
+				err := binary.Write(&buf, common.Endian, int16(i))
 				assert.NoError(t, err)
 			}
 			rawData = append(rawData, buf.Bytes())
 		case schemapb.DataType_Int32:
 			var buf bytes.Buffer
 			for i := 0; i < defaultMsgLength; i++ {
-				err := binary.Write(&buf, binary.LittleEndian, int32(i))
+				err := binary.Write(&buf, common.Endian, int32(i))
 				assert.NoError(t, err)
 			}
 			rawData = append(rawData, buf.Bytes())
 		case schemapb.DataType_Int64:
 			var buf bytes.Buffer
 			for i := 0; i < defaultMsgLength; i++ {
-				err := binary.Write(&buf, binary.LittleEndian, int64(i))
+				err := binary.Write(&buf, common.Endian, int64(i))
 				assert.NoError(t, err)
 			}
 			rawData = append(rawData, buf.Bytes())
 		case schemapb.DataType_Float:
 			var buf bytes.Buffer
 			for i := 0; i < defaultMsgLength; i++ {
-				err := binary.Write(&buf, binary.LittleEndian, float32(i))
+				err := binary.Write(&buf, common.Endian, float32(i))
 				assert.NoError(t, err)
 			}
 			rawData = append(rawData, buf.Bytes())
 		case schemapb.DataType_Double:
 			var buf bytes.Buffer
 			for i := 0; i < defaultMsgLength; i++ {
-				err := binary.Write(&buf, binary.LittleEndian, float64(i))
+				err := binary.Write(&buf, common.Endian, float64(i))
 				assert.NoError(t, err)
 			}
 			rawData = append(rawData, buf.Bytes())

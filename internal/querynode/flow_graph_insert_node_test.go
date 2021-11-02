@@ -12,7 +12,6 @@
 package querynode
 
 import (
-	"encoding/binary"
 	"sync"
 	"testing"
 
@@ -267,7 +266,7 @@ func TestFlowGraphInsertNode_operate(t *testing.T) {
 		assert.Nil(t, err)
 		buf := make([]byte, 8)
 		for i := 0; i < defaultMsgLength; i++ {
-			binary.BigEndian.PutUint64(buf, uint64(i))
+			common.Endian.PutUint64(buf, uint64(i))
 			assert.True(t, s.pkFilter.Test(buf))
 		}
 
@@ -392,7 +391,7 @@ func TestGetSegmentsByPKs(t *testing.T) {
 	buf := make([]byte, 8)
 	filter := bloom.NewWithEstimates(1000000, 0.01)
 	for i := 0; i < 3; i++ {
-		binary.BigEndian.PutUint64(buf, uint64(i))
+		common.Endian.PutUint64(buf, uint64(i))
 		filter.Add(buf)
 	}
 	segment := &Segment{
@@ -401,7 +400,7 @@ func TestGetSegmentsByPKs(t *testing.T) {
 	}
 	pks, err := filterSegmentsByPKs([]int64{0, 1, 2, 3, 4}, segment)
 	assert.Nil(t, err)
-	assert.Equal(t, len(pks), 1)
+	assert.Equal(t, len(pks), 3)
 
 	pks, err = filterSegmentsByPKs([]int64{}, segment)
 	assert.Nil(t, err)
