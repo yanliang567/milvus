@@ -40,6 +40,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 )
 
+// Client is the grpc client of QueryCoord.
 type Client struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -128,6 +129,7 @@ func NewClient(ctx context.Context, metaRoot string, etcdEndpoints []string) (*C
 	return client, nil
 }
 
+// Init initializes QueryCoord's grpc client.
 func (c *Client) Init() error {
 	Params.Init()
 	return nil
