@@ -11,6 +11,7 @@ import json
 
 
 def get_token(url):
+    """ get the request token and return the value """
     rep = requests.get(url)
     data = json.loads(rep.text)
     if 'token' in data:
@@ -39,6 +40,19 @@ def get_tags(url, token):
     except:
         print("Can not get the tag list")
         return []
+
+
+def get_master_tags(tags_list):
+    _list = []
+
+    if not isinstance(tags_list, list):
+        print("tags_list is not a list.")
+        return _list
+
+    for tag in tags_list:
+        if "master" in tag and tag != "master-latest":
+            _list.append(tag)
+    return _list
 
 
 def parse_server_tag(server_tag):
