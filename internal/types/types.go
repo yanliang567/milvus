@@ -59,6 +59,8 @@ type DataNode interface {
 
 	// GetMetrics gets the metrics about DataNode.
 	GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error)
+
+	Compaction(ctx context.Context, req *datapb.CompactionPlan) (*commonpb.Status, error)
 }
 
 // DataNodeComponent is used by grpc server of DataNode
@@ -220,6 +222,9 @@ type DataCoord interface {
 
 	// GetMetrics gets the metrics about DataCoord.
 	GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error)
+	CompleteCompaction(ctx context.Context, req *datapb.CompactionResult) (*commonpb.Status, error)
+	ManualCompaction(ctx context.Context, req *datapb.ManualCompactionRequest) (*datapb.ManualCompactionResponse, error)
+	GetCompactionState(ctx context.Context, req *datapb.GetCompactionStateRequest) (*datapb.GetCompactionStateResponse, error)
 }
 
 // IndexNode is the interface `indexnode` package implements
@@ -953,6 +958,7 @@ type QueryNode interface {
 	AddQueryChannel(ctx context.Context, req *querypb.AddQueryChannelRequest) (*commonpb.Status, error)
 	RemoveQueryChannel(ctx context.Context, req *querypb.RemoveQueryChannelRequest) (*commonpb.Status, error)
 	WatchDmChannels(ctx context.Context, req *querypb.WatchDmChannelsRequest) (*commonpb.Status, error)
+	WatchDeltaChannels(ctx context.Context, req *querypb.WatchDeltaChannelsRequest) (*commonpb.Status, error)
 	// LoadSegments notifies QueryNode to load the sealed segments from storage. The load tasks are sync to this
 	// rpc, QueryNode will return after all the sealed segments are loaded.
 	//

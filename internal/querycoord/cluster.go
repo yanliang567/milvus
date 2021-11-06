@@ -47,6 +47,7 @@ type Cluster interface {
 	getNumSegments(nodeID int64) (int, error)
 
 	watchDmChannels(ctx context.Context, nodeID int64, in *querypb.WatchDmChannelsRequest) error
+	watchDeltaChannels(ctx context.Context, nodeID int64, in *querypb.WatchDeltaChannelsRequest) error
 	//TODO:: removeDmChannel
 	getNumDmChannels(nodeID int64) (int, error)
 
@@ -57,14 +58,16 @@ type Cluster interface {
 	releaseCollection(ctx context.Context, nodeID int64, in *querypb.ReleaseCollectionRequest) error
 	releasePartitions(ctx context.Context, nodeID int64, in *querypb.ReleasePartitionsRequest) error
 	getSegmentInfo(ctx context.Context, in *querypb.GetSegmentInfoRequest) ([]*querypb.SegmentInfo, error)
+	getSegmentInfoByNode(ctx context.Context, nodeID int64, in *querypb.GetSegmentInfoRequest) ([]*querypb.SegmentInfo, error)
 
 	registerNode(ctx context.Context, session *sessionutil.Session, id UniqueID, state nodeState) error
-	getNodeByID(nodeID int64) (Node, error)
+	getNodeInfoByID(nodeID int64) (Node, error)
 	removeNodeInfo(nodeID int64) error
 	stopNode(nodeID int64)
 	onlineNodes() (map[int64]Node, error)
 	isOnline(nodeID int64) (bool, error)
 	offlineNodes() (map[int64]Node, error)
+	hasNode(nodeID int64) bool
 
 	getSessionVersion() int64
 
@@ -95,7 +98,7 @@ type queryNodeCluster struct {
 	newNodeFn   newQueryNodeFn
 }
 
-func newQueryNodeCluster(ctx context.Context, clusterMeta Meta, kv *etcdkv.EtcdKV, newNodeFn newQueryNodeFn, session *sessionutil.Session) (*queryNodeCluster, error) {
+func newQueryNodeCluster(ctx context.Context, clusterMeta Meta, kv *etcdkv.EtcdKV, newNodeFn newQueryNodeFn, session *sessionutil.Session) (Cluster, error) {
 	childCtx, cancel := context.WithCancel(ctx)
 	nodes := make(map[int64]Node)
 	c := &queryNodeCluster{
@@ -222,7 +225,7 @@ func (c *queryNodeCluster) loadSegments(ctx context.Context, nodeID int64, in *q
 
 		return nil
 	}
-	return errors.New("LoadSegments: Can't find query node by nodeID ")
+	return fmt.Errorf("LoadSegments: Can't find query node by nodeID, nodeID = %d", nodeID)
 }
 
 func (c *queryNodeCluster) releaseSegments(ctx context.Context, nodeID int64, in *querypb.ReleaseSegmentsRequest) error {
@@ -243,7 +246,7 @@ func (c *queryNodeCluster) releaseSegments(ctx context.Context, nodeID int64, in
 		return nil
 	}
 
-	return errors.New("ReleaseSegments: Can't find query node by nodeID ")
+	return fmt.Errorf("ReleaseSegments: Can't find query node by nodeID, nodeID = %d", nodeID)
 }
 
 func (c *queryNodeCluster) watchDmChannels(ctx context.Context, nodeID int64, in *querypb.WatchDmChannelsRequest) error {
@@ -262,7 +265,6 @@ func (c *queryNodeCluster) watchDmChannels(ctx context.Context, nodeID int64, in
 		}
 
 		collectionID := in.CollectionID
-		//c.clusterMeta.addCollection(collectionID, in.Schema)
 		err = c.clusterMeta.addDmChannel(collectionID, nodeID, channels)
 		if err != nil {
 			log.Debug("WatchDmChannels: queryNode watch dm channel error", zap.String("error", err.Error()))
@@ -271,7 +273,22 @@ func (c *queryNodeCluster) watchDmChannels(ctx context.Context, nodeID int64, in
 
 		return nil
 	}
-	return errors.New("WatchDmChannels: Can't find query node by nodeID ")
+	return fmt.Errorf("WatchDmChannels: Can't find query node by nodeID, nodeID = %d", nodeID)
+}
+
+func (c *queryNodeCluster) watchDeltaChannels(ctx context.Context, nodeID int64, in *querypb.WatchDeltaChannelsRequest) error {
+	c.Lock()
+	defer c.Unlock()
+
+	if node, ok := c.nodes[nodeID]; ok {
+		err := node.watchDeltaChannels(ctx, in)
+		if err != nil {
+			log.Debug("WatchDeltaChannels: queryNode watch dm channel error", zap.String("error", err.Error()))
+			return err
+		}
+		return nil
+	}
+	return errors.New("WatchDeltaChannels: Can't find query node by nodeID ")
 }
 
 func (c *queryNodeCluster) hasWatchedQueryChannel(ctx context.Context, nodeID int64, collectionID UniqueID) bool {
@@ -293,7 +310,7 @@ func (c *queryNodeCluster) addQueryChannel(ctx context.Context, nodeID int64, in
 		return nil
 	}
 
-	return errors.New("AddQueryChannel: can't find query node by nodeID")
+	return fmt.Errorf("AddQueryChannel: can't find query node by nodeID, nodeID = %d", nodeID)
 }
 func (c *queryNodeCluster) removeQueryChannel(ctx context.Context, nodeID int64, in *querypb.RemoveQueryChannelRequest) error {
 	c.Lock()
@@ -309,7 +326,7 @@ func (c *queryNodeCluster) removeQueryChannel(ctx context.Context, nodeID int64,
 		return nil
 	}
 
-	return errors.New("RemoveQueryChannel: can't find query node by nodeID")
+	return fmt.Errorf("RemoveQueryChannel: can't find query node by nodeID, nodeID = %d", nodeID)
 }
 
 func (c *queryNodeCluster) releaseCollection(ctx context.Context, nodeID int64, in *querypb.ReleaseCollectionRequest) error {
@@ -330,7 +347,7 @@ func (c *queryNodeCluster) releaseCollection(ctx context.Context, nodeID int64, 
 		return nil
 	}
 
-	return errors.New("ReleaseCollection: can't find query node by nodeID")
+	return fmt.Errorf("ReleaseCollection: can't find query node by nodeID, nodeID = %d", nodeID)
 }
 
 func (c *queryNodeCluster) releasePartitions(ctx context.Context, nodeID int64, in *querypb.ReleasePartitionsRequest) error {
@@ -354,7 +371,7 @@ func (c *queryNodeCluster) releasePartitions(ctx context.Context, nodeID int64, 
 		return nil
 	}
 
-	return errors.New("ReleasePartitions: can't find query node by nodeID")
+	return fmt.Errorf("ReleasePartitions: can't find query node by nodeID, nodeID = %d", nodeID)
 }
 
 func (c *queryNodeCluster) getSegmentInfo(ctx context.Context, in *querypb.GetSegmentInfoRequest) ([]*querypb.SegmentInfo, error) {
@@ -374,6 +391,21 @@ func (c *queryNodeCluster) getSegmentInfo(ctx context.Context, in *querypb.GetSe
 
 	//TODO::update meta
 	return segmentInfos, nil
+}
+
+func (c *queryNodeCluster) getSegmentInfoByNode(ctx context.Context, nodeID int64, in *querypb.GetSegmentInfoRequest) ([]*querypb.SegmentInfo, error) {
+	c.RLock()
+	defer c.RUnlock()
+
+	if node, ok := c.nodes[nodeID]; ok {
+		res, err := node.getSegmentInfo(ctx, in)
+		if err != nil {
+			return nil, err
+		}
+		return res.Infos, nil
+	}
+
+	return nil, fmt.Errorf("ReleasePartitions: can't find query node by nodeID, nodeID = %d", nodeID)
 }
 
 type queryNodeGetMetricsResponse struct {
@@ -402,7 +434,7 @@ func (c *queryNodeCluster) getNumDmChannels(nodeID int64) (int, error) {
 	defer c.RUnlock()
 
 	if _, ok := c.nodes[nodeID]; !ok {
-		return 0, errors.New("GetNumDmChannels: Can't find query node by nodeID ")
+		return 0, fmt.Errorf("GetNumDmChannels: Can't find query node by nodeID, nodeID = %d", nodeID)
 	}
 
 	numChannel := 0
@@ -422,7 +454,7 @@ func (c *queryNodeCluster) getNumSegments(nodeID int64) (int, error) {
 	defer c.RUnlock()
 
 	if _, ok := c.nodes[nodeID]; !ok {
-		return 0, errors.New("getNumSegments: Can't find query node by nodeID ")
+		return 0, fmt.Errorf("getNumSegments: Can't find query node by nodeID, nodeID = %d", nodeID)
 	}
 
 	numSegment := 0
@@ -471,12 +503,16 @@ func (c *queryNodeCluster) registerNode(ctx context.Context, session *sessionuti
 	return fmt.Errorf("RegisterNode: node %d alredy exists in cluster", id)
 }
 
-func (c *queryNodeCluster) getNodeByID(nodeID int64) (Node, error) {
+func (c *queryNodeCluster) getNodeInfoByID(nodeID int64) (Node, error) {
 	c.RLock()
 	defer c.RUnlock()
 
 	if node, ok := c.nodes[nodeID]; ok {
-		return node, nil
+		nodeInfo, err := node.getNodeInfo()
+		if err != nil {
+			return nil, err
+		}
+		return nodeInfo, nil
 	}
 
 	return nil, fmt.Errorf("GetNodeByID: query node %d not exist", nodeID)
@@ -542,6 +578,17 @@ func (c *queryNodeCluster) offlineNodes() (map[int64]Node, error) {
 	return c.getOfflineNodes()
 }
 
+func (c *queryNodeCluster) hasNode(nodeID int64) bool {
+	c.RLock()
+	defer c.RUnlock()
+
+	if _, ok := c.nodes[nodeID]; ok {
+		return true
+	}
+
+	return false
+}
+
 func (c *queryNodeCluster) getOfflineNodes() (map[int64]Node, error) {
 	nodes := make(map[int64]Node)
 	for nodeID, node := range c.nodes {
@@ -564,7 +611,7 @@ func (c *queryNodeCluster) isOnline(nodeID int64) (bool, error) {
 		return node.isOnline(), nil
 	}
 
-	return false, fmt.Errorf("IsOnService: query node %d not exist", nodeID)
+	return false, fmt.Errorf("IsOnline: query node %d not exist", nodeID)
 }
 
 //func (c *queryNodeCluster) printMeta() {

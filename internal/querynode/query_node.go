@@ -79,6 +79,12 @@ type QueryNode struct {
 	historical *historical
 	streaming  *streaming
 
+	// tSafeReplica
+	tSafeReplica TSafeReplicaInterface
+
+	// dataSyncService
+	dataSyncService *dataSyncService
+
 	// internal services
 	queryService *queryService
 
@@ -136,6 +142,7 @@ func (node *QueryNode) Register() error {
 	return nil
 }
 
+// InitSegcore set init params of segCore, such as chunckRows, SIMD type...
 func (node *QueryNode) InitSegcore() {
 	C.SegcoreInit()
 
@@ -151,6 +158,7 @@ func (node *QueryNode) InitSegcore() {
 	C.free(unsafe.Pointer(cSimdType))
 }
 
+// Init function init historical and streaming module to manage segments
 func (node *QueryNode) Init() error {
 	var initError error = nil
 	node.initOnce.Do(func() {
@@ -177,13 +185,27 @@ func (node *QueryNode) Init() error {
 			zap.Any("EtcdEndpoints", Params.EtcdEndpoints),
 			zap.Any("MetaRootPath", Params.MetaRootPath),
 		)
+		node.tSafeReplica = newTSafeReplica()
+
+		streamingReplica := newCollectionReplica(node.etcdKV)
+		historicalReplica := newCollectionReplica(node.etcdKV)
 
 		node.historical = newHistorical(node.queryNodeLoopCtx,
+			historicalReplica,
 			node.rootCoord,
 			node.indexCoord,
 			node.msFactory,
-			node.etcdKV)
-		node.streaming = newStreaming(node.queryNodeLoopCtx, node.msFactory, node.etcdKV, node.historical.replica)
+			node.etcdKV,
+			node.tSafeReplica,
+		)
+		node.streaming = newStreaming(node.queryNodeLoopCtx,
+			streamingReplica,
+			node.msFactory,
+			node.etcdKV,
+			node.tSafeReplica,
+		)
+
+		node.dataSyncService = newDataSyncService(node.queryNodeLoopCtx, streamingReplica, historicalReplica, node.tSafeReplica, node.msFactory)
 
 		node.InitSegcore()
 
@@ -199,6 +221,7 @@ func (node *QueryNode) Init() error {
 	return initError
 }
 
+// Start mainly start QueryNode's query service.
 func (node *QueryNode) Start() error {
 	var err error
 	m := map[string]interface{}{
@@ -231,11 +254,15 @@ func (node *QueryNode) Start() error {
 	return nil
 }
 
+// Stop mainly stop QueryNode's query service, historical loop and streaming loop.
 func (node *QueryNode) Stop() error {
 	node.UpdateStateCode(internalpb.StateCode_Abnormal)
 	node.queryNodeLoopCancel()
 
 	// close services
+	if node.dataSyncService != nil {
+		node.dataSyncService.close()
+	}
 	if node.historical != nil {
 		node.historical.close()
 	}
@@ -253,6 +280,7 @@ func (node *QueryNode) UpdateStateCode(code internalpb.StateCode) {
 	node.stateCode.Store(code)
 }
 
+// SetRootCoord assigns parameter rc to its member rootCoord.
 func (node *QueryNode) SetRootCoord(rc types.RootCoord) error {
 	if rc == nil {
 		return errors.New("null root coordinator interface")
@@ -261,6 +289,7 @@ func (node *QueryNode) SetRootCoord(rc types.RootCoord) error {
 	return nil
 }
 
+// SetIndexCoord assigns parameter index to its member indexCoord.
 func (node *QueryNode) SetIndexCoord(index types.IndexCoord) error {
 	if index == nil {
 		return errors.New("null index coordinator interface")

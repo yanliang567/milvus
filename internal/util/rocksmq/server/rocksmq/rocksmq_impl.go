@@ -185,7 +185,7 @@ func (rmq *rocksmq) Close() {
 		for _, consumer := range v.([]*Consumer) {
 			err := rmq.DestroyConsumerGroup(consumer.Topic, consumer.GroupName)
 			if err != nil {
-				log.Warn("Rocksmq DestroyConsumerGroup failed!", zap.Any("topic", consumer.Topic), zap.Any("groupName", consumer.GroupName), zap.Any("error", err))
+				log.Warn("Failed to destroy consumer group in rocksmq!", zap.Any("topic", consumer.Topic), zap.Any("groupName", consumer.GroupName), zap.Any("error", err))
 			}
 			topic = consumer.Topic
 		}
@@ -648,6 +648,7 @@ func (rmq *rocksmq) Consume(topicName string, groupName string, n int) ([]Consum
 	return consumerMessage, nil
 }
 
+// seek is used for internal call without the topicMu
 func (rmq *rocksmq) seek(topicName string, groupName string, msgID UniqueID) error {
 	rmq.storeMu.Lock()
 	defer rmq.storeMu.Unlock()
@@ -703,7 +704,7 @@ func (rmq *rocksmq) Seek(topicName string, groupName string, msgID UniqueID) err
 func (rmq *rocksmq) SeekToLatest(topicName, groupName string) error {
 	rmq.storeMu.Lock()
 	defer rmq.storeMu.Unlock()
-	key := groupName + "/" + topicName + "/current_id"
+	key := constructCurrentID(topicName, groupName)
 	if !rmq.checkKeyExist(key) {
 		log.Debug("RocksMQ: channel " + key + " not exists")
 		return fmt.Errorf("ConsumerGroup %s, channel %s not exists", groupName, topicName)

@@ -23,16 +23,19 @@ type rmqProducer struct {
 	p rocksmq.Producer
 }
 
+// Topic returns the topic of rmq producer
 func (rp *rmqProducer) Topic() string {
 	return rp.p.Topic()
 }
 
+// Send send the producer messages to rocksmq
 func (rp *rmqProducer) Send(ctx context.Context, message *ProducerMessage) (MessageID, error) {
 	pm := &rocksmq.ProducerMessage{Payload: message.Payload}
 	id, err := rp.p.Send(pm)
 	return &rmqID{messageID: id}, err
 }
 
+// Close does nothing currently
 func (rp *rmqProducer) Close() {
-
+	// TODO(yukun): may need to destroy topic
 }

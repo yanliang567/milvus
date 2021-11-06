@@ -18,8 +18,9 @@ ns=${2:-"chaos-testing"}
 
 # switch namespace
 kubectl config set-context --current --namespace=${ns}
-pod="proxy"
-chaos_type="pod_failure"
+pod="standalone"
+chaos_type="pod_kill"
+chaos_task="data-consist-test" # chaos-test or data-consist-test 
 release="milvus-chaos"
 ns="chaos-testing"
 
@@ -28,8 +29,17 @@ pushd ./scripts
 echo "uninstall milvus if exist"
 bash uninstall_milvus.sh ${release} ${ns}|| true
 echo "install milvus"
-bash install_milvus.sh ${release} ${ns}
+if [ ${pod} != "standalone" ];
+then
+    echo "insatll cluster"
+    bash install_milvus.sh ${release} ${ns}
+fi
 
+if [ ${pod} == "standalone" ];
+then
+    echo "install standalone"
+    helm install --wait --timeout 360s ${release} milvus/milvus --set service.type=NodePort -f ../standalone-values.yaml -n=${ns}
+fi
 # if chaos_type is pod_failure, update replicas
 if [ "$chaos_type" == "pod_failure" ];
 then
@@ -53,7 +63,19 @@ fi
 echo "start running testcase ${pod}"
 host=$(kubectl get svc/milvus-chaos -o jsonpath="{.spec.clusterIP}")
 python scripts/hello_milvus.py --host "$host"
-pytest -s -v test_chaos.py --host "$host" || echo "chaos test fail"
+# chaos test
+if [ "$chaos_task" == "chaos-test" ];
+then
+    pytest -s -v test_chaos.py --host "$host" || echo "chaos test fail"
+fi
+# data consist test
+if [ "$chaos_task" == "data-consist-test" ];
+then
+    pytest -s -v test_chaos_data_consist.py --host "$host" || echo "chaos test fail"
+fi
 sleep 30s
 echo "start running e2e test"
 python scripts/hello_milvus.py --host "$host" || echo "e2e test fail"
+
+# save logs
+bash ../../scripts/export_log_k8s.sh ${ns} ${release} k8s_log/${pod}

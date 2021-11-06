@@ -39,6 +39,7 @@ service QueryNode {
   rpc AddQueryChannel(AddQueryChannelRequest) returns (common.Status) {}
   rpc RemoveQueryChannel(RemoveQueryChannelRequest) returns (common.Status) {}
   rpc WatchDmChannels(WatchDmChannelsRequest) returns (common.Status) {}
+  rpc WatchDeltaChannels(WatchDeltaChannelsRequest) returns (common.Status) {}
   rpc LoadSegments(LoadSegmentsRequest) returns (common.Status) {}
   rpc ReleaseCollection(ReleaseCollectionRequest) returns (common.Status) {}
   rpc ReleasePartitions(ReleasePartitionsRequest) returns (common.Status) {}
@@ -212,6 +213,13 @@ message WatchDmChannelsRequest {
   repeated data.SegmentInfo exclude_infos = 7;
 }
 
+message WatchDeltaChannelsRequest {
+  common.MsgBase base = 1;
+  int64 nodeID = 2;
+  int64 collectionID = 3;
+  repeated data.VchannelInfo infos = 4;
+}
+
 enum TriggerCondition {
   handoff = 0;
   loadBalance = 1;
@@ -315,6 +323,8 @@ message LoadBalanceRequest {
   common.MsgBase base = 1;
   repeated int64 source_nodeIDs = 2;
   TriggerCondition balance_reason = 3;
+  repeated int64 dst_nodeIDs = 4;
+  repeated int64 sealed_segmentIDs = 5;
 }
 
 //---------------- common query proto -----------------

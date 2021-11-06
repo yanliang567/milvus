@@ -19,8 +19,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/milvus-io/milvus/internal/util/metricsinfo"
-
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/log"
@@ -28,6 +26,8 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	queryPb "github.com/milvus-io/milvus/internal/proto/querypb"
+	"github.com/milvus-io/milvus/internal/util/metricsinfo"
+	"github.com/milvus-io/milvus/internal/util/mqclient"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
@@ -133,21 +133,29 @@ func (node *QueryNode) AddQueryChannel(ctx context.Context, in *queryPb.AddQuery
 	}
 	consumeChannels := []string{in.RequestChannelID}
 	consumeSubName := Params.MsgChannelSubName + "-" + strconv.FormatInt(collectionID, 10) + "-" + strconv.Itoa(rand.Int())
-	sc.queryMsgStream.AsConsumer(consumeChannels, consumeSubName)
-	if in.SeekPosition == nil || len(in.SeekPosition.MsgID) == 0 {
-		// as consumer
-		log.Debug("querynode AsConsumer: " + strings.Join(consumeChannels, ", ") + " : " + consumeSubName)
+
+	if Params.skipQueryChannelRecovery {
+		log.Debug("Skip query channel seek back ", zap.Strings("channels", consumeChannels),
+			zap.String("seek position", string(in.SeekPosition.MsgID)),
+			zap.Uint64("ts", in.SeekPosition.Timestamp))
+		sc.queryMsgStream.AsConsumerWithPosition(consumeChannels, consumeSubName, mqclient.SubscriptionPositionLatest)
 	} else {
-		// seek query channel
-		err = sc.queryMsgStream.Seek([]*internalpb.MsgPosition{in.SeekPosition})
-		if err != nil {
-			status := &commonpb.Status{
-				ErrorCode: commonpb.ErrorCode_UnexpectedError,
-				Reason:    err.Error(),
+		sc.queryMsgStream.AsConsumer(consumeChannels, consumeSubName)
+		if in.SeekPosition == nil || len(in.SeekPosition.MsgID) == 0 {
+			// as consumer
+			log.Debug("querynode AsConsumer: " + strings.Join(consumeChannels, ", ") + " : " + consumeSubName)
+		} else {
+			// seek query channel
+			err = sc.queryMsgStream.Seek([]*internalpb.MsgPosition{in.SeekPosition})
+			if err != nil {
+				status := &commonpb.Status{
+					ErrorCode: commonpb.ErrorCode_UnexpectedError,
+					Reason:    err.Error(),
+				}
+				return status, err
 			}
-			return status, err
+			log.Debug("querynode seek query channel: ", zap.Any("consumeChannels", consumeChannels))
 		}
-		log.Debug("querynode seek query channel: ", zap.Any("consumeChannels", consumeChannels))
 	}
 
 	// add result channel
@@ -276,6 +284,13 @@ func (node *QueryNode) WatchDmChannels(ctx context.Context, in *queryPb.WatchDmC
 	}
 
 	return waitFunc()
+}
+
+// WatchDeltaChannels create consumers on dmChannels to reveive Incremental data，which is the important part of real-time query
+func (node *QueryNode) WatchDeltaChannels(ctx context.Context, in *queryPb.WatchDeltaChannelsRequest) (*commonpb.Status, error) {
+	return &commonpb.Status{
+		ErrorCode: commonpb.ErrorCode_Success,
+	}, nil
 }
 
 // LoadSegments load historical data into query node, historical data can be vector data or index
@@ -424,6 +439,7 @@ func (node *QueryNode) ReleasePartitions(ctx context.Context, in *queryPb.Releas
 	return status, nil
 }
 
+// ReleaseSegments remove the specified segments from query node according segmentIDs, partitionIDs, and collectionID
 func (node *QueryNode) ReleaseSegments(ctx context.Context, in *queryPb.ReleaseSegmentsRequest) (*commonpb.Status, error) {
 	code := node.stateCode.Load().(internalpb.StateCode)
 	if code != internalpb.StateCode_Healthy {
@@ -468,47 +484,12 @@ func (node *QueryNode) GetSegmentInfo(ctx context.Context, in *queryPb.GetSegmen
 		return res, err
 	}
 	infos := make([]*queryPb.SegmentInfo, 0)
-	// TODO: remove segmentType and use queryPb.SegmentState instead
-	getSegmentStateBySegmentType := func(segType segmentType) commonpb.SegmentState {
-		switch segType {
-		case segmentTypeGrowing:
-			return commonpb.SegmentState_Growing
-		case segmentTypeSealed:
-			return commonpb.SegmentState_Sealed
-		// TODO: remove segmentTypeIndexing
-		case segmentTypeIndexing:
-			return commonpb.SegmentState_Sealed
-		default:
-			return commonpb.SegmentState_NotExist
-		}
-	}
-	getSegmentInfo := func(segment *Segment) *queryPb.SegmentInfo {
-		var indexName string
-		var indexID int64
-		// TODO:: segment has multi vec column
-		for fieldID := range segment.indexInfos {
-			indexName = segment.getIndexName(fieldID)
-			indexID = segment.getIndexID(fieldID)
-			break
-		}
-		info := &queryPb.SegmentInfo{
-			SegmentID:    segment.ID(),
-			CollectionID: segment.collectionID,
-			PartitionID:  segment.partitionID,
-			NodeID:       Params.QueryNodeID,
-			MemSize:      segment.getMemSize(),
-			NumRows:      segment.getRowCount(),
-			IndexName:    indexName,
-			IndexID:      indexID,
-			ChannelID:    segment.vChannelID,
-			State:        getSegmentStateBySegmentType(segment.segmentType),
-		}
-		return info
-	}
+
 	// get info from historical
 	node.historical.replica.printReplica()
-	partitionIDs, err := node.historical.replica.getPartitionIDs(in.CollectionID)
+	historicalSegmentInfos, err := node.historical.replica.getSegmentInfosByColID(in.CollectionID)
 	if err != nil {
+		log.Debug("GetSegmentInfo: get historical segmentInfo failed", zap.Int64("collectionID", in.CollectionID), zap.Error(err))
 		res := &queryPb.GetSegmentInfoResponse{
 			Status: &commonpb.Status{
 				ErrorCode: commonpb.ErrorCode_UnexpectedError,
@@ -517,39 +498,13 @@ func (node *QueryNode) GetSegmentInfo(ctx context.Context, in *queryPb.GetSegmen
 		}
 		return res, err
 	}
-	for _, partitionID := range partitionIDs {
-		segmentIDs, err := node.historical.replica.getSegmentIDs(partitionID)
-		if err != nil {
-			res := &queryPb.GetSegmentInfoResponse{
-				Status: &commonpb.Status{
-					ErrorCode: commonpb.ErrorCode_UnexpectedError,
-					Reason:    err.Error(),
-				},
-			}
-			return res, err
-		}
-		for _, id := range segmentIDs {
-			segment, err := node.historical.replica.getSegmentByID(id)
-			if err != nil {
-				res := &queryPb.GetSegmentInfoResponse{
-					Status: &commonpb.Status{
-						ErrorCode: commonpb.ErrorCode_UnexpectedError,
-						Reason:    err.Error(),
-					},
-				}
-				return res, err
-			}
-			info := getSegmentInfo(segment)
-			log.Debug("QueryNode::Impl::GetSegmentInfo for historical", zap.Any("SegmentID", id), zap.Any("info", info))
-
-			infos = append(infos, info)
-		}
-	}
+	infos = append(infos, historicalSegmentInfos...)
 
 	// get info from streaming
 	node.streaming.replica.printReplica()
-	partitionIDs, err = node.streaming.replica.getPartitionIDs(in.CollectionID)
+	streamingSegmentInfos, err := node.streaming.replica.getSegmentInfosByColID(in.CollectionID)
 	if err != nil {
+		log.Debug("GetSegmentInfo: get streaming segmentInfo failed", zap.Int64("collectionID", in.CollectionID), zap.Error(err))
 		res := &queryPb.GetSegmentInfoResponse{
 			Status: &commonpb.Status{
 				ErrorCode: commonpb.ErrorCode_UnexpectedError,
@@ -558,33 +513,9 @@ func (node *QueryNode) GetSegmentInfo(ctx context.Context, in *queryPb.GetSegmen
 		}
 		return res, err
 	}
-	for _, partitionID := range partitionIDs {
-		segmentIDs, err := node.streaming.replica.getSegmentIDs(partitionID)
-		if err != nil {
-			res := &queryPb.GetSegmentInfoResponse{
-				Status: &commonpb.Status{
-					ErrorCode: commonpb.ErrorCode_UnexpectedError,
-					Reason:    err.Error(),
-				},
-			}
-			return res, err
-		}
-		for _, id := range segmentIDs {
-			segment, err := node.streaming.replica.getSegmentByID(id)
-			if err != nil {
-				res := &queryPb.GetSegmentInfoResponse{
-					Status: &commonpb.Status{
-						ErrorCode: commonpb.ErrorCode_UnexpectedError,
-						Reason:    err.Error(),
-					},
-				}
-				return res, err
-			}
-			info := getSegmentInfo(segment)
-			log.Debug("QueryNode::Impl::GetSegmentInfo for streaming", zap.Any("SegmentID", id), zap.Any("info", info))
-			infos = append(infos, info)
-		}
-	}
+	infos = append(infos, streamingSegmentInfos...)
+	log.Debug("GetSegmentInfo: get segment info from query node", zap.Int64("nodeID", node.session.ServerID), zap.Any("segment infos", infos))
+
 	return &queryPb.GetSegmentInfoResponse{
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_Success,
@@ -599,6 +530,7 @@ func (node *QueryNode) isHealthy() bool {
 }
 
 // TODO(dragondriver): cache the Metrics and set a retention to the cache
+// GetMetrics return system infos of the query node, such as total memory, memory uasge, cpu usage ...
 func (node *QueryNode) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
 	log.Debug("QueryNode.GetMetrics",
 		zap.Int64("node_id", Params.QueryNodeID),

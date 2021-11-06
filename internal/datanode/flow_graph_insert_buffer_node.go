@@ -28,12 +28,14 @@ import (
 
 	"github.com/golang/protobuf/proto"
 	"github.com/opentracing/opentracing-go"
+	"go.uber.org/atomic"
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/msgstream"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/trace"
+	"github.com/milvus-io/milvus/internal/util/tsoutil"
 
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
@@ -65,6 +67,32 @@ type insertBufferNode struct {
 
 	timeTickStream          msgstream.MsgStream
 	segmentStatisticsStream msgstream.MsgStream
+	ttLogger                timeTickLogger
+	ttMerger                *mergedTimeTickerSender
+}
+
+type timeTickLogger struct {
+	start   atomic.Uint64
+	counter atomic.Int32
+}
+
+func (l *timeTickLogger) LogTs(ts Timestamp) {
+	if l.counter.Load() == 0 {
+		l.start.Store(ts)
+	}
+	l.counter.Inc()
+	if l.counter.Load() == 1000 {
+		min := l.start.Load()
+		l.start.Store(ts)
+		l.counter.Store(0)
+		go l.printLogs(min, ts)
+	}
+}
+
+func (l *timeTickLogger) printLogs(start, end Timestamp) {
+	t1, _ := tsoutil.ParseTS(start)
+	t2, _ := tsoutil.ParseTS(end)
+	log.Debug("IBN timetick log", zap.Time("from", t1), zap.Time("to", t2), zap.Duration("elapsed", t2.Sub(t1)), zap.Uint64("start", start), zap.Uint64("end", end))
 }
 
 type segmentCheckPoint struct {
@@ -127,6 +155,8 @@ func (ibNode *insertBufferNode) Name() string {
 }
 
 func (ibNode *insertBufferNode) Close() {
+	ibNode.ttMerger.close()
+
 	if ibNode.timeTickStream != nil {
 		ibNode.timeTickStream.Close()
 	}
@@ -639,25 +669,9 @@ func readBinary(reader io.Reader, receiver interface{}, dataType schemapb.DataTy
 
 // writeHardTimeTick writes timetick once insertBufferNode operates.
 func (ibNode *insertBufferNode) writeHardTimeTick(ts Timestamp) error {
-	msgPack := msgstream.MsgPack{}
-	timeTickMsg := msgstream.DataNodeTtMsg{
-		BaseMsg: msgstream.BaseMsg{
-			BeginTimestamp: ts,
-			EndTimestamp:   ts,
-			HashValues:     []uint32{0},
-		},
-		DataNodeTtMsg: datapb.DataNodeTtMsg{
-			Base: &commonpb.MsgBase{
-				MsgType:   commonpb.MsgType_DataNodeTt,
-				MsgID:     0,
-				Timestamp: ts,
-			},
-			ChannelName: ibNode.channelName,
-			Timestamp:   ts,
-		},
-	}
-	msgPack.Msgs = append(msgPack.Msgs, &timeTickMsg)
-	return ibNode.timeTickStream.Produce(&msgPack)
+	ibNode.ttLogger.LogTs(ts)
+	ibNode.ttMerger.bufferTs(ts)
+	return nil
 }
 
 // uploadMemStates2Coord uploads latest changed segments statistics in DataNode memory to DataCoord
@@ -754,6 +768,28 @@ func newInsertBufferNode(ctx context.Context, flushCh <-chan flushMsg, fm flushM
 	var segStatisticsMsgStream msgstream.MsgStream = segS
 	segStatisticsMsgStream.Start()
 
+	mt := newMergedTimeTickerSender(func(ts Timestamp) error {
+		msgPack := msgstream.MsgPack{}
+		timeTickMsg := msgstream.DataNodeTtMsg{
+			BaseMsg: msgstream.BaseMsg{
+				BeginTimestamp: ts,
+				EndTimestamp:   ts,
+				HashValues:     []uint32{0},
+			},
+			DataNodeTtMsg: datapb.DataNodeTtMsg{
+				Base: &commonpb.MsgBase{
+					MsgType:   commonpb.MsgType_DataNodeTt,
+					MsgID:     0,
+					Timestamp: ts,
+				},
+				ChannelName: config.vChannelName,
+				Timestamp:   ts,
+			},
+		}
+		msgPack.Msgs = append(msgPack.Msgs, &timeTickMsg)
+		return wTtMsgStream.Produce(&msgPack)
+	})
+
 	return &insertBufferNode{
 		BaseNode:     baseNode,
 		insertBuffer: sync.Map{},
@@ -769,5 +805,6 @@ func newInsertBufferNode(ctx context.Context, flushCh <-chan flushMsg, fm flushM
 		replica:     config.replica,
 		idAllocator: config.allocator,
 		channelName: config.vChannelName,
+		ttMerger:    mt,
 	}, nil
 }

@@ -129,6 +129,7 @@ func NewClient(ctx context.Context, metaRoot string, etcdEndpoints []string) (*C
 	return client, nil
 }
 
+// Init initializes the client
 func (c *Client) Init() error {
 	Params.Init()
 	return nil
@@ -202,6 +203,7 @@ func (c *Client) recall(caller func() (interface{}, error)) (interface{}, error)
 	return ret, err
 }
 
+// Start enables the client
 func (c *Client) Start() error {
 	return nil
 }
@@ -236,6 +238,7 @@ func (c *Client) GetComponentStates(ctx context.Context) (*internalpb.ComponentS
 	return ret.(*internalpb.ComponentStates), err
 }
 
+// GetTimeTickChannel return the name of time tick channel.
 func (c *Client) GetTimeTickChannel(ctx context.Context) (*milvuspb.StringResponse, error) {
 	ret, err := c.recall(func() (interface{}, error) {
 		client, err := c.getGrpcClient()
@@ -251,6 +254,7 @@ func (c *Client) GetTimeTickChannel(ctx context.Context) (*milvuspb.StringRespon
 	return ret.(*milvuspb.StringResponse), err
 }
 
+// GetStatisticsChannel return the name of statistics channel.
 func (c *Client) GetStatisticsChannel(ctx context.Context) (*milvuspb.StringResponse, error) {
 	ret, err := c.recall(func() (interface{}, error) {
 		client, err := c.getGrpcClient()
@@ -511,6 +515,7 @@ func (c *Client) GetFlushedSegments(ctx context.Context, req *datapb.GetFlushedS
 	return ret.(*datapb.GetFlushedSegmentsResponse), err
 }
 
+// GetMetrics gets all metrics of datacoord
 func (c *Client) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
 	ret, err := c.recall(func() (interface{}, error) {
 		client, err := c.getGrpcClient()
@@ -524,4 +529,49 @@ func (c *Client) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest
 		return nil, err
 	}
 	return ret.(*milvuspb.GetMetricsResponse), err
+}
+
+func (c *Client) CompleteCompaction(ctx context.Context, req *datapb.CompactionResult) (*commonpb.Status, error) {
+	ret, err := c.recall(func() (interface{}, error) {
+		client, err := c.getGrpcClient()
+		if err != nil {
+			return nil, err
+		}
+
+		return client.CompleteCompaction(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*commonpb.Status), err
+}
+
+func (c *Client) ManualCompaction(ctx context.Context, req *datapb.ManualCompactionRequest) (*datapb.ManualCompactionResponse, error) {
+	ret, err := c.recall(func() (interface{}, error) {
+		client, err := c.getGrpcClient()
+		if err != nil {
+			return nil, err
+		}
+
+		return client.ManualCompaction(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*datapb.ManualCompactionResponse), err
+}
+
+func (c *Client) GetCompactionState(ctx context.Context, req *datapb.GetCompactionStateRequest) (*datapb.GetCompactionStateResponse, error) {
+	ret, err := c.recall(func() (interface{}, error) {
+		client, err := c.getGrpcClient()
+		if err != nil {
+			return nil, err
+		}
+
+		return client.GetCompactionState(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*datapb.GetCompactionStateResponse), err
 }

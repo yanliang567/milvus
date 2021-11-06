@@ -234,15 +234,14 @@ func (node *Proxy) sendChannelsTimeTickLoop() {
 			case <-node.ctx.Done():
 				return
 			case <-timer.C:
-				ts, err := node.tsoAllocator.AllocOne()
+				stats, ts, err := node.chTicker.getMinTsStatistics()
 				if err != nil {
-					log.Warn("Failed to get timestamp from tso", zap.Error(err))
+					log.Warn("sendChannelsTimeTickLoop.getMinTsStatistics", zap.Error(err))
 					continue
 				}
 
-				stats, err := node.chTicker.getMinTsStatistics()
-				if err != nil {
-					log.Warn("sendChannelsTimeTickLoop.getMinTsStatistics", zap.Error(err))
+				if ts == 0 {
+					log.Warn("sendChannelsTimeTickLoop.getMinTsStatistics default timestamp equal 0")
 					continue
 				}
 
@@ -385,14 +384,17 @@ func (node *Proxy) SetRootCoordClient(cli types.RootCoord) {
 	node.rootCoord = cli
 }
 
+// SetIndexCoordClient set IndexCoord client for proxy.
 func (node *Proxy) SetIndexCoordClient(cli types.IndexCoord) {
 	node.indexCoord = cli
 }
 
+// SetDataCoordClient set DataCoord client for proxy.
 func (node *Proxy) SetDataCoordClient(cli types.DataCoord) {
 	node.dataCoord = cli
 }
 
+// SetQueryCoordClient set QueryCoord client for proxy.
 func (node *Proxy) SetQueryCoordClient(cli types.QueryCoord) {
 	node.queryCoord = cli
 }

@@ -44,6 +44,7 @@ func (node *Proxy) UpdateStateCode(code internalpb.StateCode) {
 	node.stateCode.Store(code)
 }
 
+// GetComponentStates get state of Proxy.
 func (node *Proxy) GetComponentStates(ctx context.Context) (*internalpb.ComponentStates, error) {
 	stats := &internalpb.ComponentStates{
 		Status: &commonpb.Status{
@@ -68,6 +69,7 @@ func (node *Proxy) GetComponentStates(ctx context.Context) (*internalpb.Componen
 	return stats, nil
 }
 
+// GetStatisticsChannel get statistics channel of Proxy.
 func (node *Proxy) GetStatisticsChannel(ctx context.Context) (*milvuspb.StringResponse, error) {
 	return &milvuspb.StringResponse{
 		Status: &commonpb.Status{
@@ -78,6 +80,7 @@ func (node *Proxy) GetStatisticsChannel(ctx context.Context) (*milvuspb.StringRe
 	}, nil
 }
 
+// InvalidateCollectionMetaCache invalidate the meta cache of specific collection.
 func (node *Proxy) InvalidateCollectionMetaCache(ctx context.Context, request *proxypb.InvalidateCollMetaCacheRequest) (*commonpb.Status, error) {
 	log.Debug("InvalidateCollectionMetaCache",
 		zap.String("role", Params.RoleName),
@@ -99,6 +102,7 @@ func (node *Proxy) InvalidateCollectionMetaCache(ctx context.Context, request *p
 	}, nil
 }
 
+// ReleaseDQLMessageStream release the query message stream of specific collection.
 func (node *Proxy) ReleaseDQLMessageStream(ctx context.Context, request *proxypb.ReleaseDQLMessageStreamRequest) (*commonpb.Status, error) {
 	log.Debug("ReleaseDQLMessageStream",
 		zap.Any("role", Params.RoleName),
@@ -122,6 +126,7 @@ func (node *Proxy) ReleaseDQLMessageStream(ctx context.Context, request *proxypb
 	}, nil
 }
 
+// CreateCollection create a collection by the schema.
 func (node *Proxy) CreateCollection(ctx context.Context, request *milvuspb.CreateCollectionRequest) (*commonpb.Status, error) {
 	if !node.checkHealthy() {
 		return unhealthyStatus(), nil
@@ -174,6 +179,7 @@ func (node *Proxy) CreateCollection(ctx context.Context, request *milvuspb.Creat
 	return cct.result, nil
 }
 
+// DropCollection drop a collection.
 func (node *Proxy) DropCollection(ctx context.Context, request *milvuspb.DropCollectionRequest) (*commonpb.Status, error) {
 	if !node.checkHealthy() {
 		return unhealthyStatus(), nil
@@ -226,6 +232,7 @@ func (node *Proxy) DropCollection(ctx context.Context, request *milvuspb.DropCol
 	return dct.result, nil
 }
 
+// HasCollection check if the specific collection exists in Milvus.
 func (node *Proxy) HasCollection(ctx context.Context, request *milvuspb.HasCollectionRequest) (*milvuspb.BoolResponse, error) {
 	if !node.checkHealthy() {
 		return &milvuspb.BoolResponse{
@@ -1378,7 +1385,9 @@ func (node *Proxy) Delete(ctx context.Context, request *milvuspb.DeleteRequest) 
 		Condition: NewTaskCondition(ctx),
 		req:       deleteReq,
 		BaseDeleteTask: BaseDeleteTask{
-			BaseMsg: msgstream.BaseMsg{},
+			BaseMsg: msgstream.BaseMsg{
+				HashValues: request.HashKeys,
+			},
 			DeleteRequest: internalpb.DeleteRequest{
 				Base: &commonpb.MsgBase{
 					MsgType: commonpb.MsgType_Delete,

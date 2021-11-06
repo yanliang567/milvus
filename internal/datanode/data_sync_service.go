@@ -36,17 +36,17 @@ import (
 type dataSyncService struct {
 	ctx          context.Context
 	cancelFn     context.CancelFunc
-	fg           *flowgraph.TimeTickedFlowGraph
-	flushCh      chan flushMsg
-	replica      Replica
-	idAllocator  allocatorInterface
+	fg           *flowgraph.TimeTickedFlowGraph // internal flowgraph processes insert/delta messages
+	flushCh      chan flushMsg                  // chan to notify flush
+	replica      Replica                        // segment replica stores meta
+	idAllocator  allocatorInterface             // id/timestamp allocator
 	msFactory    msgstream.Factory
-	collectionID UniqueID
-	dataCoord    types.DataCoord
-	clearSignal  chan<- UniqueID
+	collectionID UniqueID        // collection id of vchan for which this data sync service serves
+	dataCoord    types.DataCoord // DataCoord instance to interact with
+	clearSignal  chan<- UniqueID // signal channel to notify flowgraph close for collection/partition drop msg consumed
 
-	flushingSegCache *Cache
-	flushManager     flushManager
+	flushingSegCache *Cache       // a guarding cache stores currently flushing segment ids
+	flushManager     flushManager // flush manager handles flush process
 }
 
 func newDataSyncService(ctx context.Context,
@@ -156,6 +156,7 @@ func (dsService *dataSyncService) initNodes(vchanInfo *datapb.VchannelInfo) erro
 		return err
 	}
 
+	// initialize flush manager for DataSync Service
 	dsService.flushManager = NewRendezvousFlushManager(dsService.idAllocator, minIOKV, dsService.replica, func(pack *segmentFlushPack) error {
 		fieldInsert := []*datapb.FieldBinlog{}
 		fieldStats := []*datapb.FieldBinlog{}
@@ -216,41 +217,6 @@ func (dsService *dataSyncService) initNodes(vchanInfo *datapb.VchannelInfo) erro
 		return nil
 	})
 
-	c := &nodeConfig{
-		msFactory:    dsService.msFactory,
-		collectionID: vchanInfo.GetCollectionID(),
-		vChannelName: vchanInfo.GetChannelName(),
-		replica:      dsService.replica,
-		allocator:    dsService.idAllocator,
-
-		parallelConfig: newParallelConfig(),
-	}
-
-	var dmStreamNode Node
-	dmStreamNode, err = newDmInputNode(dsService.ctx, vchanInfo.GetSeekPosition(), c)
-	if err != nil {
-		return err
-	}
-
-	var ddNode Node = newDDNode(dsService.clearSignal, dsService.collectionID, vchanInfo)
-	var insertBufferNode Node
-	insertBufferNode, err = newInsertBufferNode(
-		dsService.ctx,
-		dsService.flushCh,
-		dsService.flushManager,
-		dsService.flushingSegCache,
-		c,
-	)
-	if err != nil {
-		return err
-	}
-
-	var deleteNode Node
-	deleteNode, err = newDeleteNode(dsService.ctx, dsService.flushManager, c)
-	if err != nil {
-		return err
-	}
-
 	// recover segment checkpoints
 	for _, us := range vchanInfo.GetUnflushedSegments() {
 		if us.CollectionID != dsService.collectionID ||
@@ -296,6 +262,41 @@ func (dsService *dataSyncService) initNodes(vchanInfo *datapb.VchannelInfo) erro
 			fs.PartitionID, fs.GetInsertChannel(), fs.GetNumOfRows(), fs.Statslogs); err != nil {
 			return err
 		}
+	}
+
+	c := &nodeConfig{
+		msFactory:    dsService.msFactory,
+		collectionID: vchanInfo.GetCollectionID(),
+		vChannelName: vchanInfo.GetChannelName(),
+		replica:      dsService.replica,
+		allocator:    dsService.idAllocator,
+
+		parallelConfig: newParallelConfig(),
+	}
+
+	var dmStreamNode Node
+	dmStreamNode, err = newDmInputNode(dsService.ctx, vchanInfo.GetSeekPosition(), c)
+	if err != nil {
+		return err
+	}
+
+	var ddNode Node = newDDNode(dsService.ctx, dsService.clearSignal, dsService.collectionID, vchanInfo, dsService.msFactory)
+	var insertBufferNode Node
+	insertBufferNode, err = newInsertBufferNode(
+		dsService.ctx,
+		dsService.flushCh,
+		dsService.flushManager,
+		dsService.flushingSegCache,
+		c,
+	)
+	if err != nil {
+		return err
+	}
+
+	var deleteNode Node
+	deleteNode, err = newDeleteNode(dsService.ctx, dsService.flushManager, c)
+	if err != nil {
+		return err
 	}
 
 	dsService.fg.AddNode(dmStreamNode)

@@ -17,7 +17,7 @@ import (
 )
 
 // MaxTimestamp is the max timestamp.
-const MaxTimestamp = math.MaxUint64
+const MaxTimestamp = Timestamp(math.MaxUint64)
 
 // ZeroTime is a zero time.
 var ZeroTime = time.Time{}
@@ -27,7 +27,8 @@ var ZeroTimestamp = Timestamp(0)
 
 // ParseTimestamp returns a timestamp for a given byte slice.
 func ParseTimestamp(data []byte) (time.Time, error) {
-	nano, err := BytesToUint64(data)
+	//we use big endian here for compatibility issues
+	nano, err := BigEndianBytesToUint64(data)
 	if err != nil {
 		return ZeroTime, err
 	}

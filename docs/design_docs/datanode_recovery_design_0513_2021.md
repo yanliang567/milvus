@@ -12,7 +12,7 @@ DataNode is based on flowgraph; each flowgraph cares about only one vchannel. Th
 messages, and timetick messages inside one vchannel, FIFO log stream.
 
 One vchannel only contains dml messages of one collection. A collection consists of many segments, hence
-a vchannel contains dml messsages of many segments. **Most importantly, the dml messages of the same segment
+a vchannel contains dml messages of many segments. **Most importantly, the dml messages of the same segment
 can appear in anywhere in vchannel.**
 
 ## What does DataNode recovery really mean?
@@ -24,7 +24,7 @@ So what's DataNode's starting procedure?
 
 ## Objectives
 
-### 1. Serveice Registration
+### 1. Service Registration
 
 DataNode registers itself to etcd after grpc server started, in *INITIALIZING* state.
 

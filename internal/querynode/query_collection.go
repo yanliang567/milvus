@@ -147,10 +147,15 @@ func (q *queryCollection) registerCollectionTSafe() error {
 	if err != nil {
 		return err
 	}
+	// historicalCollection, err := q.historical.replica.getCollectionByID(q.collectionID)
+	// if err != nil {
+	// 	return err
+	// }
 
 	log.Debug("register tSafe watcher and init watcher select case",
 		zap.Any("collectionID", collection.ID()),
 		zap.Any("dml channels", collection.getVChannels()),
+		// zap.Any("delta channels", collection.getVChannels()),
 	)
 	for _, channel := range collection.getVChannels() {
 		err = q.addTSafeWatcher(channel)
@@ -158,6 +163,12 @@ func (q *queryCollection) registerCollectionTSafe() error {
 			return err
 		}
 	}
+	// for _, channel := range historicalCollection.getVChannels() {
+	// 	err := q.addTSafeWatcher(channel)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// }
 	return nil
 }
 
