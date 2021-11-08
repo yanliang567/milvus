@@ -2664,7 +2664,7 @@
     },
     {
       "datasource": "$datasource",
-      "description": "Total RootCoord Show segments operations",
+      "description": "Total count of show_segments requests",
       "fieldConfig": {
         "defaults": {
           "mappings": [],
@@ -2722,7 +2722,7 @@
     },
     {
       "datasource": "$datasource",
-      "description": "Successful RootCoord Show segments operations",
+      "description": "Success count of show_segments requests",
       "fieldConfig": {
         "defaults": {
           "mappings": [],
@@ -2780,7 +2780,7 @@
     },
     {
       "datasource": "$datasource",
-      "description": "Total RootCoord Describe segments operations",
+      "description": "Total count of describe_segments requests",
       "fieldConfig": {
         "defaults": {
           "mappings": [],
