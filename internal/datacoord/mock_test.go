@@ -472,10 +472,10 @@ func (h *mockCompactionHandler) stop() {
 }
 
 // execCompactionPlan start to execute plan and return immediately
-func (h *mockCompactionHandler) execCompactionPlan(plan *datapb.CompactionPlan) error {
+func (h *mockCompactionHandler) execCompactionPlan(signal *compactionSignal, plan *datapb.CompactionPlan) error {
 	if f, ok := h.methods["execCompactionPlan"]; ok {
-		if ff, ok := f.(func(plan *datapb.CompactionPlan) error); ok {
-			return ff(plan)
+		if ff, ok := f.(func(signal *compactionSignal, plan *datapb.CompactionPlan) error); ok {
+			return ff(signal, plan)
 		}
 	}
 	panic("not implemented")
@@ -521,10 +521,10 @@ func (h *mockCompactionHandler) isFull() bool {
 	panic("not implemented")
 }
 
-// get compaction by signal id and return the number of executing/completed/timeout plans
-func (h *mockCompactionHandler) getCompactionBySignalID(signalID int64) (executing int, completed int, timeout int) {
-	if f, ok := h.methods["getCompactionBySignalID"]; ok {
-		if ff, ok := f.(func(signalID int64) (executing int, completed int, timeout int)); ok {
+// get compaction tasks by signal id
+func (h *mockCompactionHandler) getCompactionTasksBySignalID(signalID int64) []*compactionTask {
+	if f, ok := h.methods["getCompactionTasksBySignalID"]; ok {
+		if ff, ok := f.(func(signalID int64) []*compactionTask); ok {
 			return ff(signalID)
 		}
 	}

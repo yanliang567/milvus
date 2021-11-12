@@ -288,9 +288,52 @@ func (node *QueryNode) WatchDmChannels(ctx context.Context, in *queryPb.WatchDmC
 
 // WatchDeltaChannels create consumers on dmChannels to reveive Incremental data，which is the important part of real-time query
 func (node *QueryNode) WatchDeltaChannels(ctx context.Context, in *queryPb.WatchDeltaChannelsRequest) (*commonpb.Status, error) {
-	return &commonpb.Status{
-		ErrorCode: commonpb.ErrorCode_Success,
-	}, nil
+	code := node.stateCode.Load().(internalpb.StateCode)
+	if code != internalpb.StateCode_Healthy {
+		err := fmt.Errorf("query node %d is not ready", Params.QueryNodeID)
+		status := &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_UnexpectedError,
+			Reason:    err.Error(),
+		}
+		return status, err
+	}
+	dct := &watchDeltaChannelsTask{
+		baseTask: baseTask{
+			ctx:  ctx,
+			done: make(chan error),
+		},
+		req:  in,
+		node: node,
+	}
+
+	err := node.scheduler.queue.Enqueue(dct)
+	if err != nil {
+		status := &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_UnexpectedError,
+			Reason:    err.Error(),
+		}
+		log.Warn(err.Error())
+		return status, err
+	}
+	log.Debug("watchDeltaChannelsTask Enqueue done", zap.Any("collectionID", in.CollectionID))
+
+	waitFunc := func() (*commonpb.Status, error) {
+		err = dct.WaitToFinish()
+		if err != nil {
+			status := &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+				Reason:    err.Error(),
+			}
+			log.Warn(err.Error())
+			return status, err
+		}
+		log.Debug("watchDeltaChannelsTask WaitToFinish done", zap.Any("collectionID", in.CollectionID))
+		return &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+		}, nil
+	}
+
+	return waitFunc()
 }
 
 // LoadSegments load historical data into query node, historical data can be vector data or index
@@ -529,8 +572,8 @@ func (node *QueryNode) isHealthy() bool {
 	return code == internalpb.StateCode_Healthy
 }
 
-// TODO(dragondriver): cache the Metrics and set a retention to the cache
 // GetMetrics return system infos of the query node, such as total memory, memory uasge, cpu usage ...
+// TODO(dragondriver): cache the Metrics and set a retention to the cache
 func (node *QueryNode) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
 	log.Debug("QueryNode.GetMetrics",
 		zap.Int64("node_id", Params.QueryNodeID),

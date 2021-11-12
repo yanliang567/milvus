@@ -17,7 +17,7 @@ type spyCompactionHandler struct {
 }
 
 // execCompactionPlan start to execute plan and return immediately
-func (h *spyCompactionHandler) execCompactionPlan(plan *datapb.CompactionPlan) error {
+func (h *spyCompactionHandler) execCompactionPlan(signal *compactionSignal, plan *datapb.CompactionPlan) error {
 	h.spyChan <- plan
 	return nil
 }
@@ -42,8 +42,8 @@ func (h *spyCompactionHandler) isFull() bool {
 	return false
 }
 
-// get compaction by signal id and return the number of executing/completed/timeout plans
-func (h *spyCompactionHandler) getCompactionBySignalID(signalID int64) (executing int, completed int, timeout int) {
+// get compaction tasks by signal id
+func (h *spyCompactionHandler) getCompactionTasksBySignalID(signalID int64) []*compactionTask {
 	panic("not implemented") // TODO: Implement
 }
 
@@ -52,6 +52,10 @@ func (h *spyCompactionHandler) start() {}
 func (h *spyCompactionHandler) stop() {}
 
 var _ compactionPlanContext = (*spyCompactionHandler)(nil)
+
+func disableSingleCompaction(segment *SegmentInfo, timetravel *timetravel) *datapb.CompactionPlan {
+	return nil
+}
 
 func Test_compactionTrigger_forceTriggerCompaction(t *testing.T) {
 	type fields struct {
@@ -121,7 +125,7 @@ func Test_compactionTrigger_forceTriggerCompaction(t *testing.T) {
 				},
 				newMockAllocator(),
 				nil,
-				(singleCompactionFunc)(chooseAllBinlogs),
+				(singleCompactionFunc)(disableSingleCompaction),
 				(mergeCompactionFunc)(greedyGeneratePlans),
 				&spyCompactionHandler{spyChan: make(chan *datapb.CompactionPlan, 1)},
 				nil,

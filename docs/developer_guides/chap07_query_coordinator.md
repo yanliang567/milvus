@@ -23,10 +23,12 @@ type QueryCoord interface {
 	LoadPartitions(ctx context.Context, req *querypb.LoadPartitionsRequest) (*commonpb.Status, error)
   // ReleasePartitions notifies Proxy to release collection's data
 	ReleasePartitions(ctx context.Context, req *querypb.ReleasePartitionsRequest) (*commonpb.Status, error)
+  // CreateQueryChannel creates the channels for querying in QueryCoord.
 	CreateQueryChannel(ctx context.Context) (*querypb.CreateQueryChannelResponse, error)
 	GetPartitionStates(ctx context.Context, req *querypb.GetPartitionStatesRequest) (*querypb.GetPartitionStatesResponse, error)
   // GetSegmentInfo requests segment info
 	GetSegmentInfo(ctx context.Context, req *querypb.GetSegmentInfoRequest) (*querypb.GetSegmentInfoResponse, error)
+  // GetMetrics gets the metrics about QueryCoord.
 	GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error)
 }
 ```
@@ -212,10 +214,10 @@ type SearchMsg struct {
 }
 ```
 
-- _RetriveMsg_
+- _RetrieveMsg_
 
 ```go
-type RetriveRequest struct {
+type RetrieveRequest struct {
 	Base               *commonpb.MsgBase
 	ResultChannelID    string
 	DbID               int64
@@ -227,7 +229,7 @@ type RetriveRequest struct {
 	GuaranteeTimestamp uint64
 }
 
-type RetriveMsg struct {
+type RetrieveMsg struct {
 	BaseMsg
 	RetrieveRequest
 }
@@ -249,7 +251,9 @@ type QueryNode interface {
 	LoadSegments(ctx context.Context, req *querypb.LoadSegmentsRequest) (*commonpb.Status, error)
 	// ReleaseCollection notifies Proxy to release a collection's data
 	ReleaseCollection(ctx context.Context, req *querypb.ReleaseCollectionRequest) (*commonpb.Status, error)
+	// ReleasePartitions notifies Proxy to release partitions' data
 	ReleasePartitions(ctx context.Context, req *querypb.ReleasePartitionsRequest) (*commonpb.Status, error)
+	// ReleaseSegments releases the data of the specified segments in QueryNode.
 	ReleaseSegments(ctx context.Context, req *querypb.ReleaseSegmentsRequest) (*commonpb.Status, error)
 	GetSegmentInfo(ctx context.Context, req *querypb.GetSegmentInfoRequest) (*querypb.GetSegmentInfoResponse, error)
 	GetMetrics(ctx context.Context, in *milvuspb.GetMetricsRequest, opts ...grpc.CallOption) (*milvuspb.GetMetricsResponse, error)
@@ -467,7 +471,7 @@ type Segment struct {
 	vectorFieldMutex sync.RWMutex // guards vectorFieldInfos
 	vectorFieldInfos map[UniqueID]*VectorFieldInfo
 
-	pkFilter *bloom.BloomFilter //  bloom filter of pk inside a segmen
+	pkFilter *bloom.BloomFilter //  bloom filter of pk inside a segment
 }
 ```
 

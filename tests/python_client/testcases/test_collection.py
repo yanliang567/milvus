@@ -225,7 +225,7 @@ class TestCollectionParams(TestcaseBase):
         """
         target: test collection with dup name and invalid schema
         method: 1. default schema 2. invalid schema
-        expected: raise exception and
+        expected: raise exception
         """
         self._connect()
         c_name = cf.gen_unique_str(prefix)
@@ -2964,8 +2964,8 @@ class TestReleaseAdvanced:
         connect.load_partitions(collection, [default_tag])
         res = connect.search(collection, **query, _async=True)
         connect.release_partitions(collection, [default_tag])
-        with pytest.raises(Exception) as e:
-            res = connect.search(collection, **default_single_query)
+        res = connect.search(collection, **default_single_query)
+        assert len(res[0]) == 0
 
     @pytest.mark.tags(CaseLabel.L0)
     def test_release_collection_during_searching_A(self, connect, collection):

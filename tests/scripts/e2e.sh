@@ -11,6 +11,8 @@
 # is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 # or implied. See the License for the specific language governing permissions and limitations under the License.
 
+
+# Exit immediately for non zero status
 set -e
 set -x
 
@@ -69,10 +71,6 @@ pushd "${ROOT}/tests/docker"
       export MILVUS_PYTEST_WORKSPACE="/milvus/tests/python_client"
       docker-compose run --rm pytest /bin/bash -c "pytest -n ${PARALLEL_NUM} --host ${MILVUS_SERVICE_IP} --port ${MILVUS_SERVICE_PORT} \
                                                    --html=\${CI_LOG_PATH}/report.html --self-contained-html ${@:-}"
-#    elif [[ "${MILVUS_CLIENT}" == "pymilvus-orm" ]]; then
-#      export MILVUS_PYTEST_WORKSPACE="/milvus/tests20/python_client"
-#      docker-compose run --rm pytest /bin/bash -c "pytest -n ${PARALLEL_NUM} --host ${MILVUS_SERVICE_IP} --port ${MILVUS_SERVICE_PORT} \
-#                                               --html=\${CI_LOG_PATH}/report.html --self-contained-html ${@:-}"
     fi
   fi
 popd

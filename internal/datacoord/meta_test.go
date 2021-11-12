@@ -241,7 +241,7 @@ func TestUpdateFlushSegmentsInfo(t *testing.T) {
 		err = meta.AddSegment(segment1)
 		assert.Nil(t, err)
 
-		err = meta.UpdateFlushSegmentsInfo(1, true, []*datapb.FieldBinlog{{FieldID: 1, Binlogs: []string{"binlog1"}}},
+		err = meta.UpdateFlushSegmentsInfo(1, true, false, []*datapb.FieldBinlog{{FieldID: 1, Binlogs: []string{"binlog1"}}},
 			[]*datapb.FieldBinlog{{FieldID: 1, Binlogs: []string{"statslog1"}}},
 			[]*datapb.DeltaLogInfo{{RecordEntries: 1, TimestampFrom: 100, TimestampTo: 200, DeltaLogSize: 1000}},
 			[]*datapb.CheckPoint{{SegmentID: 1, NumOfRows: 10}}, []*datapb.SegmentStartPosition{{SegmentID: 1, StartPosition: &internalpb.MsgPosition{MsgID: []byte{1, 2, 3}}}})
@@ -255,14 +255,14 @@ func TestUpdateFlushSegmentsInfo(t *testing.T) {
 			Statslogs:     []*datapb.FieldBinlog{{FieldID: 1, Binlogs: []string{"statslog0", "statslog1"}}},
 			Deltalogs:     []*datapb.DeltaLogInfo{{RecordEntries: 1, TimestampFrom: 100, TimestampTo: 200, DeltaLogSize: 1000}},
 		}}
-		assert.EqualValues(t, expected, updated)
+		assert.True(t, proto.Equal(expected, updated))
 	})
 
 	t.Run("update non-existed segment", func(t *testing.T) {
 		meta, err := newMeta(memkv.NewMemoryKV())
 		assert.Nil(t, err)
 
-		err = meta.UpdateFlushSegmentsInfo(1, false, nil, nil, nil, nil, nil)
+		err = meta.UpdateFlushSegmentsInfo(1, false, false, nil, nil, nil, nil, nil)
 		assert.Nil(t, err)
 	})
 
@@ -274,7 +274,7 @@ func TestUpdateFlushSegmentsInfo(t *testing.T) {
 		err = meta.AddSegment(segment1)
 		assert.Nil(t, err)
 
-		err = meta.UpdateFlushSegmentsInfo(1, false, nil, nil, nil, []*datapb.CheckPoint{{SegmentID: 2, NumOfRows: 10}},
+		err = meta.UpdateFlushSegmentsInfo(1, false, false, nil, nil, nil, []*datapb.CheckPoint{{SegmentID: 2, NumOfRows: 10}},
 
 			[]*datapb.SegmentStartPosition{{SegmentID: 2, StartPosition: &internalpb.MsgPosition{MsgID: []byte{1, 2, 3}}}})
 		assert.Nil(t, err)
@@ -296,7 +296,7 @@ func TestUpdateFlushSegmentsInfo(t *testing.T) {
 		}
 		meta.segments.SetSegment(1, segmentInfo)
 
-		err = meta.UpdateFlushSegmentsInfo(1, true, []*datapb.FieldBinlog{{FieldID: 1, Binlogs: []string{"binlog"}}},
+		err = meta.UpdateFlushSegmentsInfo(1, true, false, []*datapb.FieldBinlog{{FieldID: 1, Binlogs: []string{"binlog"}}},
 			[]*datapb.FieldBinlog{{FieldID: 1, Binlogs: []string{"statslog"}}},
 			[]*datapb.DeltaLogInfo{{RecordEntries: 1, TimestampFrom: 100, TimestampTo: 200, DeltaLogSize: 1000}},
 			[]*datapb.CheckPoint{{SegmentID: 1, NumOfRows: 10}}, []*datapb.SegmentStartPosition{{SegmentID: 1, StartPosition: &internalpb.MsgPosition{MsgID: []byte{1, 2, 3}}}})
@@ -537,6 +537,75 @@ func Test_meta_SetSegmentCompacting(t *testing.T) {
 			m.SetSegmentCompacting(tt.args.segmentID, tt.args.compacting)
 			segment := m.GetSegment(tt.args.segmentID)
 			assert.Equal(t, tt.args.compacting, segment.isCompacting)
+		})
+	}
+}
+
+func Test_meta_GetSegmentsOfCollection(t *testing.T) {
+	type fields struct {
+		segments *SegmentsInfo
+	}
+	type args struct {
+		collectionID UniqueID
+	}
+	tests := []struct {
+		name   string
+		fields fields
+		args   args
+		expect []*SegmentInfo
+	}{
+		{
+			"test get segments",
+			fields{
+				&SegmentsInfo{
+					map[int64]*SegmentInfo{
+						1: {
+							SegmentInfo: &datapb.SegmentInfo{
+								ID:           1,
+								CollectionID: 1,
+							},
+						},
+						2: {
+							SegmentInfo: &datapb.SegmentInfo{
+								ID:           2,
+								CollectionID: 1,
+							},
+						},
+						3: {
+							SegmentInfo: &datapb.SegmentInfo{
+								ID:           3,
+								CollectionID: 2,
+							},
+						},
+					},
+				},
+			},
+			args{
+				collectionID: 1,
+			},
+			[]*SegmentInfo{
+				{
+					SegmentInfo: &datapb.SegmentInfo{
+						ID:           1,
+						CollectionID: 1,
+					},
+				},
+				{
+					SegmentInfo: &datapb.SegmentInfo{
+						ID:           2,
+						CollectionID: 1,
+					},
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &meta{
+				segments: tt.fields.segments,
+			}
+			got := m.GetSegmentsOfCollection(tt.args.collectionID)
+			assert.ElementsMatch(t, tt.expect, got)
 		})
 	}
 }

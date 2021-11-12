@@ -1,3 +1,4 @@
+import threading
 from time import sleep, time
 
 import pytest
@@ -5,10 +6,12 @@ import datetime
 
 from pymilvus import connections
 from base.collection_wrapper import ApiCollectionWrapper
+from chaos.checker import Op, CreateChecker, InsertFlushChecker, IndexChecker, SearchChecker, QueryChecker
 from common.cus_resource_opts import CustomResourceOperations as CusResource
 from common import common_func as cf
 from common import common_type as ct
-from chaos.chaos_commons import gen_experiment_config, get_chaos_yamls
+from chaos import chaos_commons as cc
+from chaos.chaos_commons import gen_experiment_config, get_chaos_yamls, start_monitor_threads
 from common.common_type import CaseLabel
 from chaos import constants
 from utils.util_log import test_log as log
@@ -103,7 +106,7 @@ class TestChaosData:
             df = cf.gen_default_dataframe_data(nb=nb, dim=dim)
             res = collection_w.insert(df)[0]
             assert res.insert_count == nb
-            log.info(f'After {i+1} insert, num_entities: {collection_w.num_entities}')
+            log.info(f'After {i + 1} insert, num_entities: {collection_w.num_entities}')
             tt = datetime.datetime.now() - t0
             log.info(f"{i} insert and flush data cost: {tt}")
 
@@ -180,3 +183,48 @@ class TestChaosData:
                                 namespace=constants.CHAOS_NAMESPACE)
         chaos_res.create(chaos_config)
         log.debug("inject chaos")
+
+    @pytest.mark.tags(CaseLabel.L3)
+    @pytest.mark.parametrize('chaos_yaml', cc.get_chaos_yamls())
+    def test_chaos_memory_stress_etcd(self, chaos_yaml):
+        mic_checkers = {
+            Op.create: CreateChecker(),
+            Op.insert: InsertFlushChecker(),
+            Op.flush: InsertFlushChecker(flush=True),
+            Op.index: IndexChecker(),
+            Op.search: SearchChecker(),
+            Op.query: QueryChecker()
+        }
+        # start thread keep running milvus op
+        start_monitor_threads(mic_checkers)
+
+        # parse chaos object
+        chaos_config = cc.gen_experiment_config(chaos_yaml)
+        # duration = chaos_config["spec"]["duration"]
+        meta_name = chaos_config.get('metadata').get('name')
+        duration = chaos_config.get('spec').get('duration')
+
+        # apply chaos object
+        chaos_res = CusResource(kind=chaos_config['kind'],
+                                group=constants.CHAOS_GROUP,
+                                version=constants.CHAOS_VERSION,
+                                namespace=constants.CHAOS_NAMESPACE)
+        chaos_res.create(chaos_config)
+        log.info("Chaos injected")
+
+        # convert string duration time to a int number in seconds
+        if isinstance(duration, str):
+            duration = duration.replace('h', '*3600+')
+            duration = duration.replace('m', '*60+')
+            duration = duration.replace('s', '*1')
+        else:
+            log.error("Duration must be string type")
+
+        # Delete experiment after it's over
+        timer = threading.Timer(interval=eval(duration), function=chaos_res.delete, args=(meta_name, False))
+        timer.start()
+        timer.join()
+
+        # output milvus op succ rate
+        for k, ch in mic_checkers.items():
+            log.debug(f'Succ rate of {k.value}: {ch.succ_rate()}')

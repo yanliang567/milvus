@@ -67,14 +67,7 @@ IndexNode is a node that executes index building tasks.
 
 ### 8.3.2 NodeManager
 
-NodeManager is responsible for managing the node information of IndexNode, and contains a priority queue to save the
-load information of each IndexNode. The load information of IndexNode is based on the number of tasks executed.
-When the IndexCoord service starts, it first obtains the node information of all
-current IndexNodes from etcd, and then adds the node information to the NodeManager. After that, the online and offline
-information of IndexNode node is obtained from watchNodeLoop. Then it will traverse the entire MetaTable, get the load
-information corresponding to each IndexNode node, and update the priority queue in the NodeManager. When an index building 
-task needs to be allocated, the IndexNode with the lowest load will be selected according to the
-priority queue to execute the task.
+NodeManager is responsible for managing the node information of IndexNode, and contains a priority queue to save the load information of each IndexNode. The load information of IndexNode is based on the number of tasks executed. When the IndexCoord service starts, it first obtains the node information of all current IndexNodes from etcd, and then adds the node information to the NodeManager. After that, the online and offline information of IndexNode node is obtained from watchNodeLoop. Then it will traverse the entire MetaTable, get the load information corresponding to each IndexNode node, and update the priority queue in the NodeManager. When an index building task needs to be allocated, the IndexNode with the lowest load will be selected according to the priority queue to execute the task.
 
 ### 8.3.3 MetaTable
 
@@ -174,7 +167,7 @@ type Meta struct {
 Meta is used to record the state of the index.
 
 - Revision: The number of times IndexMeta has been changed in etcd. It's the same as Event.Kv.Version in etcd.
-  When IndexCoord watches the IndexMeta in etcd is changed, can compare `revision` and Event.Kv.Versionto determine
+  When IndexCoord watches the IndexMeta in etcd is changed, can compare `revision` and Event.Kv.Version to determine
   this modification of IndexMeta is caused by IndexCoord or IndexNode. If it is caused by IndexNode, the Meta in
   IndexCoord must be updated.
 

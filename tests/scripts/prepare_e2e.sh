@@ -16,7 +16,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Exit immediately for non zero status
 set -e
+
+# Print commands
 set -x
 
 SOURCE="${BASH_SOURCE[0]}"

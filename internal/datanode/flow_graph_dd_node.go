@@ -19,6 +19,7 @@ package datanode
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 
 	"go.uber.org/zap"
 
@@ -53,13 +54,13 @@ var _ flowgraph.Node = (*ddNode)(nil)
 type ddNode struct {
 	BaseNode
 
-	clearSignal  chan<- UniqueID
 	collectionID UniqueID
 
 	segID2SegInfo   sync.Map // segment ID to *SegmentInfo
 	flushedSegments []*datapb.SegmentInfo
 
 	deltaMsgStream msgstream.MsgStream
+	dropMode       atomic.Value
 }
 
 // Name returns node name, implementing flowgraph.Node
@@ -89,6 +90,11 @@ func (ddn *ddNode) Operate(in []Msg) []Msg {
 		msg.SetTraceCtx(ctx)
 	}
 
+	if load := ddn.dropMode.Load(); load != nil && load.(bool) {
+		log.Debug("ddNode in dropMode")
+		return []Msg{}
+	}
+
 	var fgMsg = flowGraphMsg{
 		insertMessages: make([]*msgstream.InsertMsg, 0),
 		timeRange: TimeRange{
@@ -97,6 +103,7 @@ func (ddn *ddNode) Operate(in []Msg) []Msg {
 		},
 		startPositions: make([]*internalpb.MsgPosition, 0),
 		endPositions:   make([]*internalpb.MsgPosition, 0),
+		dropCollection: false,
 	}
 
 	forwardMsgs := make([]msgstream.TsMsg, 0)
@@ -104,9 +111,9 @@ func (ddn *ddNode) Operate(in []Msg) []Msg {
 		switch msg.Type() {
 		case commonpb.MsgType_DropCollection:
 			if msg.(*msgstream.DropCollectionMsg).GetCollectionID() == ddn.collectionID {
-				log.Info("Destroying current flowgraph", zap.Any("collectionID", ddn.collectionID))
-				ddn.clearSignal <- ddn.collectionID
-				return []Msg{}
+				log.Info("Receiving DropCollection msg", zap.Any("collectionID", ddn.collectionID))
+				ddn.dropMode.Store(true)
+				fgMsg.dropCollection = true
 			}
 		case commonpb.MsgType_Insert:
 			log.Debug("DDNode receive insert messages")
@@ -129,8 +136,11 @@ func (ddn *ddNode) Operate(in []Msg) []Msg {
 			fgMsg.insertMessages = append(fgMsg.insertMessages, imsg)
 		case commonpb.MsgType_Delete:
 			log.Debug("DDNode receive delete messages")
-			forwardMsgs = append(forwardMsgs, msg)
 			dmsg := msg.(*msgstream.DeleteMsg)
+			for i := 0; i < len(dmsg.PrimaryKeys); i++ {
+				dmsg.HashValues = append(dmsg.HashValues, uint32(0))
+			}
+			forwardMsgs = append(forwardMsgs, dmsg)
 			if dmsg.CollectionID != ddn.collectionID {
 				//log.Debug("filter invalid DeleteMsg, collection mis-match",
 				//	zap.Int64("Get msg collID", dmsg.CollectionID),
@@ -181,9 +191,6 @@ func (ddn *ddNode) isFlushed(segmentID UniqueID) bool {
 }
 
 func (ddn *ddNode) forwardDeleteMsg(msgs []msgstream.TsMsg, minTs Timestamp, maxTs Timestamp) error {
-	if err := ddn.sendDeltaTimeTick(minTs); err != nil {
-		return err
-	}
 	if len(msgs) != 0 {
 		var msgPack = msgstream.MsgPack{
 			Msgs:    msgs,
@@ -233,7 +240,7 @@ func (ddn *ddNode) Close() {
 	}
 }
 
-func newDDNode(ctx context.Context, clearSignal chan<- UniqueID, collID UniqueID, vchanInfo *datapb.VchannelInfo, msFactory msgstream.Factory) *ddNode {
+func newDDNode(ctx context.Context, collID UniqueID, vchanInfo *datapb.VchannelInfo, msFactory msgstream.Factory) *ddNode {
 	baseNode := BaseNode{}
 	baseNode.SetMaxQueueLength(Params.FlowGraphMaxQueueLength)
 	baseNode.SetMaxParallelism(Params.FlowGraphMaxParallelism)
@@ -247,25 +254,30 @@ func newDDNode(ctx context.Context, clearSignal chan<- UniqueID, collID UniqueID
 
 	deltaStream, err := msFactory.NewMsgStream(ctx)
 	if err != nil {
+		log.Error(err.Error())
 		return nil
 	}
-	deltaChannelName, err := rootcoord.ConvertChannelName(vchanInfo.ChannelName, Params.DmlChannelName, Params.DeltaChannelName)
+	pChannelName := rootcoord.ToPhysicalChannel(vchanInfo.ChannelName)
+	deltaChannelName, err := rootcoord.ConvertChannelName(pChannelName, Params.DmlChannelName, Params.DeltaChannelName)
 	if err != nil {
 		log.Error(err.Error())
 		return nil
 	}
+
+	deltaStream.SetRepackFunc(msgstream.DefaultRepackFunc)
 	deltaStream.AsProducer([]string{deltaChannelName})
-	log.Debug("datanode AsProducer", zap.String("DeltaChannelName", Params.SegmentStatisticsChannelName))
+	log.Debug("datanode AsProducer", zap.String("DeltaChannelName", deltaChannelName))
 	var deltaMsgStream msgstream.MsgStream = deltaStream
 	deltaMsgStream.Start()
 
 	dd := &ddNode{
 		BaseNode:        baseNode,
-		clearSignal:     clearSignal,
 		collectionID:    collID,
 		flushedSegments: fs,
 		deltaMsgStream:  deltaMsgStream,
 	}
+
+	dd.dropMode.Store(false)
 
 	for _, us := range vchanInfo.GetUnflushedSegments() {
 		dd.segID2SegInfo.Store(us.GetID(), us)

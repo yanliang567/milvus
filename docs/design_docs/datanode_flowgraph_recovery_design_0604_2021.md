@@ -6,13 +6,16 @@ update: 6.21.2021, by [Goose](https://github.com/XuanYang-cn)
 ## 1. Common Sense
 
 A. One message stream to one vchannel, so there are one start position and one end position in one message pack.
+
 B. Only when datanode flushes, datanode will update every segment's position.
 An optimization: update position of
 
 - a. Current flushing segment
 - b. StartPosition of segments has never been flushed.
-  C. DataNode auto-flush is a valid flush.
-  D. DDL messages are now in DML Vchannels.
+
+C. DataNode auto-flush is a valid flush.
+
+D. DDL messages are now in DML Vchannels.
 
 ## 2. Segments in Flowgraph
 
@@ -24,15 +27,15 @@ An optimization: update position of
 
 When a flowgraph flushes a segment, we need to save these things:
 
-- current segment's binlog paths,
-- current segment positions,
-- all other segments' current positions from the replica (If a segment hasn't been flushed, save the position when datanode first meets it.)
+- current segment's binlog paths.
+- current segment positions.
+- all other segments' current positions from the replica (If a segment hasn't been flushed, save the position when datanode first meets it).
 
 Whether save successfully:
 
-- If succeeded, flowgraph updates all segments' positions to replica
+- If succeeded, flowgraph updates all segments' positions to the replica
 - If not
-  - For a grpc failure( this failure will appear after many times retry internally), crush itself.
+  - For a grpc failure(this failure will appear after many times retry internally), crush itself.
   - For a normal failure, retry save 10 times, if still fails, crush itself.
 
 ### B. Recovery from a set of checkpoints
@@ -60,7 +63,7 @@ message WatchDmChannelsRequest {
 
 ![recovery](graphs/flowgraph_recovery_design.png)
 
-Supposing we have segments `s1, s2, s3`, corresponding position `p1, p2, p3`
+Supposing we have segments `s1, s2, s3`, corresponding positions `p1, p2, p3`
 
 - Sort positions in reverse order `p3, p2, p1`
 - Get segments dup range time: `s3 ( p3 > mp_px > p1)`, `s2 (p2 > mp_px > p1)`, `s1(zero)`

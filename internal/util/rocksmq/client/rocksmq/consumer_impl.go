@@ -12,6 +12,8 @@
 package rocksmq
 
 import (
+	"sync"
+
 	"github.com/milvus-io/milvus/internal/log"
 	"go.uber.org/zap"
 )
@@ -21,6 +23,8 @@ type consumer struct {
 	client       *client
 	consumerName string
 	options      ConsumerOptions
+
+	startOnce sync.Once
 
 	msgMutex  chan struct{}
 	messageCh chan ConsumerMessage
@@ -54,6 +58,7 @@ func newConsumer(c *client, options ConsumerOptions) (*consumer, error) {
 	}, nil
 }
 
+// getExistedConsumer new a consumer and put the existed mutex channel to the new consumer
 func getExistedConsumer(c *client, options ConsumerOptions, msgMutex chan struct{}) (*consumer, error) {
 	if c == nil {
 		return nil, newError(InvalidConfiguration, "client is nil")
@@ -82,19 +87,27 @@ func getExistedConsumer(c *client, options ConsumerOptions, msgMutex chan struct
 	}, nil
 }
 
+// Subscription returns the consumer name
 func (c *consumer) Subscription() string {
 	return c.consumerName
 }
 
+// Topic returns the topic of the consumer
 func (c *consumer) Topic() string {
 	return c.topic
 }
 
+// MsgMutex return the message mutex channel of consumer
 func (c *consumer) MsgMutex() chan struct{} {
 	return c.msgMutex
 }
 
+// Chan start consume goroutine and return message channel
 func (c *consumer) Chan() <-chan ConsumerMessage {
+	c.startOnce.Do(func() {
+		c.client.wg.Add(1)
+		go c.client.consume(c)
+	})
 	return c.messageCh
 }
 

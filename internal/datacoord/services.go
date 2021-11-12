@@ -114,13 +114,8 @@ func (s *Server) AssignSegmentID(ctx context.Context, req *datapb.AssignSegmentI
 			zap.String("channelName", r.GetChannelName()),
 			zap.Uint32("count", r.GetCount()))
 
-		if coll := s.meta.GetCollection(r.CollectionID); coll == nil {
-			if err := s.loadCollectionFromRootCoord(ctx, r.CollectionID); err != nil {
-				log.Error("load collection from rootcoord error",
-					zap.Int64("collectionID", r.CollectionID),
-					zap.Error(err))
-				continue
-			}
+		if coll := s.GetCollection(ctx, r.CollectionID); coll == nil {
+			continue
 		}
 
 		s.cluster.Watch(r.ChannelName, r.CollectionID)
@@ -294,9 +289,7 @@ func (s *Server) GetSegmentInfo(ctx context.Context, req *datapb.GetSegmentInfoR
 // SaveBinlogPaths update segment related binlog path
 // works for Checkpoints and Flush
 func (s *Server) SaveBinlogPaths(ctx context.Context, req *datapb.SaveBinlogPathsRequest) (*commonpb.Status, error) {
-	resp := &commonpb.Status{
-		ErrorCode: commonpb.ErrorCode_UnexpectedError,
-	}
+	resp := &commonpb.Status{ErrorCode: commonpb.ErrorCode_UnexpectedError}
 
 	if s.isClosed() {
 		resp.Reason = serverNotServingErrMsg
@@ -324,12 +317,19 @@ func (s *Server) SaveBinlogPaths(ctx context.Context, req *datapb.SaveBinlogPath
 	if !s.channelManager.Match(nodeID, channel) {
 		FailResponse(resp, fmt.Sprintf("channel %s is not watched on node %d", channel, nodeID))
 		log.Warn("node is not matched with channel", zap.String("channel", channel), zap.Int64("nodeID", nodeID))
+		return resp, nil
 	}
 
 	// set segment to SegmentState_Flushing and save binlogs and checkpoints
-	err := s.meta.UpdateFlushSegmentsInfo(req.GetSegmentID(), req.GetFlushed(),
-		req.GetField2BinlogPaths(), req.GetField2StatslogPaths(), req.GetDeltalogs(),
-		req.GetCheckPoints(), req.GetStartPositions())
+	err := s.meta.UpdateFlushSegmentsInfo(
+		req.GetSegmentID(),
+		req.GetFlushed(),
+		req.GetDropped(),
+		req.GetField2BinlogPaths(),
+		req.GetField2StatslogPaths(),
+		req.GetDeltalogs(),
+		req.GetCheckPoints(),
+		req.GetStartPositions())
 	if err != nil {
 		log.Error("save binlog and checkpoints failed",
 			zap.Int64("segmentID", req.GetSegmentID()),
@@ -341,7 +341,15 @@ func (s *Server) SaveBinlogPaths(ctx context.Context, req *datapb.SaveBinlogPath
 	log.Debug("flush segment with meta", zap.Int64("id", req.SegmentID),
 		zap.Any("meta", req.GetField2BinlogPaths()))
 
-	if req.Flushed {
+	if req.GetDropped() && s.checkShouldDropChannel(channel) {
+		err = s.channelManager.RemoveChannel(channel)
+		if err != nil {
+			log.Warn("failed to remove channel", zap.String("channel", channel), zap.Error(err))
+		}
+		s.segmentManager.DropSegmentsOfChannel(ctx, channel)
+	}
+
+	if req.GetFlushed() {
 		s.segmentManager.DropSegment(ctx, req.SegmentID)
 		s.flushCh <- req.SegmentID
 
@@ -349,7 +357,7 @@ func (s *Server) SaveBinlogPaths(ctx context.Context, req *datapb.SaveBinlogPath
 			cctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
 			defer cancel()
 
-			tt, err := getTimetravel(cctx, s.allocator)
+			tt, err := getTimetravelReverseTime(cctx, s.allocator)
 			if err == nil {
 				if err = s.compactionTrigger.triggerSingleCompaction(segment.GetCollectionID(), segment.GetPartitionID(),
 					segmentID, segment.GetInsertChannel(), tt); err != nil {
@@ -360,6 +368,21 @@ func (s *Server) SaveBinlogPaths(ctx context.Context, req *datapb.SaveBinlogPath
 	}
 	resp.ErrorCode = commonpb.ErrorCode_Success
 	return resp, nil
+}
+
+func (s *Server) checkShouldDropChannel(channel string) bool {
+	segments := s.meta.GetSegmentsByChannel(channel)
+	for _, segment := range segments {
+		if segment.GetStartPosition() != nil && // fitler empty segment
+			// FIXME: we filter compaction generated segments
+			// because datanode may not know the segment due to the network lag or
+			// datacoord crash when handling CompleteCompaction.
+			len(segment.CompactionFrom) != 0 &&
+			segment.GetState() != commonpb.SegmentState_Dropped {
+			return false
+		}
+	}
+	return true
 }
 
 // GetComponentStates returns DataCoord's current state
@@ -614,6 +637,7 @@ func (s *Server) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest
 	}, nil
 }
 
+// CompleteCompaction completes a compaction with the result
 func (s *Server) CompleteCompaction(ctx context.Context, req *datapb.CompactionResult) (*commonpb.Status, error) {
 	log.Debug("receive complete compaction request", zap.Int64("planID", req.PlanID), zap.Int64("segmentID", req.GetSegmentID()))
 
@@ -645,10 +669,11 @@ func (s *Server) CompleteCompaction(ctx context.Context, req *datapb.CompactionR
 	return resp, nil
 }
 
-func (s *Server) ManualCompaction(ctx context.Context, req *datapb.ManualCompactionRequest) (*datapb.ManualCompactionResponse, error) {
+// ManualCompaction triggers a compaction for a collection
+func (s *Server) ManualCompaction(ctx context.Context, req *milvuspb.ManualCompactionRequest) (*milvuspb.ManualCompactionResponse, error) {
 	log.Debug("receive manual compaction", zap.Int64("collectionID", req.GetCollectionID()))
 
-	resp := &datapb.ManualCompactionResponse{
+	resp := &milvuspb.ManualCompactionResponse{
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 		},
@@ -679,9 +704,10 @@ func (s *Server) ManualCompaction(ctx context.Context, req *datapb.ManualCompact
 	return resp, nil
 }
 
-func (s *Server) GetCompactionState(ctx context.Context, req *datapb.GetCompactionStateRequest) (*datapb.GetCompactionStateResponse, error) {
+// GetCompactionState gets the state of a compaction
+func (s *Server) GetCompactionState(ctx context.Context, req *milvuspb.GetCompactionStateRequest) (*milvuspb.GetCompactionStateResponse, error) {
 	log.Debug("receive get compaction state request", zap.Int64("compactionID", req.GetCompactionID()))
-	resp := &datapb.GetCompactionStateResponse{
+	resp := &milvuspb.GetCompactionStateResponse{
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 		},
@@ -699,16 +725,114 @@ func (s *Server) GetCompactionState(ctx context.Context, req *datapb.GetCompacti
 		return resp, nil
 	}
 
-	executing, completed, timeout := s.compactionHandler.getCompactionBySignalID(req.GetCompactionID())
-	if executing != 0 {
-		resp.State = datapb.CompactionState_Executing
-	} else {
-		resp.State = datapb.CompactionState_Completed
+	tasks := s.compactionHandler.getCompactionTasksBySignalID(req.GetCompactionID())
+	state, executingCnt, completedCnt, timeoutCnt := getCompactionState(tasks)
+
+	resp.State = state
+	resp.ExecutingPlanNo = int64(executingCnt)
+	resp.CompletedPlanNo = int64(completedCnt)
+	resp.TimeoutPlanNo = int64(timeoutCnt)
+	resp.Status.ErrorCode = commonpb.ErrorCode_Success
+	log.Debug("success to get compaction state", zap.Any("state", state), zap.Int("executing", executingCnt),
+		zap.Int("completed", completedCnt), zap.Int("timeout", timeoutCnt))
+	return resp, nil
+}
+
+func (s *Server) GetCompactionStateWithPlans(ctx context.Context, req *milvuspb.GetCompactionPlansRequest) (*milvuspb.GetCompactionPlansResponse, error) {
+	log.Debug("received GetCompactionStateWithPlans request", zap.Int64("compactionID", req.GetCompactionID()))
+
+	resp := &milvuspb.GetCompactionPlansResponse{
+		Status: &commonpb.Status{ErrorCode: commonpb.ErrorCode_UnexpectedError},
 	}
 
-	resp.ExecutingPlanNo = int64(executing)
-	resp.CompletedPlanNo = int64(completed)
-	resp.TimeoutPlanNo = int64(timeout)
+	if s.isClosed() {
+		log.Warn("failed to get compaction state with plans", zap.Int64("compactionID", req.GetCompactionID()), zap.Error(errDataCoordIsUnhealthy(Params.NodeID)))
+		resp.Status.Reason = msgDataCoordIsUnhealthy(Params.NodeID)
+		return resp, nil
+	}
+
+	if !Params.EnableCompaction {
+		resp.Status.Reason = "compaction disabled"
+		return resp, nil
+	}
+
+	tasks := s.compactionHandler.getCompactionTasksBySignalID(req.GetCompactionID())
+	for _, task := range tasks {
+		resp.MergeInfos = append(resp.MergeInfos, getCompactionMergeInfo(task))
+	}
+
+	state, _, _, _ := getCompactionState(tasks)
+
 	resp.Status.ErrorCode = commonpb.ErrorCode_Success
+	resp.State = state
+	log.Debug("success to get state with plans", zap.Any("state", state), zap.Any("merge infos", resp.MergeInfos))
+	return resp, nil
+}
+
+func getCompactionMergeInfo(task *compactionTask) *milvuspb.CompactionMergeInfo {
+	segments := task.plan.GetSegmentBinlogs()
+	var sources []int64
+	for _, s := range segments {
+		sources = append(sources, s.GetSegmentID())
+	}
+
+	var target int64 = -1
+	if task.result != nil {
+		target = task.result.GetSegmentID()
+	}
+
+	return &milvuspb.CompactionMergeInfo{
+		Sources: sources,
+		Target:  target,
+	}
+}
+
+func getCompactionState(tasks []*compactionTask) (state commonpb.CompactionState, executingCnt, completedCnt, timeoutCnt int) {
+	for _, t := range tasks {
+		switch t.state {
+		case executing:
+			executingCnt++
+		case completed:
+			completedCnt++
+		case timeout:
+			timeoutCnt++
+		}
+	}
+	if executingCnt != 0 {
+		state = commonpb.CompactionState_Executing
+	} else {
+		state = commonpb.CompactionState_Completed
+	}
+	return
+}
+
+func (s *Server) WatchChannels(ctx context.Context, req *datapb.WatchChannelsRequest) (*datapb.WatchChannelsResponse, error) {
+	log.Debug("receive watch channels request", zap.Any("channels", req.GetChannelNames()))
+	resp := &datapb.WatchChannelsResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_UnexpectedError,
+		},
+	}
+
+	if s.isClosed() {
+		log.Warn("failed to  watch channels request", zap.Any("channels", req.GetChannelNames()),
+			zap.Error(errDataCoordIsUnhealthy(Params.NodeID)))
+		resp.Status.Reason = msgDataCoordIsUnhealthy(Params.NodeID)
+		return resp, nil
+	}
+	for _, channelName := range req.GetChannelNames() {
+		ch := &channel{
+			Name:         channelName,
+			CollectionID: req.GetCollectionID(),
+		}
+		err := s.channelManager.Watch(ch)
+		if err != nil {
+			log.Warn("fail to watch channelName", zap.String("channelName", channelName), zap.Error(err))
+			resp.Status.Reason = err.Error()
+			return resp, nil
+		}
+	}
+	resp.Status.ErrorCode = commonpb.ErrorCode_Success
+
 	return resp, nil
 }

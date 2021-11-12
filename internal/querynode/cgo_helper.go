@@ -27,7 +27,6 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
-	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"unsafe"
 )
 
@@ -81,28 +80,12 @@ func HandleCStatus(status *C.CStatus, extraInfo string) error {
 	return errors.New(finalMsg)
 }
 
-// HandleCProtoResult deal with the result proto returned from CGO
-func HandleCProtoResult(cRes *C.CProtoResult, msg proto.Message) error {
+// HandleCProto deal with the result proto returned from CGO
+func HandleCProto(cRes *C.CProto, msg proto.Message) error {
 	// Standalone CProto is protobuf created by C side,
 	// Passed from c side
 	// memory is managed manually
-	err := HandleCStatus(&cRes.status, "")
-	if err != nil {
-		return err
-	}
-	cpro := cRes.proto
-	blob := C.GoBytes(unsafe.Pointer(cpro.proto_blob), C.int32_t(cpro.proto_size))
-	defer C.free(cpro.proto_blob)
+	blob := C.GoBytes(unsafe.Pointer(cRes.proto_blob), C.int32_t(cRes.proto_size))
+	defer C.free(cRes.proto_blob)
 	return proto.Unmarshal(blob, msg)
-}
-
-// TestBoolArray this function will accept a BoolArray input,
-// and return a BoolArray output
-// which negates all elements of the input
-func TestBoolArray(cpb *ProtoCGo) (*schemapb.BoolArray, error) {
-	res := C.CTestBoolArrayPb(cpb.CProto)
-	ba := new(schemapb.BoolArray)
-	err := HandleCProtoResult(&res, ba)
-
-	return ba, err
 }

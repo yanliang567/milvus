@@ -554,7 +554,7 @@ message LoadPartitionsRequest {
 }
 ```
 
-**parition_names** is a list of parition_name. These partitions in collection with the **collection_name** are going to be loaded to memory.
+**partition_names** is a list of partition_name. These partitions in collection with the **collection_name** are going to be loaded to memory.
 
 **Returns:**
 
@@ -596,7 +596,7 @@ message ReleasePartitionsRequest {
 }
 ```
 
-**parition_names** is a list of parition_name. These partitions in collection with the **collection_name** are going to be released from memory.
+**partition_names** is a list of partition_name. These partitions in collection with the **collection_name** are going to be released from memory.
 
 **Returns:**
 
@@ -701,7 +701,7 @@ message ShowPartitionsResponse {
 **partition_names** is a list contains all partitions' name.
 **partitionIDs** is a list contains all partitions' ids. And the index of a partition in **partition_names** and **partitionIDs** are same.
 
-#### 3.2 Manipulation Requsts
+#### 3.2 Manipulation Requests
 
 ###### 3.2.1 Insert
 

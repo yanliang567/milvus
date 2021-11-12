@@ -23,18 +23,19 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/bits-and-blooms/bloom/v3"
 	"go.uber.org/zap"
 
-	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/kv"
 	miniokv "github.com/milvus-io/milvus/internal/kv/minio"
 	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/storage"
+	"github.com/milvus-io/milvus/internal/types"
+
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
-	"github.com/milvus-io/milvus/internal/storage"
-	"github.com/milvus-io/milvus/internal/types"
 )
 
 const (
@@ -49,6 +50,7 @@ type Replica interface {
 	getCollectionSchema(collectionID UniqueID, ts Timestamp) (*schemapb.CollectionSchema, error)
 	getCollectionAndPartitionID(segID UniqueID) (collID, partitionID UniqueID, err error)
 
+	listAllSegmentIDs() []UniqueID
 	addNewSegment(segID, collID, partitionID UniqueID, channelName string, startPos, endPos *internalpb.MsgPosition) error
 	addNormalSegment(segID, collID, partitionID UniqueID, channelName string, numOfRows int64, statsBinlog []*datapb.FieldBinlog, cp *segmentCheckPoint) error
 	filterSegments(channelName string, partitionID UniqueID) []*Segment
@@ -64,6 +66,7 @@ type Replica interface {
 	removeSegment(segID UniqueID)
 
 	updateStatistics(segID UniqueID, numRows int64)
+	refreshFlushedSegStatistics(segID UniqueID, numRows int64)
 	getSegmentStatisticsUpdates(segID UniqueID) (*internalpb.SegmentStatisticsUpdates, error)
 	segmentFlushed(segID UniqueID)
 }
@@ -541,6 +544,18 @@ func (replica *SegmentReplica) hasSegment(segID UniqueID, countFlushed bool) boo
 
 	return inNew || inNormal || inFlush
 }
+func (replica *SegmentReplica) refreshFlushedSegStatistics(segID UniqueID, numRows int64) {
+	replica.segMu.RLock()
+	defer replica.segMu.RUnlock()
+
+	if seg, ok := replica.flushedSegments[segID]; ok {
+		seg.memorySize = 0
+		seg.numRows = numRows
+		return
+	}
+
+	log.Warn("refesh numRow on not exists segment", zap.Int64("segID", segID))
+}
 
 // updateStatistics updates the number of rows of a segment in replica.
 func (replica *SegmentReplica) updateStatistics(segID UniqueID, numRows int64) {
@@ -605,13 +620,16 @@ func (replica *SegmentReplica) getCollectionSchema(collID UniqueID, ts Timestamp
 		return nil, fmt.Errorf("Not supported collection %v", collID)
 	}
 
-	sch, err := replica.metaService.getCollectionSchema(context.Background(), collID, ts)
-	if err != nil {
-		log.Error("Grpc error", zap.Error(err))
-		return nil, err
+	if replica.collSchema == nil {
+		sch, err := replica.metaService.getCollectionSchema(context.Background(), collID, ts)
+		if err != nil {
+			log.Error("Grpc error", zap.Error(err))
+			return nil, err
+		}
+		replica.collSchema = sch
 	}
 
-	return sch, nil
+	return replica.collSchema, nil
 }
 
 func (replica *SegmentReplica) validCollection(collID UniqueID) bool {
@@ -686,4 +704,25 @@ func (replica *SegmentReplica) addFlushedSegmentWithPKs(segID, collID, partID Un
 	replica.segMu.Lock()
 	replica.flushedSegments[segID] = seg
 	replica.segMu.Unlock()
+}
+
+func (replica *SegmentReplica) listAllSegmentIDs() []UniqueID {
+	replica.segMu.Lock()
+	defer replica.segMu.Unlock()
+
+	var segIDs []UniqueID
+
+	for _, seg := range replica.newSegments {
+		segIDs = append(segIDs, seg.segmentID)
+	}
+
+	for _, seg := range replica.normalSegments {
+		segIDs = append(segIDs, seg.segmentID)
+	}
+
+	for _, seg := range replica.flushedSegments {
+		segIDs = append(segIDs, seg.segmentID)
+	}
+
+	return segIDs
 }

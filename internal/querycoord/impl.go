@@ -168,7 +168,7 @@ func (qc *QueryCoord) LoadCollection(ctx context.Context, req *querypb.LoadColle
 		return status, err
 	}
 
-	log.Debug("LoadCollectionRequest completed", zap.String("role", Params.RoleName), zap.Int64("msgID", req.Base.MsgID), zap.Int64("collectionID", collectionID))
+	log.Debug("LoadCollectionRequest completed", zap.String("role", Params.RoleName), zap.Int64("msgID", req.Base.MsgID), zap.Int64("collectionID", collectionID), zap.Any("status", status))
 	return status, nil
 }
 
@@ -562,7 +562,7 @@ func (qc *QueryCoord) LoadBalance(ctx context.Context, req *querypb.LoadBalanceR
 		return status, nil
 	}
 
-	baseTask := newBaseTask(qc.loopCtx, querypb.TriggerCondition_grpcRequest)
+	baseTask := newBaseTask(qc.loopCtx, querypb.TriggerCondition_loadBalance)
 	loadBalanceTask := &loadBalanceTask{
 		baseTask:           baseTask,
 		LoadBalanceRequest: req,
@@ -582,7 +582,7 @@ func (qc *QueryCoord) LoadBalance(ctx context.Context, req *querypb.LoadBalanceR
 	if err != nil {
 		status.ErrorCode = commonpb.ErrorCode_UnexpectedError
 		status.Reason = err.Error()
-		return status, nil
+		return status, err
 	}
 	log.Debug("LoadBalanceRequest completed",
 		zap.String("role", Params.RoleName),

@@ -26,10 +26,10 @@ import (
 )
 
 // RocksmqRetentionTimeInMinutes is the time of retention
-var RocksmqRetentionTimeInMinutes int64
+var RocksmqRetentionTimeInMinutes int64 = 10080
 
 // RocksmqRetentionSizeInMB is the size of retention
-var RocksmqRetentionSizeInMB int64
+var RocksmqRetentionSizeInMB int64 = 8192
 
 // Const value that used to convert unit
 const (
@@ -134,7 +134,7 @@ func (ri *retentionInfo) retention() error {
 					return true
 				}
 				if lastRetentionTs+checkTime < timeNow {
-					err := ri.newExpiredCleanUp(topic)
+					err := ri.expiredCleanUp(topic)
 					if err != nil {
 						log.Warn("Retention expired clean failed", zap.Any("error", err))
 					}
@@ -154,7 +154,12 @@ func (ri *retentionInfo) Stop() {
 	})
 }
 
-func (ri *retentionInfo) newExpiredCleanUp(topic string) error {
+// expiredCleanUp check message retention by page:
+// 1. check acked timestamp of each page id, if expired, the whole page is expired;
+// 2. check acked size from the last unexpired page id;
+// 3. delete acked info by range of page id;
+// 4. delete message by range of page id;
+func (ri *retentionInfo) expiredCleanUp(topic string) error {
 	log.Debug("Timeticker triggers an expiredCleanUp task for topic: " + topic)
 	var deletedAckedSize int64 = 0
 	var startID UniqueID

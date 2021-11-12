@@ -1,13 +1,18 @@
-// Copyright (C) 2019-2020 Zilliz. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
 // with the License. You may obtain a copy of the License at
 //
-// http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// Unless required by applicable law or agreed to in writing, software distributed under the License
-// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
-// or implied. See the License for the specific language governing permissions and limitations under the License.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package proxy
 
@@ -88,11 +93,6 @@ func (pt *ParamTable) InitOnce() {
 // Init of BaseTable and do some other initialization.
 func (pt *ParamTable) Init() {
 	pt.BaseTable.Init()
-	err := pt.LoadYaml("advanced/proxy.yaml")
-	if err != nil {
-		panic(err)
-	}
-
 	pt.initEtcdEndpoints()
 	pt.initMetaRootPath()
 	pt.initPulsarAddress()
@@ -139,14 +139,7 @@ func (pt *ParamTable) initRocksmqPath() {
 }
 
 func (pt *ParamTable) initTimeTickInterval() {
-	intervalStr, err := pt.Load("proxy.timeTickInterval")
-	if err != nil {
-		panic(err)
-	}
-	interval, err := strconv.Atoi(intervalStr)
-	if err != nil {
-		panic(err)
-	}
+	interval := pt.ParseIntWithDefault("proxy.timeTickInterval", 200)
 	pt.TimeTickInterval = time.Duration(interval) * time.Millisecond
 }
 
@@ -178,14 +171,11 @@ func (pt *ParamTable) initProxyTimeTickChannelNames() {
 }
 
 func (pt *ParamTable) initMsgStreamTimeTickBufSize() {
-	pt.MsgStreamTimeTickBufSize = pt.ParseInt64("proxy.msgStream.timeTick.bufSize")
+	pt.MsgStreamTimeTickBufSize = pt.ParseInt64WithDefault("proxy.msgStream.timeTick.bufSize", 512)
 }
 
 func (pt *ParamTable) initMaxNameLength() {
-	str, err := pt.Load("proxy.maxNameLength")
-	if err != nil {
-		panic(err)
-	}
+	str := pt.LoadWithDefault("proxy.maxNameLength", "255")
 	maxNameLength, err := strconv.ParseInt(str, 10, 64)
 	if err != nil {
 		panic(err)
@@ -194,10 +184,7 @@ func (pt *ParamTable) initMaxNameLength() {
 }
 
 func (pt *ParamTable) initMaxShardNum() {
-	str, err := pt.Load("proxy.maxShardNum")
-	if err != nil {
-		panic(err)
-	}
+	str := pt.LoadWithDefault("proxy.maxShardNum", "256")
 	maxShardNum, err := strconv.ParseInt(str, 10, 64)
 	if err != nil {
 		panic(err)
@@ -206,10 +193,7 @@ func (pt *ParamTable) initMaxShardNum() {
 }
 
 func (pt *ParamTable) initMaxFieldNum() {
-	str, err := pt.Load("proxy.maxFieldNum")
-	if err != nil {
-		panic(err)
-	}
+	str := pt.LoadWithDefault("proxy.maxFieldNum", "64")
 	maxFieldNum, err := strconv.ParseInt(str, 10, 64)
 	if err != nil {
 		panic(err)
@@ -218,10 +202,7 @@ func (pt *ParamTable) initMaxFieldNum() {
 }
 
 func (pt *ParamTable) initMaxDimension() {
-	str, err := pt.Load("proxy.maxDimension")
-	if err != nil {
-		panic(err)
-	}
+	str := pt.LoadWithDefault("proxy.maxDimension", "32768")
 	maxDimension, err := strconv.ParseInt(str, 10, 64)
 	if err != nil {
 		panic(err)
@@ -306,13 +287,5 @@ func (pt *ParamTable) initMetaRootPath() {
 }
 
 func (pt *ParamTable) initMaxTaskNum() {
-	str, err := pt.Load("proxy.maxTaskNum")
-	if err != nil {
-		panic(err)
-	}
-	maxTaskNum, err := strconv.ParseInt(str, 10, 64)
-	if err != nil {
-		panic(err)
-	}
-	pt.MaxTaskNum = maxTaskNum
+	pt.MaxTaskNum = pt.ParseInt64WithDefault("proxy.maxTaskNum", 1024)
 }

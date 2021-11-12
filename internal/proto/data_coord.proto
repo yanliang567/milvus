@@ -34,8 +34,11 @@ service DataCoord {
   // https://wiki.lfaidata.foundation/display/MIL/MEP+8+--+Add+metrics+for+proxy
   rpc GetMetrics(milvus.GetMetricsRequest) returns (milvus.GetMetricsResponse) {}
   rpc CompleteCompaction(CompactionResult) returns (common.Status) {}
-  rpc ManualCompaction(ManualCompactionRequest) returns (ManualCompactionResponse) {}
-  rpc GetCompactionState(GetCompactionStateRequest) returns (GetCompactionStateResponse) {}
+  rpc ManualCompaction(milvus.ManualCompactionRequest) returns (milvus.ManualCompactionResponse) {}
+  rpc GetCompactionState(milvus.GetCompactionStateRequest) returns (milvus.GetCompactionStateResponse) {}
+  rpc GetCompactionStateWithPlans(milvus.GetCompactionPlansRequest) returns (milvus.GetCompactionPlansResponse) {}
+
+  rpc WatchChannels(WatchChannelsRequest) returns (WatchChannelsResponse) {}
 }
 
 service DataNode {
@@ -225,6 +228,7 @@ message SaveBinlogPathsRequest {
   bool flushed = 7;
   repeated FieldBinlog field2StatslogPaths = 8;
   repeated DeltaLogInfo deltalogs = 9;
+  bool dropped = 10;
 }
 
 message CheckPoint {
@@ -343,36 +347,17 @@ message CompactionResult {
   repeated DeltaLogInfo deltalogs = 6;
 }
 
-message ManualCompactionRequest {
-  int64 collectionID = 1;
-  uint64 timetravel = 2;
-}
-
-message ManualCompactionResponse {
-  common.Status status = 1;
-  int64 compactionID = 2;
-}
-
-message GetCompactionStateRequest {
-  int64 compactionID = 1;
-}
-
-enum CompactionState {
-  UndefiedState = 0;
-  Executing = 1;
-  Completed = 2;
-}
-
-message GetCompactionStateResponse {
-  common.Status status = 1;
-  CompactionState state = 2;
-  int64 executingPlanNo = 3;
-  int64 timeoutPlanNo = 4;
-  int64 completedPlanNo = 5;
-}
-
 // Deprecated
 message SegmentFieldBinlogMeta {
   int64  fieldID = 1;
   string binlog_path = 2;
+}
+
+message WatchChannelsRequest {
+  int64 collectionID = 1;
+  repeated string channelNames = 2;
+}
+
+message WatchChannelsResponse {
+  common.Status status = 1;
 }

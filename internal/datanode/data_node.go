@@ -40,6 +40,7 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/milvus-io/milvus/internal/kv"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
+	miniokv "github.com/milvus-io/milvus/internal/kv/minio"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/logutil"
 	"github.com/milvus-io/milvus/internal/metrics"
@@ -97,22 +98,30 @@ type DataNode struct {
 	Role   string
 	State  atomic.Value // internalpb.StateCode_Initializing
 
+	// TODO struct
 	chanMut           sync.RWMutex
 	vchan2SyncService map[string]*dataSyncService // vchannel name
 	vchan2FlushChs    map[string]chan flushMsg    // vchannel name to flush channels
 
-	clearSignal  chan UniqueID // collection ID
-	segmentCache *Cache
+	clearSignal        chan UniqueID // collection ID
+	segmentCache       *Cache
+	compactionExecutor *compactionExecutor
 
 	rootCoord types.RootCoord
 	dataCoord types.DataCoord
 
 	session *sessionutil.Session
 	watchKv kv.MetaKv
+	blobKv  kv.BaseKV
 
 	closer io.Closer
 
 	msFactory msgstream.Factory
+}
+
+type plan struct {
+	channelName string
+	cancel      context.CancelFunc
 }
 
 // NewDataNode will return a DataNode with abnormal state.
@@ -124,10 +133,11 @@ func NewDataNode(ctx context.Context, factory msgstream.Factory) *DataNode {
 		cancel: cancel2,
 		Role:   typeutil.DataNodeRole,
 
-		rootCoord:    nil,
-		dataCoord:    nil,
-		msFactory:    factory,
-		segmentCache: newCache(),
+		rootCoord:          nil,
+		dataCoord:          nil,
+		msFactory:          factory,
+		segmentCache:       newCache(),
+		compactionExecutor: newCompactionExecutor(),
 
 		vchan2SyncService: make(map[string]*dataSyncService),
 		vchan2FlushChs:    make(map[string]chan flushMsg),
@@ -323,7 +333,7 @@ func (node *DataNode) NewDataSyncService(vchan *datapb.VchannelInfo) error {
 
 	flushCh := make(chan flushMsg, 100)
 
-	dataSyncService, err := newDataSyncService(node.ctx, flushCh, replica, alloc, node.msFactory, vchan, node.clearSignal, node.dataCoord, node.segmentCache)
+	dataSyncService, err := newDataSyncService(node.ctx, flushCh, replica, alloc, node.msFactory, vchan, node.clearSignal, node.dataCoord, node.segmentCache, node.blobKv)
 	if err != nil {
 		return err
 	}
@@ -347,6 +357,7 @@ func (node *DataNode) BackGroundGC(collIDCh <-chan UniqueID) {
 		select {
 		case collID := <-collIDCh:
 			log.Info("GC collection", zap.Int64("ID", collID))
+			node.stopCompactionOfCollection(collID)
 			for _, vchanName := range node.getChannelNamesbyCollectionID(collID) {
 				node.ReleaseDataSyncService(vchanName)
 			}
@@ -406,6 +417,22 @@ func (node *DataNode) Start() error {
 		return errors.New("DataNode fail to connect etcd")
 	}
 
+	option := &miniokv.Option{
+		Address:           Params.MinioAddress,
+		AccessKeyID:       Params.MinioAccessKeyID,
+		SecretAccessKeyID: Params.MinioSecretAccessKey,
+		UseSSL:            Params.MinioUseSSL,
+		CreateBucket:      true,
+		BucketName:        Params.MinioBucketName,
+	}
+
+	kv, err := miniokv.NewMinIOKV(node.ctx, option)
+	if err != nil {
+		return err
+	}
+
+	node.blobKv = kv
+
 	if rep.Status.ErrorCode != commonpb.ErrorCode_Success || err != nil {
 		return errors.New("DataNode fail to start")
 	}
@@ -413,6 +440,8 @@ func (node *DataNode) Start() error {
 	FilterThreshold = rep.GetTimestamp()
 
 	go node.BackGroundGC(node.clearSignal)
+
+	go node.compactionExecutor.start(node.ctx)
 
 	Params.CreatedTime = time.Now()
 	Params.UpdatedTime = time.Now()
@@ -703,6 +732,38 @@ func (node *DataNode) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRe
 	}, nil
 }
 
+func (node *DataNode) stopCompactionOfCollection(collID UniqueID) {
+	log.Debug("Stop compaction of collection", zap.Int64("collection ID", collID))
+
+	node.compactionExecutor.stopExecutingtaskByCollectionID(collID)
+}
+
 func (node *DataNode) Compaction(ctx context.Context, req *datapb.CompactionPlan) (*commonpb.Status, error) {
-	panic("not implemented") // TODO: Implement
+	status := &commonpb.Status{
+		ErrorCode: commonpb.ErrorCode_UnexpectedError,
+	}
+
+	ds, ok := node.vchan2SyncService[req.GetChannel()]
+	if !ok {
+		log.Warn("illegel compaction plan, channel not in this DataNode", zap.String("channel name", req.GetChannel()))
+		status.Reason = errIllegalCompactionPlan.Error()
+		return status, nil
+	}
+
+	binlogIO := &binlogIO{node.blobKv, ds.idAllocator}
+	task := newCompactionTask(
+		ctx,
+		binlogIO, binlogIO,
+		ds.replica,
+		ds.flushManager,
+		ds.idAllocator,
+		node.dataCoord,
+		req,
+	)
+
+	node.compactionExecutor.execute(task)
+
+	return &commonpb.Status{
+		ErrorCode: commonpb.ErrorCode_Success,
+	}, nil
 }

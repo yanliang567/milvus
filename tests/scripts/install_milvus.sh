@@ -11,7 +11,10 @@
 # is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 # or implied. See the License for the specific language governing permissions and limitations under the License.
 
+# Exit immediately for non zero status
 set -e
+
+# Print commands
 set -x
 
 MILVUS_HELM_REPO="https://github.com/milvus-io/milvus-helm.git"
@@ -39,13 +42,14 @@ else
   MILVUS_SERVICE_TYPE="${MILVUS_SERVICE_TYPE:-ClusterIP}"
 fi
 
-
+# Get Milvus Chart from git
 if [[ ! -d "${MILVUS_HELM_CHART_PATH:-}" ]]; then
   TMP_DIR="$(mktemp -d)"
   git clone --depth=1 -b "${MILVUS_HELM_BRANCH:-master}" "${MILVUS_HELM_REPO}" "${TMP_DIR}"
   MILVUS_HELM_CHART_PATH="${TMP_DIR}/charts/milvus"
 fi
 
+# Create namespace when it does not exist
 kubectl create namespace "${MILVUS_HELM_NAMESPACE}" > /dev/null 2>&1 || true
 
 if [[ "${MILVUS_CLUSTER_ENABLED}" == "true" ]]; then

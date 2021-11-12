@@ -151,9 +151,9 @@ message BuildIndexResponse {
 
 10. When `RootCoood` receives the `BuildIndexResponse`, it would extract the `IndexBuildID` from the response, update `RootCoord`'s `metaTable`, then send responses to `Proxy`.
 
-11. There is a background service, `assignTaskLoop`, in `IndexCoord`. `assignTaskLoop` would call `GetUnassignedTask` periodically, the default interval is 3s. `GetUnassignedTask` would list these segments whos `index meta` has been updated, but index has not been created yet.
+11. There is a background service, `assignTaskLoop`, in `IndexCoord`. `assignTaskLoop` would call `GetUnassignedTask` periodically, the default interval is 3s. `GetUnassignedTask` would list these segments whose `index meta` has been updated, but index has not been created yet.
 
-12. The previous step has listed the segments whose index has not been created, for each those segments, `IndexCoord` would call `PeekClient` to get an available `IndexNode`, and send `CreateIndex` request to this `IndexNode`. The `proto` is defined as follow.
+12. The previous step has listed the segments whose index has not been created, for each those segments, `IndexCoord` would call `PeekClient` to get an available `IndexNode`, and send `CreateIndex` request to this `IndexNode`. The `proto` is defined as follows.
 
 ```proto
 service IndexNode {
@@ -182,7 +182,7 @@ message CreateIndexRequest {
 
 _Note_: `IndexNode` will not notify the `QueryCoord` to load the index files, if an user wants to speed up search by these index files, he should call `ReleaseCollection` firstly, then call `LoadCollection` to load these index files.
 
-15. As mentioned earlier, `RootCoord` would only search on these flushed segments on `CreateIndex` request, the following figure show how to deal with the newly add segments.
+15. As mentioned earlier, `RootCoord` would only search on these flushed segments on `CreateIndex` request, the following figure show how to deal with the newly added segments.
 
 ![data_coord_flushed](./graphs/milvus_create_index_data_coord_flushed.png)
 
@@ -224,7 +224,7 @@ message SegmentInfo {
 
 ![data_coord_flushed](./graphs/milvus_create_index_root_coord_check.png)
 
-19. There is a backgroud service, `checkFlushedSegmentLoop`, in `RootCoord`. `checkFlushedSegmentLoop` would periodically check whether there is a segment that needs to be created index but has not been created, the default interval is `10 minutes`, and call `DataCoord` and `IndexCoord`'s service to create index on these segments.
+19. There is a background service, `checkFlushedSegmentLoop`, in `RootCoord`. `checkFlushedSegmentLoop` would periodically check whether there is a segment that needs to be created index but has not been created, the default interval is `10 minutes`, and call `DataCoord` and `IndexCoord`'s service to create index on these segments.
 
 20. In `Milvus 2.0`, `Create Index` is an asynchronous operation, so the `SDK` needs to send `GetIndexStates` request to `IndexCoord` periodically to check if the index has been created, the `proto` is defined as follow.
 

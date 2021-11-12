@@ -32,6 +32,8 @@ import (
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/mqclient"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 	"go.uber.org/zap"
 
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
@@ -97,14 +99,16 @@ type Server struct {
 	isServing        ServerState
 	helper           ServerHelper
 
-	kvClient        *etcdkv.EtcdKV
-	meta            *meta
-	segmentManager  Manager
-	allocator       allocator
-	cluster         *Cluster
-	sessionManager  *SessionManager
-	channelManager  *ChannelManager
-	rootCoordClient types.RootCoord
+	kvClient         *etcdkv.EtcdKV
+	meta             *meta
+	segmentManager   Manager
+	allocator        allocator
+	cluster          *Cluster
+	sessionManager   *SessionManager
+	channelManager   *ChannelManager
+	rootCoordClient  types.RootCoord
+	garbageCollector *garbageCollector
+	gcOpt            GcOption
 
 	compactionTrigger trigger
 	compactionHandler compactionPlanContext
@@ -160,6 +164,13 @@ func SetCluster(cluster *Cluster) Option {
 func SetDataNodeCreator(creator dataNodeCreatorFunc) Option {
 	return func(svr *Server) {
 		svr.dataNodeCreator = creator
+	}
+}
+
+// SetSegmentManager returns an Option to set SegmentManager
+func SetSegmentManager(manager Manager) Option {
+	return func(svr *Server) {
+		svr.segmentManager = manager
 	}
 }
 
@@ -249,6 +260,10 @@ func (s *Server) Start() error {
 		return err
 	}
 
+	if err = s.initGarbageCollection(); err != nil {
+		return err
+	}
+
 	s.startServerLoop()
 	Params.CreatedTime = time.Now()
 	Params.UpdatedTime = time.Now()
@@ -291,6 +306,42 @@ func (s *Server) stopCompactionTrigger() {
 	s.compactionTrigger.stop()
 }
 
+func (s *Server) initGarbageCollection() error {
+	var cli *minio.Client
+	var err error
+	if Params.EnableGarbageCollection {
+		cli, err = minio.New(Params.MinioAddress, &minio.Options{
+			Creds:  credentials.NewStaticV4(Params.MinioAccessKeyID, Params.MinioSecretAccessKey, ""),
+			Secure: Params.MinioUseSSL,
+		})
+		if err != nil {
+			return err
+		}
+		has, err := cli.BucketExists(context.TODO(), Params.MinioBucketName)
+		if err != nil {
+			return err
+		}
+		if !has {
+			err = cli.MakeBucket(context.TODO(), Params.MinioBucketName, minio.MakeBucketOptions{})
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	s.garbageCollector = newGarbageCollector(s.meta, GcOption{
+		cli:        cli,
+		enabled:    Params.EnableGarbageCollection,
+		bucketName: Params.MinioBucketName,
+		rootPath:   Params.MinioRootPath,
+
+		checkInterval:    defaultGcInterval,
+		missingTolerance: defaultMissingTolerance,
+		dropTolerance:    defaultMissingTolerance,
+	})
+	return nil
+}
+
 func (s *Server) initServiceDiscovery() error {
 	sessions, rev, err := s.session.GetSessions(typeutil.DataNodeRole)
 	if err != nil {
@@ -315,7 +366,9 @@ func (s *Server) initServiceDiscovery() error {
 }
 
 func (s *Server) startSegmentManager() {
-	s.segmentManager = newSegmentManager(s.meta, s.allocator)
+	if s.segmentManager == nil {
+		s.segmentManager = newSegmentManager(s.meta, s.allocator)
+	}
 }
 
 func (s *Server) initMeta() error {
@@ -342,6 +395,7 @@ func (s *Server) startServerLoop() {
 	s.startDataNodeTtLoop(s.serverLoopCtx)
 	s.startWatchService(s.serverLoopCtx)
 	s.startFlushLoop(s.serverLoopCtx)
+	s.garbageCollector.start()
 	go s.session.LivenessCheck(s.serverLoopCtx, func() {
 		log.Error("Data Coord disconnected from etcd, process will exit", zap.Int64("Server Id", s.session.ServerID))
 		if err := s.Stop(); err != nil {
@@ -454,7 +508,8 @@ func (s *Server) startDataNodeTtLoop(ctx context.Context) {
 				}
 
 				staleSegments := s.meta.SelectSegments(func(info *SegmentInfo) bool {
-					return info.GetInsertChannel() == ch &&
+					return isSegmentHealthy(info) &&
+						info.GetInsertChannel() == ch &&
 						!info.lastFlushTime.IsZero() &&
 						time.Since(info.lastFlushTime).Minutes() >= segmentTimedFlushDuration
 				})
@@ -651,6 +706,7 @@ func (s *Server) Stop() error {
 	}
 	log.Debug("dataCoord server shutdown")
 	s.cluster.Close()
+	s.garbageCollector.close()
 	s.stopServerLoop()
 
 	if Params.EnableCompaction {
@@ -758,16 +814,9 @@ func (s *Server) GetVChanPositions(channel string, collectionID UniqueID, seekFr
 	}
 	// use collection start position when segment position is not found
 	if seekPosition == nil {
-		coll := s.meta.GetCollection(collectionID)
-		if coll != nil {
-			for _, sp := range coll.GetStartPositions() {
-				if sp.GetKey() == rootcoord.ToPhysicalChannel(channel) {
-					seekPosition = &internalpb.MsgPosition{
-						ChannelName: channel,
-						MsgID:       sp.GetData(),
-					}
-				}
-			}
+		collection := s.GetCollection(s.ctx, collectionID)
+		if collection != nil {
+			seekPosition = getCollectionStartPosition(channel, collection)
 		}
 	}
 
@@ -778,6 +827,19 @@ func (s *Server) GetVChanPositions(channel string, collectionID UniqueID, seekFr
 		FlushedSegments:   flushed,
 		UnflushedSegments: unflushed,
 	}
+}
+
+func getCollectionStartPosition(channel string, collectionInfo *datapb.CollectionInfo) *internalpb.MsgPosition {
+	for _, sp := range collectionInfo.GetStartPositions() {
+		if sp.GetKey() != rootcoord.ToPhysicalChannel(channel) {
+			continue
+		}
+		return &internalpb.MsgPosition{
+			ChannelName: channel,
+			MsgID:       sp.GetData(),
+		}
+	}
+	return nil
 }
 
 // trimSegmentInfo returns a shallow copy of datapb.SegmentInfo and sets ALL binlog info to nil
@@ -794,4 +856,17 @@ func trimSegmentInfo(info *datapb.SegmentInfo) *datapb.SegmentInfo {
 		StartPosition:  info.StartPosition,
 		DmlPosition:    info.DmlPosition,
 	}
+}
+
+func (s *Server) GetCollection(ctx context.Context, collectionID UniqueID) *datapb.CollectionInfo {
+	coll := s.meta.GetCollection(collectionID)
+	if coll != nil {
+		return coll
+	}
+	err := s.loadCollectionFromRootCoord(ctx, collectionID)
+	if err != nil {
+		log.Warn("failed to load collection from RootCoord", zap.Int64("collectionID", collectionID), zap.Error(err))
+	}
+
+	return s.meta.GetCollection(collectionID)
 }

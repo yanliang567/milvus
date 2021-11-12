@@ -98,12 +98,20 @@ func (m *MockDataCoordClient) CompleteCompaction(ctx context.Context, req *datap
 	return &commonpb.Status{}, m.err
 }
 
-func (m *MockDataCoordClient) ManualCompaction(ctx context.Context, in *datapb.ManualCompactionRequest, opts ...grpc.CallOption) (*datapb.ManualCompactionResponse, error) {
-	return &datapb.ManualCompactionResponse{}, m.err
+func (m *MockDataCoordClient) ManualCompaction(ctx context.Context, in *milvuspb.ManualCompactionRequest, opts ...grpc.CallOption) (*milvuspb.ManualCompactionResponse, error) {
+	return &milvuspb.ManualCompactionResponse{}, m.err
 }
 
-func (m *MockDataCoordClient) GetCompactionState(ctx context.Context, in *datapb.GetCompactionStateRequest, opts ...grpc.CallOption) (*datapb.GetCompactionStateResponse, error) {
-	return &datapb.GetCompactionStateResponse{}, m.err
+func (m *MockDataCoordClient) GetCompactionState(ctx context.Context, in *milvuspb.GetCompactionStateRequest, opts ...grpc.CallOption) (*milvuspb.GetCompactionStateResponse, error) {
+	return &milvuspb.GetCompactionStateResponse{}, m.err
+}
+
+func (m *MockDataCoordClient) GetCompactionStateWithPlans(ctx context.Context, req *milvuspb.GetCompactionPlansRequest, opts ...grpc.CallOption) (*milvuspb.GetCompactionPlansResponse, error) {
+	return &milvuspb.GetCompactionPlansResponse{}, m.err
+}
+
+func (m *MockDataCoordClient) WatchChannels(ctx context.Context, req *datapb.WatchChannelsRequest, opts ...grpc.CallOption) (*datapb.WatchChannelsResponse, error) {
+	return &datapb.WatchChannelsResponse{}, m.err
 }
 
 func Test_NewClient(t *testing.T) {
@@ -187,6 +195,12 @@ func Test_NewClient(t *testing.T) {
 
 		r18, err := client.ManualCompaction(ctx, nil)
 		retCheck(retNotNil, r18, err)
+
+		r19, err := client.GetCompactionStateWithPlans(ctx, nil)
+		retCheck(retNotNil, r19, err)
+
+		r20, err := client.WatchChannels(ctx, nil)
+		retCheck(retNotNil, r20, err)
 	}
 
 	client.getGrpcClient = func() (datapb.DataCoordClient, error) {

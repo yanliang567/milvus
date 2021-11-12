@@ -184,12 +184,13 @@ enum SegmentState : int {
   Sealed = 3,
   Flushed = 4,
   Flushing = 5,
+  Dropped = 6,
   SegmentState_INT_MIN_SENTINEL_DO_NOT_USE_ = std::numeric_limits<::PROTOBUF_NAMESPACE_ID::int32>::min(),
   SegmentState_INT_MAX_SENTINEL_DO_NOT_USE_ = std::numeric_limits<::PROTOBUF_NAMESPACE_ID::int32>::max()
 };
 bool SegmentState_IsValid(int value);
 constexpr SegmentState SegmentState_MIN = SegmentStateNone;
-constexpr SegmentState SegmentState_MAX = Flushing;
+constexpr SegmentState SegmentState_MAX = Dropped;
 constexpr int SegmentState_ARRAYSIZE = SegmentState_MAX + 1;
 
 const ::PROTOBUF_NAMESPACE_ID::EnumDescriptor* SegmentState_descriptor();
@@ -309,6 +310,32 @@ inline bool DslType_Parse(
     const std::string& name, DslType* value) {
   return ::PROTOBUF_NAMESPACE_ID::internal::ParseNamedEnum<DslType>(
     DslType_descriptor(), name, value);
+}
+enum CompactionState : int {
+  UndefiedState = 0,
+  Executing = 1,
+  Completed = 2,
+  CompactionState_INT_MIN_SENTINEL_DO_NOT_USE_ = std::numeric_limits<::PROTOBUF_NAMESPACE_ID::int32>::min(),
+  CompactionState_INT_MAX_SENTINEL_DO_NOT_USE_ = std::numeric_limits<::PROTOBUF_NAMESPACE_ID::int32>::max()
+};
+bool CompactionState_IsValid(int value);
+constexpr CompactionState CompactionState_MIN = UndefiedState;
+constexpr CompactionState CompactionState_MAX = Completed;
+constexpr int CompactionState_ARRAYSIZE = CompactionState_MAX + 1;
+
+const ::PROTOBUF_NAMESPACE_ID::EnumDescriptor* CompactionState_descriptor();
+template<typename T>
+inline const std::string& CompactionState_Name(T enum_t_value) {
+  static_assert(::std::is_same<T, CompactionState>::value ||
+    ::std::is_integral<T>::value,
+    "Incorrect type passed to function CompactionState_Name.");
+  return ::PROTOBUF_NAMESPACE_ID::internal::NameOfEnum(
+    CompactionState_descriptor(), enum_t_value);
+}
+inline bool CompactionState_Parse(
+    const std::string& name, CompactionState* value) {
+  return ::PROTOBUF_NAMESPACE_ID::internal::ParseNamedEnum<CompactionState>(
+    CompactionState_descriptor(), name, value);
 }
 // ===================================================================
 
@@ -2151,6 +2178,11 @@ template <> struct is_proto_enum< ::milvus::proto::common::DslType> : ::std::tru
 template <>
 inline const EnumDescriptor* GetEnumDescriptor< ::milvus::proto::common::DslType>() {
   return ::milvus::proto::common::DslType_descriptor();
+}
+template <> struct is_proto_enum< ::milvus::proto::common::CompactionState> : ::std::true_type {};
+template <>
+inline const EnumDescriptor* GetEnumDescriptor< ::milvus::proto::common::CompactionState>() {
+  return ::milvus::proto::common::CompactionState_descriptor();
 }
 
 PROTOBUF_NAMESPACE_CLOSE

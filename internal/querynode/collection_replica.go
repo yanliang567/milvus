@@ -107,13 +107,20 @@ type ReplicaInterface interface {
 	getExcludedSegments(collectionID UniqueID) ([]*datapb.SegmentInfo, error)
 
 	// query mu
+	// queryLock guards query and delete operations
 	queryLock()
+	// queryUnlock guards query and delete segment operations
 	queryUnlock()
+	// queryRLock guards query and delete segment operations
 	queryRLock()
+	// queryRUnlock guards query and delete segment operations
 	queryRUnlock()
 
+	// getSegmentsMemSize get the memory size in bytes of all the Segments
 	getSegmentsMemSize() int64
+	// freeAll will free all meta info from collectionReplica
 	freeAll()
+	// printReplica prints the collections, partitions and segments in the collectionReplica
 	printReplica()
 }
 
@@ -141,10 +148,12 @@ func (colReplica *collectionReplica) queryUnlock() {
 	colReplica.queryMu.Unlock()
 }
 
+// queryRLock guards query and delete segment operations
 func (colReplica *collectionReplica) queryRLock() {
 	colReplica.queryMu.RLock()
 }
 
+// queryRUnlock guards query and delete segment operations
 func (colReplica *collectionReplica) queryRUnlock() {
 	colReplica.queryMu.RUnlock()
 }

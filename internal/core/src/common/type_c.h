@@ -53,14 +53,6 @@ typedef struct CLoadDeletedRecordInfo {
     int64_t row_count;
 } CLoadDeletedRecordInfo;
 
-typedef struct CProtoResult {
-    CStatus status;
-    CProto proto;
-} CProtoResult;
-
-CProtoResult
-CTestBoolArrayPb(CProto pb);
-
 #ifdef __cplusplus
 }
 #endif

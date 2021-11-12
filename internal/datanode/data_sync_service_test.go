@@ -28,6 +28,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/common"
+	memkv "github.com/milvus-io/milvus/internal/kv/mem"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
@@ -96,32 +97,32 @@ func TestDataSyncService_newDataSyncService(te *testing.T) {
 
 	tests := []*testInfo{
 		{false, false, &mockMsgStreamFactory{false, true},
-			0, "by-dev-rootcoord-dml_test",
+			0, "by-dev-rootcoord-dml-test_v0",
 			0, 0, "", 0,
 			0, 0, "", 0,
 			"SetParamsReturnError"},
 		{true, false, &mockMsgStreamFactory{true, true},
-			0, "by-dev-rootcoord-dml_test",
+			0, "by-dev-rootcoord-dml-test_v0",
 			1, 0, "", 0,
 			1, 1, "", 0,
 			"CollID 0 mismach with seginfo collID 1"},
 		{true, false, &mockMsgStreamFactory{true, true},
-			1, "by-dev-rootcoord-dml_1",
-			1, 0, "by-dev-rootcoord-dml_2", 0,
-			1, 1, "by-dev-rootcoord-dml_3", 0,
+			1, "by-dev-rootcoord-dml-test_v1",
+			1, 0, "by-dev-rootcoord-dml-test_v2", 0,
+			1, 1, "by-dev-rootcoord-dml-test_v3", 0,
 			"chanName c1 mismach with seginfo chanName c2"},
 		{true, false, &mockMsgStreamFactory{true, true},
-			1, "by-dev-rootcoord-dml_1",
-			1, 0, "by-dev-rootcoord-dml_1", 0,
-			1, 1, "by-dev-rootcoord-dml_2", 0,
+			1, "by-dev-rootcoord-dml-test_v1",
+			1, 0, "by-dev-rootcoord-dml-test_v1", 0,
+			1, 1, "by-dev-rootcoord-dml-test_v2", 0,
 			"add normal segments"},
 		{false, false, &mockMsgStreamFactory{true, false},
-			0, "by-dev-rootcoord-dml",
+			0, "by-dev-rootcoord-dml-test_v0",
 			0, 0, "", 0,
 			0, 0, "", 0,
 			"error when newinsertbufernode"},
 		{false, true, &mockMsgStreamFactory{true, false},
-			0, "by-dev-rootcoord-dml",
+			0, "by-dev-rootcoord-dml-test_v0",
 			0, 0, "", 0,
 			0, 0, "", 0,
 			"replica nil"},
@@ -146,6 +147,7 @@ func TestDataSyncService_newDataSyncService(te *testing.T) {
 				make(chan UniqueID),
 				df,
 				newCache(),
+				memkv.NewMemoryKV(),
 			)
 
 			if !test.isValidCase {
@@ -222,7 +224,7 @@ func TestDataSyncService_Start(t *testing.T) {
 	}
 
 	signalCh := make(chan UniqueID, 100)
-	sync, err := newDataSyncService(ctx, flushChan, replica, allocFactory, msFactory, vchan, signalCh, &DataCoordFactory{}, newCache())
+	sync, err := newDataSyncService(ctx, flushChan, replica, allocFactory, msFactory, vchan, signalCh, &DataCoordFactory{}, newCache(), memkv.NewMemoryKV())
 
 	assert.Nil(t, err)
 	// sync.replica.addCollection(collMeta.ID, collMeta.Schema)
