@@ -24,22 +24,23 @@ import (
 	"sync"
 	"time"
 
-	grpc_opentracing "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
-	dsc "github.com/milvus-io/milvus/internal/distributed/datacoord/client"
-	rcc "github.com/milvus-io/milvus/internal/distributed/rootcoord/client"
-	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/msgstream"
-	qc "github.com/milvus-io/milvus/internal/querycoord"
-	"github.com/milvus-io/milvus/internal/types"
-	"github.com/milvus-io/milvus/internal/util/funcutil"
-	"github.com/milvus-io/milvus/internal/util/trace"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
+	grpc_opentracing "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
+	dsc "github.com/milvus-io/milvus/internal/distributed/datacoord/client"
+	isc "github.com/milvus-io/milvus/internal/distributed/indexcoord/client"
+	rcc "github.com/milvus-io/milvus/internal/distributed/rootcoord/client"
+	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
+	qc "github.com/milvus-io/milvus/internal/querycoord"
+	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/trace"
 )
 
 // Server is the grpc server of QueryCoord.
@@ -55,8 +56,9 @@ type Server struct {
 
 	msFactory msgstream.Factory
 
-	dataCoord types.DataCoord
-	rootCoord types.RootCoord
+	dataCoord  types.DataCoord
+	rootCoord  types.RootCoord
+	indexCoord types.IndexCoord
 
 	closer io.Closer
 }
@@ -99,6 +101,7 @@ func (s *Server) init() error {
 	Params.Init()
 
 	qc.Params.InitOnce()
+	qc.Params.Address = Params.Address
 	qc.Params.Port = Params.Port
 
 	closer := trace.InitTracing("querycoord")
@@ -117,8 +120,6 @@ func (s *Server) init() error {
 	}
 
 	// --- Master Server Client ---
-	log.Debug("QueryCoord try to new RootCoord client", zap.Any("RootCoordAddress", Params.RootCoordAddress))
-
 	if s.rootCoord == nil {
 		s.rootCoord, err = rcc.NewClient(s.loopCtx, qc.Params.MetaRootPath, qc.Params.EtcdEndpoints)
 		if err != nil {
@@ -150,8 +151,6 @@ func (s *Server) init() error {
 	log.Debug("QueryCoord report RootCoord ready")
 
 	// --- Data service client ---
-	log.Debug("QueryCoord try to new DataCoord client", zap.Any("DataCoordAddress", Params.DataCoordAddress))
-
 	if s.dataCoord == nil {
 		s.dataCoord, err = dsc.NewClient(s.loopCtx, qc.Params.MetaRootPath, qc.Params.EtcdEndpoints)
 		if err != nil {
@@ -178,6 +177,37 @@ func (s *Server) init() error {
 		panic(err)
 	}
 	log.Debug("QueryCoord report DataCoord ready")
+
+	// --- IndexCoord ---
+	if s.indexCoord == nil {
+		s.indexCoord, err = isc.NewClient(s.loopCtx, qc.Params.MetaRootPath, qc.Params.EtcdEndpoints)
+		if err != nil {
+			log.Debug("QueryCoord try to new IndexCoord client failed", zap.Error(err))
+			panic(err)
+		}
+	}
+
+	if err := s.indexCoord.Init(); err != nil {
+		log.Debug("QueryCoord IndexCoordClient Init failed", zap.Error(err))
+		panic(err)
+	}
+
+	if err := s.indexCoord.Start(); err != nil {
+		log.Debug("QueryCoord IndexCoordClient Start failed", zap.Error(err))
+		panic(err)
+	}
+	// wait IndexCoord healthy
+	log.Debug("QueryCoord try to wait for IndexCoord ready")
+	err = funcutil.WaitForComponentHealthy(s.loopCtx, s.indexCoord, "IndexCoord", 1000000, time.Millisecond*200)
+	if err != nil {
+		log.Debug("QueryCoord wait for IndexCoord ready failed", zap.Error(err))
+		panic(err)
+	}
+	log.Debug("QueryCoord report IndexCoord is ready")
+
+	if err := s.SetIndexCoord(s.indexCoord); err != nil {
+		panic(err)
+	}
 
 	s.queryCoord.UpdateStateCode(internalpb.StateCode_Initializing)
 	log.Debug("QueryCoord", zap.Any("State", internalpb.StateCode_Initializing))
@@ -247,6 +277,12 @@ func (s *Server) SetRootCoord(m types.RootCoord) error {
 // SetDataCoord sets the DataCoord's client for QueryCoord component.
 func (s *Server) SetDataCoord(d types.DataCoord) error {
 	s.queryCoord.SetDataCoord(d)
+	return nil
+}
+
+// SetIndexCoord sets the IndexCoord's client for QueryCoord component.
+func (s *Server) SetIndexCoord(d types.IndexCoord) error {
+	s.queryCoord.SetIndexCoord(d)
 	return nil
 }
 

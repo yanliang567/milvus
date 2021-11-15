@@ -30,6 +30,7 @@ import (
 	"unsafe"
 
 	"github.com/bits-and-blooms/bloom/v3"
+	"github.com/golang/protobuf/proto"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
 
@@ -185,9 +186,9 @@ func newSegment(collection *Collection, segmentID UniqueID, partitionID UniqueID
 		log.Warn("illegal segment type when create segment")
 		return nil
 	case segmentTypeSealed:
-		segmentPtr = C.NewSegment(collection.collectionPtr, C.ulong(segmentID), C.Sealed)
+		segmentPtr = C.NewSegment(collection.collectionPtr, C.Sealed)
 	case segmentTypeGrowing:
-		segmentPtr = C.NewSegment(collection.collectionPtr, C.ulong(segmentID), C.Growing)
+		segmentPtr = C.NewSegment(collection.collectionPtr, C.Growing)
 	default:
 		log.Warn("illegal segment type when create segment")
 		return nil
@@ -308,6 +309,16 @@ func (s *Segment) search(plan *SearchPlan,
 	}
 
 	return &searchResult, nil
+}
+
+// HandleCProto deal with the result proto returned from CGO
+func HandleCProto(cRes *C.CProto, msg proto.Message) error {
+	// Standalone CProto is protobuf created by C side,
+	// Passed from c side
+	// memory is managed manually
+	blob := C.GoBytes(unsafe.Pointer(cRes.proto_blob), C.int32_t(cRes.proto_size))
+	defer C.free(cRes.proto_blob)
+	return proto.Unmarshal(blob, msg)
 }
 
 func (s *Segment) retrieve(plan *RetrievePlan) (*segcorepb.RetrieveResults, error) {

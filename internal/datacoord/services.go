@@ -300,6 +300,7 @@ func (s *Server) SaveBinlogPaths(ctx context.Context, req *datapb.SaveBinlogPath
 		zap.Int64("collectionID", req.GetCollectionID()),
 		zap.Int64("segmentID", req.GetSegmentID()),
 		zap.Bool("isFlush", req.GetFlushed()),
+		zap.Bool("isDropped", req.GetDropped()),
 		zap.Any("checkpoints", req.GetCheckPoints()))
 
 	// validate
@@ -318,6 +319,10 @@ func (s *Server) SaveBinlogPaths(ctx context.Context, req *datapb.SaveBinlogPath
 		FailResponse(resp, fmt.Sprintf("channel %s is not watched on node %d", channel, nodeID))
 		log.Warn("node is not matched with channel", zap.String("channel", channel), zap.Int64("nodeID", nodeID))
 		return resp, nil
+	}
+
+	if req.GetDropped() {
+		s.segmentManager.DropSegment(ctx, segment.GetID())
 	}
 
 	// set segment to SegmentState_Flushing and save binlogs and checkpoints
@@ -342,6 +347,7 @@ func (s *Server) SaveBinlogPaths(ctx context.Context, req *datapb.SaveBinlogPath
 		zap.Any("meta", req.GetField2BinlogPaths()))
 
 	if req.GetDropped() && s.checkShouldDropChannel(channel) {
+		log.Debug("remove channel", zap.String("channel", channel))
 		err = s.channelManager.RemoveChannel(channel)
 		if err != nil {
 			log.Warn("failed to remove channel", zap.String("channel", channel), zap.Error(err))
@@ -359,8 +365,9 @@ func (s *Server) SaveBinlogPaths(ctx context.Context, req *datapb.SaveBinlogPath
 
 			tt, err := getTimetravelReverseTime(cctx, s.allocator)
 			if err == nil {
-				if err = s.compactionTrigger.triggerSingleCompaction(segment.GetCollectionID(), segment.GetPartitionID(),
-					segmentID, segment.GetInsertChannel(), tt); err != nil {
+				err = s.compactionTrigger.triggerSingleCompaction(segment.GetCollectionID(),
+					segment.GetPartitionID(), segmentID, segment.GetInsertChannel(), tt)
+				if err != nil {
 					log.Warn("failed to trigger single compaction", zap.Int64("segmentID", segmentID))
 				}
 			}
@@ -377,7 +384,7 @@ func (s *Server) checkShouldDropChannel(channel string) bool {
 			// FIXME: we filter compaction generated segments
 			// because datanode may not know the segment due to the network lag or
 			// datacoord crash when handling CompleteCompaction.
-			len(segment.CompactionFrom) != 0 &&
+			len(segment.CompactionFrom) == 0 &&
 			segment.GetState() != commonpb.SegmentState_Dropped {
 			return false
 		}
@@ -513,8 +520,12 @@ func (s *Server) GetRecoveryInfo(ctx context.Context, req *datapb.GetRecoveryInf
 	channels := dresp.GetVirtualChannelNames()
 	channelInfos := make([]*datapb.VchannelInfo, 0, len(channels))
 	for _, c := range channels {
-		channelInfo := s.GetVChanPositions(c, collectionID, true)
+		channelInfo := s.GetVChanPositions(c, collectionID, partitionID, false)
 		channelInfos = append(channelInfos, channelInfo)
+		log.Debug("datacoord append channelInfo in GetRecoveryInfo",
+			zap.Any("collectionID", collectionID),
+			zap.Any("channelInfo", channelInfo),
+		)
 	}
 
 	resp.Binlogs = binlogs

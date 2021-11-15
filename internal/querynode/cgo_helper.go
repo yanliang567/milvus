@@ -24,42 +24,11 @@ import "C"
 import (
 	"errors"
 	"fmt"
-	"github.com/golang/protobuf/proto"
+	"unsafe"
+
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
-	"unsafe"
 )
-
-// ProtoCGo is protobuf created by go side,
-// passed to c side
-// memory is managed by go GC
-type ProtoCGo struct {
-	CProto C.CProto
-	blob   []byte
-}
-
-// MarshalForCGo convert golang proto to ProtoCGo
-func MarshalForCGo(msg proto.Message) (*ProtoCGo, error) {
-	blob, err := proto.Marshal(msg)
-	if err != nil {
-		return nil, err
-	}
-
-	protoCGo := &ProtoCGo{
-		blob: blob,
-		CProto: C.CProto{
-			proto_size: (C.int64_t)(len(blob)),
-			proto_blob: unsafe.Pointer(&blob[0]),
-		},
-	}
-	return protoCGo, nil
-}
-
-// destruct free ProtoCGo go memory
-func (protoCGo *ProtoCGo) destruct() {
-	// NOTE: at ProtoCGo, blob is go heap memory, no need to destruct
-	protoCGo.blob = nil
-}
 
 // HandleCStatus deal with the error returned from CGO
 func HandleCStatus(status *C.CStatus, extraInfo string) error {
@@ -78,14 +47,4 @@ func HandleCStatus(status *C.CStatus, extraInfo string) error {
 	logMsg := fmt.Sprintf("%s, C Runtime Exception: %s\n", extraInfo, finalMsg)
 	log.Warn(logMsg)
 	return errors.New(finalMsg)
-}
-
-// HandleCProto deal with the result proto returned from CGO
-func HandleCProto(cRes *C.CProto, msg proto.Message) error {
-	// Standalone CProto is protobuf created by C side,
-	// Passed from c side
-	// memory is managed manually
-	blob := C.GoBytes(unsafe.Pointer(cRes.proto_blob), C.int32_t(cRes.proto_size))
-	defer C.free(cRes.proto_blob)
-	return proto.Unmarshal(blob, msg)
 }

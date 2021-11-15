@@ -83,9 +83,7 @@ func TestFlowGraphInsertBufferNodeCreate(t *testing.T) {
 
 	memkv := memkv.NewMemoryKV()
 
-	fm := NewRendezvousFlushManager(&allocator{}, memkv, replica, func(*segmentFlushPack) error {
-		return nil
-	})
+	fm := NewRendezvousFlushManager(&allocator{}, memkv, replica, func(*segmentFlushPack) {})
 
 	flushChan := make(chan flushMsg, 100)
 
@@ -182,9 +180,7 @@ func TestFlowGraphInsertBufferNode_Operate(t *testing.T) {
 
 	memkv := memkv.NewMemoryKV()
 
-	fm := NewRendezvousFlushManager(NewAllocatorFactory(), memkv, replica, func(*segmentFlushPack) error {
-		return nil
-	})
+	fm := NewRendezvousFlushManager(NewAllocatorFactory(), memkv, replica, func(*segmentFlushPack) {})
 
 	flushChan := make(chan flushMsg, 100)
 	c := &nodeConfig{
@@ -389,14 +385,16 @@ func TestFlowGraphInsertBufferNode_AutoFlush(t *testing.T) {
 	memkv := memkv.NewMemoryKV()
 	wg := sync.WaitGroup{}
 
-	fm := NewRendezvousFlushManager(NewAllocatorFactory(), memkv, colRep, func(pack *segmentFlushPack) error {
+	fm := NewRendezvousFlushManager(NewAllocatorFactory(), memkv, colRep, func(pack *segmentFlushPack) {
 		fpMut.Lock()
 		flushPacks = append(flushPacks, pack)
 		fpMut.Unlock()
 		colRep.listNewSegmentsStartPositions()
 		colRep.listSegmentsCheckPoints()
+		if pack.flushed || pack.dropped {
+			colRep.segmentFlushed(pack.segmentID)
+		}
 		wg.Done()
-		return nil
 	})
 
 	flushChan := make(chan flushMsg, 100)
@@ -658,9 +656,7 @@ func TestInsertBufferNode_bufferInsertMsg(t *testing.T) {
 
 	memkv := memkv.NewMemoryKV()
 
-	fm := NewRendezvousFlushManager(&allocator{}, memkv, replica, func(*segmentFlushPack) error {
-		return nil
-	})
+	fm := NewRendezvousFlushManager(&allocator{}, memkv, replica, func(*segmentFlushPack) {})
 
 	flushChan := make(chan flushMsg, 100)
 	c := &nodeConfig{

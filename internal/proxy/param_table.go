@@ -44,10 +44,9 @@ type ParamTable struct {
 
 	Alias string
 
-	EtcdEndpoints    []string
-	MetaRootPath     string
-	RootCoordAddress string
-	PulsarAddress    string
+	EtcdEndpoints []string
+	MetaRootPath  string
+	PulsarAddress string
 
 	RocksmqPath string // not used in Proxy
 
@@ -211,18 +210,12 @@ func (pt *ParamTable) initMaxDimension() {
 }
 
 func (pt *ParamTable) initDefaultPartitionName() {
-	name, err := pt.Load("common.defaultPartitionName")
-	if err != nil {
-		panic(err)
-	}
+	name := pt.LoadWithDefault("common.defaultPartitionName", "_default")
 	pt.DefaultPartitionName = name
 }
 
 func (pt *ParamTable) initDefaultIndexName() {
-	name, err := pt.Load("common.defaultIndexName")
-	if err != nil {
-		panic(err)
-	}
+	name := pt.LoadWithDefault("common.defaultIndexName", "_default_idx")
 	pt.DefaultIndexName = name
 }
 

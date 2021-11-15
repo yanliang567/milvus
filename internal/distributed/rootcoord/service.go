@@ -78,10 +78,12 @@ func (s *Server) DropAlias(ctx context.Context, request *milvuspb.DropAliasReque
 	return s.rootCoord.DropAlias(ctx, request)
 }
 
+// AlterAlias alters the alias for the specified collection.
 func (s *Server) AlterAlias(ctx context.Context, request *milvuspb.AlterAliasRequest) (*commonpb.Status, error) {
 	return s.rootCoord.AlterAlias(ctx, request)
 }
 
+// NewServer create a new RootCoord grpc server.
 func NewServer(ctx context.Context, factory msgstream.Factory) (*Server, error) {
 	ctx1, cancel := context.WithCancel(ctx)
 	s := &Server{
@@ -122,6 +124,7 @@ func (s *Server) setClient() {
 	}
 }
 
+// Run initializes and starts RootCoord's grpc service.
 func (s *Server) Run() error {
 	if err := s.init(); err != nil {
 		return err

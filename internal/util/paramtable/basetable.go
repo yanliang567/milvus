@@ -116,7 +116,6 @@ func (gp *BaseTable) loadFromComponentYaml() bool {
 		}
 		return true
 	}
-	log.Debug("failed to find component.yaml in config, skip..")
 	return false
 }
 
@@ -128,7 +127,6 @@ func (gp *BaseTable) loadFromCommonYaml() bool {
 		}
 		return true
 	}
-	log.Debug("failed to find common.yaml in config, skip..")
 	return false
 }
 
@@ -180,62 +178,6 @@ func (gp *BaseTable) tryloadFromEnv() {
 		rocksmqPath = path
 	}
 	gp.Save("_RocksmqPath", rocksmqPath)
-
-	rootCoordAddress := os.Getenv("ROOT_COORD_ADDRESS")
-	if rootCoordAddress == "" {
-		rootCoordHost, err := gp.Load("rootCoord.address")
-		if err != nil {
-			panic(err)
-		}
-		port, err := gp.Load("rootCoord.port")
-		if err != nil {
-			panic(err)
-		}
-		rootCoordAddress = rootCoordHost + ":" + port
-	}
-	gp.Save("_RootCoordAddress", rootCoordAddress)
-
-	indexCoordAddress := os.Getenv("INDEX_COORD_ADDRESS")
-	if indexCoordAddress == "" {
-		indexCoordHost, err := gp.Load("indexCoord.address")
-		if err != nil {
-			panic(err)
-		}
-		port, err := gp.Load("indexCoord.port")
-		if err != nil {
-			panic(err)
-		}
-		indexCoordAddress = indexCoordHost + ":" + port
-	}
-	gp.Save("_IndexCoordAddress", indexCoordAddress)
-
-	queryCoordAddress := os.Getenv("QUERY_COORD_ADDRESS")
-	if queryCoordAddress == "" {
-		serviceHost, err := gp.Load("queryCoord.address")
-		if err != nil {
-			panic(err)
-		}
-		port, err := gp.Load("queryCoord.port")
-		if err != nil {
-			panic(err)
-		}
-		queryCoordAddress = serviceHost + ":" + port
-	}
-	gp.Save("_QueryCoordAddress", queryCoordAddress)
-
-	dataCoordAddress := os.Getenv("DATA_COORD_ADDRESS")
-	if dataCoordAddress == "" {
-		serviceHost, err := gp.Load("dataCoord.address")
-		if err != nil {
-			panic(err)
-		}
-		port, err := gp.Load("dataCoord.port")
-		if err != nil {
-			panic(err)
-		}
-		dataCoordAddress = serviceHost + ":" + port
-	}
-	gp.Save("_DataCoordAddress", dataCoordAddress)
 
 	insertBufferFlushSize := os.Getenv("DATA_NODE_IBUFSIZE")
 	if insertBufferFlushSize == "" {

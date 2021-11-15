@@ -9,25 +9,20 @@
 // is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
-#include <cstring>
-#include <cstdint>
-
+#include "common/CGoHelper.h"
+#include "common/LoadInfo.h"
+#include "common/Types.h"
+#include "common/type_c.h"
+#include "knowhere/index/vector_index/adapter/VectorAdapter.h"
 #include "log/Log.h"
+#include "segcore/Collection.h"
 #include "segcore/SegmentGrowing.h"
 #include "segcore/SegmentSealed.h"
-#include "segcore/Collection.h"
 #include "segcore/segment_c.h"
-#include "common/LoadInfo.h"
-#include "common/type_c.h"
-#include <knowhere/index/vector_index/VecIndex.h>
-#include <knowhere/index/vector_index/adapter/VectorAdapter.h>
-#include "common/Types.h"
-#include "common/CGoHelper.h"
-#include <iostream>
 
 //////////////////////////////    common interfaces    //////////////////////////////
 CSegmentInterface
-NewSegment(CCollection collection, uint64_t segment_id, SegmentType seg_type) {
+NewSegment(CCollection collection, SegmentType seg_type) {
     auto col = (milvus::segcore::Collection*)collection;
 
     std::unique_ptr<milvus::segcore::SegmentInterface> segment;

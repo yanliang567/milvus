@@ -121,6 +121,7 @@ const (
 	MsgType_RemoveQueryChannels     MsgType = 511
 	// DATA SERVICE
 	MsgType_SegmentInfo MsgType = 600
+	MsgType_SystemInfo  MsgType = 601
 	// SYSTEM CONTROL
 	MsgType_TimeTick          MsgType = 1200
 	MsgType_QueryNodeStats    MsgType = 1201
@@ -192,7 +193,7 @@ func (mudf *MemUDFactory) NewUnmarshalDispatcher() *UnmarshalDispatcher
 ```
 
 ```go
-// MsgStream
+// MsgStream is an interface that can be used to produce and consume message on message queue
 
 // Interface
 type MsgStream interface {
