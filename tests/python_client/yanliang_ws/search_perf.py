@@ -56,15 +56,14 @@ def search(collection, search_vectors, topk, threads_num, times_per_thread):
 
 
 if __name__ == '__main__':
-
-    collection_name = sys.argv[1]       # collection mame
-    th = int(sys.argv[2])               # search thread num
-    per_thread = int(sys.argv[3])       # times per thread
-    host = "10.98.0.7"
+    host = sys.argv[1]
+    collection_name = sys.argv[2]       # collection mame
+    th = int(sys.argv[3])               # search thread num
+    per_thread = int(sys.argv[4])       # times per thread
     port = 19530
     conn = connections.connect('default', host=host, port=port)
 
-    collection_name = "perf_50m1"    # f"search_{collection_name}_threads{th}_per{per_thread}"
+    # collection_name = "perf_50m1"    # f"search_{collection_name}_threads{th}_per{per_thread}"
     logging.basicConfig(filename=f"/tmp/{collection_name}.log",
                         level=logging.INFO, format=LOG_FORMAT, datefmt=DATE_FORMAT)
     logging.info("search perf test....")

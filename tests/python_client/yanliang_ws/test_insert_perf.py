@@ -11,7 +11,8 @@ LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 DATE_FORMAT = "%m/%d/%Y %H:%M:%S %p"
 
 prefix = "ins_"
-nbs = [1, 100, 1000, 10*1000, 20*1000, 40*1000, 60*1000, 80*1000, 100*1000]
+# nbs = [1, 100, 1000, 10*1000, 20*1000, 40*1000, 60*1000, 80*1000, 100*1000]
+nbs =[50*1000]
 dim = 128
 auto_id = False
 
@@ -48,11 +49,11 @@ def insert(data, threads_num, ins_times_per_thread, collection):
 
 
 if __name__ == '__main__':
-    shards = int(sys.argv[1])   # shards number
-    th = int(sys.argv[2])       # insert thread num
-    per_thread = int(sys.argv[3])     # insert times per thread
+    host = sys.argv[1]
+    shards = int(sys.argv[2])   # shards number
+    th = int(sys.argv[3])       # insert thread num
+    per_thread = int(sys.argv[4])     # insert times per thread
 
-    host = "10.98.0.8"
     port = 19530
     conn = connections.connect('default', host=host, port=port)
     log_name = f"insert_shards{shards}_threads{th}_per{per_thread}"
@@ -106,9 +107,9 @@ if __name__ == '__main__':
         logging.info(f"Insert  {collection_name} cost {round(t2, 3)}, "
                      f"req_per_second {req_per_sec}, entities_throughput {entities_throughput}")
 
-        # t0 = time.time()
-        # logging.info(f"collection {collection_name}, num_entities: {collection.num_entities}")
-        # tt = time.time() - t0
-        # logging.info(f"assert flush: {tt}")
+        t0 = time.time()
+        logging.info(f"collection {collection_name}, num_entities: {collection.num_entities}")
+        tt = time.time() - t0
+        logging.info(f"assert flush: {tt}")
 
 
