@@ -19,6 +19,7 @@
 #include "segcore/SegmentGrowing.h"
 #include "segcore/SegmentSealed.h"
 #include "segcore/segment_c.h"
+#include "segcore/SimilarityCorelation.h"
 
 //////////////////////////////    common interfaces    //////////////////////////////
 CSegmentInterface
@@ -27,9 +28,6 @@ NewSegment(CCollection collection, SegmentType seg_type) {
 
     std::unique_ptr<milvus::segcore::SegmentInterface> segment;
     switch (seg_type) {
-        case Invalid:
-            std::cout << "invalid segment type" << std::endl;
-            break;
         case Growing:
             segment = milvus::segcore::CreateGrowingSegment(col->get_schema());
             break;
@@ -38,10 +36,10 @@ NewSegment(CCollection collection, SegmentType seg_type) {
             segment = milvus::segcore::CreateSealedSegment(col->get_schema());
             break;
         default:
-            std::cout << "invalid segment type" << std::endl;
+            LOG_SEGCORE_ERROR_ << "invalid segment type " << (int32_t)seg_type;
+            break;
     }
 
-    // std::cout << "create segment " << segment_id << std::endl;
     return (void*)segment.release();
 }
 
@@ -70,7 +68,8 @@ Search(CSegmentInterface c_segment,
         auto plan = (milvus::query::Plan*)c_plan;
         auto phg_ptr = reinterpret_cast<const milvus::query::PlaceholderGroup*>(c_placeholder_group);
         *search_result = segment->Search(plan, *phg_ptr, timestamp);
-        if (plan->plan_node_->search_info_.metric_type_ != milvus::MetricType::METRIC_INNER_PRODUCT) {
+        // if (plan->plan_node_->search_info_.metric_type_ != milvus::MetricType::METRIC_INNER_PRODUCT) {
+        if (!milvus::segcore::PositivelyRelated(plan->plan_node_->search_info_.metric_type_)) {
             for (auto& dis : search_result->result_distances_) {
                 dis *= -1;
             }

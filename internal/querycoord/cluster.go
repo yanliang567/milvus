@@ -23,12 +23,15 @@ import (
 	"github.com/golang/protobuf/proto"
 	"go.uber.org/zap"
 
+	"github.com/milvus-io/milvus/internal/kv"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
+	minioKV "github.com/milvus-io/milvus/internal/kv/minio"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
+	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
@@ -78,6 +81,7 @@ type Cluster interface {
 	getSessionVersion() int64
 
 	getMetrics(ctx context.Context, in *milvuspb.GetMetricsRequest) []queryNodeGetMetricsResponse
+	estimateSegmentsSize(segments *querypb.LoadSegmentsRequest) (int64, error)
 }
 
 type newQueryNodeFn func(ctx context.Context, address string, id UniqueID, kv *etcdkv.EtcdKV) (Node, error)
@@ -94,6 +98,7 @@ type queryNodeCluster struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	client *etcdkv.EtcdKV
+	dataKV kv.DataKV
 
 	session        *sessionutil.Session
 	sessionVersion int64
@@ -104,6 +109,7 @@ type queryNodeCluster struct {
 	newNodeFn        newQueryNodeFn
 	segmentAllocator SegmentAllocatePolicy
 	channelAllocator ChannelAllocatePolicy
+	segSizeEstimator func(request *querypb.LoadSegmentsRequest, dataKV kv.DataKV) (int64, error)
 }
 
 func newQueryNodeCluster(ctx context.Context, clusterMeta Meta, kv *etcdkv.EtcdKV, newNodeFn newQueryNodeFn, session *sessionutil.Session) (Cluster, error) {
@@ -119,8 +125,23 @@ func newQueryNodeCluster(ctx context.Context, clusterMeta Meta, kv *etcdkv.EtcdK
 		newNodeFn:        newNodeFn,
 		segmentAllocator: defaultSegAllocatePolicy(),
 		channelAllocator: defaultChannelAllocatePolicy(),
+		segSizeEstimator: defaultSegEstimatePolicy(),
 	}
 	err := c.reloadFromKV()
+	if err != nil {
+		return nil, err
+	}
+
+	option := &minioKV.Option{
+		Address:           Params.MinioEndPoint,
+		AccessKeyID:       Params.MinioAccessKeyID,
+		SecretAccessKeyID: Params.MinioSecretAccessKey,
+		UseSSL:            Params.MinioUseSSLStr,
+		CreateBucket:      true,
+		BucketName:        Params.MinioBucketName,
+	}
+
+	c.dataKV, err = minioKV.NewMinIOKV(ctx, option)
 	if err != nil {
 		return nil, err
 	}
@@ -229,13 +250,13 @@ func (c *queryNodeCluster) loadSegments(ctx context.Context, nodeID int64, in *q
 	if node, ok := c.nodes[nodeID]; ok {
 		err := node.loadSegments(ctx, in)
 		if err != nil {
-			log.Debug("LoadSegments: queryNode load segments error", zap.Int64("nodeID", nodeID), zap.String("error info", err.Error()))
+			log.Debug("loadSegments: queryNode load segments error", zap.Int64("nodeID", nodeID), zap.String("error info", err.Error()))
 			return err
 		}
 
 		return nil
 	}
-	return fmt.Errorf("LoadSegments: Can't find query node by nodeID, nodeID = %d", nodeID)
+	return fmt.Errorf("loadSegments: Can't find query node by nodeID, nodeID = %d", nodeID)
 }
 
 func (c *queryNodeCluster) releaseSegments(ctx context.Context, nodeID int64, in *querypb.ReleaseSegmentsRequest) error {
@@ -249,14 +270,14 @@ func (c *queryNodeCluster) releaseSegments(ctx context.Context, nodeID int64, in
 
 		err := node.releaseSegments(ctx, in)
 		if err != nil {
-			log.Debug("ReleaseSegments: queryNode release segments error", zap.Int64("nodeID", nodeID), zap.String("error info", err.Error()))
+			log.Debug("releaseSegments: queryNode release segments error", zap.Int64("nodeID", nodeID), zap.String("error info", err.Error()))
 			return err
 		}
 
 		return nil
 	}
 
-	return fmt.Errorf("ReleaseSegments: Can't find query node by nodeID, nodeID = %d", nodeID)
+	return fmt.Errorf("releaseSegments: Can't find query node by nodeID, nodeID = %d", nodeID)
 }
 
 func (c *queryNodeCluster) watchDmChannels(ctx context.Context, nodeID int64, in *querypb.WatchDmChannelsRequest) error {
@@ -266,7 +287,7 @@ func (c *queryNodeCluster) watchDmChannels(ctx context.Context, nodeID int64, in
 	if node, ok := c.nodes[nodeID]; ok {
 		err := node.watchDmChannels(ctx, in)
 		if err != nil {
-			log.Debug("WatchDmChannels: queryNode watch dm channel error", zap.String("error", err.Error()))
+			log.Debug("watchDmChannels: queryNode watch dm channel error", zap.String("error", err.Error()))
 			return err
 		}
 		channels := make([]string, 0)
@@ -277,13 +298,13 @@ func (c *queryNodeCluster) watchDmChannels(ctx context.Context, nodeID int64, in
 		collectionID := in.CollectionID
 		err = c.clusterMeta.addDmChannel(collectionID, nodeID, channels)
 		if err != nil {
-			log.Debug("WatchDmChannels: queryNode watch dm channel error", zap.String("error", err.Error()))
+			log.Debug("watchDmChannels: queryNode watch dm channel error", zap.String("error", err.Error()))
 			return err
 		}
 
 		return nil
 	}
-	return fmt.Errorf("WatchDmChannels: Can't find query node by nodeID, nodeID = %d", nodeID)
+	return fmt.Errorf("watchDmChannels: Can't find query node by nodeID, nodeID = %d", nodeID)
 }
 
 func (c *queryNodeCluster) watchDeltaChannels(ctx context.Context, nodeID int64, in *querypb.WatchDeltaChannelsRequest) error {
@@ -293,18 +314,18 @@ func (c *queryNodeCluster) watchDeltaChannels(ctx context.Context, nodeID int64,
 	if node, ok := c.nodes[nodeID]; ok {
 		err := node.watchDeltaChannels(ctx, in)
 		if err != nil {
-			log.Debug("WatchDeltaChannels: queryNode watch dm channel error", zap.String("error", err.Error()))
+			log.Debug("watchDeltaChannels: queryNode watch dm channel error", zap.String("error", err.Error()))
 			return err
 		}
 		err = c.clusterMeta.setDeltaChannel(in.CollectionID, in.Infos)
 		if err != nil {
-			log.Debug("WatchDeltaChannels: queryNode watch delta channel error", zap.String("error", err.Error()))
+			log.Debug("watchDeltaChannels: queryNode watch delta channel error", zap.String("error", err.Error()))
 			return err
 		}
 
 		return nil
 	}
-	return errors.New("WatchDeltaChannels: Can't find query node by nodeID ")
+	return errors.New("watchDeltaChannels: Can't find query node by nodeID ")
 }
 
 func (c *queryNodeCluster) hasWatchedDeltaChannel(ctx context.Context, nodeID int64, collectionID UniqueID) bool {
@@ -327,13 +348,13 @@ func (c *queryNodeCluster) addQueryChannel(ctx context.Context, nodeID int64, in
 	if node, ok := c.nodes[nodeID]; ok {
 		err := node.addQueryChannel(ctx, in)
 		if err != nil {
-			log.Debug("AddQueryChannel: queryNode add query channel error", zap.String("error", err.Error()))
+			log.Debug("addQueryChannel: queryNode add query channel error", zap.String("error", err.Error()))
 			return err
 		}
 		return nil
 	}
 
-	return fmt.Errorf("AddQueryChannel: can't find query node by nodeID, nodeID = %d", nodeID)
+	return fmt.Errorf("addQueryChannel: can't find query node by nodeID, nodeID = %d", nodeID)
 }
 func (c *queryNodeCluster) removeQueryChannel(ctx context.Context, nodeID int64, in *querypb.RemoveQueryChannelRequest) error {
 	c.Lock()
@@ -342,14 +363,14 @@ func (c *queryNodeCluster) removeQueryChannel(ctx context.Context, nodeID int64,
 	if node, ok := c.nodes[nodeID]; ok {
 		err := node.removeQueryChannel(ctx, in)
 		if err != nil {
-			log.Debug("RemoveQueryChannel: queryNode remove query channel error", zap.String("error", err.Error()))
+			log.Debug("removeQueryChannel: queryNode remove query channel error", zap.String("error", err.Error()))
 			return err
 		}
 
 		return nil
 	}
 
-	return fmt.Errorf("RemoveQueryChannel: can't find query node by nodeID, nodeID = %d", nodeID)
+	return fmt.Errorf("removeQueryChannel: can't find query node by nodeID, nodeID = %d", nodeID)
 }
 
 func (c *queryNodeCluster) releaseCollection(ctx context.Context, nodeID int64, in *querypb.ReleaseCollectionRequest) error {
@@ -703,4 +724,61 @@ func (c *queryNodeCluster) allocateSegmentsToQueryNode(ctx context.Context, reqs
 
 func (c *queryNodeCluster) allocateChannelsToQueryNode(ctx context.Context, reqs []*querypb.WatchDmChannelsRequest, wait bool, excludeNodeIDs []int64) error {
 	return c.channelAllocator(ctx, reqs, c, wait, excludeNodeIDs)
+}
+
+func (c *queryNodeCluster) estimateSegmentsSize(segments *querypb.LoadSegmentsRequest) (int64, error) {
+	return c.segSizeEstimator(segments, c.dataKV)
+}
+
+func defaultSegEstimatePolicy() segEstimatePolicy {
+	return estimateSegmentsSize
+}
+
+type segEstimatePolicy func(request *querypb.LoadSegmentsRequest, dataKv kv.DataKV) (int64, error)
+
+func estimateSegmentsSize(segments *querypb.LoadSegmentsRequest, kvClient kv.DataKV) (int64, error) {
+	segmentSize := int64(0)
+
+	//TODO:: collection has multi vector field
+	//vecFields := make([]int64, 0)
+	//for _, field := range segments.Schema.Fields {
+	//	if field.DataType == schemapb.DataType_BinaryVector || field.DataType == schemapb.DataType_FloatVector {
+	//		vecFields = append(vecFields, field.FieldID)
+	//	}
+	//}
+	// get fields data size, if len(indexFieldIDs) == 0, vector field would be involved in fieldBinLogs
+	for _, loadInfo := range segments.Infos {
+		// get index size
+		if loadInfo.EnableIndex {
+			for _, pathInfo := range loadInfo.IndexPathInfos {
+				for _, path := range pathInfo.IndexFilePaths {
+					indexSize, err := storage.EstimateMemorySize(kvClient, path)
+					if err != nil {
+						indexSize, err = storage.GetBinlogSize(kvClient, path)
+						if err != nil {
+							return 0, err
+						}
+					}
+					segmentSize += indexSize
+				}
+			}
+			continue
+		}
+
+		// get binlog size
+		for _, binlogPath := range loadInfo.BinlogPaths {
+			for _, path := range binlogPath.Binlogs {
+				binlogSize, err := storage.EstimateMemorySize(kvClient, path)
+				if err != nil {
+					binlogSize, err = storage.GetBinlogSize(kvClient, path)
+					if err != nil {
+						return 0, err
+					}
+				}
+				segmentSize += binlogSize
+			}
+		}
+	}
+
+	return segmentSize, nil
 }

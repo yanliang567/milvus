@@ -285,6 +285,7 @@ func (s *Server) Stop() error {
 	return nil
 }
 
+// GetComponentStates gets the component states of RootCoord.
 func (s *Server) GetComponentStates(ctx context.Context, req *internalpb.GetComponentStatesRequest) (*internalpb.ComponentStates, error) {
 	return s.rootCoord.GetComponentStates(ctx)
 }
@@ -329,14 +330,17 @@ func (s *Server) CreatePartition(ctx context.Context, in *milvuspb.CreatePartiti
 	return s.rootCoord.CreatePartition(ctx, in)
 }
 
+// DropPartition drops the specified partition.
 func (s *Server) DropPartition(ctx context.Context, in *milvuspb.DropPartitionRequest) (*commonpb.Status, error) {
 	return s.rootCoord.DropPartition(ctx, in)
 }
 
+// HasPartition checks whether a partition is created.
 func (s *Server) HasPartition(ctx context.Context, in *milvuspb.HasPartitionRequest) (*milvuspb.BoolResponse, error) {
 	return s.rootCoord.HasPartition(ctx, in)
 }
 
+// ShowPartitions gets all partitions for the specified collection.
 func (s *Server) ShowPartitions(ctx context.Context, in *milvuspb.ShowPartitionsRequest) (*milvuspb.ShowPartitionsResponse, error) {
 	return s.rootCoord.ShowPartitions(ctx, in)
 }
@@ -346,10 +350,12 @@ func (s *Server) CreateIndex(ctx context.Context, in *milvuspb.CreateIndexReques
 	return s.rootCoord.CreateIndex(ctx, in)
 }
 
+// DropIndex drops the index.
 func (s *Server) DropIndex(ctx context.Context, in *milvuspb.DropIndexRequest) (*commonpb.Status, error) {
 	return s.rootCoord.DropIndex(ctx, in)
 }
 
+// DescribeIndex get the index information for the specified index name.
 func (s *Server) DescribeIndex(ctx context.Context, in *milvuspb.DescribeIndexRequest) (*milvuspb.DescribeIndexResponse, error) {
 	return s.rootCoord.DescribeIndex(ctx, in)
 }

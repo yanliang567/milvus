@@ -625,7 +625,7 @@ func (s *Segment) segmentInsert(offset int64, entityIDs *[]UniqueID, timestamps 
 
 	assert.Equal(nil, numOfRow, len(*records))
 	if numOfRow != len(*records) {
-		return errors.New("EntityIDs row num not equal to length of records")
+		return errors.New("entityIDs row num not equal to length of records")
 	}
 
 	var rawData = make([]byte, numOfRow*sizeofPerRow)
@@ -674,7 +674,7 @@ func (s *Segment) segmentDelete(offset int64, entityIDs *[]UniqueID, timestamps 
 	}
 
 	if len(*entityIDs) != len(*timestamps) {
-		return errors.New("Length of entityIDs not equal to length of timestamps")
+		return errors.New("length of entityIDs not equal to length of timestamps")
 	}
 
 	var cOffset = C.long(offset)

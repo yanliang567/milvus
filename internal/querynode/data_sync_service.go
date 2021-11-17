@@ -189,6 +189,7 @@ func (dsService *dataSyncService) removeCollectionFlowGraph(collectionID UniqueI
 	delete(dsService.collectionFlowGraphs, collectionID)
 }
 
+// removeCollectionDeltaFlowGraph would remove the collection delta flow graph by collectionID
 func (dsService *dataSyncService) removeCollectionDeltaFlowGraph(collectionID UniqueID) {
 	dsService.mu.Lock()
 	defer dsService.mu.Unlock()
@@ -204,6 +205,7 @@ func (dsService *dataSyncService) removeCollectionDeltaFlowGraph(collectionID Un
 }
 
 // partition flow graph
+// addPartitionFlowGraph adds a partition flow graph to dataSyncService
 func (dsService *dataSyncService) addPartitionFlowGraph(collectionID UniqueID, partitionID UniqueID, vChannels []string) {
 	dsService.mu.Lock()
 	defer dsService.mu.Unlock()
@@ -224,6 +226,7 @@ func (dsService *dataSyncService) addPartitionFlowGraph(collectionID UniqueID, p
 	}
 }
 
+// getPartitionFlowGraphs returns the partition flow graph by partitionID
 func (dsService *dataSyncService) getPartitionFlowGraphs(partitionID UniqueID, vChannels []string) (map[Channel]*queryNodeFlowGraph, error) {
 	dsService.mu.Lock()
 	defer dsService.mu.Unlock()
