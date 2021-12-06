@@ -15,9 +15,13 @@ prefix = "ins_"
 nbs = [50000]
 dim = 128
 auto_id = False
+build = True
+# index_params = {"index_type": "IVF_SQ8", "params": {"nlist": 1024}, "metric_type": "L2"}
+# index_params = {"index_type": "IVF_FLAT", "params": {"nlist": 2048}, "metric_type": "L2"}
+index_params = {"index_type": "HNSW", "params": {"M": 8, "efConstruction": 200}, "metric_type": "L2"}
 
 
-def insert(data, threads_num, ins_times_per_thread, collection):
+def do_insert(data, threads_num, ins_times_per_thread, collection):
 
     def insert_th(col_w, data, rounds, thread_no):
         for r in range(rounds):
@@ -99,8 +103,11 @@ if __name__ == '__main__':
             embeddings = [[random.random() for _ in range(dim)] for _ in range(nb1)]
             data = [ids, ages, embeddings]
 
+        if build is True:
+            collection.create_index(field_name=embedding_field.name, index_params=index_params)
+
         t1 = time.time()
-        collection = insert(data, th, per_thread, collection)
+        collection = do_insert(data, th, per_thread, collection)
         t2 = time.time() - t1
         req_per_sec = round(per_thread * th / t2, 3)  # how many insert requests response per second
         entities_throughput = round(nb1 * req_per_sec, 3)  # how many entities inserted per second
