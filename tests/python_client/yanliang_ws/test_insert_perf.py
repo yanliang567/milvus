@@ -12,7 +12,7 @@ DATE_FORMAT = "%m/%d/%Y %H:%M:%S %p"
 
 prefix = "ins_"
 # nbs = [1, 100, 1000, 10*1000, 20*1000, 40*1000, 60*1000, 80*1000, 100*1000]
-nbs =[50*1000]
+nbs = [50000]
 dim = 128
 auto_id = False
 
@@ -49,10 +49,10 @@ def insert(data, threads_num, ins_times_per_thread, collection):
 
 
 if __name__ == '__main__':
-    host = sys.argv[1]
-    shards = int(sys.argv[2])   # shards number
-    th = int(sys.argv[3])       # insert thread num
-    per_thread = int(sys.argv[4])     # insert times per thread
+    host = sys.argv[1]  # host address
+    shards = int(sys.argv[2])  # shards number
+    th = int(sys.argv[3])  # insert thread num
+    per_thread = int(sys.argv[4])  # insert times per thread
 
     port = 19530
     conn = connections.connect('default', host=host, port=port)
@@ -102,14 +102,14 @@ if __name__ == '__main__':
         t1 = time.time()
         collection = insert(data, th, per_thread, collection)
         t2 = time.time() - t1
-        req_per_sec = round(per_thread * th / t2, 3)            # how many insert requests response per second
-        entities_throughput = round(nb1 * req_per_sec, 3)         # how many entities inserted per second
+        req_per_sec = round(per_thread * th / t2, 3)  # how many insert requests response per second
+        entities_throughput = round(nb1 * req_per_sec, 3)  # how many entities inserted per second
         logging.info(f"Insert  {collection_name} cost {round(t2, 3)}, "
                      f"req_per_second {req_per_sec}, entities_throughput {entities_throughput}")
 
-        t0 = time.time()
-        logging.info(f"collection {collection_name}, num_entities: {collection.num_entities}")
-        tt = time.time() - t0
-        logging.info(f"assert flush: {tt}")
+        # t0 = time.time()
+        # logging.info(f"collection {collection_name}, num_entities: {collection.num_entities}")
+        # tt = time.time() - t0
+        # logging.info(f"assert flush: {tt}")
 
 

@@ -11,11 +11,13 @@ LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 DATE_FORMAT = "%m/%d/%Y %H:%M:%S %p"
 
 field_name = "embedding"
-search_params_sq8_flat = {"metric_type": "L2", "params": {"nprobe": 8}}
-index_params_sq8 = {"index_type": "IVF_SQ8", "params": {"nlist": 1024}, "metric_type": "L2"}
-index_params_ivfflat = {"index_type": "IVF_FLAT", "params": {"nlist": 2048}, "metric_type": "L2"}
+search_params = {"metric_type": "L2", "params": {"nprobe": 8}}
+index_params = {"index_type": "IVF_SQ8", "params": {"nlist": 1024}, "metric_type": "L2"}
+# index_params = {"index_type": "IVF_FLAT", "params": {"nlist": 2048}, "metric_type": "L2"}
+# index_params = {"index_type": "HNSW", "params": {"M": 8, "efConstruction": 200}, "metric_type": "L2"}
+# search_params = {"metric_type": "L2", "params": {"ef": 64}}
 nqs = [1]
-topks = [1]
+topks = [10]
 dim = 128
 
 
@@ -31,7 +33,7 @@ def search(collection, search_vectors, topk, threads_num, times_per_thread):
         for r in range(rounds):
             t1 = time.time()
             col.search(data=search_vectors, anns_field=field_name,
-                       param=search_params_sq8_flat, limit=topk)
+                       param=search_params, limit=topk)
             t2 = round(time.time() - t1, 3)
             logging.info(f"assert search thread{thread_no} round{r}: {t2}")
 
@@ -47,7 +49,7 @@ def search(collection, search_vectors, topk, threads_num, times_per_thread):
         for r in range(times_per_thread):
             t1 = time.time()
             collection.search(data=search_vectors, anns_field=field_name,
-                              param=search_params_sq8_flat, limit=topk)
+                              param=search_params, limit=topk)
             t2 = round(time.time() - t1, 3)
             logging.info(f"assert search thread0 round{r}: {t2}")
 
@@ -63,18 +65,17 @@ if __name__ == '__main__':
     port = 19530
     conn = connections.connect('default', host=host, port=port)
 
-    # collection_name = "perf_50m1"    # f"search_{collection_name}_threads{th}_per{per_thread}"
     logging.basicConfig(filename=f"/tmp/{collection_name}.log",
                         level=logging.INFO, format=LOG_FORMAT, datefmt=DATE_FORMAT)
     logging.info("search perf test....")
 
     # build index
     collection = Collection(name=collection_name)
-    logging.info(f"index param: {index_params_ivfflat}")
-    logging.info(f"search_param: {search_params_sq8_flat}")
+    logging.info(f"index param: {index_params}")
+    logging.info(f"search_param: {search_params}")
 
     t1 = time.time()
-    collection.create_index(field_name=field_name, index_params=index_params_ivfflat)
+    collection.create_index(field_name=field_name, index_params=index_params)
     t2 = round(time.time() - t1, 3)
     logging.info(f"assert build index {collection_name}: {t2}")
 
