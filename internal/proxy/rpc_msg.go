@@ -14,27 +14,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package components
+package proxy
 
-import (
-	"context"
-)
+import "fmt"
 
-// MsgStream is an empty struct
-type MsgStream struct {
+func rpcReceived(method string) string {
+	return fmt.Sprintf("%s received", method)
 }
 
-// NewMsgStreamCoord nil
-func NewMsgStreamCoord(ctx context.Context) (*MsgStream, error) {
-	return nil, nil
+func rpcEnqueued(method string) string {
+	return fmt.Sprintf("%s enqueued", method)
 }
 
-// Run nil
-func (ps *MsgStream) Run() error {
-	return nil
+func rpcDone(method string) string {
+	return fmt.Sprintf("%s done", method)
 }
 
-// Stop nil
-func (ps *MsgStream) Stop() error {
-	return nil
+func rpcFailedToEnqueue(method string) string {
+	return fmt.Sprintf("%s failed to enqueue", method)
+}
+
+func rpcFailedToWaitToFinish(method string) string {
+	return fmt.Sprintf("%s failed to WaitToFinish", method)
 }
