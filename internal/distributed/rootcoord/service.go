@@ -22,6 +22,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -44,6 +45,7 @@ import (
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 	"github.com/milvus-io/milvus/internal/util/trace"
+	"google.golang.org/grpc/keepalive"
 )
 
 // Server grpc wrapper
@@ -217,7 +219,15 @@ func (s *Server) startGrpc() error {
 
 func (s *Server) startGrpcLoop(grpcPort int) {
 	defer s.wg.Done()
+	var kaep = keepalive.EnforcementPolicy{
+		MinTime:             5 * time.Second, // If a client pings more than once every 5 seconds, terminate the connection
+		PermitWithoutStream: true,            // Allow pings even when there are no active streams
+	}
 
+	var kasp = keepalive.ServerParameters{
+		Time:    60 * time.Second, // Ping the client if it is idle for 60 seconds to ensure the connection is still active
+		Timeout: 10 * time.Second, // Wait 10 second for the ping ack before assuming the connection is dead
+	}
 	log.Debug("start grpc ", zap.Int("port", grpcPort))
 	lis, err := net.Listen("tcp", ":"+strconv.Itoa(grpcPort))
 	if err != nil {
@@ -231,6 +241,8 @@ func (s *Server) startGrpcLoop(grpcPort int) {
 
 	opts := trace.GetInterceptorOpts()
 	s.grpcServer = grpc.NewServer(
+		grpc.KeepaliveEnforcementPolicy(kaep),
+		grpc.KeepaliveParams(kasp),
 		grpc.MaxRecvMsgSize(Params.ServerMaxRecvSize),
 		grpc.MaxSendMsgSize(Params.ServerMaxSendSize),
 		grpc.UnaryInterceptor(grpc_opentracing.UnaryServerInterceptor(opts...)),
@@ -252,33 +264,36 @@ func (s *Server) start() error {
 }
 
 func (s *Server) Stop() error {
+	log.Debug("Rootcoord stop", zap.String("Address", Params.Address))
 	if s.closer != nil {
 		if err := s.closer.Close(); err != nil {
-			log.Error("close opentracing", zap.Error(err))
+			log.Error("Failed to close opentracing", zap.Error(err))
 		}
 	}
 	if s.indexCoord != nil {
 		if err := s.indexCoord.Stop(); err != nil {
-			log.Debug("close indexCoord client", zap.Error(err))
+			log.Error("Failed to close indexCoord client", zap.Error(err))
 		}
 	}
 	if s.dataCoord != nil {
 		if err := s.dataCoord.Stop(); err != nil {
-			log.Debug("close dataCoord client", zap.Error(err))
+			log.Error("Failed to close dataCoord client", zap.Error(err))
 		}
 	}
 	if s.queryCoord != nil {
 		if err := s.queryCoord.Stop(); err != nil {
-			log.Debug("close queryCoord client", zap.Error(err))
+			log.Error("Failed to close queryCoord client", zap.Error(err))
 		}
 	}
 	if s.rootCoord != nil {
 		if err := s.rootCoord.Stop(); err != nil {
-			log.Debug("close rootCoord", zap.Error(err))
+			log.Error("Failed to close close rootCoord", zap.Error(err))
 		}
 	}
+	log.Debug("Rootcoord begin to stop grpc server")
 	s.cancel()
 	if s.grpcServer != nil {
+		log.Debug("Graceful stop grpc server...")
 		s.grpcServer.GracefulStop()
 	}
 	s.wg.Wait()
@@ -365,6 +380,7 @@ func (s *Server) AllocTimestamp(ctx context.Context, in *rootcoordpb.AllocTimest
 	return s.rootCoord.AllocTimestamp(ctx, in)
 }
 
+// AllocID allocates an ID
 func (s *Server) AllocID(ctx context.Context, in *rootcoordpb.AllocIDRequest) (*rootcoordpb.AllocIDResponse, error) {
 	return s.rootCoord.AllocID(ctx, in)
 }
@@ -374,21 +390,27 @@ func (s *Server) UpdateChannelTimeTick(ctx context.Context, in *internalpb.Chann
 	return s.rootCoord.UpdateChannelTimeTick(ctx, in)
 }
 
+// DescribeSegment gets meta info of the segment
 func (s *Server) DescribeSegment(ctx context.Context, in *milvuspb.DescribeSegmentRequest) (*milvuspb.DescribeSegmentResponse, error) {
 	return s.rootCoord.DescribeSegment(ctx, in)
 }
 
+// ShowSegments gets all segments
 func (s *Server) ShowSegments(ctx context.Context, in *milvuspb.ShowSegmentsRequest) (*milvuspb.ShowSegmentsResponse, error) {
 	return s.rootCoord.ShowSegments(ctx, in)
 }
 
+// ReleaseDQLMessageStream notifies RootCoord to release and close the search message stream of specific collection.
 func (s *Server) ReleaseDQLMessageStream(ctx context.Context, in *proxypb.ReleaseDQLMessageStreamRequest) (*commonpb.Status, error) {
 	return s.rootCoord.ReleaseDQLMessageStream(ctx, in)
 }
+
+// SegmentFlushCompleted notifies RootCoord that specified segment has been flushed.
 func (s *Server) SegmentFlushCompleted(ctx context.Context, in *datapb.SegmentFlushCompletedMsg) (*commonpb.Status, error) {
 	return s.rootCoord.SegmentFlushCompleted(ctx, in)
 }
 
+// GetMetrics gets the metrics of RootCoord.
 func (s *Server) GetMetrics(ctx context.Context, in *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
 	return s.rootCoord.GetMetrics(ctx, in)
 }

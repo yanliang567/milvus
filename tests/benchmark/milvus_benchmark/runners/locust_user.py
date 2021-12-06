@@ -9,7 +9,7 @@ import locust.stats
 import math
 from locust import LoadTestShape
 from locust.stats import stats_printer, print_stats
-from locust.log import setup_logging, greenlet_exception_logger
+# from locust.log import setup_logging, greenlet_exception_logger
 from milvus_benchmark.client import MilvusClient
 from .locust_task import MilvusTask
 from .locust_tasks import Tasks
@@ -64,10 +64,16 @@ def locust_executor(host, port, collection_name, connection_type="single", run_p
         MyUser.tasks.update(task)
         MyUser.params[op] = value["params"] if "params" in value else None
     logger.info(MyUser.tasks)
+
+    _nq = nq
+    if "insert" in MyUser.params and "ni_per" in MyUser.params["insert"]:
+        ni_per = MyUser.params["insert"]["ni_per"]
+        _nq = ni_per + 10 if ni_per > nq else _nq
+
     MyUser.values = {
         "ids": [random.randint(1000000, 10000000) for _ in range(nb)],
         "get_ids": [random.randint(1, 10000000) for _ in range(nb)],
-        "X": utils.generate_vectors(nq, MyUser.op_info["dimension"])
+        "X": utils.generate_vectors(_nq, MyUser.op_info["dimension"])
     }
 
     # MyUser.tasks = {Tasks.query: 1, Tasks.flush: 1}

@@ -3,6 +3,7 @@ import threading
 import pytest
 import os
 import time
+import json
 from time import sleep
 
 from pymilvus import connections
@@ -11,6 +12,7 @@ from chaos.checker import (CreateChecker, InsertFlushChecker,
 from common.cus_resource_opts import CustomResourceOperations as CusResource
 from common.milvus_sys import MilvusSys
 from utils.util_log import test_log as log
+from utils.util_k8s import wait_pods_ready
 from chaos import chaos_commons as cc
 from common.common_type import CaseLabel
 from chaos import constants
@@ -101,7 +103,7 @@ class TestChaos(TestChaosBase):
         return conn
 
     @pytest.fixture(scope="function", autouse=True)
-    def init_health_checkers(self, connection):
+    def init_health_checkers(self):
         checkers = {
             Op.create: CreateChecker(),
             Op.insert: InsertFlushChecker(),
@@ -132,15 +134,20 @@ class TestChaos(TestChaosBase):
 
         # parse chaos object
         chaos_config = cc.gen_experiment_config(chaos_yaml)
-        self._chaos_config = chaos_config  # cache the chaos config for tear down
-        log.info(f"chaos_config: {chaos_config}")
-
         # parse the test expectations in testcases.yaml
         if self.parser_testcase_config(chaos_yaml) is False:
             log.error("Fail to get the testcase info in testcases.yaml")
             assert False
-        # init report
+
         meta_name = chaos_config.get('metadata', None).get('name', None)
+        release_name = meta_name
+        chaos_config_str = json.dumps(chaos_config)
+        chaos_config_str = chaos_config_str.replace("milvus-chaos", release_name)
+        chaos_config = json.loads(chaos_config_str)
+        self._chaos_config = chaos_config  # cache the chaos config for tear down
+        log.info(f"chaos_config: {chaos_config}")
+
+        # init report
         dir_name = "./reports"
         file_name = f"./reports/{meta_name}.log"
         if not os.path.exists(dir_name):
@@ -191,17 +198,19 @@ class TestChaos(TestChaosBase):
         log.info("chaos deleted")
         log.info(f'Alive threads: {threading.enumerate()}')
         sleep(2)
-
+        # wait all pods ready
+        log.info(f"wait for pods in namespace {constants.CHAOS_NAMESPACE} with label app.kubernetes.io/instance={meta_name}")
+        wait_pods_ready(constants.CHAOS_NAMESPACE, f"app.kubernetes.io/instance={meta_name}")
+        log.info(f"wait for pods in namespace {constants.CHAOS_NAMESPACE} with label release={meta_name}")
+        wait_pods_ready(constants.CHAOS_NAMESPACE, f"release={meta_name}")
+        log.info("all pods are ready")
         # reconnect if needed
         sleep(constants.WAIT_PER_OP * 2)
         cc.reconnect(connections, alias='default')
-
         # reset counting again
         cc.reset_counting(self.health_checkers)
-
         # wait 50s (varies by feature)
         sleep(constants.WAIT_PER_OP * 5)
-
         # assert statistic: all ops success again
         log.info("******3rd assert after chaos deleted: ")
         assert_statistic(self.health_checkers)

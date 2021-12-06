@@ -1,33 +1,34 @@
-// Copyright (C) 2019-2020 Zilliz. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
 // with the License. You may obtain a copy of the License at
 //
-// http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// Unless required by applicable law or agreed to in writing, software distributed under the License
-// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
-// or implied. See the License for the specific language governing permissions and limitations under the License.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package querynode
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"math/rand"
-	"strconv"
-	"strings"
 
 	"go.uber.org/zap"
 
+	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	queryPb "github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
-	"github.com/milvus-io/milvus/internal/util/mqclient"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
@@ -38,17 +39,21 @@ func (node *QueryNode) GetComponentStates(ctx context.Context) (*internalpb.Comp
 			ErrorCode: commonpb.ErrorCode_Success,
 		},
 	}
-	code := node.stateCode.Load().(internalpb.StateCode)
-	if code != internalpb.StateCode_Healthy {
-		err := fmt.Errorf("query node %d is not ready", Params.QueryNodeID)
+	code, ok := node.stateCode.Load().(internalpb.StateCode)
+	if !ok {
+		errMsg := "unexpected error in type assertion"
 		stats.Status = &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
-			Reason:    err.Error(),
+			Reason:    errMsg,
 		}
-		return stats, err
+		return stats, nil
+	}
+	nodeID := common.NotRegisteredID
+	if node.session != nil && node.session.Registered() {
+		nodeID = node.session.ServerID
 	}
 	info := &internalpb.ComponentInfo{
-		NodeID:    Params.QueryNodeID,
+		NodeID:    nodeID,
 		Role:      typeutil.QueryNodeRole,
 		StateCode: code,
 	}
@@ -89,100 +94,45 @@ func (node *QueryNode) AddQueryChannel(ctx context.Context, in *queryPb.AddQuery
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 			Reason:    err.Error(),
 		}
-		return status, err
-	}
-	collectionID := in.CollectionID
-	if node.queryService == nil {
-		errMsg := "null query service, collectionID = " + fmt.Sprintln(collectionID)
-		status := &commonpb.Status{
-			ErrorCode: commonpb.ErrorCode_UnexpectedError,
-			Reason:    errMsg,
-		}
-		return status, errors.New(errMsg)
-	}
-
-	if node.queryService.hasQueryCollection(collectionID) {
-		log.Debug("queryCollection has been existed when addQueryChannel",
-			zap.Any("collectionID", collectionID),
-		)
-		status := &commonpb.Status{
-			ErrorCode: commonpb.ErrorCode_Success,
-		}
 		return status, nil
 	}
+	dct := &addQueryChannelTask{
+		baseTask: baseTask{
+			ctx:  ctx,
+			done: make(chan error),
+		},
+		req:  in,
+		node: node,
+	}
 
-	// add search collection
-	err := node.queryService.addQueryCollection(collectionID)
+	err := node.scheduler.queue.Enqueue(dct)
 	if err != nil {
 		status := &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 			Reason:    err.Error(),
 		}
-		return status, err
+		log.Error(err.Error())
+		return status, nil
 	}
-	log.Debug("add query collection", zap.Any("collectionID", collectionID))
+	log.Debug("addQueryChannelTask Enqueue done", zap.Any("collectionID", in.CollectionID))
 
-	// add request channel
-	sc, err := node.queryService.getQueryCollection(in.CollectionID)
-	if err != nil {
-		status := &commonpb.Status{
-			ErrorCode: commonpb.ErrorCode_UnexpectedError,
-			Reason:    err.Error(),
-		}
-		return status, err
-	}
-	consumeChannels := []string{in.RequestChannelID}
-	consumeSubName := Params.MsgChannelSubName + "-" + strconv.FormatInt(collectionID, 10) + "-" + strconv.Itoa(rand.Int())
-
-	if Params.skipQueryChannelRecovery {
-		log.Debug("Skip query channel seek back ", zap.Strings("channels", consumeChannels),
-			zap.String("seek position", string(in.SeekPosition.MsgID)),
-			zap.Uint64("ts", in.SeekPosition.Timestamp))
-		sc.queryMsgStream.AsConsumerWithPosition(consumeChannels, consumeSubName, mqclient.SubscriptionPositionLatest)
-	} else {
-		sc.queryMsgStream.AsConsumer(consumeChannels, consumeSubName)
-		if in.SeekPosition == nil || len(in.SeekPosition.MsgID) == 0 {
-			// as consumer
-			log.Debug("querynode AsConsumer: " + strings.Join(consumeChannels, ", ") + " : " + consumeSubName)
-		} else {
-			// seek query channel
-			err = sc.queryMsgStream.Seek([]*internalpb.MsgPosition{in.SeekPosition})
-			if err != nil {
-				status := &commonpb.Status{
-					ErrorCode: commonpb.ErrorCode_UnexpectedError,
-					Reason:    err.Error(),
-				}
-				return status, err
-			}
-			log.Debug("querynode seek query channel: ", zap.Any("consumeChannels", consumeChannels))
-		}
-	}
-
-	// add result channel
-	producerChannels := []string{in.ResultChannelID}
-	sc.queryResultMsgStream.AsProducer(producerChannels)
-	log.Debug("querynode AsProducer: " + strings.Join(producerChannels, ", "))
-
-	// init global sealed segments
-	for _, segment := range in.GlobalSealedSegments {
-		err = sc.globalSegmentManager.addGlobalSegmentInfo(segment)
+	waitFunc := func() (*commonpb.Status, error) {
+		err = dct.WaitToFinish()
 		if err != nil {
 			status := &commonpb.Status{
 				ErrorCode: commonpb.ErrorCode_UnexpectedError,
 				Reason:    err.Error(),
 			}
-			return status, err
+			log.Error(err.Error())
+			return status, nil
 		}
+		log.Debug("addQueryChannelTask WaitToFinish done", zap.Any("collectionID", in.CollectionID))
+		return &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+		}, nil
 	}
 
-	// start queryCollection, message stream need to asConsumer before start
-	sc.start()
-	log.Debug("start query collection", zap.Any("collectionID", collectionID))
-
-	status := &commonpb.Status{
-		ErrorCode: commonpb.ErrorCode_Success,
-	}
-	return status, nil
+	return waitFunc()
 }
 
 // RemoveQueryChannel remove queryChannel of the collection to stop receiving query message
@@ -245,7 +195,7 @@ func (node *QueryNode) WatchDmChannels(ctx context.Context, in *queryPb.WatchDmC
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 			Reason:    err.Error(),
 		}
-		return status, err
+		return status, nil
 	}
 	dct := &watchDmChannelsTask{
 		baseTask: baseTask{
@@ -262,8 +212,8 @@ func (node *QueryNode) WatchDmChannels(ctx context.Context, in *queryPb.WatchDmC
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 			Reason:    err.Error(),
 		}
-		log.Warn(err.Error())
-		return status, err
+		log.Error(err.Error())
+		return status, nil
 	}
 	log.Debug("watchDmChannelsTask Enqueue done", zap.Any("collectionID", in.CollectionID))
 
@@ -274,8 +224,8 @@ func (node *QueryNode) WatchDmChannels(ctx context.Context, in *queryPb.WatchDmC
 				ErrorCode: commonpb.ErrorCode_UnexpectedError,
 				Reason:    err.Error(),
 			}
-			log.Warn(err.Error())
-			return status, err
+			log.Error(err.Error())
+			return status, nil
 		}
 		log.Debug("watchDmChannelsTask WaitToFinish done", zap.Any("collectionID", in.CollectionID))
 		return &commonpb.Status{
@@ -295,7 +245,7 @@ func (node *QueryNode) WatchDeltaChannels(ctx context.Context, in *queryPb.Watch
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 			Reason:    err.Error(),
 		}
-		return status, err
+		return status, nil
 	}
 	dct := &watchDeltaChannelsTask{
 		baseTask: baseTask{
@@ -312,8 +262,8 @@ func (node *QueryNode) WatchDeltaChannels(ctx context.Context, in *queryPb.Watch
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 			Reason:    err.Error(),
 		}
-		log.Warn(err.Error())
-		return status, err
+		log.Error(err.Error())
+		return status, nil
 	}
 	log.Debug("watchDeltaChannelsTask Enqueue done", zap.Any("collectionID", in.CollectionID))
 
@@ -324,8 +274,8 @@ func (node *QueryNode) WatchDeltaChannels(ctx context.Context, in *queryPb.Watch
 				ErrorCode: commonpb.ErrorCode_UnexpectedError,
 				Reason:    err.Error(),
 			}
-			log.Warn(err.Error())
-			return status, err
+			log.Error(err.Error())
+			return status, nil
 		}
 		log.Debug("watchDeltaChannelsTask WaitToFinish done", zap.Any("collectionID", in.CollectionID))
 		return &commonpb.Status{
@@ -345,7 +295,7 @@ func (node *QueryNode) LoadSegments(ctx context.Context, in *queryPb.LoadSegment
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 			Reason:    err.Error(),
 		}
-		return status, err
+		return status, nil
 	}
 	dct := &loadSegmentsTask{
 		baseTask: baseTask{
@@ -362,8 +312,8 @@ func (node *QueryNode) LoadSegments(ctx context.Context, in *queryPb.LoadSegment
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 			Reason:    err.Error(),
 		}
-		log.Warn(err.Error())
-		return status, err
+		log.Error(err.Error())
+		return status, nil
 	}
 	segmentIDs := make([]UniqueID, 0)
 	for _, info := range in.Infos {
@@ -378,8 +328,8 @@ func (node *QueryNode) LoadSegments(ctx context.Context, in *queryPb.LoadSegment
 				ErrorCode: commonpb.ErrorCode_UnexpectedError,
 				Reason:    err.Error(),
 			}
-			log.Warn(err.Error())
-			return status, err
+			log.Error(err.Error())
+			return status, nil
 		}
 		log.Debug("loadSegmentsTask WaitToFinish done", zap.Int64s("segmentIDs", segmentIDs))
 		return &commonpb.Status{
@@ -399,7 +349,7 @@ func (node *QueryNode) ReleaseCollection(ctx context.Context, in *queryPb.Releas
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 			Reason:    err.Error(),
 		}
-		return status, err
+		return status, nil
 	}
 	dct := &releaseCollectionTask{
 		baseTask: baseTask{
@@ -416,15 +366,15 @@ func (node *QueryNode) ReleaseCollection(ctx context.Context, in *queryPb.Releas
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 			Reason:    err.Error(),
 		}
-		log.Warn(err.Error())
-		return status, err
+		log.Error(err.Error())
+		return status, nil
 	}
 	log.Debug("releaseCollectionTask Enqueue done", zap.Any("collectionID", in.CollectionID))
 
 	func() {
 		err = dct.WaitToFinish()
 		if err != nil {
-			log.Warn(err.Error())
+			log.Error(err.Error())
 			return
 		}
 		log.Debug("releaseCollectionTask WaitToFinish done", zap.Any("collectionID", in.CollectionID))
@@ -445,7 +395,7 @@ func (node *QueryNode) ReleasePartitions(ctx context.Context, in *queryPb.Releas
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 			Reason:    err.Error(),
 		}
-		return status, err
+		return status, nil
 	}
 	dct := &releasePartitionsTask{
 		baseTask: baseTask{
@@ -462,15 +412,15 @@ func (node *QueryNode) ReleasePartitions(ctx context.Context, in *queryPb.Releas
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 			Reason:    err.Error(),
 		}
-		log.Warn(err.Error())
-		return status, err
+		log.Error(err.Error())
+		return status, nil
 	}
 	log.Debug("releasePartitionsTask Enqueue done", zap.Any("collectionID", in.CollectionID))
 
 	func() {
 		err = dct.WaitToFinish()
 		if err != nil {
-			log.Warn(err.Error())
+			log.Error(err.Error())
 			return
 		}
 		log.Debug("releasePartitionsTask WaitToFinish done", zap.Any("collectionID", in.CollectionID))
@@ -491,7 +441,7 @@ func (node *QueryNode) ReleaseSegments(ctx context.Context, in *queryPb.ReleaseS
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 			Reason:    err.Error(),
 		}
-		return status, err
+		return status, nil
 	}
 	status := &commonpb.Status{
 		ErrorCode: commonpb.ErrorCode_Success,
@@ -524,12 +474,12 @@ func (node *QueryNode) GetSegmentInfo(ctx context.Context, in *queryPb.GetSegmen
 				Reason:    err.Error(),
 			},
 		}
-		return res, err
+		return res, nil
 	}
 	infos := make([]*queryPb.SegmentInfo, 0)
 
 	// get info from historical
-	node.historical.replica.printReplica()
+	// node.historical.replica.printReplica()
 	historicalSegmentInfos, err := node.historical.replica.getSegmentInfosByColID(in.CollectionID)
 	if err != nil {
 		log.Debug("GetSegmentInfo: get historical segmentInfo failed", zap.Int64("collectionID", in.CollectionID), zap.Error(err))
@@ -539,12 +489,12 @@ func (node *QueryNode) GetSegmentInfo(ctx context.Context, in *queryPb.GetSegmen
 				Reason:    err.Error(),
 			},
 		}
-		return res, err
+		return res, nil
 	}
 	infos = append(infos, historicalSegmentInfos...)
 
 	// get info from streaming
-	node.streaming.replica.printReplica()
+	// node.streaming.replica.printReplica()
 	streamingSegmentInfos, err := node.streaming.replica.getSegmentInfosByColID(in.CollectionID)
 	if err != nil {
 		log.Debug("GetSegmentInfo: get streaming segmentInfo failed", zap.Int64("collectionID", in.CollectionID), zap.Error(err))
@@ -554,10 +504,10 @@ func (node *QueryNode) GetSegmentInfo(ctx context.Context, in *queryPb.GetSegmen
 				Reason:    err.Error(),
 			},
 		}
-		return res, err
+		return res, nil
 	}
 	infos = append(infos, streamingSegmentInfos...)
-	log.Debug("GetSegmentInfo: get segment info from query node", zap.Int64("nodeID", node.session.ServerID), zap.Any("segment infos", infos))
+	// log.Debug("GetSegmentInfo: get segment info from query node", zap.Int64("nodeID", node.session.ServerID), zap.Any("segment infos", infos))
 
 	return &queryPb.GetSegmentInfoResponse{
 		Status: &commonpb.Status{
@@ -623,7 +573,7 @@ func (node *QueryNode) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsR
 			zap.Any("metrics", metrics), // TODO(dragondriver): necessary? may be very large
 			zap.Error(err))
 
-		return metrics, err
+		return metrics, nil
 	}
 
 	log.Debug("QueryNode.GetMetrics failed, request metric type is not implemented yet",

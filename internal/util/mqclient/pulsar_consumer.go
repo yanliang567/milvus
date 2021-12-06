@@ -19,23 +19,28 @@ import (
 	"github.com/milvus-io/milvus/internal/log"
 )
 
+// PulsarConsumer consumes from pulsar
 type PulsarConsumer struct {
-	c          pulsar.Consumer
-	msgChannel chan ConsumerMessage
+	c pulsar.Consumer
+	pulsar.Reader
+	msgChannel chan Message
 	hasSeek    bool
 	AtLatest   bool
 	closeCh    chan struct{}
 	once       sync.Once
+	skip       bool
 }
 
+// Subscription get a subscription for the consumer
 func (pc *PulsarConsumer) Subscription() string {
 	return pc.c.Subscription()
 }
 
-func (pc *PulsarConsumer) Chan() <-chan ConsumerMessage {
+// Chan returns a message channel
+func (pc *PulsarConsumer) Chan() <-chan Message {
 	if pc.msgChannel == nil {
 		pc.once.Do(func() {
-			pc.msgChannel = make(chan ConsumerMessage, 256)
+			pc.msgChannel = make(chan Message, 256)
 			// this part handles msgstream expectation when the consumer is not seeked
 			// pulsar's default behavior is setting postition to the earliest pointer when client of the same subscription pointer is not acked
 			// yet, our message stream is to setting to the very start point of the topic
@@ -57,7 +62,11 @@ func (pc *PulsarConsumer) Chan() <-chan ConsumerMessage {
 							log.Debug("pulsar consumer channel closed")
 							return
 						}
-						pc.msgChannel <- &pulsarMessage{msg: msg}
+						if !pc.skip {
+							pc.msgChannel <- &pulsarMessage{msg: msg}
+						} else {
+							pc.skip = false
+						}
 					case <-pc.closeCh: // workaround for pulsar consumer.receiveCh not closed
 						close(pc.msgChannel)
 						return
@@ -71,25 +80,24 @@ func (pc *PulsarConsumer) Chan() <-chan ConsumerMessage {
 
 // Seek seek consume position to the pointed messageID,
 // the pointed messageID will be consumed after the seek in pulsar
-func (pc *PulsarConsumer) Seek(id MessageID) error {
+func (pc *PulsarConsumer) Seek(id MessageID, inclusive bool) error {
 	messageID := id.(*pulsarID).messageID
 	err := pc.c.Seek(messageID)
 	if err == nil {
 		pc.hasSeek = true
+		// skip the first message when consume
+		pc.skip = !inclusive
 	}
 	return err
 }
 
-// ConsumeAfterSeek defines pulsar consumer SHOULD consume after seek
-func (pc *PulsarConsumer) ConsumeAfterSeek() bool {
-	return true
-}
-
-func (pc *PulsarConsumer) Ack(message ConsumerMessage) {
+// Ack the consumption of a single message
+func (pc *PulsarConsumer) Ack(message Message) {
 	pm := message.(*pulsarMessage)
 	pc.c.Ack(pm.msg)
 }
 
+// Close the consumer and stop the broker to push more messages
 func (pc *PulsarConsumer) Close() {
 	pc.c.Close()
 	close(pc.closeCh)

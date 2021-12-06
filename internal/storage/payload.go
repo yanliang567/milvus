@@ -22,6 +22,7 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"unsafe"
 
 	"github.com/milvus-io/milvus/internal/log"
@@ -307,14 +308,19 @@ func (w *PayloadWriter) FinishPayloadWriter() error {
 
 func (w *PayloadWriter) GetPayloadBufferFromWriter() ([]byte, error) {
 	cb := C.GetPayloadBufferFromWriter(w.payloadWriterPtr)
-	pointer := unsafe.Pointer(cb.data)
+	pointer := uintptr(unsafe.Pointer(cb.data))
 	length := int(cb.length)
 	if length <= 0 {
 		return nil, errors.New("empty buffer")
 	}
-	// refer to: https://github.com/golang/go/wiki/cgo#turning-c-arrays-into-go-slices
-	slice := (*[1 << 28]byte)(pointer)[:length:length]
-	return slice, nil
+
+	var data []byte
+	sh := (*reflect.SliceHeader)(unsafe.Pointer(&data))
+	sh.Data = pointer
+	sh.Len = length
+	sh.Cap = length
+
+	return data, nil
 }
 
 func (w *PayloadWriter) GetPayloadLengthFromWriter() (int, error) {
@@ -532,7 +538,7 @@ func (r *PayloadReader) GetOneStringFromPayload(idx int) (string, error) {
 	return C.GoStringN(cStr, cSize), nil
 }
 
-// ,dimension, error
+// GetBinaryVectorFromPayload returns vector, dimension, error
 func (r *PayloadReader) GetBinaryVectorFromPayload() ([]byte, int, error) {
 	if r.colType != schemapb.DataType_BinaryVector {
 		return nil, 0, errors.New("incorrect data type")
@@ -552,7 +558,7 @@ func (r *PayloadReader) GetBinaryVectorFromPayload() ([]byte, int, error) {
 	return slice, int(cDim), nil
 }
 
-// ,dimension, error
+// GetFloatVectorFromPayload returns vector, dimension, error
 func (r *PayloadReader) GetFloatVectorFromPayload() ([]float32, int, error) {
 	if r.colType != schemapb.DataType_FloatVector {
 		return nil, 0, errors.New("incorrect data type")

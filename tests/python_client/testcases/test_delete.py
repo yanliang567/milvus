@@ -135,7 +135,7 @@ class TestDeleteParams(TestcaseBase):
         """
         target: test delete with all values
         method: delete with expr: "id in [all]"
-        expected: num entities unchanged and deleted data will be not be queried
+        expected: num entities unchanged and deleted data will not be queried
         """
         # init collection with default_nb default data
         collection_w, _, _, ids = self.init_collection_general(prefix, insert_data=True)[0:4]
@@ -149,10 +149,9 @@ class TestDeleteParams(TestcaseBase):
         collection_w.query(expr, check_task=CheckTasks.check_query_empty)
 
     @pytest.mark.tags(CaseLabel.L1)
-    @pytest.mark.parametrize("ids", [[tmp_nb], [0, tmp_nb]])
-    def test_delete_not_existed_values(self, ids):
+    def test_delete_not_existed_values(self):
         """
-        target: test delete part/not existed values
+        target: test delete not existed values
         method: delete data not in the collection
         expected: No exception
         """
@@ -160,11 +159,23 @@ class TestDeleteParams(TestcaseBase):
         collection_w = self.init_collection_general(prefix, nb=tmp_nb, insert_data=True)[0]
 
         # No exception
-        expr = f'{ct.default_int64_field_name} in {ids}'
-        res = collection_w.delete(expr=expr)[0]
-        # todo assert res.delete_count == 0
+        expr = f'{ct.default_int64_field_name} in {[tmp_nb]}'
+        collection_w.delete(expr=expr)[0]
         collection_w.query(tmp_expr, check_task=CheckTasks.check_query_results,
                            check_items={exp_res: query_res_tmp_expr})
+
+    @pytest.mark.tags(CaseLabel.L2)
+    def test_delete_part_not_existed_values(self):
+        """
+        target: test delete part non-existed values
+        method: delete ids which part not existed
+        expected: delete existed id, ignore non-existed id
+        """
+        # init collection with tmp_nb default data
+        collection_w = self.init_collection_general(prefix, nb=tmp_nb, insert_data=True)[0]
+        expr = f'{ct.default_int64_field_name} in {[0, tmp_nb]}'
+        collection_w.delete(expr=expr)[0]
+        collection_w.query(expr, check_task=CheckTasks.check_query_empty)
 
     @pytest.mark.tags(CaseLabel.L1)
     def test_delete_expr_inconsistent_values(self):
@@ -286,7 +297,6 @@ class TestDeleteOperation(TestcaseBase):
         collection_w.query(tmp_expr, check_task=CheckTasks.check_query_empty)
         collection_w.delete(expr=tmp_expr)
 
-    @pytest.mark.xfail(reason="Issue #11641")
     @pytest.mark.tags(CaseLabel.L1)
     def test_delete_after_index(self):
         """
@@ -317,7 +327,6 @@ class TestDeleteOperation(TestcaseBase):
                                             ct.default_search_params, ct.default_limit)
         assert 0 not in search_res[0].ids
 
-    @pytest.mark.xfail(reason="Issue #11641")
     @pytest.mark.tags(CaseLabel.L1)
     def test_delete_and_index(self):
         """
@@ -448,12 +457,12 @@ class TestDeleteOperation(TestcaseBase):
 
         # Just one query res and search res, because de-dup
         res, _ = collection_w.query(tmp_expr, output_fields=["*"])
-        assert res[0][ct.default_float_field_name] != 0.0
+        assert len(res) == 1
 
-        search_res, _ = collection_w.search([df[ct.default_float_vec_field_name][0]],
+        search_res, _ = collection_w.search([df[ct.default_float_vec_field_name][1]],
                                             ct.default_float_vec_field_name,
                                             ct.default_search_params, ct.default_limit, output_fields=[ct.default_int64_field_name, ct.default_float_field_name])
-        assert search_res[0][0].entity._row_data[ct.default_float_field_name] != 0.0
+        assert len(search_res) == 1
 
     @pytest.mark.tags(CaseLabel.L2)
     def test_delete_empty_partition(self):
@@ -860,6 +869,68 @@ class TestDeleteOperation(TestcaseBase):
         expected: delete successfully
         """
         pass
+
+    @pytest.mark.tags(CaseLabel.L1)
+    def test_delete_time_travel(self):
+        """
+        target: test search with time travel after delete
+        method: 1.insert and flush
+                2.delete
+                3.load and search with time travel
+        expected: search successfully
+        """
+
+        collection_w = self.init_collection_wrap(cf.gen_unique_str(prefix))
+        df = cf.gen_default_dataframe_data(tmp_nb)
+        insert_res, _ = collection_w.insert(df)
+        collection_w.load()
+
+        tt = self.utility_wrap.mkts_from_hybridts(insert_res.timestamp, milliseconds=0.)
+
+        res_before, _ = collection_w.search(df[ct.default_float_vec_field_name][:1].to_list(),
+                                            ct.default_float_vec_field_name,
+                                            ct.default_search_params, ct.default_limit)
+
+        expr = f'{ct.default_int64_field_name} in {insert_res.primary_keys[:tmp_nb // 2]}'
+        delete_res, _ = collection_w.delete(expr)
+
+        res_travel, _ = collection_w.search(df[ct.default_float_vec_field_name][:1].to_list(),
+                                            ct.default_float_vec_field_name,
+                                            ct.default_search_params, ct.default_limit,
+                                            travel_timestamp=tt)
+        assert res_before[0].ids == res_travel[0].ids
+
+    @pytest.mark.tags(CaseLabel.L1)
+    def test_delete_insert_multi(self):
+        """
+        target: test delete after multi insert
+        method: 1.create
+                2.insert multi times, no flush
+                3.load
+                3.delete even number
+                4.search and query
+        expected: Verify result
+        """
+        # create collection, insert multi times, each with tmp_nb entities
+        collection_w = self.init_collection_wrap(name=cf.gen_unique_str(prefix))
+        multi = 3
+        for i in range(multi):
+            start = i * tmp_nb
+            df = cf.gen_default_dataframe_data(tmp_nb, start=start)
+            collection_w.insert(df)
+
+        # delete even numbers
+        ids = [i for i in range(0, tmp_nb*multi, 2)]
+        expr = f'{ct.default_int64_field_name} in {ids}'
+        collection_w.delete(expr)
+
+        collection_w.load()
+        collection_w.query(expr, check_task=CheckTasks.check_query_empty)
+        search_res, _ = collection_w.search(cf.gen_vectors(ct.default_nq, ct.default_dim),
+                                            ct.default_float_vec_field_name,
+                                            ct.default_search_params, ct.default_limit)
+        for res_id in search_res[0].ids:
+            assert res_id not in ids
 
     @pytest.mark.tags(CaseLabel.L3)
     def test_delete_sealed_only(self):

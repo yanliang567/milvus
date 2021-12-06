@@ -20,6 +20,7 @@ from pymilvus import (
 
 
 def hello_milvus(host="127.0.0.1"):
+    import time
     # create connection
     connections.connect(host=host, port="19530")
 
@@ -55,20 +56,28 @@ def hello_milvus(host="127.0.0.1"):
     t1 = time.time()
     print(f"\nInsert {nb} vectors cost {t1 - t0} seconds")
 
+    t0 = time.time()
     print(f"\nGet collection entities...")
     print(collection.num_entities)
+    t1 = time.time()
+    print(f"\nGet collection entities cost {t1 - t0} seconds")
 
     # create index and load table
     default_index = {"index_type": "IVF_FLAT", "params": {"nlist": 128}, "metric_type": "L2"}
     print(f"\nCreate index...")
+    t0 = time.time()
     collection.create_index(field_name="float_vector", index_params=default_index)
+    t1 = time.time()
+    print(f"\nCreate index cost {t1 - t0} seconds")
     print(f"\nload collection...")
+    t0 = time.time()
     collection.load()
+    t1 = time.time()
+    print(f"\nload collection cost {t1 - t0} seconds")
 
     # load and search
     topK = 5
     search_params = {"metric_type": "L2", "params": {"nprobe": 10}}
-    import time
     start_time = time.time()
     print(f"\nSearch...")
     # define output_fields of search result
@@ -85,13 +94,14 @@ def hello_milvus(host="127.0.0.1"):
             print(hit, hit.entity.get("random_value"))
     print("search latency = %.4fs" % (end_time - start_time))
 
-    #query
+    # query
     expr = "count in [2,4,6,8]"
     output_fields = ["count", "random_value"]
     res = collection.query(expr, output_fields)
     sorted_res = sorted(res, key=lambda k: k['count'])
     for r in sorted_res:
         print(r)
+    # collection.release()
 
 
 import argparse
@@ -100,4 +110,8 @@ parser = argparse.ArgumentParser(description='host ip')
 parser.add_argument('--host', type=str, default='127.0.0.1', help='host ip')
 args = parser.parse_args()
 
+# add time stamp
+import time
+
+print(f"\nStart time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}")
 hello_milvus(args.host)

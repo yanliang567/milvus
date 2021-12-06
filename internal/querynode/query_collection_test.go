@@ -40,7 +40,7 @@ import (
 )
 
 func genSimpleQueryCollection(ctx context.Context, cancel context.CancelFunc) (*queryCollection, error) {
-	tSafe := newTSafeReplica()
+	tSafe := newTSafeReplica(ctx)
 	historical, err := genSimpleHistorical(ctx, tSafe)
 	if err != nil {
 		return nil, err
@@ -134,7 +134,7 @@ func TestQueryCollection_withoutVChannel(t *testing.T) {
 
 	schema := genTestCollectionSchema(0, false, 2)
 	historicalReplica := newCollectionReplica(etcdKV)
-	tsReplica := newTSafeReplica()
+	tsReplica := newTSafeReplica(ctx)
 	streamingReplica := newCollectionReplica(etcdKV)
 	historical := newHistorical(context.Background(), historicalReplica, etcdKV, tsReplica)
 
@@ -472,13 +472,21 @@ func TestQueryCollection_serviceableTime(t *testing.T) {
 	assert.Equal(t, st+gracefulTime, resST)
 }
 
-func TestQueryCollection_addTSafeWatcher(t *testing.T) {
+func TestQueryCollection_tSafeWatcher(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	queryCollection, err := genSimpleQueryCollection(ctx, cancel)
 	assert.NoError(t, err)
 
-	queryCollection.addTSafeWatcher(defaultVChannel)
+	err = queryCollection.addTSafeWatcher(defaultVChannel)
+	assert.NoError(t, err)
+
+	err = queryCollection.removeTSafeWatcher(defaultVChannel)
+	assert.NoError(t, err)
+
+	// no tSafe watcher
+	err = queryCollection.removeTSafeWatcher(defaultVChannel)
+	assert.Error(t, err)
 }
 
 func TestQueryCollection_waitNewTSafe(t *testing.T) {
@@ -659,16 +667,14 @@ func TestQueryCollection_adjustByChangeInfo(t *testing.T) {
 
 		// test online
 		segmentChangeInfos.Infos[0].OnlineSegments = append(segmentChangeInfos.Infos[0].OnlineSegments, genSimpleSegmentInfo())
-		err = qc.adjustByChangeInfo(segmentChangeInfos)
-		assert.NoError(t, err)
+		qc.adjustByChangeInfo(segmentChangeInfos)
 		ids := qc.globalSegmentManager.getGlobalSegmentIDs()
 		assert.Len(t, ids, 1)
 
 		// test offline
 		segmentChangeInfos.Infos[0].OnlineSegments = make([]*querypb.SegmentInfo, 0)
 		segmentChangeInfos.Infos[0].OfflineSegments = append(segmentChangeInfos.Infos[0].OfflineSegments, genSimpleSegmentInfo())
-		err = qc.adjustByChangeInfo(segmentChangeInfos)
-		assert.NoError(t, err)
+		qc.adjustByChangeInfo(segmentChangeInfos)
 		ids = qc.globalSegmentManager.getGlobalSegmentIDs()
 		assert.Len(t, ids, 0)
 	})
@@ -683,8 +689,7 @@ func TestQueryCollection_adjustByChangeInfo(t *testing.T) {
 		simpleInfo := genSimpleSegmentInfo()
 		simpleInfo.CollectionID = 1000
 		segmentChangeInfos.Infos[0].OnlineSegments = append(segmentChangeInfos.Infos[0].OnlineSegments, simpleInfo)
-		err = qc.adjustByChangeInfo(segmentChangeInfos)
-		assert.NoError(t, err)
+		qc.adjustByChangeInfo(segmentChangeInfos)
 	})
 
 	t.Run("test no segment when adjustByChangeInfo", func(t *testing.T) {
@@ -697,8 +702,7 @@ func TestQueryCollection_adjustByChangeInfo(t *testing.T) {
 		segmentChangeInfos := genSimpleSealedSegmentsChangeInfoMsg()
 		segmentChangeInfos.Infos[0].OfflineSegments = append(segmentChangeInfos.Infos[0].OfflineSegments, genSimpleSegmentInfo())
 
-		err = qc.adjustByChangeInfo(segmentChangeInfos)
-		assert.Nil(t, err)
+		qc.adjustByChangeInfo(segmentChangeInfos)
 	})
 }
 

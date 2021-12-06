@@ -37,7 +37,7 @@ import (
 // make sure ddNode implements flowgraph.Node
 var _ flowgraph.Node = (*ddNode)(nil)
 
-// ddNode filter messages from message streams.
+// ddNode filters messages from message streams.
 //
 // ddNode recives all the messages from message stream dml channels, including insert messages,
 //  delete messages and ddl messages like CreateCollectionMsg.
@@ -58,10 +58,12 @@ type ddNode struct {
 
 	segID2SegInfo   sync.Map // segment ID to *SegmentInfo
 	flushedSegments []*datapb.SegmentInfo
+	droppedSegments []*datapb.SegmentInfo
 	vchannelName    string
 
-	deltaMsgStream msgstream.MsgStream
-	dropMode       atomic.Value
+	deltaMsgStream     msgstream.MsgStream
+	dropMode           atomic.Value
+	compactionExecutor *compactionExecutor
 }
 
 // Name returns node name, implementing flowgraph.Node
@@ -109,22 +111,26 @@ func (ddn *ddNode) Operate(in []Msg) []Msg {
 		dropCollection: false,
 	}
 
-	forwardMsgs := make([]msgstream.TsMsg, 0)
+	var forwardMsgs []msgstream.TsMsg
 	for _, msg := range msMsg.TsMessages() {
 		switch msg.Type() {
 		case commonpb.MsgType_DropCollection:
 			if msg.(*msgstream.DropCollectionMsg).GetCollectionID() == ddn.collectionID {
-				log.Info("Receiving DropCollection msg", zap.Any("collectionID", ddn.collectionID))
+				log.Info("Receiving DropCollection msg",
+					zap.Any("collectionID", ddn.collectionID),
+					zap.String("vChannelName", ddn.vchannelName))
 				ddn.dropMode.Store(true)
+
+				log.Debug("Stop compaction of vChannel", zap.String("vChannelName", ddn.vchannelName))
+				ddn.compactionExecutor.stopExecutingtaskByVChannelName(ddn.vchannelName)
 				fgMsg.dropCollection = true
 			}
 		case commonpb.MsgType_Insert:
-			log.Debug("DDNode receive insert messages")
 			imsg := msg.(*msgstream.InsertMsg)
 			if imsg.CollectionID != ddn.collectionID {
-				//log.Debug("filter invalid InsertMsg, collection mis-match",
-				//	zap.Int64("Get msg collID", imsg.CollectionID),
-				//	zap.Int64("Expected collID", ddn.collectionID))
+				log.Warn("filter invalid InsertMsg, collection mis-match",
+					zap.Int64("Get collID", imsg.CollectionID),
+					zap.Int64("Expected collID", ddn.collectionID))
 				continue
 			}
 			if msg.EndTs() < FilterThreshold {
@@ -136,6 +142,9 @@ func (ddn *ddNode) Operate(in []Msg) []Msg {
 					continue
 				}
 			}
+			log.Debug("DDNode receive insert messages",
+				zap.Int("numRows", len(imsg.GetRowIDs())),
+				zap.String("vChannelName", ddn.vchannelName))
 			fgMsg.insertMessages = append(fgMsg.insertMessages, imsg)
 		case commonpb.MsgType_Delete:
 			log.Debug("DDNode receive delete messages")
@@ -145,9 +154,9 @@ func (ddn *ddNode) Operate(in []Msg) []Msg {
 			}
 			forwardMsgs = append(forwardMsgs, dmsg)
 			if dmsg.CollectionID != ddn.collectionID {
-				//log.Debug("filter invalid DeleteMsg, collection mis-match",
-				//	zap.Int64("Get msg collID", dmsg.CollectionID),
-				//	zap.Int64("Expected collID", ddn.collectionID))
+				log.Warn("filter invalid DeleteMsg, collection mis-match",
+					zap.Int64("Get collID", dmsg.CollectionID),
+					zap.Int64("Expected collID", ddn.collectionID))
 				continue
 			}
 			fgMsg.deleteMessages = append(fgMsg.deleteMessages, dmsg)
@@ -170,7 +179,7 @@ func (ddn *ddNode) Operate(in []Msg) []Msg {
 }
 
 func (ddn *ddNode) filterFlushedSegmentInsertMessages(msg *msgstream.InsertMsg) bool {
-	if ddn.isFlushed(msg.GetSegmentID()) {
+	if ddn.isFlushed(msg.GetSegmentID()) || ddn.isDropped(msg.GetSegmentID()) {
 		return true
 	}
 
@@ -187,6 +196,15 @@ func (ddn *ddNode) filterFlushedSegmentInsertMessages(msg *msgstream.InsertMsg) 
 func (ddn *ddNode) isFlushed(segmentID UniqueID) bool {
 	for _, s := range ddn.flushedSegments {
 		if s.ID == segmentID {
+			return true
+		}
+	}
+	return false
+}
+
+func (ddn *ddNode) isDropped(segID UniqueID) bool {
+	for _, droppedSegment := range ddn.droppedSegments {
+		if droppedSegment.GetID() == segID {
 			return true
 		}
 	}
@@ -243,7 +261,8 @@ func (ddn *ddNode) Close() {
 	}
 }
 
-func newDDNode(ctx context.Context, collID UniqueID, vchanInfo *datapb.VchannelInfo, msFactory msgstream.Factory) *ddNode {
+func newDDNode(ctx context.Context, collID UniqueID, vchanInfo *datapb.VchannelInfo,
+	msFactory msgstream.Factory, compactor *compactionExecutor) *ddNode {
 	baseNode := BaseNode{}
 	baseNode.SetMaxQueueLength(Params.FlowGraphMaxQueueLength)
 	baseNode.SetMaxParallelism(Params.FlowGraphMaxParallelism)
@@ -274,11 +293,13 @@ func newDDNode(ctx context.Context, collID UniqueID, vchanInfo *datapb.VchannelI
 	deltaMsgStream.Start()
 
 	dd := &ddNode{
-		BaseNode:        baseNode,
-		collectionID:    collID,
-		flushedSegments: fs,
-		vchannelName:    vchanInfo.ChannelName,
-		deltaMsgStream:  deltaMsgStream,
+		BaseNode:           baseNode,
+		collectionID:       collID,
+		flushedSegments:    fs,
+		droppedSegments:    vchanInfo.GetDroppedSegments(),
+		vchannelName:       vchanInfo.ChannelName,
+		deltaMsgStream:     deltaMsgStream,
+		compactionExecutor: compactor,
 	}
 
 	dd.dropMode.Store(false)

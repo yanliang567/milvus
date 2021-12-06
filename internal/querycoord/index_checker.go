@@ -1,13 +1,18 @@
-// Copyright (C) 2019-2020 Zilliz. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
 // with the License. You may obtain a copy of the License at
 //
-// http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// Unless required by applicable law or agreed to in writing, software distributed under the License
-// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
-// or implied. See the License for the specific language governing permissions and limitations under the License.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package querycoord
 
@@ -79,6 +84,7 @@ func newIndexChecker(ctx context.Context,
 
 		meta:      meta,
 		scheduler: scheduler,
+		cluster:   cluster,
 
 		rootCoord:  root,
 		indexCoord: index,
@@ -285,7 +291,9 @@ func getIndexInfo(ctx context.Context, info *querypb.SegmentInfo, root types.Roo
 		CollectionID: info.CollectionID,
 		SegmentID:    info.SegmentID,
 	}
-	response, err := root.DescribeSegment(ctx, req)
+	ctx2, cancel2 := context.WithTimeout(ctx, timeoutForRPC)
+	defer cancel2()
+	response, err := root.DescribeSegment(ctx2, req)
 	if err != nil {
 		return nil, err
 	}
@@ -303,9 +311,11 @@ func getIndexInfo(ctx context.Context, info *querypb.SegmentInfo, root types.Roo
 	indexFilePathRequest := &indexpb.GetIndexFilePathsRequest{
 		IndexBuildIDs: []UniqueID{response.BuildID},
 	}
-	pathResponse, err := index.GetIndexFilePaths(ctx, indexFilePathRequest)
-	if err != nil {
-		return nil, err
+	ctx3, cancel3 := context.WithTimeout(ctx, timeoutForRPC)
+	defer cancel3()
+	pathResponse, err2 := index.GetIndexFilePaths(ctx3, indexFilePathRequest)
+	if err2 != nil {
+		return nil, err2
 	}
 
 	if pathResponse.Status.ErrorCode != commonpb.ErrorCode_Success {

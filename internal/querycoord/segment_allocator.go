@@ -1,13 +1,18 @@
-// Copyright (C) 2019-2020 Zilliz. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
 // with the License. You may obtain a copy of the License at
 //
-// http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// Unless required by applicable law or agreed to in writing, software distributed under the License
-// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
-// or implied. See the License for the specific language governing permissions and limitations under the License.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package querycoord
 
@@ -15,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -93,16 +99,26 @@ func shuffleSegmentsToQueryNodeV2(ctx context.Context, reqs []*querypb.LoadSegme
 	if len(reqs) == 0 {
 		return nil
 	}
-
-	dataSizePerReq := make([]int64, 0)
-	for _, req := range reqs {
-		sizeOfReq, err := cluster.estimateSegmentsSize(req)
+	log.Debug("shuffleSegmentsToQueryNodeV2: start estimate the size of loadReqs")
+	dataSizePerReq := make([]int64, len(reqs))
+	estimateError := make([]error, len(reqs))
+	var estimateWg sync.WaitGroup
+	estimateReqFn := func(offset int, req *querypb.LoadSegmentsRequest) {
+		defer estimateWg.Done()
+		dataSizePerReq[offset], estimateError[offset] = cluster.estimateSegmentsSize(req)
+	}
+	for offset, req := range reqs {
+		estimateWg.Add(1)
+		go estimateReqFn(offset, req)
+	}
+	estimateWg.Wait()
+	for _, err := range estimateError {
 		if err != nil {
+			log.Debug("shuffleSegmentsToQueryNodeV2: estimate segment size error", zap.Error(err))
 			return err
 		}
-		dataSizePerReq = append(dataSizePerReq, sizeOfReq)
 	}
-
+	log.Debug("shuffleSegmentsToQueryNodeV2: estimate the size of loadReqs end")
 	for {
 		// online nodes map and totalMem, usedMem, memUsage of every node
 		totalMem := make(map[int64]uint64)
@@ -138,6 +154,7 @@ func shuffleSegmentsToQueryNodeV2(ctx context.Context, reqs []*querypb.LoadSegme
 			// update totalMem, memUsage, memUsageRate
 			totalMem[nodeID], memUsage[nodeID], memUsageRate[nodeID] = queryNodeInfo.totalMem, queryNodeInfo.memUsage, queryNodeInfo.memUsageRate
 		}
+		log.Debug("shuffleSegmentsToQueryNodeV2: num of availableNodes", zap.Int("size", len(availableNodes)))
 		if len(availableNodes) > 0 {
 			nodeIDSlice := make([]int64, 0, len(availableNodes))
 			for nodeID := range availableNodes {
@@ -171,6 +188,7 @@ func shuffleSegmentsToQueryNodeV2(ctx context.Context, reqs []*querypb.LoadSegme
 			}
 
 			if allocateSegmentsDone {
+				log.Debug("shuffleSegmentsToQueryNodeV2: shuffle segment to query node success")
 				return nil
 			}
 		}

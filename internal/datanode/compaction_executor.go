@@ -18,7 +18,6 @@ package datanode
 
 import (
 	"context"
-	"runtime"
 	"sync"
 
 	"github.com/milvus-io/milvus/internal/log"
@@ -35,15 +34,17 @@ type compactionExecutor struct {
 	parallelCh chan struct{}
 	executing  sync.Map // planID to compactor
 	taskCh     chan compactor
+	dropped    sync.Map // vchannel dropped
 }
 
 // 0.5*min(8, NumCPU/2)
 func calculeateParallel() int {
-	cores := runtime.NumCPU()
-	if cores < 16 {
-		return 4
-	}
-	return cores / 2
+	return 2
+	//cores := runtime.NumCPU()
+	//if cores < 16 {
+	//return 4
+	//}
+	//return cores / 2
 }
 
 func newCompactionExecutor() *compactionExecutor {
@@ -98,12 +99,19 @@ func (c *compactionExecutor) stopTask(planID UniqueID) {
 	}
 }
 
-func (c *compactionExecutor) stopExecutingtaskByCollectionID(collID UniqueID) {
+func (c *compactionExecutor) channelValidateForCompaction(vChannelName string) bool {
+	// if vchannel marked dropped, compaction should not proceed
+	_, loaded := c.dropped.Load(vChannelName)
+	return !loaded
+}
+
+func (c *compactionExecutor) stopExecutingtaskByVChannelName(vChannelName string) {
+	c.dropped.Store(vChannelName, struct{}{})
 	c.executing.Range(func(key interface{}, value interface{}) bool {
-		if value.(compactor).getCollection() == collID {
+		if value.(compactor).getChannelName() == vChannelName {
 			c.stopTask(key.(UniqueID))
 		}
-
+		log.Warn(value.(compactor).getChannelName())
 		return true
 	})
 }

@@ -74,7 +74,7 @@ macro(build_faiss)
             "CXX=${FAISS_CXX_COMPILER}"
             "NVCC=${FAISS_CUDA_COMPILER}"
             "CFLAGS=${EP_C_FLAGS}"
-            "CXXFLAGS=${EP_CXX_FLAGS} -mf16c -O3"
+            "CXXFLAGS=${EP_CXX_FLAGS} -msse4.2 -O3"
             --without-python)
 
     message(STATUS "${FAISS_CONFIGURE_ARGS}")
@@ -104,7 +104,8 @@ macro(build_faiss)
     endif ()
 
     message(STATUS "Building FAISS with configure args -${FAISS_CONFIGURE_ARGS}")
-
+	
+    #Notice: there will not set LDFLAGS value
     if (DEFINED ENV{FAISS_SOURCE_URL})
         set(FAISS_SOURCE_URL "$ENV{FAISS_SOURCE_URL}")
         externalproject_add(faiss_ep

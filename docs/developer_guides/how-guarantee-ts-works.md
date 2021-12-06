@@ -25,7 +25,7 @@ Among them, the batch data will no longer be changed, and the search request wil
 QueryNodes and DataNodes consume user insert requests through the same subscription mechanism, which constitute the
 streaming data.
 
-Due to the network delays, QueryNodes often do not hold all the latest streaming data. Without other control mechanism,
+Due to the network delays, QueryNodes often do not hold all the latest streaming data. Without other control mechanisms,
 some unconsumed data will be invisible and thus reduce the query accuracy. At this time, let's introduce the
 "GuaranteeTs".
 
@@ -35,8 +35,7 @@ As shown in the figure below, when inserting data into the message queue, Milvus
 records, but also insert timetick continuously. Taking "syncTs1" in the figure as an example, when downstream consumers
 (such as QueryNodes) see syncTs1, it means that all the data which is earlier than syncTs1 has been consumed. In
 other words, the inserted record with a timestamp smaller than syncTs1 will no longer appear in the message queue.
-Of course, if there is, there must be a bug in the system. If you find it, we are pleased to solve it as soon as
-possible.
+
 
 ![ts-watermask](./figs/guarantee-ts-ts-mask.png)
 
@@ -72,7 +71,7 @@ As shown in the figure below, different GuaranteeTs correspond to four different
 - Strong consistency: GuaranteeTs is set to the newest timestamp of the system, QueryNodes will wait for the ServiceTime
   to be greater than or equal to the GuaranteeTs;
 - Eventual consistency: Set GuaranteeTs to 0 and skip the check, QueryNodes will execute search requests immediately;
-- Bounded Staleness: Set GuaranteeTs to an older timestamp, such as 1 minutes ago, the query can be executed immediately
+- Bounded Staleness: Set GuaranteeTs to an older timestamp, such as 1 minute ago, the query can be executed immediately
   within a tolerable range;
 - Read your own write (Session): Set GuaranteeTs to the client last write, in this way, every client will see all their
   own data.

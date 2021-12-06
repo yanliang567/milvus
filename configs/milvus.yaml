@@ -28,25 +28,25 @@ etcd:
 
 # Related configuration of minio, which is responsible for data persistence for Milvus.
 minio:
-  address: localhost
+  address: localhost # Address of MinIO/S3
   port: 9000   # Port of MinIO/S3
-  accessKeyID: minioadmin
+  accessKeyID: minioadmin # accessKeyID of MinIO/S3
   secretAccessKey: minioadmin # MinIO/S3 encryption string
-  useSSL: false
-  bucketName: "a-bucket"
-  rootPath: files
+  useSSL: false # Access to MinIO/S3 with SSL
+  bucketName: "a-bucket" # Bucket name in MinIO/S3
+  rootPath: files # The root path where the message is stored in MinIO/S3
 
 # Related configuration of pulsar, used to manage Milvus logs of recent mutation operations, output streaming log, and provide log publish-subscribe services.
 pulsar:
-  address: localhost
-  port: 6650
+  address: localhost # Address of pulsar
+  port: 6650 # Port of pulsar
   maxMessageSize: 5242880 # 5 * 1024 * 1024 Bytes, Maximum size of each message in pulsar.
 
 rocksmq:
-  path: /var/lib/milvus/rdb_data
-  rocksmqPageSize: 2147483648 # 2 GB, 2 * 1024 * 1024 * 1024 bytes
-  retentionTimeInMinutes: 10080 # 7 days, 7 * 24 * 60 minutes
-  retentionSizeInMB: 8192 # 8 GB, 8 * 1024 MB
+  path: /var/lib/milvus/rdb_data # The path where the message is stored in rocksmq
+  rocksmqPageSize: 2147483648 # 2 GB, 2 * 1024 * 1024 * 1024 bytes, The size of each page of messages in rocksmq
+  retentionTimeInMinutes: 10080 # 7 days, 7 * 24 * 60 minutes, The retention time of the message in rocksmq.
+  retentionSizeInMB: 8192 # 8 GB, 8 * 1024 MB, The retention size of the message in rocksmq.
 
 # Related configuration of rootCoord, used to handle data definition language (DDL) and data control language (DCL) requests
 rootCoord:
@@ -70,8 +70,8 @@ proxy:
   port: 19530
 
   grpc:
-    serverMaxRecvSize: 2147483647 # math.MaxInt32
-    serverMaxSendSize: 2147483647 # math.MaxInt32
+    serverMaxRecvSize: 536870912 # 512 MB, 100 * 1024 * 1024
+    serverMaxSendSize: 536870912 # 512 MB, 100 * 1024 * 1024
     clientMaxRecvSize: 104857600 # 100 MB, 100 * 1024 * 1024
     clientMaxSendSize: 104857600 # 100 MB, 100 * 1024 * 1024
 
@@ -80,14 +80,14 @@ proxy:
     insert:
       bufSize: 1024 # msgPack chan buffer size
     search:
-      bufSize: 512
+      bufSize: 512 # msgPack chan buffer size
     searchResult:
       recvBufSize: 1024 # msgPack chan buffer size
       pulsarBufSize: 1024 # pulsar chan buffer size
     timeTick:
       bufSize: 512
   maxNameLength: 255  # max name length of collection or alias
-  maxFieldNum: 64     # max field number of a collection
+  maxFieldNum: 256     # max field number of a collection
   maxDimension: 32768 # Maximum dimension of vector
   maxShardNum: 256 # Maximum number of shards in a collection
   maxTaskNum: 1024 # max task number of proxy task queue
@@ -100,7 +100,7 @@ queryCoord:
   address: localhost
   port: 19531
   autoHandoff: true
-  autoBalance: false
+  autoBalance: true
   overloadedMemoryThresholdPercentage: 90
   balanceIntervalSeconds: 60
   memoryUsageMaxDifferencePercentage: 30
@@ -168,16 +168,22 @@ dataCoord:
     serverMaxSendSize: 2147483647 # math.MaxInt32
     clientMaxRecvSize: 104857600 # 100 MB, 100 * 1024 * 1024
     clientMaxSendSize: 104857600 # 100 MB, 100 * 1024 * 1024
-  enableCompaction: false
+  enableCompaction: false # Enable data segment compression
   enableGarbageCollection: false
 
   segment:
     maxSize: 512 # Maximum size of a segment in MB
     sealProportion: 0.75 # It's the minimum proportion for a segment which can be sealed
-    assignmentExpiration: 2000 # ms
+    assignmentExpiration: 2000 # The time of the assignment expiration in ms 
 
   compaction:
     retentionDuration: 432000 # 5 days in seconds
+
+  gc:
+    interval: 3600 # gc interval in seconds
+    missingTolerance: 86400 # file meta missing tolerance duration in seconds, 60*24
+    dropTolerance: 86400 # file belongs to dropped entity tolerance duration in seconds, 60*24
+
 
 dataNode:
   port: 21124
@@ -207,7 +213,7 @@ log:
   file:
     rootPath: "" # default to stdout, stderr
     maxSize: 300 # MB
-    maxAge: 10 # day
+    maxAge: 10 # Maximum time for log retention in day.
     maxBackups: 20
   format: text # text/json
 

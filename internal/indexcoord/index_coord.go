@@ -24,7 +24,10 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
+
+	"github.com/milvus-io/milvus/internal/common"
 
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.uber.org/zap"
@@ -58,8 +61,6 @@ var _ types.IndexCoord = (*IndexCoord)(nil)
 // request to build the index to IndexNode. IndexCoord records the status of the index, and the index file.
 type IndexCoord struct {
 	stateCode atomic.Value
-
-	ID UniqueID
 
 	loopCtx    context.Context
 	loopCancel func()
@@ -193,13 +194,6 @@ func (i *IndexCoord) Init() error {
 			return
 		}
 
-		i.ID, err = i.idAllocator.AllocOne()
-		if err != nil {
-			log.Error("IndexCoord idAllocator allocOne failed", zap.Error(err))
-			initErr = err
-			return
-		}
-
 		option := &miniokv.Option{
 			Address:           Params.MinIOAddress,
 			AccessKeyID:       Params.MinIOAccessKeyID,
@@ -257,6 +251,8 @@ func (i *IndexCoord) Start() error {
 			if err := i.Stop(); err != nil {
 				log.Fatal("failed to stop server", zap.Error(err))
 			}
+			// manually send signal to starter goroutine
+			syscall.Kill(syscall.Getpid(), syscall.SIGINT)
 		})
 
 		startErr = i.sched.Start()
@@ -279,6 +275,9 @@ func (i *IndexCoord) Start() error {
 
 // Stop stops the IndexCoord component.
 func (i *IndexCoord) Stop() error {
+	// https://github.com/milvus-io/milvus/issues/12282
+	i.UpdateStateCode(internalpb.StateCode_Abnormal)
+
 	i.loopCancel()
 	i.sched.Close()
 	i.loopWg.Wait()
@@ -286,6 +285,7 @@ func (i *IndexCoord) Stop() error {
 		cb()
 	}
 	i.session.Revoke(time.Second)
+
 	return nil
 }
 
@@ -302,8 +302,14 @@ func (i *IndexCoord) isHealthy() bool {
 // GetComponentStates gets the component states of IndexCoord.
 func (i *IndexCoord) GetComponentStates(ctx context.Context) (*internalpb.ComponentStates, error) {
 	log.Debug("get IndexCoord component states ...")
+
+	nodeID := common.NotRegisteredID
+	if i.session != nil && i.session.Registered() {
+		nodeID = i.session.ServerID
+	}
+
 	stateInfo := &internalpb.ComponentInfo{
-		NodeID:    i.ID,
+		NodeID:    nodeID,
 		Role:      "IndexCoord",
 		StateCode: i.stateCode.Load().(internalpb.StateCode),
 	}
@@ -355,6 +361,17 @@ func (i *IndexCoord) BuildIndex(ctx context.Context, req *indexpb.BuildIndexRequ
 		zap.Strings("DataPath = ", req.DataPaths),
 		zap.Any("TypeParams", req.TypeParams),
 		zap.Any("IndexParams", req.IndexParams))
+	if !i.isHealthy() {
+		errMsg := "IndexCoord is not healthy"
+		err := errors.New(errMsg)
+		log.Warn(errMsg)
+		return &indexpb.BuildIndexResponse{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+				Reason:    errMsg,
+			},
+		}, err
+	}
 	sp, ctx := trace.StartSpanFromContextWithOperationName(ctx, "IndexCoord-BuildIndex")
 	defer sp.Finish()
 	hasIndex, indexBuildID := i.metaTable.HasSameReq(req)
@@ -495,7 +512,12 @@ func (i *IndexCoord) GetIndexFilePaths(ctx context.Context, req *indexpb.GetInde
 	for _, indexID := range req.IndexBuildIDs {
 		indexPathInfo, err := i.metaTable.GetIndexFilePathInfo(indexID)
 		if err != nil {
-			return nil, err
+			return &indexpb.GetIndexFilePathsResponse{
+				Status: &commonpb.Status{
+					ErrorCode: commonpb.ErrorCode_UnexpectedError,
+					Reason:    err.Error(),
+				},
+			}, nil
 		}
 		indexPaths = append(indexPaths, indexPathInfo)
 	}
@@ -515,19 +537,19 @@ func (i *IndexCoord) GetIndexFilePaths(ctx context.Context, req *indexpb.GetInde
 // GetMetrics gets the metrics info of IndexCoord.
 func (i *IndexCoord) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
 	log.Debug("IndexCoord.GetMetrics",
-		zap.Int64("node_id", i.ID),
+		zap.Int64("node_id", i.session.ServerID),
 		zap.String("req", req.Request))
 
 	if !i.isHealthy() {
 		log.Warn("IndexCoord.GetMetrics failed",
-			zap.Int64("node_id", i.ID),
+			zap.Int64("node_id", i.session.ServerID),
 			zap.String("req", req.Request),
-			zap.Error(errIndexCoordIsUnhealthy(i.ID)))
+			zap.Error(errIndexCoordIsUnhealthy(i.session.ServerID)))
 
 		return &milvuspb.GetMetricsResponse{
 			Status: &commonpb.Status{
 				ErrorCode: commonpb.ErrorCode_UnexpectedError,
-				Reason:    msgIndexCoordIsUnhealthy(i.ID),
+				Reason:    msgIndexCoordIsUnhealthy(i.session.ServerID),
 			},
 			Response: "",
 		}, nil
@@ -536,7 +558,7 @@ func (i *IndexCoord) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsReq
 	metricType, err := metricsinfo.ParseMetricType(req.Request)
 	if err != nil {
 		log.Error("IndexCoord.GetMetrics failed to parse metric type",
-			zap.Int64("node_id", i.ID),
+			zap.Int64("node_id", i.session.ServerID),
 			zap.String("req", req.Request),
 			zap.Error(err))
 
@@ -563,7 +585,7 @@ func (i *IndexCoord) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsReq
 		metrics, err := getSystemInfoMetrics(ctx, req, i)
 
 		log.Debug("IndexCoord.GetMetrics",
-			zap.Int64("node_id", i.ID),
+			zap.Int64("node_id", i.session.ServerID),
 			zap.String("req", req.Request),
 			zap.String("metric_type", metricType),
 			zap.Any("metrics", metrics), // TODO(dragondriver): necessary? may be very large
@@ -571,11 +593,11 @@ func (i *IndexCoord) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsReq
 
 		i.metricsCacheManager.UpdateSystemInfoMetrics(metrics)
 
-		return metrics, err
+		return metrics, nil
 	}
 
 	log.Debug("IndexCoord.GetMetrics failed, request metric type is not implemented yet",
-		zap.Int64("node_id", i.ID),
+		zap.Int64("node_id", i.session.ServerID),
 		zap.String("req", req.Request),
 		zap.String("metric_type", metricType))
 
@@ -778,18 +800,7 @@ func (i *IndexCoord) assignTaskLoop() {
 			log.Debug("IndexCoord assignTaskLoop ctx Done")
 			return
 		case <-timeTicker.C:
-			sessions, _, err := i.session.GetSessions(typeutil.IndexNodeRole)
-			if err != nil {
-				log.Error("IndexCoord assignTaskLoop", zap.Any("GetSessions error", err))
-			}
-			if len(sessions) <= 0 {
-				log.Warn("There is no IndexNode available as this time.")
-				break
-			}
-			var serverIDs []int64
-			for _, session := range sessions {
-				serverIDs = append(serverIDs, session.ServerID)
-			}
+			serverIDs := i.nodeManager.ListNode()
 			metas := i.metaTable.GetUnassignedTasks(serverIDs)
 			sort.Slice(metas, func(i, j int) bool {
 				return metas[i].indexMeta.Version <= metas[j].indexMeta.Version
@@ -800,7 +811,7 @@ func (i *IndexCoord) assignTaskLoop() {
 			}
 			for index, meta := range metas {
 				indexBuildID := meta.indexMeta.IndexBuildID
-				if err = i.metaTable.UpdateVersion(indexBuildID); err != nil {
+				if err := i.metaTable.UpdateVersion(indexBuildID); err != nil {
 					log.Warn("IndexCoord assignmentTasksLoop metaTable.UpdateVersion failed", zap.Error(err))
 					continue
 				}
@@ -825,12 +836,11 @@ func (i *IndexCoord) assignTaskLoop() {
 					log.Warn("IndexCoord assignTask assign task to IndexNode failed")
 					continue
 				}
-				if err = i.metaTable.BuildIndex(indexBuildID, nodeID); err != nil {
+				if err := i.metaTable.BuildIndex(indexBuildID, nodeID); err != nil {
 					log.Error("IndexCoord assignmentTasksLoop metaTable.BuildIndex failed", zap.Error(err))
 					break
 				}
-				log.Debug("This task has been assigned", zap.Int64("indexBuildID", indexBuildID),
-					zap.Int64("The IndexNode execute this task", nodeID))
+				log.Debug("This task has been assigned successfully", zap.Int64("indexBuildID", indexBuildID), zap.Int64("nodeID", nodeID))
 				i.nodeManager.pq.IncPriority(nodeID, 1)
 				if index > i.taskLimit {
 					break

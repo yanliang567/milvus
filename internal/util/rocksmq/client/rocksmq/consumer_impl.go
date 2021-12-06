@@ -28,7 +28,8 @@ type consumer struct {
 	startOnce sync.Once
 
 	msgMutex  chan struct{}
-	messageCh chan ConsumerMessage
+	initCh    chan struct{}
+	messageCh chan Message
 }
 
 func newConsumer(c *client, options ConsumerOptions) (*consumer, error) {
@@ -46,15 +47,18 @@ func newConsumer(c *client, options ConsumerOptions) (*consumer, error) {
 
 	messageCh := options.MessageChannel
 	if options.MessageChannel == nil {
-		messageCh = make(chan ConsumerMessage, 1)
+		messageCh = make(chan Message, 1)
 	}
-
+	// only used for
+	initCh := make(chan struct{}, 1)
+	initCh <- struct{}{}
 	return &consumer{
 		topic:        options.Topic,
 		client:       c,
 		consumerName: options.SubscriptionName,
 		options:      options,
 		msgMutex:     make(chan struct{}, 1),
+		initCh:       initCh,
 		messageCh:    messageCh,
 	}, nil
 }
@@ -75,7 +79,7 @@ func getExistedConsumer(c *client, options ConsumerOptions, msgMutex chan struct
 
 	messageCh := options.MessageChannel
 	if options.MessageChannel == nil {
-		messageCh = make(chan ConsumerMessage, 1)
+		messageCh = make(chan Message, 1)
 	}
 
 	return &consumer{
@@ -104,7 +108,7 @@ func (c *consumer) MsgMutex() chan struct{} {
 }
 
 // Chan start consume goroutine and return message channel
-func (c *consumer) Chan() <-chan ConsumerMessage {
+func (c *consumer) Chan() <-chan Message {
 	c.startOnce.Do(func() {
 		c.client.wg.Add(1)
 		go c.client.consume(c)

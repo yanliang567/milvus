@@ -22,6 +22,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	memkv "github.com/milvus-io/milvus/internal/kv/mem"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
@@ -144,7 +145,7 @@ func TestRendezvousFlushManager(t *testing.T) {
 	m := NewRendezvousFlushManager(&allocator{}, kv, newMockReplica(), func(pack *segmentFlushPack) {
 		counter.Inc()
 		finish.Done()
-	})
+	}, emptyFlushAndDropFunc)
 
 	ids := make([][]byte, 0, size)
 	for i := 0; i < size; i++ {
@@ -177,23 +178,20 @@ func TestRendezvousFlushManager_Inject(t *testing.T) {
 	var counter atomic.Int64
 	finish := sync.WaitGroup{}
 	finish.Add(size)
-	packs := make([]*segmentFlushPack, 0, size+1)
+	var packMut sync.Mutex
+	packs := make([]*segmentFlushPack, 0, size+3)
 	m := NewRendezvousFlushManager(&allocator{}, kv, newMockReplica(), func(pack *segmentFlushPack) {
+		packMut.Lock()
 		packs = append(packs, pack)
+		packMut.Unlock()
 		counter.Inc()
 		finish.Done()
-	})
+	}, emptyFlushAndDropFunc)
 
-	injected := make(chan struct{})
-	injectOver := make(chan bool)
-	m.injectFlush(taskInjection{
-		injected:   injected,
-		injectOver: injectOver,
-		postInjection: func(*segmentFlushPack) {
-		},
-	}, 1)
-	<-injected
-	injectOver <- true
+	ti := newTaskInjection(1, func(*segmentFlushPack) {})
+	m.injectFlush(ti, 1)
+	<-ti.injected
+	ti.injectDone(true)
 
 	ids := make([][]byte, 0, size)
 	for i := 0; i < size; i++ {
@@ -218,44 +216,60 @@ func TestRendezvousFlushManager_Inject(t *testing.T) {
 
 	assert.EqualValues(t, size, counter.Load())
 
-	finish.Add(1)
+	finish.Add(2)
 	id := make([]byte, 10)
+	rand.Read(id)
+	id2 := make([]byte, 10)
+	rand.Read(id2)
 	rand.Read(id)
 	m.flushBufferData(nil, 2, true, false, &internalpb.MsgPosition{
 		MsgID: id,
 	})
+	m.flushBufferData(nil, 3, true, false, &internalpb.MsgPosition{
+		MsgID: id2,
+	})
 
-	m.injectFlush(taskInjection{
-		injected:   injected,
-		injectOver: injectOver,
-		postInjection: func(pack *segmentFlushPack) {
-			pack.segmentID = 3
-		},
-	}, 2)
+	ti = newTaskInjection(2, func(pack *segmentFlushPack) {
+		pack.segmentID = 4
+	})
+	m.injectFlush(ti, 2, 3)
 
 	go func() {
-		<-injected
-		injectOver <- true
+		<-ti.injected
+		ti.injectDone(true)
 	}()
 	m.flushDelData(nil, 2, &internalpb.MsgPosition{
 		MsgID: id,
 	})
+	m.flushDelData(nil, 3, &internalpb.MsgPosition{
+		MsgID: id2,
+	})
 
 	finish.Wait()
-	assert.EqualValues(t, size+1, counter.Load())
-	assert.EqualValues(t, 3, packs[size].segmentID)
+	assert.EqualValues(t, size+2, counter.Load())
+	assert.EqualValues(t, 4, packs[size].segmentID)
 
 	finish.Add(1)
 	rand.Read(id)
+
 	m.flushBufferData(nil, 2, false, false, &internalpb.MsgPosition{
 		MsgID: id,
 	})
+	ti = newTaskInjection(1, func(pack *segmentFlushPack) {
+		pack.segmentID = 5
+	})
+	go func() {
+		<-ti.injected
+		ti.injectDone(false) // inject fail, segment id shall not be changed to 5
+	}()
+	m.injectFlush(ti, 2)
+
 	m.flushDelData(nil, 2, &internalpb.MsgPosition{
 		MsgID: id,
 	})
 	finish.Wait()
-	assert.EqualValues(t, size+2, counter.Load())
-	assert.EqualValues(t, 3, packs[size+1].segmentID)
+	assert.EqualValues(t, size+3, counter.Load())
+	assert.EqualValues(t, 4, packs[size+1].segmentID)
 
 }
 
@@ -263,7 +277,7 @@ func TestRendezvousFlushManager_getSegmentMeta(t *testing.T) {
 	memkv := memkv.NewMemoryKV()
 	replica := newMockReplica()
 	fm := NewRendezvousFlushManager(NewAllocatorFactory(), memkv, replica, func(*segmentFlushPack) {
-	})
+	}, emptyFlushAndDropFunc)
 
 	// non exists segment
 	_, _, _, err := fm.getSegmentMeta(-1, &internalpb.MsgPosition{})
@@ -280,6 +294,187 @@ func TestRendezvousFlushManager_getSegmentMeta(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestRendezvousFlushManager_waitForAllFlushQueue(t *testing.T) {
+	kv := memkv.NewMemoryKV()
+
+	size := 1000
+	var counter atomic.Int64
+	var finish sync.WaitGroup
+	finish.Add(size)
+	m := NewRendezvousFlushManager(&allocator{}, kv, newMockReplica(), func(pack *segmentFlushPack) {
+		counter.Inc()
+		finish.Done()
+	}, emptyFlushAndDropFunc)
+
+	ids := make([][]byte, 0, size)
+	for i := 0; i < size; i++ {
+		id := make([]byte, 10)
+		rand.Read(id)
+		ids = append(ids, id)
+	}
+
+	for i := 0; i < size; i++ {
+		m.flushDelData(nil, 1, &internalpb.MsgPosition{
+			MsgID: ids[i],
+		})
+	}
+
+	var finished bool
+	var mut sync.RWMutex
+	signal := make(chan struct{})
+
+	go func() {
+		m.waitForAllFlushQueue()
+		mut.Lock()
+		finished = true
+		mut.Unlock()
+		close(signal)
+	}()
+
+	mut.RLock()
+	assert.False(t, finished)
+	mut.RUnlock()
+
+	for i := 0; i < size/2; i++ {
+		m.flushBufferData(nil, 1, true, false, &internalpb.MsgPosition{
+			MsgID: ids[i],
+		})
+	}
+
+	mut.RLock()
+	assert.False(t, finished)
+	mut.RUnlock()
+
+	for i := size / 2; i < size; i++ {
+		m.flushBufferData(nil, 1, true, false, &internalpb.MsgPosition{
+			MsgID: ids[i],
+		})
+	}
+
+	timeout := time.NewTimer(time.Second)
+	select {
+	case <-timeout.C:
+		t.FailNow()
+	case <-signal:
+	}
+
+	mut.RLock()
+	assert.True(t, finished)
+	mut.RUnlock()
+}
+
+func TestRendezvousFlushManager_dropMode(t *testing.T) {
+	t.Run("test drop mode", func(t *testing.T) {
+		kv := memkv.NewMemoryKV()
+
+		var mut sync.Mutex
+		var result []*segmentFlushPack
+		signal := make(chan struct{})
+
+		m := NewRendezvousFlushManager(&allocator{}, kv, newMockReplica(), func(pack *segmentFlushPack) {
+		}, func(packs []*segmentFlushPack) {
+			mut.Lock()
+			result = packs
+			mut.Unlock()
+			close(signal)
+		})
+
+		halfMsgID := []byte{1, 1, 1}
+		m.flushBufferData(nil, -1, true, false, &internalpb.MsgPosition{
+			MsgID: halfMsgID,
+		})
+
+		m.startDropping()
+		// half normal, half drop mode, should not appear in final packs
+		m.flushDelData(nil, -1, &internalpb.MsgPosition{
+			MsgID: halfMsgID,
+		})
+
+		target := make(map[int64]struct{})
+		for i := 1; i < 11; i++ {
+			target[int64(i)] = struct{}{}
+			m.flushBufferData(nil, int64(i), true, false, &internalpb.MsgPosition{
+				MsgID: []byte{1},
+			})
+			m.flushDelData(nil, int64(i), &internalpb.MsgPosition{
+				MsgID: []byte{1},
+			})
+		}
+
+		m.notifyAllFlushed()
+
+		<-signal
+		mut.Lock()
+		defer mut.Unlock()
+
+		output := make(map[int64]struct{})
+		for _, pack := range result {
+			assert.NotEqual(t, -1, pack.segmentID)
+			output[pack.segmentID] = struct{}{}
+			_, has := target[pack.segmentID]
+			assert.True(t, has)
+		}
+		assert.Equal(t, len(target), len(output))
+	})
+	t.Run("test drop mode with injection", func(t *testing.T) {
+		kv := memkv.NewMemoryKV()
+
+		var mut sync.Mutex
+		var result []*segmentFlushPack
+		signal := make(chan struct{})
+
+		m := NewRendezvousFlushManager(&allocator{}, kv, newMockReplica(), func(pack *segmentFlushPack) {
+		}, func(packs []*segmentFlushPack) {
+			mut.Lock()
+			result = packs
+			mut.Unlock()
+			close(signal)
+		})
+
+		halfMsgID := []byte{1, 1, 1}
+		m.flushBufferData(nil, -1, true, false, &internalpb.MsgPosition{
+			MsgID: halfMsgID,
+		})
+
+		injFunc := func(pack *segmentFlushPack) {
+			pack.segmentID = 100
+		}
+		for i := 1; i < 11; i++ {
+			it := newTaskInjection(1, injFunc)
+			m.injectFlush(it, int64(i))
+			<-it.Injected()
+			it.injectDone(true)
+		}
+
+		m.startDropping()
+		// half normal, half drop mode, should not appear in final packs
+		m.flushDelData(nil, -1, &internalpb.MsgPosition{
+			MsgID: halfMsgID,
+		})
+
+		for i := 1; i < 11; i++ {
+			m.flushBufferData(nil, int64(i), true, false, &internalpb.MsgPosition{
+				MsgID: []byte{1},
+			})
+			m.flushDelData(nil, int64(i), &internalpb.MsgPosition{
+				MsgID: []byte{1},
+			})
+		}
+
+		m.notifyAllFlushed()
+
+		<-signal
+		mut.Lock()
+		defer mut.Unlock()
+
+		for _, pack := range result {
+			assert.NotEqual(t, -1, pack.segmentID)
+			assert.Equal(t, int64(100), pack.segmentID)
+		}
+	})
+
+}
+
 func TestRendezvousFlushManager_close(t *testing.T) {
 	kv := memkv.NewMemoryKV()
 
@@ -290,7 +485,7 @@ func TestRendezvousFlushManager_close(t *testing.T) {
 	m := NewRendezvousFlushManager(&allocator{}, kv, newMockReplica(), func(pack *segmentFlushPack) {
 		counter.Inc()
 		finish.Done()
-	})
+	}, emptyFlushAndDropFunc)
 
 	ids := make([][]byte, 0, size)
 	for i := 0; i < size; i++ {
@@ -318,8 +513,6 @@ func TestRendezvousFlushManager_close(t *testing.T) {
 }
 
 func TestFlushNotifyFunc(t *testing.T) {
-	//	replica :=
-	//	rcf := &RootCoordFactory{}
 	ctx := context.Background()
 	rcf := &RootCoordFactory{}
 
@@ -368,4 +561,71 @@ func TestFlushNotifyFunc(t *testing.T) {
 			notifyFunc(&segmentFlushPack{})
 		})
 	})
+}
+
+func TestDropVirtualChannelFunc(t *testing.T) {
+	ctx := context.Background()
+	rcf := &RootCoordFactory{}
+	replica, err := newReplica(ctx, rcf, 1)
+	require.NoError(t, err)
+
+	dataCoord := &DataCoordFactory{}
+	flushingCache := newCache()
+	dsService := &dataSyncService{
+		collectionID:     1,
+		replica:          replica,
+		dataCoord:        dataCoord,
+		flushingSegCache: flushingCache,
+		vchannelName:     "vchan_01",
+	}
+	dropFunc := dropVirtualChannelFunc(dsService, retry.Attempts(1))
+	t.Run("normal run", func(t *testing.T) {
+		replica.addNewSegment(2, 1, 10, "vchan_01", &internalpb.MsgPosition{
+			ChannelName: "vchan_01",
+			MsgID:       []byte{1, 2, 3},
+			Timestamp:   10,
+		}, nil)
+		assert.NotPanics(t, func() {
+			dropFunc([]*segmentFlushPack{
+				{
+					segmentID:  1,
+					insertLogs: map[UniqueID]string{1: "/dev/test/id"},
+					statsLogs:  map[UniqueID]string{1: "/dev/test/id-stats"},
+					deltaLogs:  []*DelDataBuf{{filePath: "/dev/test/del"}},
+					pos: &internalpb.MsgPosition{
+						ChannelName: "vchan_01",
+						MsgID:       []byte{1, 2, 3},
+						Timestamp:   10,
+					},
+				},
+				{
+					segmentID:  1,
+					insertLogs: map[UniqueID]string{1: "/dev/test/id_2"},
+					statsLogs:  map[UniqueID]string{1: "/dev/test/id-stats-2"},
+					deltaLogs:  []*DelDataBuf{{filePath: "/dev/test/del-2"}},
+					pos: &internalpb.MsgPosition{
+						ChannelName: "vchan_01",
+						MsgID:       []byte{1, 2, 3},
+						Timestamp:   30,
+					},
+				},
+			})
+		})
+	})
+	t.Run("datacoord drop fails", func(t *testing.T) {
+		dataCoord.DropVirtualChannelNotSuccess = true
+		assert.Panics(t, func() {
+			dropFunc(nil)
+		})
+	})
+
+	t.Run("datacoord call error", func(t *testing.T) {
+
+		dataCoord.DropVirtualChannelNotSuccess = false
+		dataCoord.DropVirtualChannelError = true
+		assert.Panics(t, func() {
+			dropFunc(nil)
+		})
+	})
+
 }

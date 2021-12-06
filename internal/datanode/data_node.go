@@ -30,7 +30,10 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
+
+	"github.com/milvus-io/milvus/internal/common"
 
 	v3rpc "go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -103,7 +106,7 @@ type DataNode struct {
 	vchan2SyncService map[string]*dataSyncService // vchannel name
 	vchan2FlushChs    map[string]chan flushMsg    // vchannel name to flush channels
 
-	clearSignal        chan UniqueID // collection ID
+	clearSignal        chan string // vchannel name
 	segmentCache       *Cache
 	compactionExecutor *compactionExecutor
 
@@ -136,7 +139,7 @@ func NewDataNode(ctx context.Context, factory msgstream.Factory) *DataNode {
 
 		vchan2SyncService: make(map[string]*dataSyncService),
 		vchan2FlushChs:    make(map[string]chan flushMsg),
-		clearSignal:       make(chan UniqueID, 100),
+		clearSignal:       make(chan string, 100),
 	}
 	node.UpdateStateCode(internalpb.StateCode_Abnormal)
 	return node
@@ -184,6 +187,8 @@ func (node *DataNode) Register() error {
 		if err := node.Stop(); err != nil {
 			log.Fatal("failed to stop server", zap.Error(err))
 		}
+		// manually send signal to starter goroutine
+		syscall.Kill(syscall.Getpid(), syscall.SIGINT)
 	})
 
 	Params.initMsgChannelSubName()
@@ -269,7 +274,9 @@ func (node *DataNode) handleChannelEvt(evt *clientv3.Event) {
 	case clientv3.EventTypeDelete:
 		// guaranteed there is no "/" in channel name
 		parts := strings.Split(string(evt.Kv.Key), "/")
-		node.ReleaseDataSyncService(parts[len(parts)-1])
+		vchanName := parts[len(parts)-1]
+		log.Warn("handle channel delete event", zap.Int64("node id", Params.NodeID), zap.String("vchannel", vchanName))
+		node.ReleaseDataSyncService(vchanName)
 	}
 }
 
@@ -328,7 +335,7 @@ func (node *DataNode) NewDataSyncService(vchan *datapb.VchannelInfo) error {
 
 	flushCh := make(chan flushMsg, 100)
 
-	dataSyncService, err := newDataSyncService(node.ctx, flushCh, replica, alloc, node.msFactory, vchan, node.clearSignal, node.dataCoord, node.segmentCache, node.blobKv)
+	dataSyncService, err := newDataSyncService(node.ctx, flushCh, replica, alloc, node.msFactory, vchan, node.clearSignal, node.dataCoord, node.segmentCache, node.blobKv, node.compactionExecutor)
 	if err != nil {
 		return err
 	}
@@ -346,16 +353,13 @@ func (node *DataNode) NewDataSyncService(vchan *datapb.VchannelInfo) error {
 }
 
 // BackGroundGC runs in background to release datanode resources
-func (node *DataNode) BackGroundGC(collIDCh <-chan UniqueID) {
+func (node *DataNode) BackGroundGC(vChannelCh <-chan string) {
 	log.Info("DataNode Background GC Start")
 	for {
 		select {
-		case collID := <-collIDCh:
-			log.Info("GC collection", zap.Int64("ID", collID))
-			node.stopCompactionOfCollection(collID)
-			for _, vchanName := range node.getChannelNamesbyCollectionID(collID) {
-				node.ReleaseDataSyncService(vchanName)
-			}
+		case vChan := <-vChannelCh:
+			log.Info("GC flowgraph", zap.String("vChan", vChan))
+			node.ReleaseDataSyncService(vChan)
 		case <-node.ctx.Done():
 			log.Info("DataNode ctx done")
 			return
@@ -473,9 +477,14 @@ func (node *DataNode) WatchDmChannels(ctx context.Context, in *datapb.WatchDmCha
 // GetComponentStates will return current state of DataNode
 func (node *DataNode) GetComponentStates(ctx context.Context) (*internalpb.ComponentStates, error) {
 	log.Debug("DataNode current state", zap.Any("State", node.State.Load()))
+	nodeID := common.NotRegisteredID
+	if node.session != nil && node.session.Registered() {
+		nodeID = node.session.ServerID
+	}
 	states := &internalpb.ComponentStates{
 		State: &internalpb.ComponentInfo{
-			NodeID:    Params.NodeID,
+			// NodeID:    Params.NodeID, // will race with DataNode.Register()
+			NodeID:    nodeID,
 			Role:      node.Role,
 			StateCode: node.State.Load().(internalpb.StateCode),
 		},
@@ -636,6 +645,10 @@ func (node *DataNode) Stop() error {
 	}
 
 	node.session.Revoke(time.Second)
+
+	// https://github.com/milvus-io/milvus/issues/12282
+	node.UpdateStateCode(internalpb.StateCode_Abnormal)
+
 	return nil
 }
 
@@ -712,7 +725,7 @@ func (node *DataNode) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRe
 			zap.Any("systemInfoMetrics", systemInfoMetrics), // TODO(dragondriver): necessary? may be very large
 			zap.Error(err))
 
-		return systemInfoMetrics, err
+		return systemInfoMetrics, nil
 	}
 
 	log.Debug("DataNode.GetMetrics failed, request metric type is not implemented yet",
@@ -729,12 +742,6 @@ func (node *DataNode) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRe
 	}, nil
 }
 
-func (node *DataNode) stopCompactionOfCollection(collID UniqueID) {
-	log.Debug("Stop compaction of collection", zap.Int64("collection ID", collID))
-
-	node.compactionExecutor.stopExecutingtaskByCollectionID(collID)
-}
-
 func (node *DataNode) Compaction(ctx context.Context, req *datapb.CompactionPlan) (*commonpb.Status, error) {
 	status := &commonpb.Status{
 		ErrorCode: commonpb.ErrorCode_UnexpectedError,
@@ -744,6 +751,12 @@ func (node *DataNode) Compaction(ctx context.Context, req *datapb.CompactionPlan
 	if !ok {
 		log.Warn("illegel compaction plan, channel not in this DataNode", zap.String("channel name", req.GetChannel()))
 		status.Reason = errIllegalCompactionPlan.Error()
+		return status, nil
+	}
+
+	if !node.compactionExecutor.channelValidateForCompaction(req.GetChannel()) {
+		log.Warn("channel of compaction is marked invalid in compaction executor", zap.String("channel name", req.GetChannel()))
+		status.Reason = "channel marked invalid"
 		return status, nil
 	}
 

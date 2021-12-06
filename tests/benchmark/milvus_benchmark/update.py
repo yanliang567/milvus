@@ -105,6 +105,20 @@ def get_latest_tag(limit=200):
     return latest_tag
 
 
+def get_image_tag():
+    url = ""
+    headers = {"accept": "application/json"}
+    try:
+        rep = requests.get(url, headers=headers)
+        data = json.loads(rep.text)
+        tag_name = data[0]["tags"][0]["name"]
+        print("[benchmark update] The image name used is %s" % str(tag_name))
+        return tag_name
+    except:
+        print("Can not get the tag list")
+        return "master-latest"
+
+
 def parse_server_tag(server_tag):
     """ paser server tag from server config"""
     # tag format: "8c"/"8c16m"/"8c16m1g"
@@ -308,6 +322,10 @@ def update_values(src_values_file, deploy_params_file):
         'name': 'test',
         'mountPath': '/test'
     }]
+
+    server_resource = utils.get_server_resource(deploy_params)
+    print("[benchmark update] server_resource: %s" % str(server_resource))
+    values_dict = utils.update_dict_value(server_resource, values_dict)
 
     print(values_dict)
     # Update content of src_values_file

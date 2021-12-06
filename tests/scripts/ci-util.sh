@@ -14,8 +14,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Exit immediately for non zero status
 set -e
+# Check unset variables
 set -u
+# Print commands
 set -x
 
 SOURCE="${BASH_SOURCE[0]}"
@@ -34,6 +37,7 @@ function install_pytest_requirements(){
  python3 -m pip install --no-cache-dir -r requirements.txt
 }
 
+# Login in ci docker registry
 function docker_login_ci_registry(){
 
     if [[ -z "${CI_REGISTRY_USERNAME:-}" || -z "${CI_REGISTRY_PASSWORD:-}" ]]; then 

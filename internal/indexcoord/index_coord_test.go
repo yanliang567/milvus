@@ -23,6 +23,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/common"
+
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 
 	grpcindexnode "github.com/milvus-io/milvus/internal/distributed/indexnode"
@@ -230,4 +232,27 @@ func TestIndexCoord_watchNodeLoop(t *testing.T) {
 	<-signal
 	assert.True(t, flag)
 
+}
+
+func TestIndexCoord_GetComponentStates(t *testing.T) {
+	n := &IndexCoord{}
+	n.stateCode.Store(internalpb.StateCode_Healthy)
+	resp, err := n.GetComponentStates(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
+	assert.Equal(t, common.NotRegisteredID, resp.State.NodeID)
+	n.session = &sessionutil.Session{}
+	n.session.UpdateRegistered(true)
+	resp, err = n.GetComponentStates(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
+}
+
+func TestIndexCoord_NotHealthy(t *testing.T) {
+	ic := &IndexCoord{}
+	ic.stateCode.Store(internalpb.StateCode_Abnormal)
+	req := &indexpb.BuildIndexRequest{}
+	resp, err := ic.BuildIndex(context.Background(), req)
+	assert.Error(t, err)
+	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp.Status.ErrorCode)
 }

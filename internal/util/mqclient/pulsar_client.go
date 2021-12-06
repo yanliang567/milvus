@@ -55,6 +55,24 @@ func (pc *pulsarClient) CreateProducer(options ProducerOptions) (Producer, error
 	return producer, nil
 }
 
+func (pc *pulsarClient) CreateReader(options ReaderOptions) (Reader, error) {
+	opts := pulsar.ReaderOptions{
+		Topic:                   options.Topic,
+		StartMessageID:          options.StartMessageID.(*pulsarID).messageID,
+		StartMessageIDInclusive: options.StartMessageIDInclusive,
+		SubscriptionRolePrefix:  options.SubscriptionRolePrefix,
+	}
+	pr, err := pc.client.CreateReader(opts)
+	if err != nil {
+		return nil, err
+	}
+	if pr == nil {
+		return nil, errors.New("pulsar is not ready, producer is nil")
+	}
+	reader := &pulsarReader{r: pr}
+	return reader, nil
+}
+
 func (pc *pulsarClient) Subscribe(options ConsumerOptions) (Consumer, error) {
 	receiveChannel := make(chan pulsar.ConsumerMessage, options.BufSize)
 	consumer, err := pc.client.Subscribe(pulsar.ConsumerOptions{

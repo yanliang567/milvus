@@ -62,6 +62,7 @@ func (pt *ParamTable) LoadFromEnv() {
 	Params.IP = funcutil.GetLocalIP()
 }
 
+// initParams initializes params of the configuration items.
 func (pt *ParamTable) initParams() {
 	pt.LoadFromEnv()
 	pt.LoadFromArgs()
@@ -70,6 +71,7 @@ func (pt *ParamTable) initParams() {
 	pt.initServerMaxRecvSize()
 }
 
+// initPort initializes the port of IndexNode service.
 func (pt *ParamTable) initPort() {
 	port := pt.ParseInt("indexNode.port")
 	pt.Port = port

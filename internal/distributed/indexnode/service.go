@@ -23,10 +23,12 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/milvus-io/milvus/internal/types"
 
 	"go.uber.org/zap"
+	"google.golang.org/grpc/keepalive"
 
 	grpc_opentracing "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
 	"github.com/milvus-io/milvus/internal/indexnode"
@@ -67,6 +69,7 @@ func (s *Server) Run() error {
 	return nil
 }
 
+// startGrpcLoop starts the grep loop of IndexNode component.
 func (s *Server) startGrpcLoop(grpcPort int) {
 	defer s.loopWg.Done()
 
@@ -81,8 +84,20 @@ func (s *Server) startGrpcLoop(grpcPort int) {
 	ctx, cancel := context.WithCancel(s.loopCtx)
 	defer cancel()
 
+	var kaep = keepalive.EnforcementPolicy{
+		MinTime:             5 * time.Second, // If a client pings more than once every 5 seconds, terminate the connection
+		PermitWithoutStream: true,            // Allow pings even when there are no active streams
+	}
+
+	var kasp = keepalive.ServerParameters{
+		Time:    60 * time.Second, // Ping the client if it is idle for 60 seconds to ensure the connection is still active
+		Timeout: 10 * time.Second, // Wait 10 second for the ping ack before assuming the connection is dead
+	}
+
 	opts := trace.GetInterceptorOpts()
 	s.grpcServer = grpc.NewServer(
+		grpc.KeepaliveEnforcementPolicy(kaep),
+		grpc.KeepaliveParams(kasp),
 		grpc.MaxRecvMsgSize(Params.ServerMaxRecvSize),
 		grpc.MaxSendMsgSize(Params.ServerMaxSendSize),
 		grpc.UnaryInterceptor(grpc_opentracing.UnaryServerInterceptor(opts...)),
@@ -153,6 +168,7 @@ func (s *Server) start() error {
 
 // Stop stops IndexNode's grpc service.
 func (s *Server) Stop() error {
+	log.Debug("IndexNode stop", zap.String("Address", Params.Address))
 	if s.closer != nil {
 		if err := s.closer.Close(); err != nil {
 			return err

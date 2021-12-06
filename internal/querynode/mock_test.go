@@ -37,6 +37,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/storage"
+	"github.com/milvus-io/milvus/internal/util"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 )
 
@@ -83,6 +84,7 @@ const (
 const (
 	buildID   = UniqueID(0)
 	indexID   = UniqueID(0)
+	fieldID   = UniqueID(100)
 	indexName = "query-node-index-0"
 )
 
@@ -887,7 +889,7 @@ func genSimpleSegmentLoader(ctx context.Context, historicalReplica ReplicaInterf
 	if err != nil {
 		return nil, err
 	}
-	return newSegmentLoader(ctx, newMockRootCoord(), newMockIndexCoord(), historicalReplica, streamingReplica, kv), nil
+	return newSegmentLoader(ctx, newMockRootCoord(), newMockIndexCoord(), historicalReplica, streamingReplica, kv, msgstream.NewPmsFactory()), nil
 }
 
 func genSimpleHistorical(ctx context.Context, tSafeReplica TSafeReplicaInterface) (*historical, error) {
@@ -1289,7 +1291,7 @@ func saveChangeInfo(key string, value string) error {
 		return err
 	}
 
-	key = changeInfoMetaPrefix + "/" + key
+	key = util.ChangeInfoMetaPrefix + "/" + key
 
 	return kv.Save(key, value)
 }
@@ -1313,7 +1315,7 @@ func genSimpleQueryNode(ctx context.Context) (*QueryNode, error) {
 
 	node.etcdKV = etcdKV
 
-	node.tSafeReplica = newTSafeReplica()
+	node.tSafeReplica = newTSafeReplica(ctx)
 
 	streaming, err := genSimpleStreaming(ctx, node.tSafeReplica)
 	if err != nil {

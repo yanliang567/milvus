@@ -1,7 +1,7 @@
 #!/usr/bin/env groovy
 
 int total_timeout_minutes = 120
-int e2e_timeout_seconds = 50 * 60
+int e2e_timeout_seconds = 70 * 60
 
 pipeline {
     agent none
@@ -52,6 +52,9 @@ pipeline {
                                 }
                             }
                             container('main') {
+                                // dir ('build'){
+                                //      sh './set_docker_mirror.sh'
+                                // }
                                 dir ('tests/scripts') {
                                     script {
                                         sh 'printenv'
@@ -104,7 +107,7 @@ pipeline {
                                 body: '$DEFAULT_CONTENT',
                                 recipientProviders: [developers(), culprits()],
                                 replyTo: '$DEFAULT_REPLYTO',
-                                to: "${authorEmail}"
+                                to: "${authorEmail},devops@zilliz.com"
                             }
                         }
                     }

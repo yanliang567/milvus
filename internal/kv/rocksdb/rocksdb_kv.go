@@ -141,7 +141,7 @@ func (kv *RocksdbKV) ResetPrefixLength(len int) error {
 // MultiLoad load a batch of values by keys
 func (kv *RocksdbKV) MultiLoad(keys []string) ([]string, error) {
 	if kv.DB == nil {
-		return nil, errors.New("Rocksdb instance is nil when do MultiLoad")
+		return nil, errors.New("rocksdb instance is nil when do MultiLoad")
 	}
 	values := make([]string, 0, len(keys))
 	for _, key := range keys {
@@ -158,7 +158,7 @@ func (kv *RocksdbKV) MultiLoad(keys []string) ([]string, error) {
 // Save a pair of key-value
 func (kv *RocksdbKV) Save(key, value string) error {
 	if kv.DB == nil {
-		return errors.New("Rocksdb instance is nil when do save")
+		return errors.New("rocksdb instance is nil when do save")
 	}
 	err := kv.DB.Put(kv.WriteOptions, []byte(key), []byte(value))
 	return err
@@ -232,7 +232,7 @@ func (kv *RocksdbKV) MultiRemove(keys []string) error {
 	return err
 }
 
-// MultiSaveAndRemove provides a transaction to execute a batch of operators
+// MultiSaveAndRemove provides a transaction to execute a batch of operations
 func (kv *RocksdbKV) MultiSaveAndRemove(saves map[string]string, removals []string) error {
 	if kv.DB == nil {
 		return errors.New("Rocksdb instance is nil when do MultiSaveAndRemove")

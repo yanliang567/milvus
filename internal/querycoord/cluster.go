@@ -1,13 +1,18 @@
-// Copyright (C) 2019-2020 Zilliz. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
 // with the License. You may obtain a copy of the License at
 //
-// http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// Unless required by applicable law or agreed to in writing, software distributed under the License
-// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
-// or implied. See the License for the specific language governing permissions and limitations under the License.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package querycoord
 
@@ -161,7 +166,7 @@ func (c *queryNodeCluster) reloadFromKV() error {
 		onlineSessionMap[nodeID] = session
 	}
 	for nodeID, session := range onlineSessionMap {
-		log.Debug("ReloadFromKV: register a queryNode to cluster", zap.Any("nodeID", nodeID))
+		log.Debug("reloadFromKV: register a queryNode to cluster", zap.Any("nodeID", nodeID))
 		err := c.registerNode(c.ctx, session, nodeID, disConnect)
 		if err != nil {
 			log.Error("query node failed to register", zap.Int64("nodeID", nodeID), zap.String("error info", err.Error()))
@@ -180,19 +185,19 @@ func (c *queryNodeCluster) reloadFromKV() error {
 	for index := range oldStringNodeIDs {
 		nodeID, err := strconv.ParseInt(filepath.Base(oldStringNodeIDs[index]), 10, 64)
 		if err != nil {
-			log.Error("WatchNodeLoop: parse nodeID error", zap.Error(err))
+			log.Error("watchNodeLoop: parse nodeID error", zap.Error(err))
 			return err
 		}
 		if _, ok := onlineSessionMap[nodeID]; !ok {
 			session := &sessionutil.Session{}
 			err = json.Unmarshal([]byte(oldNodeSessions[index]), session)
 			if err != nil {
-				log.Error("WatchNodeLoop: unmarshal session error", zap.Error(err))
+				log.Error("watchNodeLoop: unmarshal session error", zap.Error(err))
 				return err
 			}
 			err = c.registerNode(context.Background(), session, nodeID, offline)
 			if err != nil {
-				log.Debug("ReloadFromKV: failed to add queryNode to cluster", zap.Int64("nodeID", nodeID), zap.String("error info", err.Error()))
+				log.Debug("reloadFromKV: failed to add queryNode to cluster", zap.Int64("nodeID", nodeID), zap.String("error info", err.Error()))
 				return err
 			}
 			toLoadMetaNodeIDs = append(toLoadMetaNodeIDs, nodeID)
@@ -214,9 +219,10 @@ func (c *queryNodeCluster) reloadFromKV() error {
 			}
 			err = c.nodes[nodeID].setCollectionInfo(collectionInfo)
 			if err != nil {
-				log.Debug("ReloadFromKV: failed to add queryNode meta to cluster", zap.Int64("nodeID", nodeID), zap.String("error info", err.Error()))
+				log.Debug("reloadFromKV: failed to add queryNode meta to cluster", zap.Int64("nodeID", nodeID), zap.String("error info", err.Error()))
 				return err
 			}
+			log.Debug("reloadFromKV: reload collection info from etcd", zap.Any("info", collectionInfo))
 		}
 	}
 	return nil
@@ -232,7 +238,7 @@ func (c *queryNodeCluster) getComponentInfos(ctx context.Context) ([]*internalpb
 	subComponentInfos := make([]*internalpb.ComponentInfo, 0)
 	nodes, err := c.getOnlineNodes()
 	if err != nil {
-		log.Debug("GetComponentInfos: failed get on service nodes", zap.String("error info", err.Error()))
+		log.Debug("getComponentInfos: failed get on service nodes", zap.String("error info", err.Error()))
 		return nil, err
 	}
 	for _, node := range nodes {
@@ -244,11 +250,15 @@ func (c *queryNodeCluster) getComponentInfos(ctx context.Context) ([]*internalpb
 }
 
 func (c *queryNodeCluster) loadSegments(ctx context.Context, nodeID int64, in *querypb.LoadSegmentsRequest) error {
-	c.Lock()
-	defer c.Unlock()
-
+	c.RLock()
+	var targetNode Node
 	if node, ok := c.nodes[nodeID]; ok {
-		err := node.loadSegments(ctx, in)
+		targetNode = node
+	}
+	c.RUnlock()
+
+	if targetNode != nil {
+		err := targetNode.loadSegments(ctx, in)
 		if err != nil {
 			log.Debug("loadSegments: queryNode load segments error", zap.Int64("nodeID", nodeID), zap.String("error info", err.Error()))
 			return err
@@ -260,15 +270,19 @@ func (c *queryNodeCluster) loadSegments(ctx context.Context, nodeID int64, in *q
 }
 
 func (c *queryNodeCluster) releaseSegments(ctx context.Context, nodeID int64, in *querypb.ReleaseSegmentsRequest) error {
-	c.Lock()
-	defer c.Unlock()
-
+	c.RLock()
+	var targetNode Node
 	if node, ok := c.nodes[nodeID]; ok {
-		if !node.isOnline() {
+		targetNode = node
+	}
+	c.RUnlock()
+
+	if targetNode != nil {
+		if !targetNode.isOnline() {
 			return errors.New("node offline")
 		}
 
-		err := node.releaseSegments(ctx, in)
+		err := targetNode.releaseSegments(ctx, in)
 		if err != nil {
 			log.Debug("releaseSegments: queryNode release segments error", zap.Int64("nodeID", nodeID), zap.String("error info", err.Error()))
 			return err
@@ -281,11 +295,15 @@ func (c *queryNodeCluster) releaseSegments(ctx context.Context, nodeID int64, in
 }
 
 func (c *queryNodeCluster) watchDmChannels(ctx context.Context, nodeID int64, in *querypb.WatchDmChannelsRequest) error {
-	c.Lock()
-	defer c.Unlock()
-
+	c.RLock()
+	var targetNode Node
 	if node, ok := c.nodes[nodeID]; ok {
-		err := node.watchDmChannels(ctx, in)
+		targetNode = node
+	}
+	c.RUnlock()
+
+	if targetNode != nil {
+		err := targetNode.watchDmChannels(ctx, in)
 		if err != nil {
 			log.Debug("watchDmChannels: queryNode watch dm channel error", zap.String("error", err.Error()))
 			return err
@@ -308,13 +326,17 @@ func (c *queryNodeCluster) watchDmChannels(ctx context.Context, nodeID int64, in
 }
 
 func (c *queryNodeCluster) watchDeltaChannels(ctx context.Context, nodeID int64, in *querypb.WatchDeltaChannelsRequest) error {
-	c.Lock()
-	defer c.Unlock()
-
+	c.RLock()
+	var targetNode Node
 	if node, ok := c.nodes[nodeID]; ok {
-		err := node.watchDeltaChannels(ctx, in)
+		targetNode = node
+	}
+	c.RUnlock()
+
+	if targetNode != nil {
+		err := targetNode.watchDeltaChannels(ctx, in)
 		if err != nil {
-			log.Debug("watchDeltaChannels: queryNode watch dm channel error", zap.String("error", err.Error()))
+			log.Debug("watchDeltaChannels: queryNode watch delta channel error", zap.String("error", err.Error()))
 			return err
 		}
 		err = c.clusterMeta.setDeltaChannel(in.CollectionID, in.Infos)
@@ -325,28 +347,34 @@ func (c *queryNodeCluster) watchDeltaChannels(ctx context.Context, nodeID int64,
 
 		return nil
 	}
-	return errors.New("watchDeltaChannels: Can't find query node by nodeID ")
+
+	return fmt.Errorf("watchDeltaChannels: Can't find query node by nodeID, nodeID = %d", nodeID)
 }
 
 func (c *queryNodeCluster) hasWatchedDeltaChannel(ctx context.Context, nodeID int64, collectionID UniqueID) bool {
-	c.Lock()
-	defer c.Unlock()
+	c.RLock()
+	defer c.RUnlock()
 
 	return c.nodes[nodeID].hasWatchedDeltaChannel(collectionID)
 }
 
 func (c *queryNodeCluster) hasWatchedQueryChannel(ctx context.Context, nodeID int64, collectionID UniqueID) bool {
-	c.Lock()
-	defer c.Unlock()
+	c.RLock()
+	defer c.RUnlock()
 
 	return c.nodes[nodeID].hasWatchedQueryChannel(collectionID)
 }
 
 func (c *queryNodeCluster) addQueryChannel(ctx context.Context, nodeID int64, in *querypb.AddQueryChannelRequest) error {
-	c.Lock()
-	defer c.Unlock()
+	c.RLock()
+	var targetNode Node
 	if node, ok := c.nodes[nodeID]; ok {
-		err := node.addQueryChannel(ctx, in)
+		targetNode = node
+	}
+	c.RUnlock()
+
+	if targetNode != nil {
+		err := targetNode.addQueryChannel(ctx, in)
 		if err != nil {
 			log.Debug("addQueryChannel: queryNode add query channel error", zap.String("error", err.Error()))
 			return err
@@ -357,11 +385,15 @@ func (c *queryNodeCluster) addQueryChannel(ctx context.Context, nodeID int64, in
 	return fmt.Errorf("addQueryChannel: can't find query node by nodeID, nodeID = %d", nodeID)
 }
 func (c *queryNodeCluster) removeQueryChannel(ctx context.Context, nodeID int64, in *querypb.RemoveQueryChannelRequest) error {
-	c.Lock()
-	defer c.Unlock()
-
+	c.RLock()
+	var targetNode Node
 	if node, ok := c.nodes[nodeID]; ok {
-		err := node.removeQueryChannel(ctx, in)
+		targetNode = node
+	}
+	c.RUnlock()
+
+	if targetNode != nil {
+		err := targetNode.removeQueryChannel(ctx, in)
 		if err != nil {
 			log.Debug("removeQueryChannel: queryNode remove query channel error", zap.String("error", err.Error()))
 			return err
@@ -374,48 +406,56 @@ func (c *queryNodeCluster) removeQueryChannel(ctx context.Context, nodeID int64,
 }
 
 func (c *queryNodeCluster) releaseCollection(ctx context.Context, nodeID int64, in *querypb.ReleaseCollectionRequest) error {
-	c.Lock()
-	defer c.Unlock()
-
+	c.RLock()
+	var targetNode Node
 	if node, ok := c.nodes[nodeID]; ok {
-		err := node.releaseCollection(ctx, in)
+		targetNode = node
+	}
+	c.RUnlock()
+
+	if targetNode != nil {
+		err := targetNode.releaseCollection(ctx, in)
 		if err != nil {
-			log.Debug("ReleaseCollection: queryNode release collection error", zap.String("error", err.Error()))
+			log.Debug("releaseCollection: queryNode release collection error", zap.String("error", err.Error()))
 			return err
 		}
 		err = c.clusterMeta.releaseCollection(in.CollectionID)
 		if err != nil {
-			log.Debug("ReleaseCollection: meta release collection error", zap.String("error", err.Error()))
+			log.Debug("releaseCollection: meta release collection error", zap.String("error", err.Error()))
 			return err
 		}
 		return nil
 	}
 
-	return fmt.Errorf("ReleaseCollection: can't find query node by nodeID, nodeID = %d", nodeID)
+	return fmt.Errorf("releaseCollection: can't find query node by nodeID, nodeID = %d", nodeID)
 }
 
 func (c *queryNodeCluster) releasePartitions(ctx context.Context, nodeID int64, in *querypb.ReleasePartitionsRequest) error {
-	c.Lock()
-	defer c.Unlock()
-
+	c.RLock()
+	var targetNode Node
 	if node, ok := c.nodes[nodeID]; ok {
-		err := node.releasePartitions(ctx, in)
+		targetNode = node
+	}
+	c.RUnlock()
+
+	if targetNode != nil {
+		err := targetNode.releasePartitions(ctx, in)
 		if err != nil {
-			log.Debug("ReleasePartitions: queryNode release partitions error", zap.String("error", err.Error()))
+			log.Debug("releasePartitions: queryNode release partitions error", zap.String("error", err.Error()))
 			return err
 		}
 
 		for _, partitionID := range in.PartitionIDs {
 			err = c.clusterMeta.releasePartition(in.CollectionID, partitionID)
 			if err != nil {
-				log.Debug("ReleasePartitions: meta release partitions error", zap.String("error", err.Error()))
+				log.Debug("releasePartitions: meta release partitions error", zap.String("error", err.Error()))
 				return err
 			}
 		}
 		return nil
 	}
 
-	return fmt.Errorf("ReleasePartitions: can't find query node by nodeID, nodeID = %d", nodeID)
+	return fmt.Errorf("releasePartitions: can't find query node by nodeID, nodeID = %d", nodeID)
 }
 
 func (c *queryNodeCluster) getSegmentInfoByID(ctx context.Context, segmentID UniqueID) (*querypb.SegmentInfo, error) {
@@ -480,7 +520,7 @@ func (c *queryNodeCluster) getSegmentInfoByNode(ctx context.Context, nodeID int6
 		return res.Infos, nil
 	}
 
-	return nil, fmt.Errorf("ReleasePartitions: can't find query node by nodeID, nodeID = %d", nodeID)
+	return nil, fmt.Errorf("getSegmentInfoByNode: can't find query node by nodeID, nodeID = %d", nodeID)
 }
 
 type queryNodeGetMetricsResponse struct {
@@ -509,7 +549,7 @@ func (c *queryNodeCluster) getNumDmChannels(nodeID int64) (int, error) {
 	defer c.RUnlock()
 
 	if _, ok := c.nodes[nodeID]; !ok {
-		return 0, fmt.Errorf("GetNumDmChannels: Can't find query node by nodeID, nodeID = %d", nodeID)
+		return 0, fmt.Errorf("getNumDmChannels: Can't find query node by nodeID, nodeID = %d", nodeID)
 	}
 
 	numChannel := 0
@@ -554,7 +594,7 @@ func (c *queryNodeCluster) registerNode(ctx context.Context, session *sessionuti
 	if _, ok := c.nodes[id]; !ok {
 		sessionJSON, err := json.Marshal(session)
 		if err != nil {
-			log.Debug("RegisterNode: marshal session error", zap.Int64("nodeID", id), zap.Any("address", session))
+			log.Debug("registerNode: marshal session error", zap.Int64("nodeID", id), zap.Any("address", session))
 			return err
 		}
 		key := fmt.Sprintf("%s/%d", queryNodeInfoPrefix, id)
@@ -564,7 +604,7 @@ func (c *queryNodeCluster) registerNode(ctx context.Context, session *sessionuti
 		}
 		node, err := c.newNodeFn(ctx, session.Address, id, c.client)
 		if err != nil {
-			log.Debug("RegisterNode: create a new query node failed", zap.Int64("nodeID", id), zap.Error(err))
+			log.Debug("registerNode: create a new query node failed", zap.Int64("nodeID", id), zap.Error(err))
 			return err
 		}
 		node.setState(state)
@@ -572,10 +612,10 @@ func (c *queryNodeCluster) registerNode(ctx context.Context, session *sessionuti
 			go node.start()
 		}
 		c.nodes[id] = node
-		log.Debug("RegisterNode: create a new query node", zap.Int64("nodeID", id), zap.String("address", session.Address))
+		log.Debug("registerNode: create a new query node", zap.Int64("nodeID", id), zap.String("address", session.Address))
 		return nil
 	}
-	return fmt.Errorf("RegisterNode: node %d alredy exists in cluster", id)
+	return fmt.Errorf("registerNode: node %d alredy exists in cluster", id)
 }
 
 func (c *queryNodeCluster) getNodeInfoByID(nodeID int64) (Node, error) {
@@ -590,7 +630,7 @@ func (c *queryNodeCluster) getNodeInfoByID(nodeID int64) (Node, error) {
 		return nodeInfo, nil
 	}
 
-	return nil, fmt.Errorf("GetNodeByID: query node %d not exist", nodeID)
+	return nil, fmt.Errorf("getNodeInfoByID: query node %d not exist", nodeID)
 }
 
 func (c *queryNodeCluster) removeNodeInfo(nodeID int64) error {
@@ -609,19 +649,19 @@ func (c *queryNodeCluster) removeNodeInfo(nodeID int64) error {
 			return err
 		}
 		delete(c.nodes, nodeID)
-		log.Debug("RemoveNodeInfo: delete nodeInfo in cluster MetaReplica and etcd", zap.Int64("nodeID", nodeID))
+		log.Debug("removeNodeInfo: delete nodeInfo in cluster MetaReplica and etcd", zap.Int64("nodeID", nodeID))
 	}
 
 	return nil
 }
 
 func (c *queryNodeCluster) stopNode(nodeID int64) {
-	c.Lock()
-	defer c.Unlock()
+	c.RLock()
+	defer c.RUnlock()
 
 	if node, ok := c.nodes[nodeID]; ok {
 		node.stop()
-		log.Debug("StopNode: queryNode offline", zap.Int64("nodeID", nodeID))
+		log.Debug("stopNode: queryNode offline", zap.Int64("nodeID", nodeID))
 	}
 }
 
@@ -640,7 +680,7 @@ func (c *queryNodeCluster) getOnlineNodes() (map[int64]Node, error) {
 		}
 	}
 	if len(nodes) == 0 {
-		return nil, errors.New("GetOnlineNodes: no queryNode is alive")
+		return nil, errors.New("getOnlineNodes: no queryNode is alive")
 	}
 
 	return nodes, nil
@@ -672,21 +712,21 @@ func (c *queryNodeCluster) getOfflineNodes() (map[int64]Node, error) {
 		}
 	}
 	if len(nodes) == 0 {
-		return nil, errors.New("GetOfflineNodes: no queryNode is offline")
+		return nil, errors.New("getOfflineNodes: no queryNode is offline")
 	}
 
 	return nodes, nil
 }
 
 func (c *queryNodeCluster) isOnline(nodeID int64) (bool, error) {
-	c.Lock()
-	defer c.Unlock()
+	c.RLock()
+	defer c.RUnlock()
 
 	if node, ok := c.nodes[nodeID]; ok {
 		return node.isOnline(), nil
 	}
 
-	return false, fmt.Errorf("IsOnline: query node %d not exist", nodeID)
+	return false, fmt.Errorf("isOnline: query node %d not exist", nodeID)
 }
 
 //func (c *queryNodeCluster) printMeta() {

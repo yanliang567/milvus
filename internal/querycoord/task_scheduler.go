@@ -1,13 +1,18 @@
-// Copyright (C) 2019-2020 Zilliz. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
 // with the License. You may obtain a copy of the License at
 //
-// http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// Unless required by applicable law or agreed to in writing, software distributed under the License
-// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
-// or implied. See the License for the specific language governing permissions and limitations under the License.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package querycoord
 
@@ -583,64 +588,28 @@ func (scheduler *TaskScheduler) scheduleLoop() {
 		activeTaskWg.Wait()
 	}
 
-	rollBackInterTaskFn := func(triggerTask task, originInternalTasks []task, rollBackTasks []task) error {
-		saves := make(map[string]string)
-		removes := make([]string, 0)
-		childTaskIDs := make([]int64, 0)
-		for _, t := range originInternalTasks {
-			childTaskIDs = append(childTaskIDs, t.getTaskID())
-			taskKey := fmt.Sprintf("%s/%d", activeTaskPrefix, t.getTaskID())
-			removes = append(removes, taskKey)
-			stateKey := fmt.Sprintf("%s/%d", taskInfoPrefix, t.getTaskID())
-			removes = append(removes, stateKey)
-		}
-
-		for _, t := range rollBackTasks {
-			id, err := scheduler.taskIDAllocator()
-			if err != nil {
-				return err
-			}
-			t.setTaskID(id)
-			taskKey := fmt.Sprintf("%s/%d", activeTaskPrefix, t.getTaskID())
-			blobs, err := t.marshal()
-			if err != nil {
-				return err
-			}
-			saves[taskKey] = string(blobs)
-			stateKey := fmt.Sprintf("%s/%d", taskInfoPrefix, t.getTaskID())
-			saves[stateKey] = strconv.Itoa(int(taskUndo))
-		}
-
-		err := scheduler.client.MultiSaveAndRemove(saves, removes)
-		if err != nil {
-			return err
-		}
-		for _, taskID := range childTaskIDs {
-			triggerTask.removeChildTaskByID(taskID)
-		}
-		for _, t := range rollBackTasks {
-			triggerTask.addChildTask(t)
-		}
-
-		return nil
-	}
-
 	removeTaskFromKVFn := func(triggerTask task) error {
-		keys := make([]string, 0)
-		taskKey := fmt.Sprintf("%s/%d", triggerTaskPrefix, triggerTask.getTaskID())
-		stateKey := fmt.Sprintf("%s/%d", taskInfoPrefix, triggerTask.getTaskID())
-		keys = append(keys, taskKey)
-		keys = append(keys, stateKey)
 		childTasks := triggerTask.getChildTask()
 		for _, t := range childTasks {
-			taskKey = fmt.Sprintf("%s/%d", activeTaskPrefix, t.getTaskID())
-			stateKey = fmt.Sprintf("%s/%d", taskInfoPrefix, t.getTaskID())
-			keys = append(keys, taskKey)
-			keys = append(keys, stateKey)
+			childTaskKeys := make([]string, 0)
+			taskKey := fmt.Sprintf("%s/%d", activeTaskPrefix, t.getTaskID())
+			stateKey := fmt.Sprintf("%s/%d", taskInfoPrefix, t.getTaskID())
+			childTaskKeys = append(childTaskKeys, taskKey)
+			childTaskKeys = append(childTaskKeys, stateKey)
+			err := scheduler.client.MultiRemove(childTaskKeys)
+			// after recover, child Task's state will be TaskDone, will not be repeat executed
+			if err != nil {
+				panic(err)
+			}
 		}
-		err := scheduler.client.MultiRemove(keys)
+		triggerTaskKeys := make([]string, 0)
+		taskKey := fmt.Sprintf("%s/%d", triggerTaskPrefix, triggerTask.getTaskID())
+		stateKey := fmt.Sprintf("%s/%d", taskInfoPrefix, triggerTask.getTaskID())
+		triggerTaskKeys = append(triggerTaskKeys, taskKey)
+		triggerTaskKeys = append(triggerTaskKeys, stateKey)
+		err := scheduler.client.MultiRemove(triggerTaskKeys)
 		if err != nil {
-			return err
+			panic(err)
 		}
 		return nil
 	}
@@ -690,15 +659,10 @@ func (scheduler *TaskScheduler) scheduleLoop() {
 					log.Debug("scheduleLoop: start rollBack after triggerTask failed",
 						zap.Int64("triggerTaskID", triggerTask.getTaskID()),
 						zap.Any("rollBackTasks", rollBackTasks))
-					err = rollBackInterTaskFn(triggerTask, childTasks, rollBackTasks)
-					if err != nil {
-						log.Error("scheduleLoop: rollBackInternalTask error",
-							zap.Int64("triggerTaskID", triggerTask.getTaskID()),
-							zap.Error(err))
-
-					} else {
-						processInternalTaskFn(rollBackTasks, triggerTask)
-					}
+					// there is no need to save rollBacked internal task to etcd
+					// After queryCoord recover, it will retry failed childTask
+					// if childTask still execute failed, then reProduce rollBacked tasks
+					processInternalTaskFn(rollBackTasks, triggerTask)
 				}
 			}
 
@@ -954,6 +918,7 @@ func updateSegmentInfoFromTask(ctx context.Context, triggerTask task, meta Meta)
 	}
 
 	if err != nil {
+		log.Error("Failed to update global sealed seg infos, begin to rollback", zap.Error(err))
 		rollBackSegmentChangeInfoErr := retry.Do(ctx, func() error {
 			rollBackChangeInfos := reverseSealedSegmentChangeInfo(sealedSegmentChangeInfos)
 			for collectionID, infos := range rollBackChangeInfos {
@@ -967,6 +932,7 @@ func updateSegmentInfoFromTask(ctx context.Context, triggerTask task, meta Meta)
 		if rollBackSegmentChangeInfoErr != nil {
 			log.Error("scheduleLoop: Restore the information of global sealed segments in query node failed", zap.Error(rollBackSegmentChangeInfoErr))
 		}
+		log.Info("Successfully roll back segment info change")
 		return err
 	}
 

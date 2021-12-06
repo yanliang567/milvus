@@ -83,7 +83,7 @@ func TestFlowGraphInsertBufferNodeCreate(t *testing.T) {
 
 	memkv := memkv.NewMemoryKV()
 
-	fm := NewRendezvousFlushManager(&allocator{}, memkv, replica, func(*segmentFlushPack) {})
+	fm := NewRendezvousFlushManager(&allocator{}, memkv, replica, func(*segmentFlushPack) {}, emptyFlushAndDropFunc)
 
 	flushChan := make(chan flushMsg, 100)
 
@@ -180,7 +180,7 @@ func TestFlowGraphInsertBufferNode_Operate(t *testing.T) {
 
 	memkv := memkv.NewMemoryKV()
 
-	fm := NewRendezvousFlushManager(NewAllocatorFactory(), memkv, replica, func(*segmentFlushPack) {})
+	fm := NewRendezvousFlushManager(NewAllocatorFactory(), memkv, replica, func(*segmentFlushPack) {}, emptyFlushAndDropFunc)
 
 	flushChan := make(chan flushMsg, 100)
 	c := &nodeConfig{
@@ -204,8 +204,12 @@ func TestFlowGraphInsertBufferNode_Operate(t *testing.T) {
 	}
 
 	inMsg := genFlowGraphInsertMsg(insertChannelName)
-	var fgMsg flowgraph.Msg = &inMsg
-	iBNode.Operate([]flowgraph.Msg{fgMsg})
+	assert.NotPanics(t, func() { iBNode.Operate([]flowgraph.Msg{&inMsg}) })
+
+	// test drop collection operate
+	inMsg = genFlowGraphInsertMsg(insertChannelName)
+	inMsg.dropCollection = true
+	assert.NotPanics(t, func() { iBNode.Operate([]flowgraph.Msg{&inMsg}) })
 }
 
 /*
@@ -395,7 +399,7 @@ func TestFlowGraphInsertBufferNode_AutoFlush(t *testing.T) {
 			colRep.segmentFlushed(pack.segmentID)
 		}
 		wg.Done()
-	})
+	}, emptyFlushAndDropFunc)
 
 	flushChan := make(chan flushMsg, 100)
 	c := &nodeConfig{
@@ -656,7 +660,7 @@ func TestInsertBufferNode_bufferInsertMsg(t *testing.T) {
 
 	memkv := memkv.NewMemoryKV()
 
-	fm := NewRendezvousFlushManager(&allocator{}, memkv, replica, func(*segmentFlushPack) {})
+	fm := NewRendezvousFlushManager(&allocator{}, memkv, replica, func(*segmentFlushPack) {}, emptyFlushAndDropFunc)
 
 	flushChan := make(chan flushMsg, 100)
 	c := &nodeConfig{

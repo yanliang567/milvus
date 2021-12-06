@@ -30,8 +30,6 @@ import (
 	"strings"
 	"unsafe"
 
-	"github.com/milvus-io/milvus/internal/util/distance"
-
 	"go.uber.org/zap"
 
 	"github.com/golang/protobuf/proto"
@@ -48,6 +46,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/distance"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/indexparamcheck"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
@@ -829,7 +828,7 @@ func (it *insertTask) _assignSegmentID(stream msgstream.MsgStream, pack *msgstre
 		}
 		channelName := channelNames[channelID]
 		if channelName == "" {
-			return nil, fmt.Errorf("Proxy, repack_func, can not found channelName")
+			return nil, fmt.Errorf("proxy, repack_func, can not found channelName")
 		}
 		mapInfo, err := it.segIDAssigner.GetSegmentID(it.CollectionID, it.PartitionID, channelName, count, ts)
 		if err != nil {
@@ -1172,6 +1171,10 @@ func (cct *createCollectionTask) PreExecute(ctx context.Context) error {
 				}
 			}
 		}
+	}
+
+	if err := validateMultipleVectorFields(cct.schema); err != nil {
+		return err
 	}
 
 	return nil
@@ -1539,7 +1542,7 @@ func (st *searchTask) PreExecute(ctx context.Context) error {
 			for _, field := range schema.Fields {
 				if field.Name == name {
 					if field.DataType == schemapb.DataType_BinaryVector || field.DataType == schemapb.DataType_FloatVector {
-						return errors.New("Search doesn't support vector field as output_fields")
+						return errors.New("search doesn't support vector field as output_fields")
 					}
 
 					st.SearchRequest.OutputFieldsId = append(st.SearchRequest.OutputFieldsId, field.FieldID)
@@ -1833,7 +1836,6 @@ func reduceSearchResultData(searchResultData []*schemapb.SearchResultData, nq in
 	log.Debug("skip duplicated search result", zap.Int64("count", skipDupCnt))
 	ret.Results.TopK = realTopK
 
-	// if metricType != "IP" {
 	if !distance.PositivelyRelated(metricType) {
 		for k := range ret.Results.Scores {
 			ret.Results.Scores[k] *= -1
@@ -1891,7 +1893,7 @@ func (st *searchTask) PostExecute(ctx context.Context) error {
 						Reason:    filterReason,
 					},
 				}
-				return fmt.Errorf("No Available Query node result, filter reason %s: id %d", filterReason, st.ID())
+				return fmt.Errorf("no Available Query node result, filter reason %s: id %d", filterReason, st.ID())
 			}
 
 			validSearchResults, err := decodeSearchResults(filterSearchResults)
@@ -4062,7 +4064,7 @@ func (ft *flushTask) Execute(ctx context.Context) error {
 		}
 		resp, err := ft.dataCoord.Flush(ctx, flushReq)
 		if err != nil {
-			return fmt.Errorf("Failed to call flush to data coordinator: %s", err.Error())
+			return fmt.Errorf("failed to call flush to data coordinator: %s", err.Error())
 		}
 		if resp.Status.ErrorCode != commonpb.ErrorCode_Success {
 			return errors.New(resp.Status.Reason)
@@ -4501,6 +4503,43 @@ func (dt *deleteTask) OnEnqueue() error {
 	return nil
 }
 
+func (dt *deleteTask) getPChanStats() (map[pChan]pChanStatistics, error) {
+	ret := make(map[pChan]pChanStatistics)
+
+	channels, err := dt.getChannels()
+	if err != nil {
+		return ret, err
+	}
+
+	beginTs := dt.BeginTs()
+	endTs := dt.EndTs()
+
+	for _, channel := range channels {
+		ret[channel] = pChanStatistics{
+			minTs: beginTs,
+			maxTs: endTs,
+		}
+	}
+	return ret, nil
+}
+
+func (dt *deleteTask) getChannels() ([]pChan, error) {
+	collID, err := globalMetaCache.GetCollectionID(dt.ctx, dt.CollectionName)
+	if err != nil {
+		return nil, err
+	}
+	var channels []pChan
+	channels, err = dt.chMgr.getChannels(collID)
+	if err != nil {
+		err = dt.chMgr.createDMLMsgStream(collID)
+		if err != nil {
+			return nil, err
+		}
+		channels, err = dt.chMgr.getChannels(collID)
+	}
+	return channels, err
+}
+
 func getPrimaryKeysFromExpr(schema *schemapb.CollectionSchema, expr string) (res []int64, err error) {
 	if len(expr) == 0 {
 		log.Warn("empty expr")
@@ -4579,7 +4618,7 @@ func (dt *deleteTask) PreExecute(ctx context.Context) error {
 		log.Error("Failed to get primary keys from expr", zap.Error(err))
 		return err
 	}
-	log.Debug("get primary keys from expr", zap.Any("primary keys", primaryKeys))
+	log.Debug("get primary keys from expr", zap.Int("len of primary keys", len(primaryKeys)))
 	dt.DeleteRequest.PrimaryKeys = primaryKeys
 
 	// set result
@@ -4718,22 +4757,27 @@ type CreateAliasTask struct {
 	result    *commonpb.Status
 }
 
+// TraceCtx returns the trace context of the task.
 func (c *CreateAliasTask) TraceCtx() context.Context {
 	return c.ctx
 }
 
+// ID return the id of the task
 func (c *CreateAliasTask) ID() UniqueID {
 	return c.Base.MsgID
 }
 
+// SetID sets the id of the task
 func (c *CreateAliasTask) SetID(uid UniqueID) {
 	c.Base.MsgID = uid
 }
 
+// Name returns the name of the task
 func (c *CreateAliasTask) Name() string {
 	return CreateAliasTaskName
 }
 
+// Type returns the type of the task
 func (c *CreateAliasTask) Type() commonpb.MsgType {
 	return c.Base.MsgType
 }

@@ -9,7 +9,7 @@ pipeline {
             customWorkspace '/home/jenkins/agent/workspace'
             // We allow this pod to remain active for a while, later jobs can
             // reuse cache in previous created nodes.
-            idleMinutes 120
+            // idleMinutes 120
         }
     }
 
@@ -32,6 +32,7 @@ pipeline {
             steps {
                 container('main') {
                     script {
+                        sh './build/set_docker_mirror.sh'
                         sh "build/builder.sh /bin/bash -c \"make install\""
 
                         def date = sh(returnStdout: true, script: 'date +%Y%m%d').trim()

@@ -18,12 +18,12 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 )
 
-// TODO(dragondriver): load from config file
 // DefaultMetricsRetention defines the default retention of metrics cache.
+// TODO(dragondriver): load from config file
 const DefaultMetricsRetention = time.Second * 5
 
-// TODO(dragondriver): we can use a map to manage the metrics if there are too many kind metrics
 // MetricsCacheManager manage the cache of metrics information.
+// TODO(dragondriver): we can use a map to manage the metrics if there are too many kind metrics
 type MetricsCacheManager struct {
 	systemInfoMetrics                *milvuspb.GetMetricsResponse
 	systemInfoMetricsInvalid         bool
@@ -47,6 +47,7 @@ func NewMetricsCacheManager() *MetricsCacheManager {
 	return manager
 }
 
+// GetRetention returns the retention
 func (manager *MetricsCacheManager) GetRetention() time.Duration {
 	manager.retentionMtx.RLock()
 	defer manager.retentionMtx.RUnlock()
@@ -54,6 +55,7 @@ func (manager *MetricsCacheManager) GetRetention() time.Duration {
 	return manager.retention
 }
 
+// SetRetention updates the retention
 func (manager *MetricsCacheManager) SetRetention(retention time.Duration) {
 	manager.retentionMtx.Lock()
 	defer manager.retentionMtx.Unlock()
@@ -61,6 +63,7 @@ func (manager *MetricsCacheManager) SetRetention(retention time.Duration) {
 	manager.retention = retention
 }
 
+// ResetRetention reset retention to default
 func (manager *MetricsCacheManager) ResetRetention() {
 	manager.retentionMtx.Lock()
 	defer manager.retentionMtx.Unlock()
@@ -76,6 +79,7 @@ func (manager *MetricsCacheManager) InvalidateSystemInfoMetrics() {
 	manager.systemInfoMetricsInvalid = true
 }
 
+// IsSystemInfoMetricsValid checks if the manager's systemInfoMetrics is valid
 func (manager *MetricsCacheManager) IsSystemInfoMetricsValid() bool {
 	retention := manager.GetRetention()
 
@@ -104,6 +108,7 @@ func (manager *MetricsCacheManager) GetSystemInfoMetrics() (*milvuspb.GetMetrics
 	return manager.systemInfoMetrics, nil
 }
 
+// UpdateSystemInfoMetrics updates systemInfoMetrics by given info
 func (manager *MetricsCacheManager) UpdateSystemInfoMetrics(infos *milvuspb.GetMetricsResponse) {
 	manager.systemInfoMetricsMtx.Lock()
 	defer manager.systemInfoMetricsMtx.Unlock()

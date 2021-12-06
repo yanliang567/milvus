@@ -39,7 +39,6 @@ raw_vectors, binary_entities = gen_binary_entities(default_nb)
 default_query, _ = gen_search_vectors_params(field_name, entities, default_top_k, nq)
 
 
-# default_binary_query, _ = gen_search_vectors_params(binary_field_name, binary_entities, default_top_k, nq)
 
 
 class TestCollectionSearchInvalid(TestcaseBase):
@@ -90,6 +89,10 @@ class TestCollectionSearchInvalid(TestcaseBase):
         yield request.param
 
     @pytest.fixture(scope="function", params=ct.get_invalid_strs)
+    def get_invalid_expr_bool_value(self, request):
+        yield request.param
+
+    @pytest.fixture(scope="function", params=ct.get_invalid_strs)
     def get_invalid_partition(self, request):
         if request.param == []:
             pytest.skip("empty is valid for partition")
@@ -109,6 +112,12 @@ class TestCollectionSearchInvalid(TestcaseBase):
     def get_invalid_travel_timestamp(self, request):
         if request.param == 9999999999:
             pytest.skip("9999999999 is valid for travel timestamp")
+        yield request.param
+
+    @pytest.fixture(scope="function", params=ct.get_invalid_ints)
+    def get_invalid_guarantee_timestamp(self, request):
+        if request.param == 9999999999:
+            pytest.skip("9999999999 is valid for guarantee_timestamp")
         yield request.param
 
     """
@@ -160,7 +169,7 @@ class TestCollectionSearchInvalid(TestcaseBase):
                             check_items={"err_code": 1,
                                          "err_msg": "collection %s doesn't exist!" % collection_w.name})
 
-    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.tags(CaseLabel.L2)
     def test_search_param_missing(self):
         """
         target: test search with incomplete parameters
@@ -178,7 +187,7 @@ class TestCollectionSearchInvalid(TestcaseBase):
             assert "missing 4 required positional arguments: 'data', " \
                    "'anns_field', 'param', and 'limit'" in str(e)
 
-    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.tags(CaseLabel.L2)
     def test_search_param_invalid_vectors(self, get_invalid_vectors):
         """
         target: test search with invalid parameter values
@@ -197,7 +206,7 @@ class TestCollectionSearchInvalid(TestcaseBase):
                             check_items={"err_code": 1,
                                          "err_msg": "`search_data` value {} is illegal".format(invalid_vectors)})
 
-    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.tags(CaseLabel.L2)
     def test_search_param_invalid_dim(self):
         """
         target: test search with invalid parameter values
@@ -217,7 +226,7 @@ class TestCollectionSearchInvalid(TestcaseBase):
                                          "err_msg": "The dimension of query entities "
                                                     "is different from schema"})
 
-    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.tags(CaseLabel.L2)
     def test_search_param_invalid_field_type(self, get_invalid_fields_type):
         """
         target: test search with invalid parameter type
@@ -236,7 +245,7 @@ class TestCollectionSearchInvalid(TestcaseBase):
                             check_items={"err_code": 1,
                                          "err_msg": "`anns_field` value {} is illegal".format(invalid_search_field)})
 
-    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.tags(CaseLabel.L2)
     def test_search_param_invalid_field_value(self, get_invalid_fields_value):
         """
         target: test search with invalid parameter values
@@ -256,7 +265,7 @@ class TestCollectionSearchInvalid(TestcaseBase):
                                          "err_msg": "Field %s doesn't exist in schema"
                                                     % invalid_search_field})
 
-    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.tags(CaseLabel.L2)
     def test_search_param_invalid_metric_type(self, get_invalid_metric_type):
         """
         target: test search with invalid parameter values
@@ -307,7 +316,7 @@ class TestCollectionSearchInvalid(TestcaseBase):
                                     check_items={"err_code": 0,
                                                  "err_msg": message})
 
-    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.tags(CaseLabel.L2)
     def test_search_param_invalid_limit_type(self, get_invalid_limit):
         """
         target: test search with invalid limit type
@@ -326,7 +335,7 @@ class TestCollectionSearchInvalid(TestcaseBase):
                             check_items={"err_code": 1,
                                          "err_msg": "`limit` value %s is illegal" % invalid_limit})
 
-    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.tags(CaseLabel.L2)
     @pytest.mark.parametrize("limit", [0, 16385])
     def test_search_param_invalid_limit_value(self, limit):
         """
@@ -348,7 +357,7 @@ class TestCollectionSearchInvalid(TestcaseBase):
                             check_items={"err_code": 1,
                                          "err_msg": err_msg})
 
-    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.tags(CaseLabel.L2)
     def test_search_param_invalid_expr_type(self, get_invalid_expr_type):
         """
         target: test search with invalid parameter type
@@ -369,7 +378,7 @@ class TestCollectionSearchInvalid(TestcaseBase):
                                          "err_msg": "The type of expr must be string ,"
                                                     "but {} is given".format(type(invalid_search_expr))})
 
-    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.tags(CaseLabel.L2)
     def test_search_param_invalid_expr_value(self, get_invalid_expr_value):
         """
         target: test search with invalid parameter values
@@ -388,6 +397,25 @@ class TestCollectionSearchInvalid(TestcaseBase):
                             check_items={"err_code": 1,
                                          "err_msg": "invalid expression %s"
                                                     % invalid_search_expr})
+
+    @pytest.mark.tags(CaseLabel.L2)
+    def test_search_param_invalid_expr_bool(self, get_invalid_expr_bool_value):
+        """
+        target: test search with invalid parameter values
+        method: search with invalid bool search expressions
+        expected: raise exception and report the error
+        """
+        # 1. initialize with data
+        collection_w = self.init_collection_general(prefix, True, is_all_data_type=True)[0]
+        # 2 search with invalid bool expr
+        invalid_search_expr_bool = f"{default_bool_field_name} == {get_invalid_expr_bool_value}"
+        log.info("test_search_param_invalid_expr_bool: searching with "
+                 "invalid expr: %s" % invalid_search_expr_bool)
+        collection_w.search(vectors[:default_nq], default_search_field,
+                            default_search_params, default_limit, invalid_search_expr_bool,
+                            check_task=CheckTasks.err_res,
+                            check_items={"err_code": 1,
+                                         "err_msg": "failed to create query plan"})
 
     @pytest.mark.tags(CaseLabel.L2)
     def test_search_partition_invalid_type(self, get_invalid_partition):
@@ -508,14 +536,10 @@ class TestCollectionSearchInvalid(TestcaseBase):
                                          "limit": 0})
         # 4. search with data inserted but not load again
         data = cf.gen_default_dataframe_data(nb=2000)
-
-        insert_res, _ = collection_w.insert(data)
-
-        # TODO: remove sleep with search grantee_timestamp when issue #10101 fixed
-        sleep(1)
-
+        insert_res = collection_w.insert(data)[0]
         collection_w.search(vectors[:default_nq], default_search_field, default_search_params,
                             default_limit, default_search_exp,
+                            guarantee_timestamp=insert_res.timestamp,
                             check_task=CheckTasks.check_search_results,
                             check_items={"nq": default_nq,
                                          "ids": insert_res.primary_keys,
@@ -720,6 +744,26 @@ class TestCollectionSearchInvalid(TestcaseBase):
                                          "err_msg": "`travel_timestamp` value %s is illegal" % invalid_travel_time})
 
     @pytest.mark.tags(CaseLabel.L2)
+    def test_search_param_invalid_guarantee_timestamp(self, get_invalid_guarantee_timestamp):
+        """
+        target: test search with invalid guarantee timestamp
+        method: search with invalid guarantee timestamp
+        expected: raise exception and report the error
+        """
+        # 1. initialize with data
+        collection_w = self.init_collection_general(prefix, True, 10)[0]
+        # 2. search with invalid travel timestamp
+        log.info("test_search_param_invalid_guarantee_timestamp: searching with invalid guarantee timestamp")
+        invalid_guarantee_time = get_invalid_guarantee_timestamp
+        collection_w.search(vectors[:default_nq], default_search_field, default_search_params,
+                            default_limit, default_search_exp,
+                            guarantee_timestamp=invalid_guarantee_time,
+                            check_task=CheckTasks.err_res,
+                            check_items={"err_code": 1,
+                                         "err_msg": "`guarantee_timestamp` value %s is illegal"
+                                                    % invalid_guarantee_time})
+
+    @pytest.mark.tags(CaseLabel.L2)
     @pytest.mark.parametrize("round_decimal", [7, -2, 999, 1.0, None, [1], "string", {}])
     def test_search_invalid_round_decimal(self, round_decimal):
         """
@@ -796,6 +840,7 @@ class TestCollectionSearch(TestcaseBase):
                             default_search_params, default_limit,
                             default_search_exp,
                             travel_timestamp=time_stamp,
+                            guarantee_timestamp=0,
                             check_task=CheckTasks.check_search_results,
                             check_items={"nq": nq,
                                          "ids": insert_ids,
@@ -976,7 +1021,7 @@ class TestCollectionSearch(TestcaseBase):
                                          "limit": limit - deleted_entity_num,
                                          "_async": _async})
 
-    @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.tags(CaseLabel.L1)
     def test_search_partition_after_release_one(self, nq, dim, auto_id, _async):
         """
         target: test search function before and after release
@@ -1065,7 +1110,7 @@ class TestCollectionSearch(TestcaseBase):
                                          "limit": 0,
                                          "_async": _async})
 
-    @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.tags(CaseLabel.L1)
     def test_search_collection_after_release_load(self, nb, nq, dim, auto_id, _async):
         """
         target: search the pre-released collection after load
@@ -1175,13 +1220,14 @@ class TestCollectionSearch(TestcaseBase):
                                          "limit": default_limit,
                                          "_async": _async})
 
-    @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.tags(CaseLabel.L1)
     def test_search_new_data(self, nq, dim, auto_id, _async):
         """
         target: test search new inserted data without load
         method: 1. search the collection
                 2. insert new data
                 3. search the collection without load again
+                4. Use guarantee_timestamp to guarantee data consistency
         expected: new data should be searched
         """
         # 1. initialize with data
@@ -1208,14 +1254,11 @@ class TestCollectionSearch(TestcaseBase):
                                                              auto_id=auto_id, dim=dim,
                                                              insert_offset=nb_old)
         insert_ids.extend(insert_ids_new)
-        # gracefulTime is default as 1s which allows data
-        # could not be searched instantly in gracefulTime
-        time.sleep(gracefulTime)
         # 4. search for new data without load
         collection_w.search(vectors[:nq], default_search_field,
                             default_search_params, limit,
                             default_search_exp, _async=_async,
-                            travel_timestamp=time_stamp,
+                            guarantee_timestamp=time_stamp,
                             check_task=CheckTasks.check_search_results,
                             check_items={"nq": nq,
                                          "ids": insert_ids,
@@ -1247,7 +1290,7 @@ class TestCollectionSearch(TestcaseBase):
                                          "limit": nq,
                                          "_async": _async})
 
-    @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.tags(CaseLabel.L1)
     @pytest.mark.parametrize("index, params",
                              zip(ct.all_index_types[:9],
                                  ct.default_index_params[:9]))
@@ -1428,6 +1471,35 @@ class TestCollectionSearch(TestcaseBase):
                                          "ids": insert_ids,
                                          "limit": default_limit,
                                          "_async": _async})
+
+    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.skip(reason="issue #12680")
+    # TODO: add one more for binary vectors
+    # @pytest.mark.parametrize("vec_fields", [[cf.gen_float_vec_field(name="test_vector1")],
+    #                                         [cf.gen_binary_vec_field(name="test_vector1")],
+    #                                         [cf.gen_binary_vec_field(), cf.gen_binary_vec_field("test_vector1")]])
+    def test_search_multiple_vectors_with_one_indexed(self):
+        """
+        target: test indexing on one vector fields when there are multi float vec fields
+        method: 1. create collection with multiple float vector fields
+                2. insert data and build index on one of float vector fields
+                3. load collection and search
+        expected: load and search successfully
+        """
+        vec_fields = [cf.gen_float_vec_field(name="test_vector1")]
+        schema = cf.gen_schema_multi_vector_fields(vec_fields)
+        collection_w = self.init_collection_wrap(name=cf.gen_unique_str(prefix), schema=schema)
+        df = cf.gen_dataframe_multi_vec_fields(vec_fields=vec_fields)
+        collection_w.insert(df)
+        assert collection_w.num_entities == ct.default_nb
+        _index = {"index_type": "IVF_FLAT", "params": {"nlist": 128}, "metric_type": "L2"}
+        res, ch = collection_w.create_index(field_name="test_vector1", index_params=_index)
+        assert ch is True
+        collection_w.load()
+        vectors = [[random.random() for _ in range(default_dim)] for _ in range(2)]
+        search_params = {"metric_type": "L2", "params": {"nprobe": 16}}
+        res_1, _ = collection_w.search(data=vectors, anns_field="test_vector1",
+                                       param=search_params, limit=1)
 
     @pytest.mark.tags(CaseLabel.L1)
     def test_search_index_one_partition(self, nb, auto_id, _async):
@@ -1784,8 +1856,7 @@ class TestCollectionSearch(TestcaseBase):
             assert set(ids).issubset(filter_ids_set)
 
     @pytest.mark.tags(CaseLabel.L2)
-    @pytest.mark.xfail(reason="issue 7910")
-    @pytest.mark.parametrize("bool_type", [True, False, "true", "false", 1, 0, 2])
+    @pytest.mark.parametrize("bool_type", [True, False, "true", "false"])
     def test_search_with_expression_bool(self, dim, auto_id, _async, bool_type):
         """
         target: test search with different bool expressions
@@ -1842,7 +1913,7 @@ class TestCollectionSearch(TestcaseBase):
     def test_search_with_expression_auto_id(self, dim, expression, _async):
         """
         target: test search with different expressions
-        method: test search with different expressions
+        method: test search with different expressions with auto id
         expected: searched successfully with correct limit(topK)
         """
         # 1. initialize with data

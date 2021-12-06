@@ -94,13 +94,13 @@ func NewMinIOKV(ctx context.Context, option *Option) (*MinIOKV, error) {
 	return kv, nil
 }
 
-// Exist check whether a key exists in MinIO.
+// Exist checks whether a key exists in MinIO.
 func (kv *MinIOKV) Exist(key string) bool {
 	_, err := kv.minioClient.StatObject(kv.ctx, kv.bucketName, key, minio.StatObjectOptions{})
 	return err == nil
 }
 
-// LoadWithPrefix load objects with the same prefix @key from minio .
+// LoadWithPrefix loads objects with the same prefix @key from minio .
 func (kv *MinIOKV) LoadWithPrefix(key string) ([]string, []string, error) {
 	objects := kv.minioClient.ListObjects(kv.ctx, kv.bucketName, minio.ListObjectsOptions{Prefix: key})
 
@@ -128,8 +128,12 @@ func (kv *MinIOKV) Load(key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-
+	info, err := object.Stat()
+	if err != nil {
+		return "", err
+	}
 	buf := new(strings.Builder)
+	buf.Grow(int(info.Size))
 	_, err = io.Copy(buf, object)
 	if err != nil && err != io.EOF {
 		return "", err
@@ -137,16 +141,12 @@ func (kv *MinIOKV) Load(key string) (string, error) {
 	return buf.String(), nil
 }
 
-// FGetObject download file from minio to local storage system.
+// FGetObject downloads file from minio to local storage system.
 func (kv *MinIOKV) FGetObject(key, localPath string) error {
-	err := kv.minioClient.FGetObject(kv.ctx, kv.bucketName, key, localPath+key, minio.GetObjectOptions{})
-	if err != nil {
-		return err
-	}
-	return nil
+	return kv.minioClient.FGetObject(kv.ctx, kv.bucketName, key, localPath+key, minio.GetObjectOptions{})
 }
 
-// FGetObjects download file from minio to local storage system.
+// FGetObjects downloads files from minio to local storage system.
 // For parallell downloads file, n goroutines will be started to download n keys.
 func (kv *MinIOKV) FGetObjects(keys []string, localPath string) error {
 	var wg sync.WaitGroup
@@ -199,7 +199,7 @@ func (kv *MinIOKV) Save(key, value string) error {
 	return err
 }
 
-// MultiSave save multiple objects, the path is the key of @kvs.
+// MultiSave saves multiple objects, the path is the key of @kvs.
 // The object value is the value of @kvs.
 func (kv *MinIOKV) MultiSave(kvs map[string]string) error {
 	var resultErr error
@@ -214,7 +214,7 @@ func (kv *MinIOKV) MultiSave(kvs map[string]string) error {
 	return resultErr
 }
 
-// RemoveWithPrefix remove all objects with the same prefix @prefix from minio.
+// RemoveWithPrefix removes all objects with the same prefix @prefix from minio.
 func (kv *MinIOKV) RemoveWithPrefix(prefix string) error {
 	objectsCh := make(chan minio.ObjectInfo)
 
@@ -234,13 +234,13 @@ func (kv *MinIOKV) RemoveWithPrefix(prefix string) error {
 	return nil
 }
 
-// Remove delete an object with @key.
+// Remove deletes an object with @key.
 func (kv *MinIOKV) Remove(key string) error {
 	err := kv.minioClient.RemoveObject(kv.ctx, kv.bucketName, string(key), minio.RemoveObjectOptions{})
 	return err
 }
 
-// MultiRemove delete a objects with @keys.
+// MultiRemove deletes a objects with @keys.
 func (kv *MinIOKV) MultiRemove(keys []string) error {
 	var resultErr error
 	for _, key := range keys {

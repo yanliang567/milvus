@@ -1,13 +1,18 @@
-// Copyright (C) 2019-2020 Zilliz. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
 // with the License. You may obtain a copy of the License at
 //
-// http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// Unless required by applicable law or agreed to in writing, software distributed under the License
-// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
-// or implied. See the License for the specific language governing permissions and limitations under the License.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package querycoord
 
@@ -31,15 +36,14 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
+	"github.com/milvus-io/milvus/internal/util"
 	"github.com/milvus-io/milvus/internal/util/mqclient"
 )
 
 const (
 	collectionMetaPrefix          = "queryCoord-collectionMeta"
-	segmentMetaPrefix             = "queryCoord-segmentMeta"
 	queryChannelMetaPrefix        = "queryCoord-queryChannel"
 	deltaChannelMetaPrefix        = "queryCoord-deltaChannel"
-	sealedSegmentChangeInfoPrefix = "queryCoord-sealedSegmentChangeInfo"
 	globalQuerySeekPositionPrefix = "queryCoord-globalQuerySeekPosition"
 )
 
@@ -147,6 +151,7 @@ func newMeta(ctx context.Context, kv kv.MetaKv, factory msgstream.Factory, idAll
 }
 
 func (m *MetaReplica) reloadFromKV() error {
+	log.Debug("start reload from kv")
 	collectionKeys, collectionValues, err := m.client.LoadWithPrefix(collectionMetaPrefix)
 	if err != nil {
 		return err
@@ -164,7 +169,7 @@ func (m *MetaReplica) reloadFromKV() error {
 		m.collectionInfos[collectionID] = collectionInfo
 	}
 
-	segmentKeys, segmentValues, err := m.client.LoadWithPrefix(segmentMetaPrefix)
+	segmentKeys, segmentValues, err := m.client.LoadWithPrefix(util.SegmentMetaPrefix)
 	if err != nil {
 		return err
 	}
@@ -226,6 +231,7 @@ func (m *MetaReplica) reloadFromKV() error {
 		m.globalSeekPosition = position
 	}
 	//TODO::update partition states
+	log.Debug("reload from kv finished")
 
 	return nil
 }
@@ -413,7 +419,7 @@ func (m *MetaReplica) saveGlobalSealedSegInfos(saves col2SegmentInfos) (col2Seal
 	col2SegmentChangeInfos := make(col2SealedSegmentChangeInfos)
 
 	segmentsCompactionFrom := make([]UniqueID, 0)
-	// get segmentInfos to sav
+	// get segmentInfos to colSegmentInfos
 	for collectionID, onlineInfos := range saves {
 		segmentsChangeInfo := &querypb.SealedSegmentsChangeInfo{
 			Base: &commonpb.MsgBase{
@@ -508,7 +514,7 @@ func (m *MetaReplica) saveGlobalSealedSegInfos(saves col2SegmentInfos) (col2Seal
 			if err != nil {
 				return col2SegmentChangeInfos, err
 			}
-			segmentKey := fmt.Sprintf("%s/%d", segmentMetaPrefix, info.SegmentID)
+			segmentKey := fmt.Sprintf("%s/%d", util.SegmentMetaPrefix, info.SegmentID)
 			segmentInfoKvs[segmentKey] = string(segmentInfoBytes)
 		}
 	}
@@ -521,7 +527,7 @@ func (m *MetaReplica) saveGlobalSealedSegInfos(saves col2SegmentInfos) (col2Seal
 
 	// remove compacted segment info from etcd
 	for _, segmentID := range segmentsCompactionFrom {
-		segmentKey := fmt.Sprintf("%s/%d", segmentMetaPrefix, segmentID)
+		segmentKey := fmt.Sprintf("%s/%d", util.SegmentMetaPrefix, segmentID)
 		err := m.client.Remove(segmentKey)
 		if err != nil {
 			panic(err)
@@ -553,7 +559,7 @@ func (m *MetaReplica) saveGlobalSealedSegInfos(saves col2SegmentInfos) (col2Seal
 			return col2SegmentChangeInfos, err
 		}
 		// TODO:: segmentChangeInfo clear in etcd with coord gc and queryNode watch the changeInfo meta to deal changeInfoMsg
-		changeInfoKey := fmt.Sprintf("%s/%d", sealedSegmentChangeInfoPrefix, changeInfos.Base.MsgID)
+		changeInfoKey := fmt.Sprintf("%s/%d", util.ChangeInfoMetaPrefix, changeInfos.Base.MsgID)
 		saveKvs[changeInfoKey] = string(changeInfoBytes)
 	}
 
@@ -644,7 +650,7 @@ func (m *MetaReplica) removeGlobalSealedSegInfos(collectionID UniqueID, partitio
 
 	// remove meta from etcd
 	for _, info := range removes {
-		segmentKey := fmt.Sprintf("%s/%d", segmentMetaPrefix, info.SegmentID)
+		segmentKey := fmt.Sprintf("%s/%d", util.SegmentMetaPrefix, info.SegmentID)
 		err = m.client.Remove(segmentKey)
 		if err != nil {
 			panic(err)
@@ -673,7 +679,7 @@ func (m *MetaReplica) removeGlobalSealedSegInfos(collectionID UniqueID, partitio
 		return col2SealedSegmentChangeInfos{collectionID: segmentChangeInfos}, err
 	}
 	// TODO:: segmentChangeInfo clear in etcd with coord gc and queryNode watch the changeInfo meta to deal changeInfoMsg
-	changeInfoKey := fmt.Sprintf("%s/%d", sealedSegmentChangeInfoPrefix, segmentChangeInfos.Base.MsgID)
+	changeInfoKey := fmt.Sprintf("%s/%d", util.ChangeInfoMetaPrefix, segmentChangeInfos.Base.MsgID)
 	saveKvs[changeInfoKey] = string(changeInfoBytes)
 
 	err = m.client.MultiSave(saveKvs)
@@ -695,6 +701,7 @@ func (m *MetaReplica) removeGlobalSealedSegInfos(collectionID UniqueID, partitio
 	return col2SealedSegmentChangeInfos{collectionID: segmentChangeInfos}, nil
 }
 
+// send sealed segment change infos into query channels
 func (m *MetaReplica) sendSealedSegmentChangeInfos(collectionID UniqueID, changeInfos *querypb.SealedSegmentsChangeInfo) (*querypb.QueryChannelInfo, map[string][]mqclient.MessageID, error) {
 	// get msgStream to produce sealedSegmentChangeInfos to query channel
 	queryChannelInfo, err := m.getQueryChannelInfoByID(collectionID)
@@ -995,13 +1002,16 @@ func (m *MetaReplica) setDeltaChannel(collectionID UniqueID, infos []*datapb.Vch
 	defer m.deltaChannelMu.Unlock()
 	_, ok := m.deltaChannelInfos[collectionID]
 	if ok {
+		log.Debug("delta channel already exist", zap.Any("collectionID", collectionID))
 		return nil
 	}
 
 	err := saveDeltaChannelInfo(collectionID, infos, m.client)
 	if err != nil {
+		log.Error("save delta channel info error", zap.Error(err))
 		return err
 	}
+	log.Debug("save delta channel infos to meta", zap.Any("collectionID", collectionID), zap.Any("infos", infos))
 	m.deltaChannelInfos[collectionID] = infos
 	return nil
 }
@@ -1179,7 +1189,7 @@ func multiSaveSegmentInfos(segmentInfos map[UniqueID]*querypb.SegmentInfo, kv kv
 		if err != nil {
 			return err
 		}
-		key := fmt.Sprintf("%s/%d", segmentMetaPrefix, segmentID)
+		key := fmt.Sprintf("%s/%d", util.SegmentMetaPrefix, segmentID)
 		kvs[key] = string(infoBytes)
 	}
 
@@ -1189,7 +1199,7 @@ func multiSaveSegmentInfos(segmentInfos map[UniqueID]*querypb.SegmentInfo, kv kv
 func multiRemoveSegmentInfo(segmentIDs []UniqueID, kv kv.MetaKv) error {
 	keys := make([]string, 0)
 	for _, segmentID := range segmentIDs {
-		key := fmt.Sprintf("%s/%d", segmentMetaPrefix, segmentID)
+		key := fmt.Sprintf("%s/%d", util.SegmentMetaPrefix, segmentID)
 		keys = append(keys, key)
 	}
 

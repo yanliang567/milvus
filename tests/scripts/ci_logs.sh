@@ -14,8 +14,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Exit immediately for non zero status
 set -e
+# Check unset variables
 set -u
+# Print commands
 set -x
 
 SOURCE="${BASH_SOURCE[0]}"
@@ -74,6 +77,17 @@ Use \"$0  --help\" for more information about a given command.
   esac
 done
 
-
+# try to found logs file from mount disk /volume1/ci-logs
 find ${LOG_DIR:-/ci-logs/} -type f  -name "*${RELEASE_NAME:-milvus-testing}*" \
-| xargs tar -zcvf ${ARTIFACTS_NAME:-artifacts}.tar.gz --remove-files || true
+| xargs tar -zcvf ${ARTIFACTS_NAME:-artifacts}.tar.gz -P --remove-files || true
+
+remain_log_files=$(find ${LOG_DIR:-/ci-logs/} -type f  -name "*${RELEASE_NAME:-milvus-testing}*")
+
+if [ -z "${remain_log_files:-}" ]; then
+  echo "No remain log files"
+else
+  echo "Still have log files & Remove again"
+  find ${LOG_DIR:-/ci-logs/} -type f  -name "*${RELEASE_NAME:-milvus-testing}*" -exec rm -rf {} +
+  echo "Check if any remain log files  after using rm to delete again "
+  find ${LOG_DIR:-/ci-logs/} -type f  -name "*${RELEASE_NAME:-milvus-testing}*"
+fi

@@ -68,8 +68,8 @@ empty_search_result(int64_t num_queries, int64_t topk, int64_t round_decimal, Me
     SubSearchResult result(num_queries, topk, metric_type, round_decimal);
     final_result.num_queries_ = num_queries;
     final_result.topk_ = topk;
-    final_result.internal_seg_offsets_ = std::move(result.mutable_labels());
-    final_result.result_distances_ = std::move(result.mutable_values());
+    final_result.ids_ = std::move(result.mutable_ids());
+    final_result.distances_ = std::move(result.mutable_distances());
     return final_result;
 }
 
@@ -112,7 +112,7 @@ ExecPlanNodeVisitor::VectorVisitorImpl(VectorPlanNode& node) {
         view = BitsetView((uint8_t*)boost_ext::get_data(bitset_holder), bitset_holder.size());
     }
 
-    auto final_bitset = segment->get_filtered_bitmap(view, active_count, MAX_TIMESTAMP);
+    auto final_bitset = segment->get_filtered_bitmap(view, active_count, timestamp_);
 
     segment->vector_search(active_count, node.search_info_, src_data, num_queries, MAX_TIMESTAMP, final_bitset, ret);
 
@@ -148,7 +148,7 @@ ExecPlanNodeVisitor::visit(RetrievePlanNode& node) {
         view = BitsetView((uint8_t*)boost_ext::get_data(bitset_holder), bitset_holder.size());
     }
 
-    auto final_bitset = segment->get_filtered_bitmap(view, active_count, MAX_TIMESTAMP);
+    auto final_bitset = segment->get_filtered_bitmap(view, active_count, timestamp_);
 
     auto seg_offsets = std::move(segment->search_ids(final_bitset, MAX_TIMESTAMP));
     ret.result_offsets_.assign((int64_t*)seg_offsets.data(), (int64_t*)seg_offsets.data() + seg_offsets.size());

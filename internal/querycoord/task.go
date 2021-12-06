@@ -1,13 +1,18 @@
-// Copyright (C) 2019-2020 Zilliz. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
 // with the License. You may obtain a copy of the License at
 //
-// http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// Unless required by applicable law or agreed to in writing, software distributed under the License
-// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
-// or implied. See the License for the specific language governing permissions and limitations under the License.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package querycoord
 
@@ -16,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/golang/protobuf/proto"
 	"go.uber.org/zap"
@@ -32,6 +38,8 @@ import (
 	"github.com/milvus-io/milvus/internal/util/trace"
 	"github.com/opentracing/opentracing-go"
 )
+
+const timeoutForRPC = 10 * time.Second
 
 const (
 	triggerTaskPrefix     = "queryCoord-triggerTask"
@@ -308,7 +316,9 @@ func (lct *loadCollectionTask) execute(ctx context.Context) error {
 		},
 		CollectionID: collectionID,
 	}
-	showPartitionResponse, err := lct.rootCoord.ShowPartitions(ctx, showPartitionRequest)
+	ctx2, cancel2 := context.WithTimeout(ctx, timeoutForRPC)
+	defer cancel2()
+	showPartitionResponse, err := lct.rootCoord.ShowPartitions(ctx2, showPartitionRequest)
 	if err != nil {
 		lct.setResultInfo(err)
 		return err
@@ -359,7 +369,11 @@ func (lct *loadCollectionTask) execute(ctx context.Context) error {
 			CollectionID: collectionID,
 			PartitionID:  partitionID,
 		}
-		recoveryInfo, err := lct.dataCoord.GetRecoveryInfo(ctx, getRecoveryInfoRequest)
+		recoveryInfo, err := func() (*datapb.GetRecoveryInfoResponse, error) {
+			ctx2, cancel2 := context.WithTimeout(ctx, timeoutForRPC)
+			defer cancel2()
+			return lct.dataCoord.GetRecoveryInfo(ctx2, getRecoveryInfoRequest)
+		}()
 		if err != nil {
 			lct.setResultInfo(err)
 			return err
@@ -383,6 +397,7 @@ func (lct *loadCollectionTask) execute(ctx context.Context) error {
 			}, lct.rootCoord, lct.indexCoord)
 
 			if err == nil && indexInfo.enableIndex {
+				segmentLoadInfo.EnableIndex = true
 				segmentLoadInfo.IndexPathInfos = indexInfo.infos
 			}
 
@@ -400,16 +415,12 @@ func (lct *loadCollectionTask) execute(ctx context.Context) error {
 			loadSegmentReqs = append(loadSegmentReqs, loadSegmentReq)
 		}
 
-		if len(watchDeltaChannels) != len(recoveryInfo.Channels) {
-			for _, info := range recoveryInfo.Channels {
-				deltaChannelName, err := rootcoord.ConvertChannelName(info.ChannelName, Params.DmlChannelPrefix, Params.DeltaChannelPrefix)
-				if err != nil {
-					return err
-				}
-				deltaChannel := proto.Clone(info).(*datapb.VchannelInfo)
-				deltaChannel.ChannelName = deltaChannelName
-				watchDeltaChannels = append(watchDeltaChannels, deltaChannel)
+		for _, info := range recoveryInfo.Channels {
+			deltaChannel, err := generateWatchDeltaChannelInfo(info)
+			if err != nil {
+				return err
 			}
+			watchDeltaChannels = append(watchDeltaChannels, deltaChannel)
 		}
 
 		for _, info := range recoveryInfo.Channels {
@@ -453,15 +464,19 @@ func (lct *loadCollectionTask) execute(ctx context.Context) error {
 		}
 
 	}
+	mergedDeltaChannels := mergeWatchDeltaChannelInfo(watchDeltaChannels)
 	msgBase := proto.Clone(lct.Base).(*commonpb.MsgBase)
 	msgBase.MsgType = commonpb.MsgType_WatchDeltaChannels
 	watchDeltaChannelReq := &querypb.WatchDeltaChannelsRequest{
 		Base:         msgBase,
 		CollectionID: collectionID,
-		Infos:        watchDeltaChannels,
+		Infos:        mergedDeltaChannels,
 	}
 	// If meta is not updated here, deltaChannel meta will not be available when loadSegment reschedule
-	lct.meta.setDeltaChannel(watchDeltaChannelReq.CollectionID, watchDeltaChannelReq.Infos)
+	err = lct.meta.setDeltaChannel(watchDeltaChannelReq.CollectionID, watchDeltaChannelReq.Infos)
+	if err != nil {
+		return err
+	}
 
 	internalTasks, err := assignInternalTask(ctx, collectionID, lct, lct.meta, lct.cluster, loadSegmentReqs, watchDmChannelReqs, watchDeltaChannelReq, false, nil, nil)
 	if err != nil {
@@ -580,7 +595,9 @@ func (rct *releaseCollectionTask) execute(ctx context.Context) error {
 			DbID:         rct.DbID,
 			CollectionID: rct.CollectionID,
 		}
-		res, err := rct.rootCoord.ReleaseDQLMessageStream(rct.ctx, releaseDQLMessageStreamReq)
+		ctx2, cancel2 := context.WithTimeout(rct.ctx, timeoutForRPC)
+		defer cancel2()
+		res, err := rct.rootCoord.ReleaseDQLMessageStream(ctx2, releaseDQLMessageStreamReq)
 		if res.ErrorCode != commonpb.ErrorCode_Success || err != nil {
 			log.Warn("releaseCollectionTask: release collection end, releaseDQLMessageStream occur error", zap.Int64("collectionID", rct.CollectionID))
 			err = errors.New("rootCoord releaseDQLMessageStream failed")
@@ -726,7 +743,11 @@ func (lpt *loadPartitionTask) execute(ctx context.Context) error {
 			CollectionID: collectionID,
 			PartitionID:  partitionID,
 		}
-		recoveryInfo, err := lpt.dataCoord.GetRecoveryInfo(ctx, getRecoveryInfoRequest)
+		recoveryInfo, err := func() (*datapb.GetRecoveryInfoResponse, error) {
+			ctx2, cancel2 := context.WithTimeout(ctx, timeoutForRPC)
+			defer cancel2()
+			return lpt.dataCoord.GetRecoveryInfo(ctx2, getRecoveryInfoRequest)
+		}()
 		if err != nil {
 			lpt.setResultInfo(err)
 			return err
@@ -750,6 +771,7 @@ func (lpt *loadPartitionTask) execute(ctx context.Context) error {
 			}, lpt.rootCoord, lpt.indexCoord)
 
 			if err == nil && indexInfo.enableIndex {
+				segmentLoadInfo.EnableIndex = true
 				segmentLoadInfo.IndexPathInfos = indexInfo.infos
 			}
 
@@ -766,18 +788,13 @@ func (lpt *loadPartitionTask) execute(ctx context.Context) error {
 			loadSegmentReqs = append(loadSegmentReqs, loadSegmentReq)
 		}
 
-		if len(watchDeltaChannels) != len(recoveryInfo.Channels) {
-			for _, info := range recoveryInfo.Channels {
-				deltaChannelName, err := rootcoord.ConvertChannelName(info.ChannelName, Params.DmlChannelPrefix, Params.DeltaChannelPrefix)
-				if err != nil {
-					return err
-				}
-				deltaChannel := proto.Clone(info).(*datapb.VchannelInfo)
-				deltaChannel.ChannelName = deltaChannelName
-				watchDeltaChannels = append(watchDeltaChannels, deltaChannel)
+		for _, info := range recoveryInfo.Channels {
+			deltaChannel, err := generateWatchDeltaChannelInfo(info)
+			if err != nil {
+				return err
 			}
+			watchDeltaChannels = append(watchDeltaChannels, deltaChannel)
 		}
-
 		for _, info := range recoveryInfo.Channels {
 			// watch dml channels
 			channel := info.ChannelName
@@ -796,15 +813,19 @@ func (lpt *loadPartitionTask) execute(ctx context.Context) error {
 
 		}
 	}
+	mergedDeltaChannels := mergeWatchDeltaChannelInfo(watchDeltaChannels)
 	msgBase := proto.Clone(lpt.Base).(*commonpb.MsgBase)
 	msgBase.MsgType = commonpb.MsgType_WatchDeltaChannels
 	watchDeltaChannelReq := &querypb.WatchDeltaChannelsRequest{
 		Base:         msgBase,
 		CollectionID: collectionID,
-		Infos:        watchDeltaChannels,
+		Infos:        mergedDeltaChannels,
 	}
 	// If meta is not updated here, deltaChannel meta will not be available when loadSegment reschedule
-	lpt.meta.setDeltaChannel(watchDeltaChannelReq.CollectionID, watchDeltaChannelReq.Infos)
+	err := lpt.meta.setDeltaChannel(watchDeltaChannelReq.CollectionID, watchDeltaChannelReq.Infos)
+	if err != nil {
+		return err
+	}
 	internalTasks, err := assignInternalTask(ctx, collectionID, lpt, lpt.meta, lpt.cluster, loadSegmentReqs, watchDmReqs, watchDeltaChannelReq, false, nil, nil)
 	if err != nil {
 		log.Warn("loadPartitionTask: assign child task failed", zap.Int64("collectionID", collectionID), zap.Int64s("partitionIDs", partitionIDs))
@@ -1536,7 +1557,11 @@ func (ht *handoffTask) execute(ctx context.Context) error {
 				CollectionID: collectionID,
 				PartitionID:  partitionID,
 			}
-			recoveryInfo, err := ht.dataCoord.GetRecoveryInfo(ctx, getRecoveryInfoRequest)
+			recoveryInfo, err := func() (*datapb.GetRecoveryInfoResponse, error) {
+				ctx2, cancel2 := context.WithTimeout(ctx, timeoutForRPC)
+				defer cancel2()
+				return ht.dataCoord.GetRecoveryInfo(ctx2, getRecoveryInfoRequest)
+			}()
 			if err != nil {
 				ht.setResultInfo(err)
 				return err
@@ -1555,6 +1580,7 @@ func (ht *handoffTask) execute(ctx context.Context) error {
 						BinlogPaths:    segmentBinlogs.FieldBinlogs,
 						NumOfRows:      segmentBinlogs.NumOfRows,
 						CompactionFrom: segmentInfo.CompactionFrom,
+						EnableIndex:    segmentInfo.EnableIndex,
 						IndexPathInfos: segmentInfo.IndexPathInfos,
 					}
 
@@ -1568,16 +1594,12 @@ func (ht *handoffTask) execute(ctx context.Context) error {
 					}
 				}
 			}
-			if len(watchDeltaChannels) != len(recoveryInfo.Channels) {
-				for _, info := range recoveryInfo.Channels {
-					deltaChannelName, err := rootcoord.ConvertChannelName(info.ChannelName, Params.DmlChannelPrefix, Params.DeltaChannelPrefix)
-					if err != nil {
-						return err
-					}
-					deltaChannel := proto.Clone(info).(*datapb.VchannelInfo)
-					deltaChannel.ChannelName = deltaChannelName
-					watchDeltaChannels = append(watchDeltaChannels, deltaChannel)
+			for _, info := range recoveryInfo.Channels {
+				deltaChannel, err := generateWatchDeltaChannelInfo(info)
+				if err != nil {
+					return err
 				}
+				watchDeltaChannels = append(watchDeltaChannels, deltaChannel)
 			}
 
 			if !findBinlog {
@@ -1585,15 +1607,19 @@ func (ht *handoffTask) execute(ctx context.Context) error {
 				ht.setResultInfo(err)
 				return err
 			}
+			mergedDeltaChannels := mergeWatchDeltaChannelInfo(watchDeltaChannels)
 			msgBase := proto.Clone(ht.Base).(*commonpb.MsgBase)
 			msgBase.MsgType = commonpb.MsgType_WatchDeltaChannels
 			watchDeltaChannelReq := &querypb.WatchDeltaChannelsRequest{
 				Base:         msgBase,
 				CollectionID: collectionID,
-				Infos:        watchDeltaChannels,
+				Infos:        mergedDeltaChannels,
 			}
 			// If meta is not updated here, deltaChannel meta will not be available when loadSegment reschedule
-			ht.meta.setDeltaChannel(watchDeltaChannelReq.CollectionID, watchDeltaChannelReq.Infos)
+			err = ht.meta.setDeltaChannel(watchDeltaChannelReq.CollectionID, watchDeltaChannelReq.Infos)
+			if err != nil {
+				return err
+			}
 			internalTasks, err := assignInternalTask(ctx, collectionID, ht, ht.meta, ht.cluster, []*querypb.LoadSegmentsRequest{loadSegmentReq}, nil, watchDeltaChannelReq, true, nil, nil)
 			if err != nil {
 				log.Error("handoffTask: assign child task failed", zap.Any("segmentInfo", segmentInfo))
@@ -1710,6 +1736,7 @@ func (lbt *loadBalanceTask) execute(ctx context.Context) error {
 					return err
 				}
 
+				log.Debug("loadBalanceTask: partitions to recover", zap.Int64s("partitionIDs", partitionIDs))
 				for _, partitionID := range partitionIDs {
 					getRecoveryInfo := &datapb.GetRecoveryInfoRequest{
 						Base: &commonpb.MsgBase{
@@ -1718,7 +1745,11 @@ func (lbt *loadBalanceTask) execute(ctx context.Context) error {
 						CollectionID: collectionID,
 						PartitionID:  partitionID,
 					}
-					recoveryInfo, err := lbt.dataCoord.GetRecoveryInfo(ctx, getRecoveryInfo)
+					recoveryInfo, err := func() (*datapb.GetRecoveryInfoResponse, error) {
+						ctx2, cancel2 := context.WithTimeout(ctx, timeoutForRPC)
+						defer cancel2()
+						return lbt.dataCoord.GetRecoveryInfo(ctx2, getRecoveryInfo)
+					}()
 					if err != nil {
 						lbt.setResultInfo(err)
 						return err
@@ -1741,6 +1772,7 @@ func (lbt *loadBalanceTask) execute(ctx context.Context) error {
 						}, lbt.rootCoord, lbt.indexCoord)
 
 						if err == nil && indexInfo.enableIndex {
+							segmentLoadInfo.EnableIndex = true
 							segmentLoadInfo.IndexPathInfos = indexInfo.infos
 						}
 
@@ -1758,16 +1790,12 @@ func (lbt *loadBalanceTask) execute(ctx context.Context) error {
 						loadSegmentReqs = append(loadSegmentReqs, loadSegmentReq)
 					}
 
-					if len(watchDeltaChannels) != len(recoveryInfo.Channels) {
-						for _, info := range recoveryInfo.Channels {
-							deltaChannelName, err := rootcoord.ConvertChannelName(info.ChannelName, Params.DmlChannelPrefix, Params.DeltaChannelPrefix)
-							if err != nil {
-								return err
-							}
-							deltaChannel := proto.Clone(info).(*datapb.VchannelInfo)
-							deltaChannel.ChannelName = deltaChannelName
-							watchDeltaChannels = append(watchDeltaChannels, deltaChannel)
+					for _, info := range recoveryInfo.Channels {
+						deltaChannel, err := generateWatchDeltaChannelInfo(info)
+						if err != nil {
+							return err
 						}
+						watchDeltaChannels = append(watchDeltaChannels, deltaChannel)
 					}
 
 					for _, channelInfo := range recoveryInfo.Channels {
@@ -1814,15 +1842,19 @@ func (lbt *loadBalanceTask) execute(ctx context.Context) error {
 						}
 					}
 				}
+				mergedDeltaChannel := mergeWatchDeltaChannelInfo(watchDeltaChannels)
 				msgBase := proto.Clone(lbt.Base).(*commonpb.MsgBase)
 				msgBase.MsgType = commonpb.MsgType_WatchDeltaChannels
 				watchDeltaChannelReq := &querypb.WatchDeltaChannelsRequest{
 					Base:         msgBase,
 					CollectionID: collectionID,
-					Infos:        watchDeltaChannels,
+					Infos:        mergedDeltaChannel,
 				}
 				// If meta is not updated here, deltaChannel meta will not be available when loadSegment reschedule
-				lbt.meta.setDeltaChannel(watchDeltaChannelReq.CollectionID, watchDeltaChannelReq.Infos)
+				err = lbt.meta.setDeltaChannel(watchDeltaChannelReq.CollectionID, watchDeltaChannelReq.Infos)
+				if err != nil {
+					return err
+				}
 
 				internalTasks, err := assignInternalTask(ctx, collectionID, lbt, lbt.meta, lbt.cluster, loadSegmentReqs, watchDmChannelReqs, watchDeltaChannelReq, true, lbt.SourceNodeIDs, lbt.DstNodeIDs)
 				if err != nil {
@@ -1912,7 +1944,11 @@ func (lbt *loadBalanceTask) execute(ctx context.Context) error {
 					CollectionID: collectionID,
 					PartitionID:  partitionID,
 				}
-				recoveryInfo, err := lbt.dataCoord.GetRecoveryInfo(ctx, getRecoveryInfoRequest)
+				recoveryInfo, err := func() (*datapb.GetRecoveryInfoResponse, error) {
+					ctx2, cancel2 := context.WithTimeout(ctx, timeoutForRPC)
+					defer cancel2()
+					return lbt.dataCoord.GetRecoveryInfo(ctx2, getRecoveryInfoRequest)
+				}()
 				if err != nil {
 					lbt.setResultInfo(err)
 					return err
@@ -1946,6 +1982,7 @@ func (lbt *loadBalanceTask) execute(ctx context.Context) error {
 					}, lbt.rootCoord, lbt.indexCoord)
 
 					if err == nil && indexInfo.enableIndex {
+						segmentLoadInfo.EnableIndex = true
 						segmentLoadInfo.IndexPathInfos = indexInfo.infos
 					}
 
@@ -1962,27 +1999,27 @@ func (lbt *loadBalanceTask) execute(ctx context.Context) error {
 					loadSegmentReqs = append(loadSegmentReqs, loadSegmentReq)
 				}
 
-				if len(watchDeltaChannels) != len(recoveryInfo.Channels) {
-					for _, info := range recoveryInfo.Channels {
-						deltaChannelName, err := rootcoord.ConvertChannelName(info.ChannelName, Params.DmlChannelPrefix, Params.DeltaChannelPrefix)
-						if err != nil {
-							return err
-						}
-						deltaChannel := proto.Clone(info).(*datapb.VchannelInfo)
-						deltaChannel.ChannelName = deltaChannelName
-						watchDeltaChannels = append(watchDeltaChannels, deltaChannel)
+				for _, info := range recoveryInfo.Channels {
+					deltaChannel, err := generateWatchDeltaChannelInfo(info)
+					if err != nil {
+						return err
 					}
+					watchDeltaChannels = append(watchDeltaChannels, deltaChannel)
 				}
 			}
+			mergedDeltaChannels := mergeWatchDeltaChannelInfo(watchDeltaChannels)
 			msgBase := proto.Clone(lbt.Base).(*commonpb.MsgBase)
 			msgBase.MsgType = commonpb.MsgType_WatchDeltaChannels
 			watchDeltaChannelReq := &querypb.WatchDeltaChannelsRequest{
 				Base:         msgBase,
 				CollectionID: collectionID,
-				Infos:        watchDeltaChannels,
+				Infos:        mergedDeltaChannels,
 			}
 			// If meta is not updated here, deltaChannel meta will not be available when loadSegment reschedule
-			lbt.meta.setDeltaChannel(watchDeltaChannelReq.CollectionID, watchDeltaChannelReq.Infos)
+			err = lbt.meta.setDeltaChannel(watchDeltaChannelReq.CollectionID, watchDeltaChannelReq.Infos)
+			if err != nil {
+				return err
+			}
 
 			// TODO:: assignInternalTask with multi collection
 			internalTasks, err := assignInternalTask(ctx, collectionID, lbt, lbt.meta, lbt.cluster, loadSegmentReqs, nil, watchDeltaChannelReq, false, lbt.SourceNodeIDs, lbt.DstNodeIDs)
@@ -2069,6 +2106,7 @@ func assignInternalTask(ctx context.Context,
 	wait bool, excludeNodeIDs []int64, includeNodeIDs []int64) ([]task, error) {
 	sp, _ := trace.StartSpanFromContext(ctx)
 	defer sp.Finish()
+	log.Debug("assignInternalTask: start assign task to query node")
 	internalTasks := make([]task, 0)
 	err := cluster.allocateSegmentsToQueryNode(ctx, loadSegmentRequests, wait, excludeNodeIDs, includeNodeIDs)
 	if err != nil {
@@ -2127,7 +2165,7 @@ func assignInternalTask(ctx context.Context,
 			internalTasks = append(internalTasks, loadSegmentTask)
 		}
 
-		if watchDeltaChannelRequest != nil {
+		if watchDeltaChannelRequest != nil && len(loadSegmentsReqs) != 0 {
 			ctx = opentracing.ContextWithSpan(context.Background(), sp)
 			watchDeltaRequest := proto.Clone(watchDeltaChannelRequest).(*querypb.WatchDeltaChannelsRequest)
 			watchDeltaRequest.NodeID = nodeID
@@ -2200,4 +2238,40 @@ func assignInternalTask(ctx context.Context,
 
 func getSizeOfLoadSegmentReq(req *querypb.LoadSegmentsRequest) int {
 	return proto.Size(req)
+}
+
+func generateWatchDeltaChannelInfo(info *datapb.VchannelInfo) (*datapb.VchannelInfo, error) {
+	deltaChannelName, err := rootcoord.ConvertChannelName(info.ChannelName, Params.DmlChannelPrefix, Params.DeltaChannelPrefix)
+	if err != nil {
+		return nil, err
+	}
+	deltaChannel := proto.Clone(info).(*datapb.VchannelInfo)
+	deltaChannel.ChannelName = deltaChannelName
+	deltaChannel.UnflushedSegments = nil
+	deltaChannel.FlushedSegments = nil
+	deltaChannel.DroppedSegments = nil
+	return deltaChannel, nil
+}
+
+func mergeWatchDeltaChannelInfo(infos []*datapb.VchannelInfo) []*datapb.VchannelInfo {
+	minPositions := make(map[string]int)
+	for index, info := range infos {
+		_, ok := minPositions[info.ChannelName]
+		if !ok {
+			minPositions[info.ChannelName] = index
+		}
+		minTimeStampIndex := minPositions[info.ChannelName]
+		if info.SeekPosition.GetTimestamp() < infos[minTimeStampIndex].SeekPosition.GetTimestamp() {
+			minPositions[info.ChannelName] = index
+		}
+	}
+	var result []*datapb.VchannelInfo
+	for _, index := range minPositions {
+		result = append(result, infos[index])
+	}
+	log.Debug("merge delta channels finished",
+		zap.Any("origin info length", len(infos)),
+		zap.Any("merged info length", len(result)),
+	)
+	return result
 }

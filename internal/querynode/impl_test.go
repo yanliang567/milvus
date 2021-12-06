@@ -1,13 +1,18 @@
-// Copyright (C) 2019-2020 Zilliz. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
 // with the License. You may obtain a copy of the License at
 //
-// http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// Unless required by applicable law or agreed to in writing, software distributed under the License
-// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
-// or implied. See the License for the specific language governing permissions and limitations under the License.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package querynode
 
@@ -15,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"math/rand"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -33,13 +39,21 @@ func TestImpl_GetComponentStates(t *testing.T) {
 	node, err := genSimpleQueryNode(ctx)
 	assert.NoError(t, err)
 
+	node.session.UpdateRegistered(true)
+
 	rsp, err := node.GetComponentStates(ctx)
 	assert.NoError(t, err)
 	assert.Equal(t, commonpb.ErrorCode_Success, rsp.Status.ErrorCode)
 
 	node.UpdateStateCode(internalpb.StateCode_Abnormal)
 	rsp, err = node.GetComponentStates(ctx)
-	assert.Error(t, err)
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_Success, rsp.Status.ErrorCode)
+
+	node.stateCode = atomic.Value{}
+	node.stateCode.Store("invalid")
+	rsp, err = node.GetComponentStates(ctx)
+	assert.NoError(t, err)
 	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, rsp.Status.ErrorCode)
 }
 
@@ -68,158 +82,28 @@ func TestImpl_GetStatisticsChannel(t *testing.T) {
 func TestImpl_AddQueryChannel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	t.Run("test addQueryChannel", func(t *testing.T) {
-		node, err := genSimpleQueryNode(ctx)
-		assert.NoError(t, err)
+	node, err := genSimpleQueryNode(ctx)
+	assert.NoError(t, err)
 
-		req := &queryPb.AddQueryChannelRequest{
-			Base:             genCommonMsgBase(commonpb.MsgType_WatchQueryChannels),
-			NodeID:           0,
-			CollectionID:     defaultCollectionID,
-			RequestChannelID: genQueryChannel(),
-			ResultChannelID:  genQueryResultChannel(),
-		}
+	req := &queryPb.AddQueryChannelRequest{
+		Base: &commonpb.MsgBase{
+			MsgType: commonpb.MsgType_LoadCollection,
+			MsgID:   rand.Int63(),
+		},
+		NodeID:           0,
+		CollectionID:     defaultCollectionID,
+		RequestChannelID: genQueryChannel(),
+		ResultChannelID:  genQueryResultChannel(),
+	}
 
-		status, err := node.AddQueryChannel(ctx, req)
-		assert.NoError(t, err)
-		assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
-	})
+	status, err := node.AddQueryChannel(ctx, req)
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
 
-	t.Run("test addQueryChannel has queryCollection", func(t *testing.T) {
-		node, err := genSimpleQueryNode(ctx)
-		assert.NoError(t, err)
-
-		err = node.queryService.addQueryCollection(defaultCollectionID)
-		assert.NoError(t, err)
-
-		req := &queryPb.AddQueryChannelRequest{
-			Base:             genCommonMsgBase(commonpb.MsgType_WatchQueryChannels),
-			NodeID:           0,
-			CollectionID:     defaultCollectionID,
-			RequestChannelID: genQueryChannel(),
-			ResultChannelID:  genQueryResultChannel(),
-		}
-
-		status, err := node.AddQueryChannel(ctx, req)
-		assert.NoError(t, err)
-		assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
-	})
-
-	t.Run("test node is abnormal", func(t *testing.T) {
-		node, err := genSimpleQueryNode(ctx)
-		assert.NoError(t, err)
-
-		node.UpdateStateCode(internalpb.StateCode_Abnormal)
-		status, err := node.AddQueryChannel(ctx, nil)
-		assert.Error(t, err)
-		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
-	})
-
-	t.Run("test nil query service", func(t *testing.T) {
-		node, err := genSimpleQueryNode(ctx)
-		assert.NoError(t, err)
-
-		req := &queryPb.AddQueryChannelRequest{
-			Base:         genCommonMsgBase(commonpb.MsgType_WatchQueryChannels),
-			CollectionID: defaultCollectionID,
-		}
-
-		node.queryService = nil
-		status, err := node.AddQueryChannel(ctx, req)
-		assert.Error(t, err)
-		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
-	})
-
-	t.Run("test add query collection failed", func(t *testing.T) {
-		node, err := genSimpleQueryNode(ctx)
-		assert.NoError(t, err)
-
-		err = node.streaming.replica.removeCollection(defaultCollectionID)
-		assert.NoError(t, err)
-		err = node.historical.replica.removeCollection(defaultCollectionID)
-		assert.NoError(t, err)
-
-		req := &queryPb.AddQueryChannelRequest{
-			Base:             genCommonMsgBase(commonpb.MsgType_WatchQueryChannels),
-			NodeID:           0,
-			CollectionID:     defaultCollectionID,
-			RequestChannelID: genQueryChannel(),
-			ResultChannelID:  genQueryResultChannel(),
-		}
-
-		status, err := node.AddQueryChannel(ctx, req)
-		assert.Error(t, err)
-		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
-	})
-
-	t.Run("test init global sealed segments", func(t *testing.T) {
-		node, err := genSimpleQueryNode(ctx)
-		assert.NoError(t, err)
-
-		req := &queryPb.AddQueryChannelRequest{
-			Base:             genCommonMsgBase(commonpb.MsgType_WatchQueryChannels),
-			NodeID:           0,
-			CollectionID:     defaultCollectionID,
-			RequestChannelID: genQueryChannel(),
-			ResultChannelID:  genQueryResultChannel(),
-			GlobalSealedSegments: []*queryPb.SegmentInfo{{
-				SegmentID:    defaultSegmentID,
-				CollectionID: defaultCollectionID,
-				PartitionID:  defaultPartitionID,
-			}},
-		}
-
-		status, err := node.AddQueryChannel(ctx, req)
-		assert.NoError(t, err)
-		assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
-	})
-
-	t.Run("test not init global sealed segments", func(t *testing.T) {
-		node, err := genSimpleQueryNode(ctx)
-		assert.NoError(t, err)
-
-		req := &queryPb.AddQueryChannelRequest{
-			Base:             genCommonMsgBase(commonpb.MsgType_WatchQueryChannels),
-			NodeID:           0,
-			CollectionID:     defaultCollectionID,
-			RequestChannelID: genQueryChannel(),
-			ResultChannelID:  genQueryResultChannel(),
-			GlobalSealedSegments: []*queryPb.SegmentInfo{{
-				SegmentID:    defaultSegmentID,
-				CollectionID: 1000,
-				PartitionID:  defaultPartitionID,
-			}},
-		}
-
-		status, err := node.AddQueryChannel(ctx, req)
-		assert.NoError(t, err)
-		assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
-	})
-
-	t.Run("test seek error", func(t *testing.T) {
-		node, err := genSimpleQueryNode(ctx)
-		assert.NoError(t, err)
-
-		position := &internalpb.MsgPosition{
-			ChannelName: genQueryChannel(),
-			MsgID:       []byte{1, 2, 3},
-			MsgGroup:    defaultSubName,
-			Timestamp:   0,
-		}
-
-		req := &queryPb.AddQueryChannelRequest{
-			Base:             genCommonMsgBase(commonpb.MsgType_WatchQueryChannels),
-			NodeID:           0,
-			CollectionID:     defaultCollectionID,
-			RequestChannelID: genQueryChannel(),
-			ResultChannelID:  genQueryResultChannel(),
-			SeekPosition:     position,
-		}
-
-		status, err := node.AddQueryChannel(ctx, req)
-		assert.Error(t, err)
-		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
-	})
+	node.UpdateStateCode(internalpb.StateCode_Abnormal)
+	status, err = node.AddQueryChannel(ctx, req)
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
 }
 
 func TestImpl_RemoveQueryChannel(t *testing.T) {
@@ -258,7 +142,7 @@ func TestImpl_WatchDmChannels(t *testing.T) {
 
 	node.UpdateStateCode(internalpb.StateCode_Abnormal)
 	status, err = node.WatchDmChannels(ctx, req)
-	assert.Error(t, err)
+	assert.NoError(t, err)
 	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
 }
 
@@ -286,7 +170,7 @@ func TestImpl_LoadSegments(t *testing.T) {
 
 	node.UpdateStateCode(internalpb.StateCode_Abnormal)
 	status, err = node.LoadSegments(ctx, req)
-	assert.Error(t, err)
+	assert.NoError(t, err)
 	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
 }
 
@@ -311,7 +195,7 @@ func TestImpl_ReleaseCollection(t *testing.T) {
 
 	node.UpdateStateCode(internalpb.StateCode_Abnormal)
 	status, err = node.ReleaseCollection(ctx, req)
-	assert.Error(t, err)
+	assert.NoError(t, err)
 	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
 }
 
@@ -337,7 +221,7 @@ func TestImpl_ReleasePartitions(t *testing.T) {
 
 	node.UpdateStateCode(internalpb.StateCode_Abnormal)
 	status, err = node.ReleasePartitions(ctx, req)
-	assert.Error(t, err)
+	assert.NoError(t, err)
 	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
 }
 
@@ -364,7 +248,7 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 
 		node.UpdateStateCode(internalpb.StateCode_Abnormal)
 		rsp, err = node.GetSegmentInfo(ctx, req)
-		assert.Error(t, err)
+		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, rsp.Status.ErrorCode)
 	})
 
@@ -459,12 +343,11 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 		seg, err := node.historical.replica.getSegmentByID(defaultSegmentID)
 		assert.NoError(t, err)
 
-		err = seg.setIndexInfo(simpleVecField.id, &indexInfo{
+		seg.setIndexInfo(simpleVecField.id, &indexInfo{
 			indexName: "query-node-test",
 			indexID:   UniqueID(0),
 			buildID:   UniqueID(0),
 		})
-		assert.NoError(t, err)
 
 		req := &queryPb.GetSegmentInfoRequest{
 			Base: &commonpb.MsgBase{
@@ -481,7 +364,7 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 
 		node.UpdateStateCode(internalpb.StateCode_Abnormal)
 		rsp, err = node.GetSegmentInfo(ctx, req)
-		assert.Error(t, err)
+		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, rsp.Status.ErrorCode)
 	})
 
@@ -500,7 +383,7 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 
 		node.streaming.replica.(*collectionReplica).partitions = make(map[UniqueID]*Partition)
 		rsp, err := node.GetSegmentInfo(ctx, req)
-		assert.Error(t, err)
+		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, rsp.Status.ErrorCode)
 	})
 
@@ -519,7 +402,7 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 
 		node.streaming.replica.(*collectionReplica).segments = make(map[UniqueID]*Segment)
 		rsp, err := node.GetSegmentInfo(ctx, req)
-		assert.Error(t, err)
+		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, rsp.Status.ErrorCode)
 	})
 
@@ -538,7 +421,7 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 
 		node.historical.replica.(*collectionReplica).partitions = make(map[UniqueID]*Partition)
 		rsp, err := node.GetSegmentInfo(ctx, req)
-		assert.Error(t, err)
+		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, rsp.Status.ErrorCode)
 	})
 
@@ -557,7 +440,7 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 
 		node.historical.replica.(*collectionReplica).segments = make(map[UniqueID]*Segment)
 		rsp, err := node.GetSegmentInfo(ctx, req)
-		assert.Error(t, err)
+		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, rsp.Status.ErrorCode)
 	})
 }
@@ -651,7 +534,7 @@ func TestImpl_ReleaseSegments(t *testing.T) {
 
 		node.UpdateStateCode(internalpb.StateCode_Abnormal)
 		_, err = node.ReleaseSegments(ctx, req)
-		assert.Error(t, err)
+		assert.NoError(t, err)
 	})
 
 	t.Run("test segment not exists", func(t *testing.T) {

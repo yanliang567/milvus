@@ -36,7 +36,7 @@ const (
 // ChannelManager manages the allocation and the balance of channels between datanodes
 type ChannelManager struct {
 	mu               sync.RWMutex
-	posProvider      positionProvider
+	h                Handler
 	store            RWChannelStore
 	factory          ChannelPolicyFactory
 	registerPolicy   RegisterPolicy
@@ -62,11 +62,15 @@ func defaultFactory(hash *consistent.Consistent) ChannelPolicyFactory {
 }
 
 // NewChannelManager returns a new ChannelManager
-func NewChannelManager(kv kv.TxnKV, posProvider positionProvider, options ...ChannelManagerOpt) (*ChannelManager, error) {
+func NewChannelManager(
+	kv kv.TxnKV,
+	h Handler,
+	options ...ChannelManagerOpt,
+) (*ChannelManager, error) {
 	c := &ChannelManager{
-		posProvider: posProvider,
-		factory:     NewChannelPolicyFactoryV1(kv),
-		store:       NewChannelStore(kv),
+		h:       h,
+		factory: NewChannelPolicyFactoryV1(kv),
+		store:   NewChannelStore(kv),
 	}
 
 	if err := c.store.Reload(); err != nil {
@@ -106,12 +110,32 @@ func (c *ChannelManager) Startup(nodes []int64) error {
 			return err
 		}
 	}
+
+	c.unwatchDroppedChannels()
+
 	log.Debug("cluster start up",
 		zap.Any("nodes", nodes),
 		zap.Any("olds", olds),
 		zap.Int64s("new onlines", newOnlines),
 		zap.Int64s("offlines", offlines))
 	return nil
+}
+
+func (c *ChannelManager) unwatchDroppedChannels() {
+	nodeChannels := c.store.GetNodesChannels()
+	for _, nodeChannel := range nodeChannels {
+		for _, ch := range nodeChannel.Channels {
+			if !c.h.CheckShouldDropChannel(ch.Name) {
+				continue
+			}
+			err := c.remove(nodeChannel.NodeID, ch)
+			if err != nil {
+				log.Warn("unable to remove channel", zap.String("channel", ch.Name), zap.Error(err))
+				continue
+			}
+			c.h.FinishDropChannel(ch.Name)
+		}
+	}
 }
 
 func (c *ChannelManager) bgCheckChannelsWork(ctx context.Context) {
@@ -151,7 +175,7 @@ func (c *ChannelManager) bgCheckChannelsWork(ctx context.Context) {
 
 func (c *ChannelManager) getNewOnlines(curr []int64, old []int64) []int64 {
 	mold := make(map[int64]struct{})
-	ret := make([]int64, 0)
+	ret := make([]int64, 0, len(curr))
 	for _, n := range old {
 		mold[n] = struct{}{}
 	}
@@ -165,7 +189,7 @@ func (c *ChannelManager) getNewOnlines(curr []int64, old []int64) []int64 {
 
 func (c *ChannelManager) getOfflines(curr []int64, old []int64) []int64 {
 	mcurr := make(map[int64]struct{})
-	ret := make([]int64, 0)
+	ret := make([]int64, 0, len(old))
 	for _, n := range curr {
 		mcurr[n] = struct{}{}
 	}
@@ -242,7 +266,7 @@ func (c *ChannelManager) Watch(ch *channel) error {
 
 func (c *ChannelManager) fillChannelPosition(update *ChannelOp) {
 	for _, ch := range update.Channels {
-		vchan := c.posProvider.GetVChanPositions(ch.Name, ch.CollectionID, allPartitionID)
+		vchan := c.h.GetVChanPositions(ch.Name, ch.CollectionID, allPartitionID)
 		info := &datapb.ChannelWatchInfo{
 			Vchan:   vchan,
 			StartTs: time.Now().Unix(),
@@ -320,6 +344,10 @@ func (c *ChannelManager) RemoveChannel(channelName string) error {
 		return nil
 	}
 
+	return c.remove(nodeID, ch)
+}
+
+func (c *ChannelManager) remove(nodeID int64, ch *channel) error {
 	var op ChannelOpSet
 	op.Delete(nodeID, []*channel{ch})
 	if err := c.store.Update(op); err != nil {

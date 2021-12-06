@@ -20,9 +20,10 @@ import (
 // RmqConsumer is a client that used to consume messages from rocksmq
 type RmqConsumer struct {
 	c          rocksmq.Consumer
-	msgChannel chan ConsumerMessage
+	msgChannel chan Message
 	closeCh    chan struct{}
 	once       sync.Once
+	skip       bool
 }
 
 // Subscription returns the subscription name of this consumer
@@ -31,10 +32,10 @@ func (rc *RmqConsumer) Subscription() string {
 }
 
 // Chan returns a channel to read messages from rocksmq
-func (rc *RmqConsumer) Chan() <-chan ConsumerMessage {
+func (rc *RmqConsumer) Chan() <-chan Message {
 	if rc.msgChannel == nil {
 		rc.once.Do(func() {
-			rc.msgChannel = make(chan ConsumerMessage, 256)
+			rc.msgChannel = make(chan Message, 256)
 			go func() {
 				for { //nolint:gosimple
 					select {
@@ -43,7 +44,11 @@ func (rc *RmqConsumer) Chan() <-chan ConsumerMessage {
 							close(rc.msgChannel)
 							return
 						}
-						rc.msgChannel <- &rmqMessage{msg: msg}
+						if !rc.skip {
+							rc.msgChannel <- &rmqMessage{msg: msg}
+						} else {
+							rc.skip = false
+						}
 					case <-rc.closeCh:
 						close(rc.msgChannel)
 						return
@@ -56,18 +61,15 @@ func (rc *RmqConsumer) Chan() <-chan ConsumerMessage {
 }
 
 // Seek is used to seek the position in rocksmq topic
-func (rc *RmqConsumer) Seek(id MessageID) error {
+func (rc *RmqConsumer) Seek(id MessageID, inclusive bool) error {
 	msgID := id.(*rmqID).messageID
+	// skip the first message when consume
+	rc.skip = !inclusive
 	return rc.c.Seek(msgID)
 }
 
-// ConsumeAfterSeek defines rmq consumer should NOT consume after seek
-func (rc *RmqConsumer) ConsumeAfterSeek() bool {
-	return false
-}
-
 // Ack is used to ask a rocksmq message
-func (rc *RmqConsumer) Ack(message ConsumerMessage) {
+func (rc *RmqConsumer) Ack(message Message) {
 }
 
 // Close is used to free the resources of this consumer

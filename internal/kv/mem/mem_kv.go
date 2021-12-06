@@ -88,7 +88,7 @@ func (kv *MemoryKV) LoadRange(key, endKey string, limit int) ([]string, []string
 	return keys, values, nil
 }
 
-// Save object with @key to Minio. Object value is @value.
+// Save object with @key to btree. Object value is @value.
 func (kv *MemoryKV) Save(key, value string) error {
 	kv.Lock()
 	defer kv.Unlock()
@@ -96,7 +96,7 @@ func (kv *MemoryKV) Save(key, value string) error {
 	return nil
 }
 
-// Remove delete an object with @key.
+// Remove deletes an object with @key.
 func (kv *MemoryKV) Remove(key string) error {
 	kv.Lock()
 	defer kv.Unlock()
@@ -117,6 +117,7 @@ func (kv *MemoryKV) MultiLoad(keys []string) ([]string, error) {
 	return result, nil
 }
 
+// MultiSave saves given key-value pairs in MemoryKV atomicly.
 func (kv *MemoryKV) MultiSave(kvs map[string]string) error {
 	kv.Lock()
 	defer kv.Unlock()
@@ -126,6 +127,7 @@ func (kv *MemoryKV) MultiSave(kvs map[string]string) error {
 	return nil
 }
 
+// MultiRemove removes given @keys in MemoryKV atomicly.
 func (kv *MemoryKV) MultiRemove(keys []string) error {
 	kv.Lock()
 	defer kv.Unlock()
@@ -135,6 +137,7 @@ func (kv *MemoryKV) MultiRemove(keys []string) error {
 	return nil
 }
 
+// MultiSaveAndRemove saves and removes given key-value pairs in MemoryKV atomicly.
 func (kv *MemoryKV) MultiSaveAndRemove(saves map[string]string, removals []string) error {
 	kv.Lock()
 	defer kv.Unlock()
@@ -147,13 +150,13 @@ func (kv *MemoryKV) MultiSaveAndRemove(saves map[string]string, removals []strin
 	return nil
 }
 
-// todo
+// LoadWithPrefix returns all keys & values with given prefix.
 func (kv *MemoryKV) LoadWithPrefix(key string) ([]string, []string, error) {
 	kv.Lock()
 	defer kv.Unlock()
 
-	keys := make([]string, 0)
-	values := make([]string, 0)
+	var keys []string
+	var values []string
 
 	kv.tree.Ascend(func(i btree.Item) bool {
 		if strings.HasPrefix(i.(memoryKVItem).key, key) {
@@ -165,17 +168,21 @@ func (kv *MemoryKV) LoadWithPrefix(key string) ([]string, []string, error) {
 	return keys, values, nil
 }
 
+// Close dummy close
 func (kv *MemoryKV) Close() {
 }
 
+// MultiRemoveWithPrefix not implemented
 func (kv *MemoryKV) MultiRemoveWithPrefix(keys []string) error {
 	panic("not implement")
 }
+
+// MultiSaveAndRemoveWithPrefix saves key-value pairs in @saves, & remove key with prefix in @removals in MemoryKV atomicly.
 func (kv *MemoryKV) MultiSaveAndRemoveWithPrefix(saves map[string]string, removals []string) error {
 	kv.Lock()
 	defer kv.Unlock()
 
-	keys := make([]memoryKVItem, 0)
+	var keys []memoryKVItem
 	for _, key := range removals {
 		kv.tree.Ascend(func(i btree.Item) bool {
 			if strings.HasPrefix(i.(memoryKVItem).key, key) {
@@ -194,11 +201,12 @@ func (kv *MemoryKV) MultiSaveAndRemoveWithPrefix(saves map[string]string, remova
 	return nil
 }
 
+// RemoveWithPrefix remove key of given prefix in MemoryKV atomicly.
 func (kv *MemoryKV) RemoveWithPrefix(key string) error {
 	kv.Lock()
 	defer kv.Unlock()
 
-	keys := make([]btree.Item, 0)
+	var keys []btree.Item
 
 	kv.tree.Ascend(func(i btree.Item) bool {
 		if strings.HasPrefix(i.(memoryKVItem).key, key) {

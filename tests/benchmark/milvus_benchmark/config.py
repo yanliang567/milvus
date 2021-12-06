@@ -1,6 +1,5 @@
 # address of mongoDB
 MONGO_SERVER = 'mongodb://192.168.1.234:27017/'
-# MONGO_SERVER = 'mongodb://mongodb.test:27017/'
 
 SCHEDULER_DB = "scheduler"
 JOB_COLLECTION = "jobs"
@@ -21,6 +20,8 @@ HELM_NAMESPACE = "milvus"
 BRANCH = "master"
 
 DEFAULT_CPUS = 48
+
+NAS_MOUNT_PATH = '/test'
 
 # path of NAS mount
 RAW_DATA_DIR = "/test/milvus/raw_data/"

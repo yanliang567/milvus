@@ -1,6 +1,6 @@
 # Opentracing User Guide
 
-This guide mainly describes the use of jaeger and the commonly used display meanings.
+This guide mainly describes the use of jaeger, and the commonly used display meanings.
 
 Jaeger, inspired by [Dapper](https://research.google.com/pubs/pub36356.html) and [OpenZipkin](https://zipkin.io/), is a distributed tracing platform created by [Uber Technologies](https://uber.github.io/) and donated to [Cloud Native Computing Foundation](https://cncf.io/). It can be used for monitoring microservices-based distributed systems:
 
@@ -36,7 +36,7 @@ Filter with service name.
 
 ### Operation
 
-Operation in Service, eg. request name, function name.
+Operation in Service, e.g. request name, function name.
 
 ### Tags
 
@@ -52,7 +52,7 @@ The minimum and maximum request duration, you can use this condition to find the
 
 ### Limit Result
 
-The max number of result.
+The max number of results.
 
 ## Search result
 
@@ -60,7 +60,7 @@ You can search through the above conditions, and those that meet the conditions 
 
 ![](./figs/jaeger_single_search_result.png)
 
-The detailed information of search result.
+The detailed information of search results.
 
 1. The upper left corner identifies the service name: tracing, Root span name: Insert grpc received and The first half of the Trace ID 46874e2.
 2. The duration of the entire request is shown in the upper right corner.
@@ -84,7 +84,7 @@ Click the search result. You can analyze the detail trace information.
 
 Click the Span to see the detailed span information such as the last span in the picture above.
 
-1. Tags contains a series of custom tags. You can mark in the code what type of call this Span is, request method, call result, call, etc. All the information it contains can be filtered by the Tags on the homepage.
+1. Tags contain a series of custom tags. You can mark in the code what type of call this Span is,the request method, call result, call, etc. All the information it contains can be filtered by the Tags on the homepage.
 2. Process can locate which specific server processing this data.
 3. Logs are the logs printed by this span during the call.
 

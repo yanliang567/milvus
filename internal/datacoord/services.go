@@ -23,6 +23,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/common"
+
 	"github.com/milvus-io/milvus/internal/util/trace"
 
 	"github.com/milvus-io/milvus/internal/log"
@@ -114,8 +116,12 @@ func (s *Server) AssignSegmentID(ctx context.Context, req *datapb.AssignSegmentI
 			zap.String("channelName", r.GetChannelName()),
 			zap.Uint32("count", r.GetCount()))
 
-		if coll := s.GetCollection(ctx, r.CollectionID); coll == nil {
-			continue
+		if s.meta.GetCollection(r.GetCollectionID()) == nil {
+			err := s.loadCollectionFromRootCoord(ctx, r.GetCollectionID())
+			if err != nil {
+				log.Warn("failed to load collection in alloc segment", zap.Any("request", r), zap.Error(err))
+				continue
+			}
 		}
 
 		s.cluster.Watch(r.ChannelName, r.CollectionID)
@@ -301,6 +307,7 @@ func (s *Server) SaveBinlogPaths(ctx context.Context, req *datapb.SaveBinlogPath
 		zap.Int64("segmentID", req.GetSegmentID()),
 		zap.Bool("isFlush", req.GetFlushed()),
 		zap.Bool("isDropped", req.GetDropped()),
+		zap.Any("startPositions", req.GetStartPositions()),
 		zap.Any("checkpoints", req.GetCheckPoints()))
 
 	// validate
@@ -346,14 +353,16 @@ func (s *Server) SaveBinlogPaths(ctx context.Context, req *datapb.SaveBinlogPath
 	log.Debug("flush segment with meta", zap.Int64("id", req.SegmentID),
 		zap.Any("meta", req.GetField2BinlogPaths()))
 
-	if req.GetDropped() && s.checkShouldDropChannel(channel) {
-		log.Debug("remove channel", zap.String("channel", channel))
-		err = s.channelManager.RemoveChannel(channel)
-		if err != nil {
-			log.Warn("failed to remove channel", zap.String("channel", channel), zap.Error(err))
-		}
-		s.segmentManager.DropSegmentsOfChannel(ctx, channel)
-	}
+	// Drop logic handler in DropVirtualChannel
+	/*
+		if req.GetDropped() && s.handler.CheckShouldDropChannel(channel) {
+			log.Debug("remove channel", zap.String("channel", channel))
+			err = s.channelManager.RemoveChannel(channel)
+			if err != nil {
+				log.Warn("failed to remove channel", zap.String("channel", channel), zap.Error(err))
+			}
+			s.segmentManager.DropSegmentsOfChannel(ctx, channel)
+		}*/
 
 	if req.GetFlushed() {
 		s.segmentManager.DropSegment(ctx, req.SegmentID)
@@ -377,26 +386,81 @@ func (s *Server) SaveBinlogPaths(ctx context.Context, req *datapb.SaveBinlogPath
 	return resp, nil
 }
 
-func (s *Server) checkShouldDropChannel(channel string) bool {
-	segments := s.meta.GetSegmentsByChannel(channel)
-	for _, segment := range segments {
-		if segment.GetStartPosition() != nil && // fitler empty segment
-			// FIXME: we filter compaction generated segments
-			// because datanode may not know the segment due to the network lag or
-			// datacoord crash when handling CompleteCompaction.
-			len(segment.CompactionFrom) == 0 &&
-			segment.GetState() != commonpb.SegmentState_Dropped {
-			return false
-		}
+// DropVirtualChannel notifies vchannel dropped
+// And contains the remaining data log & checkpoint to update
+func (s *Server) DropVirtualChannel(ctx context.Context, req *datapb.DropVirtualChannelRequest) (*datapb.DropVirtualChannelResponse, error) {
+	resp := &datapb.DropVirtualChannelResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_UnexpectedError,
+		},
 	}
-	return true
+	if s.isClosed() {
+		resp.Status.Reason = serverNotServingErrMsg
+		return resp, nil
+	}
+
+	channel := req.GetChannelName()
+	log.Debug("receive DropVirtualChannel request",
+		zap.String("channel name", channel))
+
+	// validate
+	nodeID := req.GetBase().GetSourceID()
+	if !s.channelManager.Match(nodeID, channel) {
+		FailResponse(resp.Status, fmt.Sprintf("channel %s is not watched on node %d", channel, nodeID))
+		log.Warn("node is not matched with channel", zap.String("channel", channel), zap.Int64("nodeID", nodeID))
+		return resp, nil
+	}
+
+	segments := make([]*SegmentInfo, 0, len(req.GetSegments()))
+	for _, seg2Drop := range req.GetSegments() {
+		info := &datapb.SegmentInfo{
+			ID:            seg2Drop.GetSegmentID(),
+			CollectionID:  seg2Drop.GetCollectionID(),
+			InsertChannel: channel,
+			Binlogs:       seg2Drop.GetField2BinlogPaths(),
+			Statslogs:     seg2Drop.GetField2StatslogPaths(),
+			Deltalogs:     seg2Drop.GetDeltalogs(),
+			StartPosition: seg2Drop.GetStartPosition(),
+			DmlPosition:   seg2Drop.GetCheckPoint(),
+			NumOfRows:     seg2Drop.GetNumOfRows(),
+		}
+		segment := NewSegmentInfo(info)
+		segments = append(segments, segment)
+	}
+
+	err := s.meta.UpdateDropChannelSegmentInfo(channel, segments)
+	if err != nil {
+		log.Error("Update Drop Channel segment info failed", zap.String("channel", channel), zap.Error(err))
+		resp.Status.Reason = err.Error()
+		return resp, nil
+	}
+
+	log.Debug("DropVChannel plan to remove", zap.String("channel", channel))
+	err = s.channelManager.RemoveChannel(channel)
+	if err != nil {
+		log.Warn("DropVChannel failed to RemoveChannel", zap.String("channel", channel), zap.Error(err))
+	}
+	s.segmentManager.DropSegmentsOfChannel(ctx, channel)
+
+	// clean up removal flag
+	s.meta.FinishRemoveChannel(channel)
+
+	// no compaction triggerred in Drop procedure
+	resp.Status.ErrorCode = commonpb.ErrorCode_Success
+	return resp, nil
 }
 
 // GetComponentStates returns DataCoord's current state
 func (s *Server) GetComponentStates(ctx context.Context) (*internalpb.ComponentStates, error) {
+	nodeID := common.NotRegisteredID
+	if s.session != nil && s.session.Registered() {
+		nodeID = s.session.ServerID // or Params.NodeID
+	}
+
 	resp := &internalpb.ComponentStates{
 		State: &internalpb.ComponentInfo{
-			NodeID:    Params.NodeID,
+			// NodeID:    Params.NodeID, // will race with Server.Register()
+			NodeID:    nodeID,
 			Role:      "datacoord",
 			StateCode: 0,
 		},
@@ -520,7 +584,7 @@ func (s *Server) GetRecoveryInfo(ctx context.Context, req *datapb.GetRecoveryInf
 	channels := dresp.GetVirtualChannelNames()
 	channelInfos := make([]*datapb.VchannelInfo, 0, len(channels))
 	for _, c := range channels {
-		channelInfo := s.GetVChanPositions(c, collectionID, partitionID)
+		channelInfo := s.handler.GetVChanPositions(c, collectionID, partitionID)
 		channelInfos = append(channelInfos, channelInfo)
 		log.Debug("datacoord append channelInfo in GetRecoveryInfo",
 			zap.Any("collectionID", collectionID),
@@ -631,7 +695,7 @@ func (s *Server) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest
 
 		s.metricsCacheManager.UpdateSystemInfoMetrics(metrics)
 
-		return metrics, err
+		return metrics, nil
 	}
 
 	log.Debug("DataCoord.GetMetrics failed, request metric type is not implemented yet",
@@ -749,6 +813,7 @@ func (s *Server) GetCompactionState(ctx context.Context, req *milvuspb.GetCompac
 	return resp, nil
 }
 
+// GetCompactionStateWithPlans returns the compaction state of given plan
 func (s *Server) GetCompactionStateWithPlans(ctx context.Context, req *milvuspb.GetCompactionPlansRequest) (*milvuspb.GetCompactionPlansResponse, error) {
 	log.Debug("received GetCompactionStateWithPlans request", zap.Int64("compactionID", req.GetCompactionID()))
 
@@ -817,6 +882,7 @@ func getCompactionState(tasks []*compactionTask) (state commonpb.CompactionState
 	return
 }
 
+// WatchChannels notifies DataCoord to watch vchannels of a collection
 func (s *Server) WatchChannels(ctx context.Context, req *datapb.WatchChannelsRequest) (*datapb.WatchChannelsResponse, error) {
 	log.Debug("receive watch channels request", zap.Any("channels", req.GetChannelNames()))
 	resp := &datapb.WatchChannelsResponse{
@@ -826,7 +892,7 @@ func (s *Server) WatchChannels(ctx context.Context, req *datapb.WatchChannelsReq
 	}
 
 	if s.isClosed() {
-		log.Warn("failed to  watch channels request", zap.Any("channels", req.GetChannelNames()),
+		log.Warn("failed to watch channels request", zap.Any("channels", req.GetChannelNames()),
 			zap.Error(errDataCoordIsUnhealthy(Params.NodeID)))
 		resp.Status.Reason = msgDataCoordIsUnhealthy(Params.NodeID)
 		return resp, nil
@@ -845,5 +911,41 @@ func (s *Server) WatchChannels(ctx context.Context, req *datapb.WatchChannelsReq
 	}
 	resp.Status.ErrorCode = commonpb.ErrorCode_Success
 
+	return resp, nil
+}
+
+// GetFlushState gets the flush state of multiple segments
+func (s *Server) GetFlushState(ctx context.Context, req *milvuspb.GetFlushStateRequest) (*milvuspb.GetFlushStateResponse, error) {
+	log.Debug("received get flush state request", zap.Int64s("segment ids", req.GetSegmentIDs()), zap.Int("len", len(req.GetSegmentIDs())))
+
+	resp := &milvuspb.GetFlushStateResponse{Status: &commonpb.Status{ErrorCode: commonpb.ErrorCode_UnexpectedError}}
+	if s.isClosed() {
+		log.Warn("failed to get flush state because of closed server",
+			zap.Int64s("segment ids", req.GetSegmentIDs()), zap.Int("len", len(req.GetSegmentIDs())))
+		resp.Status.Reason = msgDataCoordIsUnhealthy(Params.NodeID)
+		return resp, nil
+	}
+
+	var unflushed []UniqueID
+	for _, sid := range req.GetSegmentIDs() {
+		segment := s.meta.GetSegment(sid)
+		// segment is nil if it was compacted
+		if segment == nil || segment.GetState() == commonpb.SegmentState_Flushed ||
+			segment.GetState() == commonpb.SegmentState_Flushed {
+			continue
+		}
+
+		unflushed = append(unflushed, sid)
+	}
+
+	if len(unflushed) != 0 {
+		log.Debug("unflushed segment ids", zap.Int64s("segment ids", unflushed), zap.Int("len", len(unflushed)))
+		resp.Flushed = false
+	} else {
+		log.Debug("all segment is flushed", zap.Int64s("segment ids", req.GetSegmentIDs()))
+		resp.Flushed = true
+	}
+
+	resp.Status.ErrorCode = commonpb.ErrorCode_Success
 	return resp, nil
 }

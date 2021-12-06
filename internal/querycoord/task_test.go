@@ -1,13 +1,19 @@
-// Copyright (C) 2019-2020 Zilliz. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
 // with the License. You may obtain a copy of the License at
 //
-// http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// Unless required by applicable law or agreed to in writing, software distributed under the License
-// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
-// or implied. See the License for the specific language governing permissions and limitations under the License.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package querycoord
 
 import (
@@ -18,6 +24,7 @@ import (
 
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
+	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 )
@@ -936,4 +943,170 @@ func TestLoadBalanceSegmentsTask(t *testing.T) {
 	queryCoord.Stop()
 	err = removeAllSession()
 	assert.Nil(t, err)
+}
+
+func TestLoadBalanceIndexedSegmentsTask(t *testing.T) {
+	refreshParams()
+	ctx := context.Background()
+	queryCoord, err := startQueryCoord(ctx)
+	assert.Nil(t, err)
+	indexCoord := newIndexCoordMock()
+	indexCoord.returnIndexFile = true
+	queryCoord.indexCoordClient = indexCoord
+
+	node1, err := startQueryNodeServer(ctx)
+	assert.Nil(t, err)
+	waitQueryNodeOnline(queryCoord.cluster, node1.queryNodeID)
+
+	loadCollectionTask := genLoadCollectionTask(ctx, queryCoord)
+
+	err = queryCoord.scheduler.Enqueue(loadCollectionTask)
+	assert.Nil(t, err)
+	waitTaskFinalState(loadCollectionTask, taskExpired)
+
+	node2, err := startQueryNodeServer(ctx)
+	assert.Nil(t, err)
+	waitQueryNodeOnline(queryCoord.cluster, node2.queryNodeID)
+
+	baseTask := newBaseTask(ctx, querypb.TriggerCondition_loadBalance)
+	loadBalanceTask := &loadBalanceTask{
+		baseTask: baseTask,
+		LoadBalanceRequest: &querypb.LoadBalanceRequest{
+			Base: &commonpb.MsgBase{
+				MsgType: commonpb.MsgType_LoadBalanceSegments,
+			},
+			SourceNodeIDs:    []int64{node1.queryNodeID},
+			SealedSegmentIDs: []UniqueID{defaultSegmentID},
+		},
+		rootCoord:  queryCoord.rootCoordClient,
+		dataCoord:  queryCoord.dataCoordClient,
+		indexCoord: queryCoord.indexCoordClient,
+		cluster:    queryCoord.cluster,
+		meta:       queryCoord.meta,
+	}
+	err = queryCoord.scheduler.Enqueue(loadBalanceTask)
+	assert.Nil(t, err)
+	waitTaskFinalState(loadBalanceTask, taskExpired)
+
+	node1.stop()
+	node2.stop()
+	queryCoord.Stop()
+	err = removeAllSession()
+	assert.Nil(t, err)
+}
+
+func TestLoadBalanceIndexedSegmentsAfterNodeDown(t *testing.T) {
+	refreshParams()
+	ctx := context.Background()
+	queryCoord, err := startQueryCoord(ctx)
+	assert.Nil(t, err)
+
+	node1, err := startQueryNodeServer(ctx)
+	assert.Nil(t, err)
+	waitQueryNodeOnline(queryCoord.cluster, node1.queryNodeID)
+
+	loadCollectionTask := genLoadCollectionTask(ctx, queryCoord)
+
+	err = queryCoord.scheduler.Enqueue(loadCollectionTask)
+	assert.Nil(t, err)
+	waitTaskFinalState(loadCollectionTask, taskExpired)
+
+	node2, err := startQueryNodeServer(ctx)
+	assert.Nil(t, err)
+	waitQueryNodeOnline(queryCoord.cluster, node2.queryNodeID)
+
+	indexCoord := newIndexCoordMock()
+	indexCoord.returnIndexFile = true
+	queryCoord.indexCoordClient = indexCoord
+	removeNodeSession(node1.queryNodeID)
+	for {
+		if len(queryCoord.meta.getSegmentInfosByNode(node1.queryNodeID)) == 0 {
+			break
+		}
+	}
+
+	node2.stop()
+	queryCoord.Stop()
+	err = removeAllSession()
+	assert.Nil(t, err)
+}
+
+func TestMergeWatchDeltaChannelInfo(t *testing.T) {
+	infos := []*datapb.VchannelInfo{
+		{
+			ChannelName: "test-1",
+			SeekPosition: &internalpb.MsgPosition{
+				ChannelName: "test-1",
+				Timestamp:   9,
+			},
+		},
+		{
+			ChannelName: "test-2",
+			SeekPosition: &internalpb.MsgPosition{
+				ChannelName: "test-2",
+				Timestamp:   10,
+			},
+		},
+		{
+			ChannelName: "test-1",
+			SeekPosition: &internalpb.MsgPosition{
+				ChannelName: "test-1",
+				Timestamp:   15,
+			},
+		},
+		{
+			ChannelName: "test-2",
+			SeekPosition: &internalpb.MsgPosition{
+				ChannelName: "test-2",
+				Timestamp:   16,
+			},
+		},
+		{
+			ChannelName: "test-1",
+			SeekPosition: &internalpb.MsgPosition{
+				ChannelName: "test-1",
+				Timestamp:   5,
+			},
+		},
+		{
+			ChannelName: "test-2",
+			SeekPosition: &internalpb.MsgPosition{
+				ChannelName: "test-2",
+				Timestamp:   4,
+			},
+		},
+		{
+			ChannelName: "test-1",
+			SeekPosition: &internalpb.MsgPosition{
+				ChannelName: "test-1",
+				Timestamp:   3,
+			},
+		},
+		{
+			ChannelName: "test-2",
+			SeekPosition: &internalpb.MsgPosition{
+				ChannelName: "test-2",
+				Timestamp:   5,
+			},
+		},
+	}
+
+	results := mergeWatchDeltaChannelInfo(infos)
+	expected := []*datapb.VchannelInfo{
+		{
+			ChannelName: "test-1",
+			SeekPosition: &internalpb.MsgPosition{
+				ChannelName: "test-1",
+				Timestamp:   3,
+			},
+		},
+		{
+			ChannelName: "test-2",
+			SeekPosition: &internalpb.MsgPosition{
+				ChannelName: "test-2",
+				Timestamp:   4,
+			},
+		},
+	}
+	assert.ElementsMatch(t, expected, results)
 }

@@ -107,7 +107,7 @@ func TestFlowGraphDeleteNode_newDeleteNode(te *testing.T) {
 
 	for _, test := range tests {
 		te.Run(test.description, func(t *testing.T) {
-			dn, err := newDeleteNode(test.ctx, nil, make(chan UniqueID, 1), test.config)
+			dn, err := newDeleteNode(test.ctx, nil, make(chan string, 1), test.config)
 			assert.Nil(t, err)
 
 			assert.NotNil(t, dn)
@@ -205,7 +205,7 @@ func TestFlowGraphDeleteNode_Operate(t *testing.T) {
 	)
 	replica := genMockReplica(segIDs, pks, chanName)
 	kv := memkv.NewMemoryKV()
-	fm := NewRendezvousFlushManager(NewAllocatorFactory(), kv, replica, func(*segmentFlushPack) {})
+	fm := NewRendezvousFlushManager(NewAllocatorFactory(), kv, replica, func(*segmentFlushPack) {}, emptyFlushAndDropFunc)
 	t.Run("Test get segment by primary keys", func(te *testing.T) {
 		c := &nodeConfig{
 			replica:      replica,
@@ -213,7 +213,7 @@ func TestFlowGraphDeleteNode_Operate(t *testing.T) {
 			vChannelName: chanName,
 		}
 
-		dn, err := newDeleteNode(context.Background(), fm, make(chan UniqueID, 1), c)
+		dn, err := newDeleteNode(context.Background(), fm, make(chan string, 1), c)
 		assert.Nil(t, err)
 
 		results := dn.filterSegmentByPK(0, pks)
@@ -244,7 +244,7 @@ func TestFlowGraphDeleteNode_Operate(t *testing.T) {
 			allocator:    NewAllocatorFactory(),
 			vChannelName: chanName,
 		}
-		delNode, err := newDeleteNode(ctx, fm, make(chan UniqueID, 1), c)
+		delNode, err := newDeleteNode(ctx, fm, make(chan string, 1), c)
 		assert.Nil(te, err)
 
 		msg := genFlowGraphDeleteMsg(pks, chanName)
@@ -268,7 +268,7 @@ func TestFlowGraphDeleteNode_Operate(t *testing.T) {
 			allocator:    NewAllocatorFactory(),
 			vChannelName: chanName,
 		}
-		delNode, err := newDeleteNode(ctx, fm, make(chan UniqueID, 1), c)
+		delNode, err := newDeleteNode(ctx, fm, make(chan string, 1), c)
 		assert.Nil(te, err)
 
 		msg := genFlowGraphDeleteMsg(pks, chanName)
@@ -281,5 +281,40 @@ func TestFlowGraphDeleteNode_Operate(t *testing.T) {
 		msg.deleteMessages = []*msgstream.DeleteMsg{}
 		// send again shall trigger empty buffer flush
 		delNode.Operate([]flowgraph.Msg{fgMsg})
+	})
+	t.Run("Test deleteNode Operate valid with dropCollection", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		chanName := "datanode-test-FlowGraphDeletenode-operate"
+		testPath := "/test/datanode/root/meta"
+		assert.NoError(t, clearEtcd(testPath))
+		Params.MetaRootPath = testPath
+		Params.DeleteBinlogRootPath = testPath
+
+		c := &nodeConfig{
+			replica:      replica,
+			allocator:    NewAllocatorFactory(),
+			vChannelName: chanName,
+		}
+		sig := make(chan string, 1)
+		delNode, err := newDeleteNode(ctx, fm, sig, c)
+		assert.Nil(t, err)
+
+		msg := genFlowGraphDeleteMsg(pks, chanName)
+		msg.segmentsToFlush = segIDs
+
+		msg.endPositions[0].Timestamp = 100 // set to normal timestamp
+		msg.dropCollection = true
+		assert.NotPanics(t, func() {
+			fm.startDropping()
+			delNode.Operate([]flowgraph.Msg{&msg})
+		})
+		timer := time.NewTimer(time.Millisecond)
+		select {
+		case <-timer.C:
+			t.FailNow()
+		case <-sig:
+		}
 	})
 }

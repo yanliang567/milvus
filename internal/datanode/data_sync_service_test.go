@@ -144,10 +144,11 @@ func TestDataSyncService_newDataSyncService(te *testing.T) {
 				NewAllocatorFactory(),
 				test.inMsgFactory,
 				getVchanInfo(test),
-				make(chan UniqueID),
+				make(chan string),
 				df,
 				newCache(),
 				memkv.NewMemoryKV(),
+				newCompactionExecutor(),
 			)
 
 			if !test.isValidCase {
@@ -223,8 +224,8 @@ func TestDataSyncService_Start(t *testing.T) {
 		FlushedSegments:   fs,
 	}
 
-	signalCh := make(chan UniqueID, 100)
-	sync, err := newDataSyncService(ctx, flushChan, replica, allocFactory, msFactory, vchan, signalCh, &DataCoordFactory{}, newCache(), memkv.NewMemoryKV())
+	signalCh := make(chan string, 100)
+	sync, err := newDataSyncService(ctx, flushChan, replica, allocFactory, msFactory, vchan, signalCh, &DataCoordFactory{}, newCache(), memkv.NewMemoryKV(), newCompactionExecutor())
 
 	assert.Nil(t, err)
 	// sync.replica.addCollection(collMeta.ID, collMeta.Schema)

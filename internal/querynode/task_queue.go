@@ -35,7 +35,7 @@ type taskQueue interface {
 }
 
 type baseTaskQueue struct {
-	utMu          sync.Mutex // guards unissuedTasks
+	utMu          sync.RWMutex // guards unissuedTasks
 	unissuedTasks *list.List
 
 	atMu        sync.Mutex // guards activeTasks
@@ -47,7 +47,7 @@ type baseTaskQueue struct {
 	scheduler *taskScheduler
 }
 
-type loadAndReleaseTaskQueue struct {
+type queryNodeTaskQueue struct {
 	baseTaskQueue
 	mu sync.Mutex
 }
@@ -58,20 +58,24 @@ func (queue *baseTaskQueue) utChan() <-chan int {
 }
 
 func (queue *baseTaskQueue) utEmpty() bool {
+	queue.utMu.RLock()
+	defer queue.utMu.RUnlock()
 	return queue.unissuedTasks.Len() == 0
 }
 
 func (queue *baseTaskQueue) utFull() bool {
+	queue.utMu.RLock()
+	defer queue.utMu.RUnlock()
 	return int64(queue.unissuedTasks.Len()) >= queue.maxTaskNum
 }
 
 func (queue *baseTaskQueue) addUnissuedTask(t task) error {
-	queue.utMu.Lock()
-	defer queue.utMu.Unlock()
-
 	if queue.utFull() {
 		return errors.New("task queue is full")
 	}
+
+	queue.utMu.Lock()
+	defer queue.utMu.Unlock()
 
 	if queue.unissuedTasks.Len() <= 0 {
 		queue.unissuedTasks.PushBack(t)
@@ -144,15 +148,15 @@ func (queue *baseTaskQueue) Enqueue(t task) error {
 	return queue.addUnissuedTask(t)
 }
 
-// loadAndReleaseTaskQueue
-func (queue *loadAndReleaseTaskQueue) Enqueue(t task) error {
+// queryNodeTaskQueue
+func (queue *queryNodeTaskQueue) Enqueue(t task) error {
 	queue.mu.Lock()
 	defer queue.mu.Unlock()
 	return queue.baseTaskQueue.Enqueue(t)
 }
 
-func newLoadAndReleaseTaskQueue(scheduler *taskScheduler) *loadAndReleaseTaskQueue {
-	return &loadAndReleaseTaskQueue{
+func newQueryNodeTaskQueue(scheduler *taskScheduler) *queryNodeTaskQueue {
+	return &queryNodeTaskQueue{
 		baseTaskQueue: baseTaskQueue{
 			unissuedTasks: list.New(),
 			activeTasks:   make(map[UniqueID]task),

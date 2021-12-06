@@ -50,7 +50,7 @@ class TestQueryParams(TestcaseBase):
     def test_query_empty_collection(self):
         """
         target: test query empty collection
-        method: query on a empty collection
+        method: query on an empty collection
         expected: empty result
         """
         c_name = cf.gen_unique_str(prefix)
@@ -90,7 +90,7 @@ class TestQueryParams(TestcaseBase):
                                    check_items={exp_res: res[:1]})
 
     @pytest.mark.tags(CaseLabel.L1)
-    @pytest.mark.parametrize("dup_times",[1,2,3])
+    @pytest.mark.parametrize("dup_times", [1, 2, 3])
     @pytest.mark.parametrize("dim", [8, 128])
     def test_query_with_dup_primary_key(self, dim, dup_times):
         """
@@ -224,10 +224,10 @@ class TestQueryParams(TestcaseBase):
                                        check_task=CheckTasks.check_query_results, check_items={exp_res: res})
 
     @pytest.mark.tags(CaseLabel.L2)
-    @pytest.mark.xfail(reason="issue #7521 #7522")
+    @pytest.mark.xfail(reason="issue #12210 #7522")
     def test_query_expr_by_bool_field(self):
         """
-        target: test query by bool field and output binary field
+        target: test query by bool field and output bool field
         method: 1.create and insert with [int64, float, bool, float_vec] fields
                 2.query by bool field, and output all int64, bool fields
         expected: verify query result and output fields
@@ -240,10 +240,19 @@ class TestQueryParams(TestcaseBase):
                                                       primary_field=ct.default_int64_field_name)
         assert self.collection_wrap.num_entities == ct.default_nb
         self.collection_wrap.load()
-        term_expr = f'{ct.default_bool_field_name} in [True]'
-        res, _ = self.collection_wrap.query(term_expr, output_fields=[ct.default_bool_field_name])
-        assert len(res) == ct.default_nb / 2
-        assert set(res[0].keys()) == {ct.default_int64_field_name, ct.default_bool_field_name}
+
+        # Now don't support output bool field
+        # res, _ = self.collection_wrap.query(term_expr, output_fields=[ct.default_bool_field_name])
+        # assert set(res[0].keys()) == {ct.default_int64_field_name, ct.default_bool_field_name}
+
+        exprs = [f'{ct.default_bool_field_name} in [false]',
+                 f'{ct.default_bool_field_name} in [True]',
+                 f'{ct.default_bool_field_name} == true',
+                 f'{ct.default_bool_field_name} == False']
+        # exprs.append(f'{ct.default_bool_field_name} in [0]')
+        for expr in exprs:
+            res, _ = self.collection_wrap.query(expr)
+            assert len(res) == ct.default_nb / 2
 
     @pytest.mark.tags(CaseLabel.L2)
     def test_query_expr_by_int8_field(self):
@@ -522,6 +531,7 @@ class TestQueryParams(TestcaseBase):
                                check_items={exp_res: res, "with_vec": True})
 
     @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.skip("https://github.com/milvus-io/milvus/issues/12680")
     @pytest.mark.parametrize("vec_fields", [[cf.gen_float_vec_field(name="float_vector1")]])
     def test_query_output_multi_float_vec_field(self, vec_fields):
         """
@@ -548,6 +558,7 @@ class TestQueryParams(TestcaseBase):
                            check_items={exp_res: res, "with_vec": True})
 
     @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.skip("https://github.com/milvus-io/milvus/issues/12680")
     @pytest.mark.parametrize("vec_fields", [[cf.gen_binary_vec_field()],
                                             [cf.gen_binary_vec_field(), cf.gen_binary_vec_field("binary_vec1")]])
     def test_query_output_mix_float_binary_field(self, vec_fields):
@@ -633,6 +644,7 @@ class TestQueryParams(TestcaseBase):
                                check_items=error)
 
     @pytest.mark.tags(CaseLabel.L0)
+    @pytest.mark.skip("https://github.com/milvus-io/milvus/issues/12680")
     def test_query_output_fields_simple_wildcard(self):
         """
         target: test query output_fields with simple wildcard (* and %)
@@ -664,6 +676,7 @@ class TestQueryParams(TestcaseBase):
                            check_items={exp_res: res3, "with_vec": True})
 
     @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.skip("https://github.com/milvus-io/milvus/issues/12680")
     def test_query_output_fields_part_scale_wildcard(self):
         """
         target: test query output_fields with part wildcard
@@ -688,6 +701,7 @@ class TestQueryParams(TestcaseBase):
                            check_items={exp_res: res2})
 
     @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.skip("https://github.com/milvus-io/milvus/issues/12680")
     def test_query_output_fields_part_vector_wildcard(self):
         """
         target: test query output_fields with part wildcard
@@ -712,6 +726,7 @@ class TestQueryParams(TestcaseBase):
                            check_items={exp_res: res2, "with_vec": True})
 
     @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.skip("https://github.com/milvus-io/milvus/issues/12680")
     @pytest.mark.parametrize("output_fields", [["*%"], ["**"], ["*", "@"]])
     def test_query_invalid_wildcard(self, output_fields):
         """
@@ -737,7 +752,7 @@ class TestQueryParams(TestcaseBase):
         """
         collection_w = self.init_collection_wrap(name=cf.gen_unique_str(prefix))
         partition_w = self.init_partition_wrap(collection_wrap=collection_w)
-        df = cf.gen_default_dataframe_data(ct.default_nb)
+        df = cf.gen_default_dataframe_data()
         partition_w.insert(df)
         assert collection_w.num_entities == ct.default_nb
         partition_w.load()
@@ -754,7 +769,7 @@ class TestQueryParams(TestcaseBase):
         """
         collection_w = self.init_collection_wrap(name=cf.gen_unique_str(prefix))
         partition_w = self.init_partition_wrap(collection_wrap=collection_w)
-        df = cf.gen_default_dataframe_data(ct.default_nb)
+        df = cf.gen_default_dataframe_data()
         partition_w.insert(df)
         assert partition_w.num_entities == ct.default_nb
         error = {ct.err_code: 1, ct.err_msg: f'collection {collection_w.name} was not loaded into memory'}
@@ -843,7 +858,7 @@ class TestQueryOperation(TestcaseBase):
         collection_w = self.init_collection_wrap(name=collection_name)
 
         # insert data to collection
-        collection_w.insert(data=cf.gen_default_list_data(ct.default_nb))
+        collection_w.insert(data=cf.gen_default_list_data())
 
         # check number of entities and that method calls the flush interface
         assert collection_w.num_entities == ct.default_nb
@@ -1054,7 +1069,7 @@ class TestQueryOperation(TestcaseBase):
         partition_w = self.init_partition_wrap(collection_wrap=collection_w)
 
         # insert data to partition
-        df = cf.gen_default_dataframe_data(ct.default_nb)
+        df = cf.gen_default_dataframe_data()
         partition_w.insert(df)
 
         # check number of entities and that method calls the flush interface

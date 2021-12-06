@@ -52,6 +52,7 @@ type compactor interface {
 	stop()
 	getPlanID() UniqueID
 	getCollection() UniqueID
+	getChannelName() string
 }
 
 // make sure compactionTask implements compactor interface
@@ -70,6 +71,8 @@ type compactionTask struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	wg sync.WaitGroup
 }
 
 // check if compactionTask implements compactor
@@ -102,10 +105,15 @@ func newCompactionTask(
 
 func (t *compactionTask) stop() {
 	t.cancel()
+	t.wg.Wait()
 }
 
 func (t *compactionTask) getPlanID() UniqueID {
 	return t.plan.GetPlanID()
+}
+
+func (t *compactionTask) getChannelName() string {
+	return t.plan.GetChannel()
 }
 
 func (t *compactionTask) mergeDeltalogs(dBlobs map[UniqueID][]*Blob, timetravelTs Timestamp) (map[UniqueID]Timestamp, *DelDataBuf, error) {
@@ -257,6 +265,8 @@ func (t *compactionTask) merge(mergeItr iterator, delta map[UniqueID]Timestamp, 
 }
 
 func (t *compactionTask) compact() error {
+	t.wg.Add(1)
+	defer t.wg.Done()
 	ctxTimeout, cancelAll := context.WithTimeout(t.ctx, time.Duration(t.plan.GetTimeoutInSeconds())*time.Second)
 	defer cancelAll()
 
@@ -296,17 +306,13 @@ func (t *compactionTask) compact() error {
 	}
 
 	// Inject to stop flush
-	ti := taskInjection{
-		injected:   make(chan struct{}),
-		injectOver: make(chan bool),
-		postInjection: func(pack *segmentFlushPack) {
-			pack.segmentID = targetSegID
-		},
-	}
+	ti := newTaskInjection(len(segIDs), func(pack *segmentFlushPack) {
+		pack.segmentID = targetSegID
+	})
 	defer close(ti.injectOver)
 
 	t.injectFlush(ti, segIDs...)
-	<-ti.injected
+	<-ti.Injected()
 
 	var (
 		iItr = make([]iterator, 0)
@@ -403,9 +409,14 @@ func (t *compactionTask) compact() error {
 		return err
 	}
 
-	cpaths.deltaInfo.DeltaLogSize = deltaBuf.size
-	cpaths.deltaInfo.TimestampFrom = deltaBuf.tsFrom
-	cpaths.deltaInfo.TimestampTo = deltaBuf.tsTo
+	var deltaLogs []*datapb.DeltaLogInfo
+	if len(cpaths.deltaInfo.GetDeltaLogPath()) > 0 {
+		cpaths.deltaInfo.DeltaLogSize = deltaBuf.size
+		cpaths.deltaInfo.TimestampFrom = deltaBuf.tsFrom
+		cpaths.deltaInfo.TimestampTo = deltaBuf.tsTo
+
+		deltaLogs = append(deltaLogs, cpaths.deltaInfo)
+	}
 
 	pack := &datapb.CompactionResult{
 		PlanID:              t.plan.GetPlanID(),
@@ -413,8 +424,7 @@ func (t *compactionTask) compact() error {
 		InsertLogs:          cpaths.inPaths,
 		Field2StatslogPaths: cpaths.statsPaths,
 		NumOfRows:           numRows,
-
-		Deltalogs: []*datapb.DeltaLogInfo{cpaths.deltaInfo},
+		Deltalogs:           deltaLogs,
 	}
 
 	status, err := t.dc.CompleteCompaction(ctxTimeout, pack)
@@ -445,8 +455,12 @@ func (t *compactionTask) compact() error {
 		}
 	}
 
-	ti.injectOver <- true
-	log.Info("compaction done", zap.Int64("planID", t.plan.GetPlanID()))
+	ti.injectDone(true)
+	log.Info("compaction done", zap.Int64("planID", t.plan.GetPlanID()),
+		zap.Any("num of binlog paths", len(cpaths.inPaths)),
+		zap.Any("num of stats paths", len(cpaths.statsPaths)),
+		zap.Any("deltalog paths", cpaths.deltaInfo.GetDeltaLogPath()),
+	)
 	return nil
 }
 
@@ -563,15 +577,15 @@ func interface2FieldData(schemaDataType schemapb.DataType, content []interface{}
 	case schemapb.DataType_FloatVector:
 		var data = &storage.FloatVectorFieldData{
 			NumRows: numOfRows,
-			Data:    make([]float32, 0, len(content)),
+			Data:    []float32{},
 		}
 
 		for _, c := range content {
-			r, ok := c.(float32)
+			r, ok := c.([]float32)
 			if !ok {
 				return nil, errTransferType
 			}
-			data.Data = append(data.Data, r)
+			data.Data = append(data.Data, r...)
 		}
 
 		data.Dim = len(data.Data) / int(numRows)
@@ -580,15 +594,15 @@ func interface2FieldData(schemaDataType schemapb.DataType, content []interface{}
 	case schemapb.DataType_BinaryVector:
 		var data = &storage.BinaryVectorFieldData{
 			NumRows: numOfRows,
-			Data:    make([]byte, 0, len(content)),
+			Data:    []byte{},
 		}
 
 		for _, c := range content {
-			r, ok := c.(byte)
+			r, ok := c.([]byte)
 			if !ok {
 				return nil, errTransferType
 			}
-			data.Data = append(data.Data, r)
+			data.Data = append(data.Data, r...)
 		}
 
 		data.Dim = len(data.Data) * 8 / int(numRows)

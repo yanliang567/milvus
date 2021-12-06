@@ -1,13 +1,18 @@
-// Copyright (C) 2019-2020 Zilliz. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
 // with the License. You may obtain a copy of the License at
 //
-// http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// Unless required by applicable law or agreed to in writing, software distributed under the License
-// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
-// or implied. See the License for the specific language governing permissions and limitations under the License.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package querynode
 
@@ -36,8 +41,9 @@ func TestIndexLoader_setIndexInfo(t *testing.T) {
 		loader.indexLoader.rootCoord = newMockRootCoord()
 		loader.indexLoader.indexCoord = newMockIndexCoord()
 
-		err = loader.indexLoader.setIndexInfo(defaultCollectionID, segment, rowIDFieldID)
+		info, err := loader.indexLoader.getIndexInfo(defaultCollectionID, segment)
 		assert.NoError(t, err)
+		loader.indexLoader.setIndexInfo(segment, info)
 	})
 
 	t.Run("test nil root and index", func(t *testing.T) {
@@ -49,8 +55,9 @@ func TestIndexLoader_setIndexInfo(t *testing.T) {
 		segment, err := genSimpleSealedSegment()
 		assert.NoError(t, err)
 
-		err = loader.indexLoader.setIndexInfo(defaultCollectionID, segment, rowIDFieldID)
+		info, err := loader.indexLoader.getIndexInfo(defaultCollectionID, segment)
 		assert.NoError(t, err)
+		loader.indexLoader.setIndexInfo(segment, info)
 	})
 }
 
@@ -116,14 +123,15 @@ func TestIndexLoader_loadIndex(t *testing.T) {
 		loader.indexLoader.rootCoord = newMockRootCoord()
 		loader.indexLoader.indexCoord = newMockIndexCoord()
 
-		err = loader.indexLoader.setIndexInfo(defaultCollectionID, segment, simpleVecField.id)
+		info, err := loader.indexLoader.getIndexInfo(defaultCollectionID, segment)
 		assert.NoError(t, err)
+		loader.indexLoader.setIndexInfo(segment, info)
 
 		err = loader.indexLoader.loadIndex(segment, simpleVecField.id)
 		assert.NoError(t, err)
 	})
 
-	t.Run("test set indexinfo with empty indexFilePath", func(t *testing.T) {
+	t.Run("test get indexinfo with empty indexFilePath", func(t *testing.T) {
 		node, err := genSimpleQueryNode(ctx)
 		assert.NoError(t, err)
 		loader := node.loader
@@ -138,9 +146,8 @@ func TestIndexLoader_loadIndex(t *testing.T) {
 
 		loader.indexLoader.indexCoord = ic
 
-		err = loader.indexLoader.setIndexInfo(defaultCollectionID, segment, simpleVecField.id)
+		_, err = loader.indexLoader.getIndexInfo(defaultCollectionID, segment)
 		assert.Error(t, err)
-
 	})
 
 	//t.Run("test get index failed", func(t *testing.T) {
@@ -169,12 +176,15 @@ func TestIndexLoader_loadIndex(t *testing.T) {
 		loader.indexLoader.rootCoord = newMockRootCoord()
 		loader.indexLoader.indexCoord = newMockIndexCoord()
 
-		err = loader.indexLoader.setIndexInfo(defaultCollectionID, segment, rowIDFieldID)
+		info, err := loader.indexLoader.getIndexInfo(defaultCollectionID, segment)
 		assert.NoError(t, err)
 
-		segment.indexInfos[rowIDFieldID].setReadyLoad(false)
+		vecFieldID := UniqueID(101)
+		info.setFieldID(vecFieldID)
+		loader.indexLoader.setIndexInfo(segment, info)
 
-		err = loader.indexLoader.loadIndex(segment, rowIDFieldID)
+		segment.indexInfos[vecFieldID].setReadyLoad(false)
+		err = loader.indexLoader.loadIndex(segment, vecFieldID)
 		assert.Error(t, err)
 	})
 }

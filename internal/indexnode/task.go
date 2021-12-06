@@ -204,7 +204,7 @@ func (it *IndexBuildTask) checkIndexMeta(ctx context.Context, pre bool) error {
 		if err != nil {
 			log.Warn("IndexNode checkIndexMeta CompareVersionAndSwap", zap.Error(err))
 		}
-		return err
+		return nil
 	}
 
 	err := retry.Do(ctx, fn, retry.Attempts(3))
@@ -348,7 +348,6 @@ func (it *IndexBuildTask) Execute(ctx context.Context) error {
 
 	storageBlobs := getStorageBlobs(blobs)
 	var insertCodec storage.InsertCodec
-	defer insertCodec.Close()
 	collectionID, partitionID, segmentID, insertData, err2 := insertCodec.DeserializeAll(storageBlobs)
 	if err2 != nil {
 		return err2
@@ -407,7 +406,6 @@ func (it *IndexBuildTask) Execute(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		_ = codec.Close()
 		tr.Record("serialize index codec done")
 
 		getSavePathByKey := func(key string) string {
@@ -466,7 +464,7 @@ func (it *IndexBuildTask) Execute(ctx context.Context) error {
 		tr.Record("save index file done")
 	}
 	log.Info("IndexNode CreateIndex successfully ", zap.Int64("collect", collectionID),
-		zap.Int64("partition", partitionID), zap.Int64("segment", partitionID))
+		zap.Int64("partition", partitionID), zap.Int64("segment", segmentID))
 	tr.Elapse("all done")
 	return nil
 }

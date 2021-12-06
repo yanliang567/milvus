@@ -23,12 +23,12 @@ import (
 	"math/rand"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	datanodeclient "github.com/milvus-io/milvus/internal/distributed/datanode/client"
 	rootcoordclient "github.com/milvus-io/milvus/internal/distributed/rootcoord/client"
 	"github.com/milvus-io/milvus/internal/logutil"
-	"github.com/milvus-io/milvus/internal/rootcoord"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/mqclient"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
@@ -46,7 +46,6 @@ import (
 
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 )
 
@@ -89,9 +88,6 @@ type rootCoordCreatorFunc func(ctx context.Context, metaRootPath string, etcdEnd
 // makes sure Server implements `DataCoord`
 var _ types.DataCoord = (*Server)(nil)
 
-// makes sure Server implements `positionProvider`
-var _ positionProvider = (*Server)(nil)
-
 // Server implements `types.Datacoord`
 // handles Data Cooridinator related jobs
 type Server struct {
@@ -99,6 +95,7 @@ type Server struct {
 	serverLoopCtx    context.Context
 	serverLoopCancel context.CancelFunc
 	serverLoopWg     sync.WaitGroup
+	quitCh           chan struct{}
 	isServing        ServerState
 	helper           ServerHelper
 
@@ -112,6 +109,7 @@ type Server struct {
 	rootCoordClient  types.RootCoord
 	garbageCollector *garbageCollector
 	gcOpt            GcOption
+	handler          Handler
 
 	compactionTrigger trigger
 	compactionHandler compactionPlanContext
@@ -182,6 +180,7 @@ func CreateServer(ctx context.Context, factory msgstream.Factory, opts ...Option
 	rand.Seed(time.Now().UnixNano())
 	s := &Server{
 		ctx:                    ctx,
+		quitCh:                 make(chan struct{}),
 		msFactory:              factory,
 		flushCh:                make(chan UniqueID, 1024),
 		dataNodeCreator:        defaultDataNodeCreatorFunc,
@@ -203,6 +202,11 @@ func defaultDataNodeCreatorFunc(ctx context.Context, addr string) (types.DataNod
 
 func defaultRootCoordCreatorFunc(ctx context.Context, metaRootPath string, etcdEndpoints []string) (types.RootCoord, error) {
 	return rootcoordclient.NewClient(ctx, metaRootPath, etcdEndpoints)
+}
+
+// QuitSignal returns signal when server quits
+func (s *Server) QuitSignal() <-chan struct{} {
+	return s.quitCh
 }
 
 // Register register data service at etcd
@@ -248,6 +252,8 @@ func (s *Server) Start() error {
 		return err
 	}
 
+	s.handler = newServerHandler(s)
+
 	if err = s.initCluster(); err != nil {
 		return err
 	}
@@ -282,7 +288,7 @@ func (s *Server) initCluster() error {
 	}
 
 	var err error
-	s.channelManager, err = NewChannelManager(s.kvClient, s)
+	s.channelManager, err = NewChannelManager(s.kvClient, s.handler)
 	if err != nil {
 		return err
 	}
@@ -338,9 +344,9 @@ func (s *Server) initGarbageCollection() error {
 		bucketName: Params.MinioBucketName,
 		rootPath:   Params.MinioRootPath,
 
-		checkInterval:    defaultGcInterval,
-		missingTolerance: defaultMissingTolerance,
-		dropTolerance:    defaultMissingTolerance,
+		checkInterval:    Params.GCInterval,
+		missingTolerance: Params.GCMissingTolerance,
+		dropTolerance:    Params.GCDropTolerance,
 	})
 	return nil
 }
@@ -404,6 +410,8 @@ func (s *Server) startServerLoop() {
 		if err := s.Stop(); err != nil {
 			log.Fatal("failed to stop server", zap.Error(err))
 		}
+		// manually send signal to starter goroutine
+		syscall.Kill(syscall.Getpid(), syscall.SIGINT)
 	})
 }
 
@@ -782,97 +790,4 @@ func (s *Server) loadCollectionFromRootCoord(ctx context.Context, collectionID i
 	}
 	s.meta.AddCollection(collInfo)
 	return nil
-}
-
-// GetVChanPositions get vchannel latest postitions with provided dml channel names
-func (s *Server) GetVChanPositions(channel string, collectionID UniqueID, partitionID UniqueID) *datapb.VchannelInfo {
-	segments := s.meta.GetSegmentsByChannel(channel)
-	log.Debug("GetSegmentsByChannel",
-		zap.Any("collectionID", collectionID),
-		zap.Any("channel", channel),
-		zap.Any("numOfSegments", len(segments)),
-	)
-	var flushed []*datapb.SegmentInfo
-	var unflushed []*datapb.SegmentInfo
-	var seekPosition *internalpb.MsgPosition
-	for _, s := range segments {
-		if (partitionID > allPartitionID && s.PartitionID != partitionID) ||
-			(s.GetStartPosition() == nil && s.GetDmlPosition() == nil) {
-			continue
-		}
-
-		if s.GetState() == commonpb.SegmentState_Flushing || s.GetState() == commonpb.SegmentState_Flushed {
-			flushed = append(flushed, trimSegmentInfo(s.SegmentInfo))
-		} else {
-			unflushed = append(unflushed, s.SegmentInfo)
-		}
-
-		var segmentPosition *internalpb.MsgPosition
-		if s.GetDmlPosition() != nil {
-			segmentPosition = s.GetDmlPosition()
-		} else {
-			segmentPosition = s.GetStartPosition()
-		}
-
-		if seekPosition == nil || segmentPosition.Timestamp < seekPosition.Timestamp {
-			seekPosition = segmentPosition
-		}
-	}
-	// use collection start position when segment position is not found
-	if seekPosition == nil {
-		collection := s.GetCollection(s.ctx, collectionID)
-		if collection != nil {
-			seekPosition = getCollectionStartPosition(channel, collection)
-		}
-	}
-
-	return &datapb.VchannelInfo{
-		CollectionID:      collectionID,
-		ChannelName:       channel,
-		SeekPosition:      seekPosition,
-		FlushedSegments:   flushed,
-		UnflushedSegments: unflushed,
-	}
-}
-
-func getCollectionStartPosition(channel string, collectionInfo *datapb.CollectionInfo) *internalpb.MsgPosition {
-	for _, sp := range collectionInfo.GetStartPositions() {
-		if sp.GetKey() != rootcoord.ToPhysicalChannel(channel) {
-			continue
-		}
-		return &internalpb.MsgPosition{
-			ChannelName: channel,
-			MsgID:       sp.GetData(),
-		}
-	}
-	return nil
-}
-
-// trimSegmentInfo returns a shallow copy of datapb.SegmentInfo and sets ALL binlog info to nil
-func trimSegmentInfo(info *datapb.SegmentInfo) *datapb.SegmentInfo {
-	return &datapb.SegmentInfo{
-		ID:             info.ID,
-		CollectionID:   info.CollectionID,
-		PartitionID:    info.PartitionID,
-		InsertChannel:  info.InsertChannel,
-		NumOfRows:      info.NumOfRows,
-		State:          info.State,
-		MaxRowNum:      info.MaxRowNum,
-		LastExpireTime: info.LastExpireTime,
-		StartPosition:  info.StartPosition,
-		DmlPosition:    info.DmlPosition,
-	}
-}
-
-func (s *Server) GetCollection(ctx context.Context, collectionID UniqueID) *datapb.CollectionInfo {
-	coll := s.meta.GetCollection(collectionID)
-	if coll != nil {
-		return coll
-	}
-	err := s.loadCollectionFromRootCoord(ctx, collectionID)
-	if err != nil {
-		log.Warn("failed to load collection from RootCoord", zap.Int64("collectionID", collectionID), zap.Error(err))
-	}
-
-	return s.meta.GetCollection(collectionID)
 }

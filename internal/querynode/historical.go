@@ -1,13 +1,18 @@
-// Copyright (C) 2019-2020 Zilliz. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
 // with the License. You may obtain a copy of the License at
 //
-// http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// Unless required by applicable law or agreed to in writing, software distributed under the License
-// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
-// or implied. See the License for the specific language governing permissions and limitations under the License.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package querynode
 
@@ -28,10 +33,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/proto/segcorepb"
 	"github.com/milvus-io/milvus/internal/storage"
-)
-
-const (
-	segmentMetaPrefix = "queryCoord-segmentMeta"
+	"github.com/milvus-io/milvus/internal/util"
 )
 
 // historical is in charge of historical data in query node
@@ -73,7 +75,7 @@ func (h *historical) close() {
 
 func (h *historical) watchGlobalSegmentMeta() {
 	log.Debug("query node watchGlobalSegmentMeta start")
-	watchChan := h.etcdKV.WatchWithPrefix(segmentMetaPrefix)
+	watchChan := h.etcdKV.WatchWithPrefix(util.SegmentMetaPrefix)
 
 	for {
 		select {
@@ -274,25 +276,44 @@ func (h *historical) search(searchReqs []*searchRequest, collID UniqueID, partID
 		zap.Any("searchPartitionIDs", searchPartIDs),
 	)
 
+	var segmentLock sync.RWMutex
 	for _, partID := range searchPartIDs {
 		segIDs, err := h.replica.getSegmentIDs(partID)
 		if err != nil {
 			return searchResults, searchSegmentIDs, err
 		}
+
+		var err2 error
+		var wg sync.WaitGroup
 		for _, segID := range segIDs {
-			seg, err := h.replica.getSegmentByID(segID)
-			if err != nil {
-				return searchResults, searchSegmentIDs, err
-			}
-			if !seg.getOnService() {
-				continue
-			}
-			searchResult, err := seg.search(plan, searchReqs, []Timestamp{searchTs})
-			if err != nil {
-				return searchResults, searchSegmentIDs, err
-			}
-			searchResults = append(searchResults, searchResult)
-			searchSegmentIDs = append(searchSegmentIDs, seg.segmentID)
+			segID2 := segID
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				seg, err := h.replica.getSegmentByID(segID2)
+				if err != nil {
+					err2 = err
+					return
+				}
+				if !seg.getOnService() {
+					return
+				}
+				searchResult, err := seg.search(plan, searchReqs, []Timestamp{searchTs})
+				if err != nil {
+					err2 = err
+					return
+				}
+
+				segmentLock.Lock()
+				searchResults = append(searchResults, searchResult)
+				searchSegmentIDs = append(searchSegmentIDs, seg.segmentID)
+				segmentLock.Unlock()
+			}()
+
+		}
+		wg.Wait()
+		if err2 != nil {
+			return searchResults, searchSegmentIDs, err2
 		}
 	}
 

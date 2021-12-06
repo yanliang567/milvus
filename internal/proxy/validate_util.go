@@ -26,6 +26,8 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
 )
 
+const enableMultipleVectorFields = false
+
 func isAlpha(c uint8) bool {
 	if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') {
 		return false
@@ -44,7 +46,7 @@ func validateCollectionNameOrAlias(entity, entityType string) error {
 	entity = strings.TrimSpace(entity)
 
 	if entity == "" {
-		return fmt.Errorf("Collection %s should not be empty", entityType)
+		return fmt.Errorf("collection %s should not be empty", entityType)
 	}
 
 	invalidMsg := fmt.Sprintf("Invalid collection %s: %s. ", entityType, entity)
@@ -118,7 +120,7 @@ func validateFieldName(fieldName string) error {
 	fieldName = strings.TrimSpace(fieldName)
 
 	if fieldName == "" {
-		return errors.New("Field name should not be empty")
+		return errors.New("field name should not be empty")
 	}
 
 	invalidMsg := "Invalid field name: " + fieldName + ". "
@@ -267,7 +269,7 @@ func validateSchema(coll *schemapb.CollectionSchema) error {
 		// check system field
 		if field.FieldID < 100 {
 			// System Fields, not injected yet
-			return fmt.Errorf("FieldID(%d) that is less than 100 is reserved for system fields: %s", field.FieldID, field.Name)
+			return fmt.Errorf("fieldID(%d) that is less than 100 is reserved for system fields: %s", field.FieldID, field.Name)
 		}
 
 		// primary key detector
@@ -339,6 +341,29 @@ func validateSchema(coll *schemapb.CollectionSchema) error {
 
 	if !autoID && primaryIdx == -1 {
 		return fmt.Errorf("primary key is required for non autoid mode")
+	}
+
+	return nil
+}
+
+func validateMultipleVectorFields(schema *schemapb.CollectionSchema) error {
+	vecExist := false
+	var vecName string
+
+	for i := range schema.Fields {
+		name := schema.Fields[i].Name
+		dType := schema.Fields[i].DataType
+		isVec := (dType == schemapb.DataType_BinaryVector || dType == schemapb.DataType_FloatVector)
+		if isVec && vecExist && !enableMultipleVectorFields {
+			return fmt.Errorf(
+				"multiple vector fields is not supported, fields name: %s, %s",
+				vecName,
+				name,
+			)
+		} else if isVec {
+			vecExist = true
+			vecName = name
+		}
 	}
 
 	return nil

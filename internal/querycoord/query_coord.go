@@ -1,13 +1,18 @@
-// Copyright (C) 2019-2020 Zilliz. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
 // with the License. You may obtain a copy of the License at
 //
-// http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// Unless required by applicable law or agreed to in writing, software distributed under the License
-// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
-// or implied. See the License for the specific language governing permissions and limitations under the License.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package querycoord
 
@@ -16,6 +21,7 @@ import (
 	"errors"
 	"math"
 	"sort"
+	"syscall"
 
 	"fmt"
 	"math/rand"
@@ -196,14 +202,18 @@ func (qc *QueryCoord) Start() error {
 	qc.loopWg.Add(1)
 	go qc.watchHandoffSegmentLoop()
 
-	qc.loopWg.Add(1)
-	go qc.loadBalanceSegmentLoop()
+	if Params.AutoBalance {
+		qc.loopWg.Add(1)
+		go qc.loadBalanceSegmentLoop()
+	}
 
 	go qc.session.LivenessCheck(qc.loopCtx, func() {
 		log.Error("Query Coord disconnected from etcd, process will exit", zap.Int64("Server Id", qc.session.ServerID))
 		if err := qc.Stop(); err != nil {
 			log.Fatal("failed to stop server", zap.Error(err))
 		}
+		// manually send signal to starter goroutine
+		syscall.Kill(syscall.Getpid(), syscall.SIGINT)
 	})
 
 	return nil
@@ -472,7 +482,7 @@ func (qc *QueryCoord) loadBalanceSegmentLoop() {
 					nodeID2SegmentInfos[nodeID] = leastSegmentInfos
 				}
 			}
-			log.Debug("loadBalanceSegmentLoop: memory usage rage of all online query node", zap.Any("mem rate", nodeID2MemUsageRate))
+			log.Debug("loadBalanceSegmentLoop: memory usage rate of all online query node", zap.Any("mem rate", nodeID2MemUsageRate))
 			if len(onlineNodeIDs) <= 1 {
 				log.Warn("loadBalanceSegmentLoop: there are too few online query nodes to balance", zap.Int64s("onlineNodeIDs", onlineNodeIDs))
 				continue

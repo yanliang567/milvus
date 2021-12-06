@@ -82,6 +82,7 @@ func TestFlowGraph_DDNode_newDDNode(te *testing.T) {
 					ChannelName:       "by-dev-rootcoord-dml-test",
 				},
 				mmf,
+				newCompactionExecutor(),
 			)
 			require.NotNil(t, ddNode)
 
@@ -146,8 +147,10 @@ func TestFlowGraph_DDNode_Operate(to *testing.T) {
 				deltaStream, err := factory.NewMsgStream(context.Background())
 				assert.Nil(t, err)
 				ddn := ddNode{
-					collectionID:   test.ddnCollID,
-					deltaMsgStream: deltaStream,
+					collectionID:       test.ddnCollID,
+					deltaMsgStream:     deltaStream,
+					vchannelName:       "ddn_drop_msg",
+					compactionExecutor: newCompactionExecutor(),
 				}
 
 				var dropCollMsg msgstream.TsMsg = &msgstream.DropCollectionMsg{
@@ -377,6 +380,44 @@ func TestFlowGraph_DDNode_isFlushed(te *testing.T) {
 			assert.Nil(t, err)
 			ddn := &ddNode{flushedSegments: fs, deltaMsgStream: deltaStream}
 			assert.Equal(t, test.expectedOut, ddn.isFlushed(test.inSeg))
+		})
+	}
+}
+
+func TestFlowGraph_DDNode_isDropped(te *testing.T) {
+	genSegmentInfoByID := func(segmentID UniqueID) *datapb.SegmentInfo {
+		return &datapb.SegmentInfo{
+			ID: segmentID,
+		}
+	}
+
+	tests := []struct {
+		indroppedSegment []*datapb.SegmentInfo
+		inSeg            UniqueID
+
+		expectedOut bool
+
+		description string
+	}{
+		{[]*datapb.SegmentInfo{genSegmentInfoByID(1), genSegmentInfoByID(2), genSegmentInfoByID(3)}, 1, true,
+			"Input seg 1 in droppedSegs{1, 2, 3}"},
+		{[]*datapb.SegmentInfo{genSegmentInfoByID(1), genSegmentInfoByID(2), genSegmentInfoByID(3)}, 2, true,
+			"Input seg 2 in droppedSegs{1, 2, 3}"},
+		{[]*datapb.SegmentInfo{genSegmentInfoByID(1), genSegmentInfoByID(2), genSegmentInfoByID(3)}, 3, true,
+			"Input seg 3 in droppedSegs{1, 2, 3}"},
+		{[]*datapb.SegmentInfo{genSegmentInfoByID(1), genSegmentInfoByID(2), genSegmentInfoByID(3)}, 4, false,
+			"Input seg 4 not in droppedSegs{1, 2, 3}"},
+		{[]*datapb.SegmentInfo{}, 5, false,
+			"Input seg 5, no droppedSegs {}"},
+	}
+
+	for _, test := range tests {
+		te.Run(test.description, func(t *testing.T) {
+			factory := mockMsgStreamFactory{true, true}
+			deltaStream, err := factory.NewMsgStream(context.Background())
+			assert.Nil(t, err)
+			ddn := &ddNode{droppedSegments: test.indroppedSegment, deltaMsgStream: deltaStream}
+			assert.Equal(t, test.expectedOut, ddn.isDropped(test.inSeg))
 		})
 	}
 }
