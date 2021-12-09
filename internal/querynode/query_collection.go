@@ -1,13 +1,18 @@
-// Copyright (C) 2019-2020 Zilliz. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
 // with the License. You may obtain a copy of the License at
 //
-// http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// Unless required by applicable law or agreed to in writing, software distributed under the License
-// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
-// or implied. See the License for the specific language governing permissions and limitations under the License.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package querynode
 
@@ -44,6 +49,7 @@ type queryMsg interface {
 	msgstream.TsMsg
 	GuaranteeTs() Timestamp
 	TravelTs() Timestamp
+	TimeoutTs() Timestamp
 }
 
 type queryCollection struct {
@@ -269,12 +275,12 @@ func (q *queryCollection) waitNewTSafe() (Timestamp, error) {
 			t = ts
 		}
 	}
-	p, _ := tsoutil.ParseTS(t)
-	log.Debug("waitNewTSafe",
-		zap.Any("collectionID", q.collectionID),
-		zap.Any("tSafe", t),
-		zap.Any("tSafe_p", p),
-	)
+	//p, _ := tsoutil.ParseTS(t)
+	//log.Debug("waitNewTSafe",
+	//	zap.Any("collectionID", q.collectionID),
+	//	zap.Any("tSafe", t),
+	//	zap.Any("tSafe_p", p),
+	//)
 	return t, nil
 }
 
@@ -297,6 +303,21 @@ func (q *queryCollection) setServiceableTime(t Timestamp) {
 		return
 	}
 	q.serviceableTime = t
+}
+
+func (q *queryCollection) checkTimeout(msg queryMsg) bool {
+	curTime := tsoutil.GetCurrentTime()
+	//curTimePhysical, _ := tsoutil.ParseTS(curTime)
+	//timeoutTsPhysical, _ := tsoutil.ParseTS(msg.TimeoutTs())
+	//log.Debug("check if query timeout",
+	//	zap.Any("collectionID", q.collectionID),
+	//	zap.Any("msgID", msg.ID()),
+	//	zap.Any("TimeoutTs", msg.TimeoutTs()),
+	//	zap.Any("curTime", curTime),
+	//	zap.Any("timeoutTsPhysical", timeoutTsPhysical),
+	//	zap.Any("curTimePhysical", curTimePhysical),
+	//)
+	return msg.TimeoutTs() > typeutil.ZeroTimestamp && curTime >= msg.TimeoutTs()
 }
 
 func (q *queryCollection) consumeQuery() {
@@ -426,6 +447,17 @@ func (q *queryCollection) receiveQueryMsg(msg queryMsg) error {
 	sp, ctx := trace.StartSpanFromContext(msg.TraceCtx())
 	msg.SetTraceCtx(ctx)
 	tr := timerecord.NewTimeRecorder(fmt.Sprintf("receiveQueryMsg %d", msg.ID()))
+
+	if q.checkTimeout(msg) {
+		err := errors.New(fmt.Sprintln("do query failed in receiveQueryMsg because timeout"+
+			", collectionID = ", collectionID,
+			", msgID = ", msg.ID()))
+		publishErr := q.publishFailedQueryResult(msg, err.Error())
+		if publishErr != nil {
+			return fmt.Errorf("first err = %s, second err = %s", err, publishErr)
+		}
+		return err
+	}
 
 	// check if collection has been released
 	collection, err := q.historical.replica.getCollectionByID(collectionID)
@@ -561,6 +593,19 @@ func (q *queryCollection) doUnsolvedQueryMsg() {
 					zap.Any("guaranteeTime_l", guaranteeTs),
 					zap.Any("serviceTime_l", serviceTime),
 				)
+
+				if q.checkTimeout(m) {
+					err := errors.New(fmt.Sprintln("do query failed in doUnsolvedQueryMsg because timeout"+
+						", collectionID = ", q.collectionID,
+						", msgID = ", m.ID()))
+					log.Warn(err.Error())
+					publishErr := q.publishFailedQueryResult(m, err.Error())
+					if publishErr != nil {
+						log.Error(publishErr.Error())
+					}
+					continue
+				}
+
 				if guaranteeTs <= q.getServiceableTime() {
 					unSolvedMsg = append(unSolvedMsg, m)
 					continue
@@ -977,6 +1022,7 @@ func (q *queryCollection) search(msg queryMsg) error {
 	searchResults := make([]*SearchResult, 0)
 
 	// historical search
+	log.Debug("historical search start", zap.Int64("msgID", msg.ID()))
 	hisSearchResults, sealedSegmentSearched, err := q.historical.search(searchRequests, collection.id, searchMsg.PartitionIDs, plan, travelTimestamp)
 	if err != nil {
 		return err
@@ -984,6 +1030,7 @@ func (q *queryCollection) search(msg queryMsg) error {
 	searchResults = append(searchResults, hisSearchResults...)
 	tr.Record("historical search done")
 
+	log.Debug("streaming search start", zap.Int64("msgID", msg.ID()))
 	for _, channel := range collection.getVChannels() {
 		var strSearchResults []*SearchResult
 		strSearchResults, err := q.streaming.search(searchRequests, collection.id, searchMsg.PartitionIDs, channel, plan, travelTimestamp)
@@ -1368,10 +1415,5 @@ func (q *queryCollection) publishFailedQueryResult(msg msgstream.TsMsg, errMsg s
 		return fmt.Errorf("publish invalid msgType %d", msgType)
 	}
 
-	err := q.queryResultMsgStream.Produce(&msgPack)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return q.queryResultMsgStream.Produce(&msgPack)
 }

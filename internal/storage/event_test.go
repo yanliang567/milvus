@@ -166,8 +166,7 @@ func TestInsertEvent(t *testing.T) {
 		var buf bytes.Buffer
 		err = w.Write(&buf)
 		assert.Nil(t, err)
-		err = w.Close()
-		assert.Nil(t, err)
+		w.Close()
 
 		wBuf := buf.Bytes()
 		st := UnsafeReadInt64(wBuf, binary.Size(eventHeader{}))
@@ -182,8 +181,7 @@ func TestInsertEvent(t *testing.T) {
 		values, _, err := pR.GetDataFromPayload()
 		assert.Nil(t, err)
 		assert.Equal(t, values, ev)
-		err = pR.Close()
-		assert.Nil(t, err)
+		pR.Close()
 
 		r, err := newEventReader(dt, bytes.NewBuffer(wBuf))
 		assert.Nil(t, err)
@@ -191,8 +189,7 @@ func TestInsertEvent(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, payload, ev)
 
-		err = r.Close()
-		assert.Nil(t, err)
+		r.Close()
 	}
 
 	t.Run("insert_bool", func(t *testing.T) {
@@ -339,8 +336,7 @@ func TestInsertEvent(t *testing.T) {
 		var buf bytes.Buffer
 		err = w.Write(&buf)
 		assert.Nil(t, err)
-		err = w.Close()
-		assert.Nil(t, err)
+		w.Close()
 
 		wBuf := buf.Bytes()
 		st := UnsafeReadInt64(wBuf, binary.Size(eventHeader{}))
@@ -365,8 +361,7 @@ func TestInsertEvent(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, s2, "abcdefg")
 
-		err = pR.Close()
-		assert.Nil(t, err)
+		pR.Close()
 
 		r, err := newEventReader(schemapb.DataType_String, bytes.NewBuffer(wBuf))
 		assert.Nil(t, err)
@@ -383,8 +378,7 @@ func TestInsertEvent(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, s2, "abcdefg")
 
-		err = r.Close()
-		assert.Nil(t, err)
+		r.Close()
 	})
 }
 
@@ -412,8 +406,7 @@ func TestDeleteEvent(t *testing.T) {
 		var buf bytes.Buffer
 		err = w.Write(&buf)
 		assert.Nil(t, err)
-		err = w.Close()
-		assert.Nil(t, err)
+		w.Close()
 
 		wBuf := buf.Bytes()
 		st := UnsafeReadInt64(wBuf, binary.Size(eventHeader{}))
@@ -428,8 +421,7 @@ func TestDeleteEvent(t *testing.T) {
 		values, _, err := pR.GetDataFromPayload()
 		assert.Nil(t, err)
 		assert.Equal(t, values, ev)
-		err = pR.Close()
-		assert.Nil(t, err)
+		pR.Close()
 
 		r, err := newEventReader(dt, bytes.NewBuffer(wBuf))
 		assert.Nil(t, err)
@@ -437,8 +429,7 @@ func TestDeleteEvent(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, payload, ev)
 
-		err = r.Close()
-		assert.Nil(t, err)
+		r.Close()
 	}
 
 	t.Run("delete_bool", func(t *testing.T) {
@@ -585,8 +576,7 @@ func TestDeleteEvent(t *testing.T) {
 		var buf bytes.Buffer
 		err = w.Write(&buf)
 		assert.Nil(t, err)
-		err = w.Close()
-		assert.Nil(t, err)
+		w.Close()
 
 		wBuf := buf.Bytes()
 		st := UnsafeReadInt64(wBuf, binary.Size(eventHeader{}))
@@ -611,8 +601,7 @@ func TestDeleteEvent(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, s2, "abcdefg")
 
-		err = pR.Close()
-		assert.Nil(t, err)
+		pR.Close()
 
 		r, err := newEventReader(schemapb.DataType_String, bytes.NewBuffer(wBuf))
 		assert.Nil(t, err)
@@ -629,8 +618,7 @@ func TestDeleteEvent(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, s2, "abcdefg")
 
-		err = r.Close()
-		assert.Nil(t, err)
+		r.Close()
 	})
 }
 
@@ -658,8 +646,7 @@ func TestCreateCollectionEvent(t *testing.T) {
 		var buf bytes.Buffer
 		err = w.Write(&buf)
 		assert.Nil(t, err)
-		err = w.Close()
-		assert.Nil(t, err)
+		w.Close()
 
 		wBuf := buf.Bytes()
 		st := UnsafeReadInt64(wBuf, binary.Size(eventHeader{}))
@@ -674,8 +661,7 @@ func TestCreateCollectionEvent(t *testing.T) {
 		values, _, err := pR.GetDataFromPayload()
 		assert.Nil(t, err)
 		assert.Equal(t, values, []int64{1, 2, 3, 4, 5, 6})
-		err = pR.Close()
-		assert.Nil(t, err)
+		pR.Close()
 
 		r, err := newEventReader(schemapb.DataType_Int64, bytes.NewBuffer(wBuf))
 		assert.Nil(t, err)
@@ -683,8 +669,7 @@ func TestCreateCollectionEvent(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, payload, []int64{1, 2, 3, 4, 5, 6})
 
-		err = r.Close()
-		assert.Nil(t, err)
+		r.Close()
 	})
 
 	t.Run("create_collection_string", func(t *testing.T) {
@@ -705,8 +690,7 @@ func TestCreateCollectionEvent(t *testing.T) {
 		var buf bytes.Buffer
 		err = w.Write(&buf)
 		assert.Nil(t, err)
-		err = w.Close()
-		assert.Nil(t, err)
+		w.Close()
 
 		wBuf := buf.Bytes()
 		st := UnsafeReadInt64(wBuf, binary.Size(eventHeader{}))
@@ -731,8 +715,7 @@ func TestCreateCollectionEvent(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, s2, "abcdefg")
 
-		err = pR.Close()
-		assert.Nil(t, err)
+		pR.Close()
 
 		r, err := newEventReader(schemapb.DataType_String, bytes.NewBuffer(wBuf))
 		assert.Nil(t, err)
@@ -749,8 +732,7 @@ func TestCreateCollectionEvent(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, s2, "abcdefg")
 
-		err = r.Close()
-		assert.Nil(t, err)
+		r.Close()
 	})
 }
 
@@ -778,8 +760,7 @@ func TestDropCollectionEvent(t *testing.T) {
 		var buf bytes.Buffer
 		err = w.Write(&buf)
 		assert.Nil(t, err)
-		err = w.Close()
-		assert.Nil(t, err)
+		w.Close()
 
 		wBuf := buf.Bytes()
 		st := UnsafeReadInt64(wBuf, binary.Size(eventHeader{}))
@@ -794,8 +775,7 @@ func TestDropCollectionEvent(t *testing.T) {
 		values, _, err := pR.GetDataFromPayload()
 		assert.Nil(t, err)
 		assert.Equal(t, values, []int64{1, 2, 3, 4, 5, 6})
-		err = pR.Close()
-		assert.Nil(t, err)
+		pR.Close()
 
 		r, err := newEventReader(schemapb.DataType_Int64, bytes.NewBuffer(wBuf))
 		assert.Nil(t, err)
@@ -803,8 +783,7 @@ func TestDropCollectionEvent(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, payload, []int64{1, 2, 3, 4, 5, 6})
 
-		err = r.Close()
-		assert.Nil(t, err)
+		r.Close()
 	})
 
 	t.Run("drop_collection_string", func(t *testing.T) {
@@ -825,8 +804,7 @@ func TestDropCollectionEvent(t *testing.T) {
 		var buf bytes.Buffer
 		err = w.Write(&buf)
 		assert.Nil(t, err)
-		err = w.Close()
-		assert.Nil(t, err)
+		w.Close()
 
 		wBuf := buf.Bytes()
 		st := UnsafeReadInt64(wBuf, binary.Size(eventHeader{}))
@@ -851,8 +829,7 @@ func TestDropCollectionEvent(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, s2, "abcdefg")
 
-		err = pR.Close()
-		assert.Nil(t, err)
+		pR.Close()
 
 		r, err := newEventReader(schemapb.DataType_String, bytes.NewBuffer(wBuf))
 		assert.Nil(t, err)
@@ -869,8 +846,7 @@ func TestDropCollectionEvent(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, s2, "abcdefg")
 
-		err = r.Close()
-		assert.Nil(t, err)
+		r.Close()
 	})
 }
 
@@ -898,8 +874,7 @@ func TestCreatePartitionEvent(t *testing.T) {
 		var buf bytes.Buffer
 		err = w.Write(&buf)
 		assert.Nil(t, err)
-		err = w.Close()
-		assert.Nil(t, err)
+		w.Close()
 
 		wBuf := buf.Bytes()
 		st := UnsafeReadInt64(wBuf, binary.Size(eventHeader{}))
@@ -914,8 +889,7 @@ func TestCreatePartitionEvent(t *testing.T) {
 		values, _, err := pR.GetDataFromPayload()
 		assert.Nil(t, err)
 		assert.Equal(t, values, []int64{1, 2, 3, 4, 5, 6})
-		err = pR.Close()
-		assert.Nil(t, err)
+		pR.Close()
 
 		r, err := newEventReader(schemapb.DataType_Int64, bytes.NewBuffer(wBuf))
 		assert.Nil(t, err)
@@ -923,8 +897,7 @@ func TestCreatePartitionEvent(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, payload, []int64{1, 2, 3, 4, 5, 6})
 
-		err = r.Close()
-		assert.Nil(t, err)
+		r.Close()
 	})
 
 	t.Run("create_partition_string", func(t *testing.T) {
@@ -945,8 +918,7 @@ func TestCreatePartitionEvent(t *testing.T) {
 		var buf bytes.Buffer
 		err = w.Write(&buf)
 		assert.Nil(t, err)
-		err = w.Close()
-		assert.Nil(t, err)
+		w.Close()
 
 		wBuf := buf.Bytes()
 		st := UnsafeReadInt64(wBuf, binary.Size(eventHeader{}))
@@ -971,8 +943,7 @@ func TestCreatePartitionEvent(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, s2, "abcdefg")
 
-		err = pR.Close()
-		assert.Nil(t, err)
+		pR.Close()
 
 		r, err := newEventReader(schemapb.DataType_String, bytes.NewBuffer(wBuf))
 		assert.Nil(t, err)
@@ -989,8 +960,7 @@ func TestCreatePartitionEvent(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, s2, "abcdefg")
 
-		err = r.Close()
-		assert.Nil(t, err)
+		r.Close()
 	})
 }
 
@@ -1018,8 +988,7 @@ func TestDropPartitionEvent(t *testing.T) {
 		var buf bytes.Buffer
 		err = w.Write(&buf)
 		assert.Nil(t, err)
-		err = w.Close()
-		assert.Nil(t, err)
+		w.Close()
 
 		wBuf := buf.Bytes()
 		st := UnsafeReadInt64(wBuf, binary.Size(eventHeader{}))
@@ -1034,8 +1003,7 @@ func TestDropPartitionEvent(t *testing.T) {
 		values, _, err := pR.GetDataFromPayload()
 		assert.Nil(t, err)
 		assert.Equal(t, values, []int64{1, 2, 3, 4, 5, 6})
-		err = pR.Close()
-		assert.Nil(t, err)
+		pR.Close()
 
 		r, err := newEventReader(schemapb.DataType_Int64, bytes.NewBuffer(wBuf))
 		assert.Nil(t, err)
@@ -1043,8 +1011,7 @@ func TestDropPartitionEvent(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, payload, []int64{1, 2, 3, 4, 5, 6})
 
-		err = r.Close()
-		assert.Nil(t, err)
+		r.Close()
 	})
 
 	t.Run("drop_partition_string", func(t *testing.T) {
@@ -1065,8 +1032,7 @@ func TestDropPartitionEvent(t *testing.T) {
 		var buf bytes.Buffer
 		err = w.Write(&buf)
 		assert.Nil(t, err)
-		err = w.Close()
-		assert.Nil(t, err)
+		w.Close()
 
 		wBuf := buf.Bytes()
 		st := UnsafeReadInt64(wBuf, binary.Size(eventHeader{}))
@@ -1091,8 +1057,7 @@ func TestDropPartitionEvent(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, s2, "abcdefg")
 
-		err = pR.Close()
-		assert.Nil(t, err)
+		pR.Close()
 
 		r, err := newEventReader(schemapb.DataType_String, bytes.NewBuffer(wBuf))
 		assert.Nil(t, err)
@@ -1109,8 +1074,7 @@ func TestDropPartitionEvent(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, s2, "abcdefg")
 
-		err = r.Close()
-		assert.Nil(t, err)
+		r.Close()
 	})
 
 }
@@ -1132,8 +1096,7 @@ func TestIndexFileEvent(t *testing.T) {
 		var buf bytes.Buffer
 		err = w.Write(&buf)
 		assert.Nil(t, err)
-		err = w.Close()
-		assert.Nil(t, err)
+		w.Close()
 
 		wBuf := buf.Bytes()
 		st := UnsafeReadInt64(wBuf, binary.Size(eventHeader{}))
@@ -1148,8 +1111,7 @@ func TestIndexFileEvent(t *testing.T) {
 		value, err := pR.GetOneStringFromPayload(0)
 		assert.Nil(t, err)
 		assert.Equal(t, payload, value)
-		err = pR.Close()
-		assert.Nil(t, err)
+		pR.Close()
 	})
 }
 
@@ -1306,17 +1268,13 @@ func TestEventClose(t *testing.T) {
 	var buf bytes.Buffer
 	err = w.Write(&buf)
 	assert.Nil(t, err)
-	err = w.Close()
-	assert.Nil(t, err)
+	w.Close()
 
 	wBuf := buf.Bytes()
 	r, err := newEventReader(schemapb.DataType_String, bytes.NewBuffer(wBuf))
 	assert.Nil(t, err)
 
-	err = r.Close()
-	assert.Nil(t, err)
-	err = r.Close()
-	assert.Nil(t, err)
+	r.Close()
 
 	err = r.readHeader()
 	assert.NotNil(t, err)

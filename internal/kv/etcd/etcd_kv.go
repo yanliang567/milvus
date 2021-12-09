@@ -29,11 +29,11 @@ import (
 )
 
 const (
-	// RequestTimeout default timeout for etcd request.
+	// RequestTimeout is default timeout for etcd request.
 	RequestTimeout = 10 * time.Second
 )
 
-// EtcdKV implements TxnKv interface, it supports to process multiple kvs in a transaction.
+// EtcdKV implements TxnKV interface, it supports to process multiple kvs in a transaction.
 type EtcdKV struct {
 	client   *clientv3.Client
 	rootPath string
@@ -75,7 +75,7 @@ func (kv *EtcdKV) GetPath(key string) string {
 	return path.Join(kv.rootPath, key)
 }
 
-// LoadWithPrefix returns all the the keys and values with the given key prefix.
+// LoadWithPrefix returns all the keys and values with the given key prefix.
 func (kv *EtcdKV) LoadWithPrefix(key string) ([]string, []string, error) {
 	start := time.Now()
 	key = path.Join(kv.rootPath, key)

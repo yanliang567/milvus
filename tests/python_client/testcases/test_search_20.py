@@ -782,7 +782,6 @@ class TestCollectionSearchInvalid(TestcaseBase):
                             check_items={"err_code": 1,
                                          "err_msg": f"`round_decimal` value {round_decimal} is illegal"})
 
-
 class TestCollectionSearch(TestcaseBase):
     """ Test case of search interface """
 
@@ -1191,7 +1190,7 @@ class TestCollectionSearch(TestcaseBase):
                                          "limit": limit_check,
                                          "_async": _async})
 
-    @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.tags(CaseLabel.L1)
     def test_search_load_flush_load(self, nb, nq, dim, auto_id, _async):
         """
         target: test search when load before flush
@@ -1423,54 +1422,6 @@ class TestCollectionSearch(TestcaseBase):
                                                  "ids": insert_ids,
                                                  "limit": default_limit,
                                                  "_async": _async})
-
-    @pytest.mark.tags(CaseLabel.L2)
-    def test_search_multiple_vectors(self, nb, nq, dim, auto_id, _async):
-        """
-        target: test search with multiple vectors
-        method: create connection, collection with multiple
-                vectors, insert and search
-        expected: search successfully with limit(topK)
-        """
-        # 1. connect
-        self._connect()
-        # 2. create collection with multiple vectors
-        c_name = cf.gen_unique_str(prefix)
-        fields = [cf.gen_int64_field(is_primary=True), cf.gen_float_field(),
-                  cf.gen_float_vec_field(dim=dim), cf.gen_float_vec_field(name="tmp", dim=dim)]
-        schema = cf.gen_collection_schema(fields=fields, auto_id=auto_id)
-        collection_w = self.collection_wrap.init_collection(c_name, schema=schema,
-                                                            check_task=CheckTasks.check_collection_property,
-                                                            check_items={"name": c_name, "schema": schema})[0]
-        # 3. insert
-        vectors = [[random.random() for _ in range(dim)] for _ in range(nb)]
-        vectors_tmp = [[random.random() for _ in range(dim)] for _ in range(nb)]
-        data = [[i for i in range(nb)], [np.float32(i) for i in range(nb)], vectors, vectors_tmp]
-        if auto_id:
-            data = [[np.float32(i) for i in range(nb)], vectors, vectors_tmp]
-        res = collection_w.insert(data)
-        insert_ids = res.primary_keys
-        assert collection_w.num_entities == nb
-        # 4. load
-        collection_w.load()
-        # 5. search all the vectors
-        log.info("test_search_multiple_vectors: searching collection %s" % collection_w.name)
-        collection_w.search(vectors[:nq], default_search_field,
-                            default_search_params, default_limit,
-                            default_search_exp, _async=_async,
-                            check_task=CheckTasks.check_search_results,
-                            check_items={"nq": nq,
-                                         "ids": insert_ids,
-                                         "limit": default_limit,
-                                         "_async": _async})
-        collection_w.search(vectors[:nq], "tmp",
-                            default_search_params, default_limit,
-                            default_search_exp, _async=_async,
-                            check_task=CheckTasks.check_search_results,
-                            check_items={"nq": nq,
-                                         "ids": insert_ids,
-                                         "limit": default_limit,
-                                         "_async": _async})
 
     @pytest.mark.tags(CaseLabel.L1)
     @pytest.mark.skip(reason="issue #12680")
@@ -1754,9 +1705,9 @@ class TestCollectionSearch(TestcaseBase):
         assert abs(res[0].distances[0] - min(distance_0, distance_1)) <= epsilon
 
     @pytest.mark.tag(CaseLabel.L2)
-    def test_search_without_expression(self, auto_id):
+    def test_search_travel_time_without_expression(self, auto_id):
         """
-        target: test search without expression
+        target: test search using travel time without expression
         method: 1. create connections,collection
                 2. first insert, and return with timestamp1
                 3. second insert, and return with timestamp2
@@ -1790,10 +1741,8 @@ class TestCollectionSearch(TestcaseBase):
         for i in range(len(search_res)):
             assert insert_ids_2[i] not in search_res[i].ids
         # 5. search with insert timestamp2
-        time.sleep(gracefulTime)
         log.info("test_search_without_expression: searching collection %s with time_stamp_2 '%d'"
                  % (collection_w.name, time_stamp_2))
-        log.info(time_stamp_2)
         search_res = collection_w.search(vectors, default_search_field,
                                          default_search_params, default_limit,
                                          travel_timestamp=time_stamp_2,
@@ -1888,7 +1837,7 @@ class TestCollectionSearch(TestcaseBase):
 
         # 4. search with different expressions
         expression = f"{default_bool_field_name} == {bool_type}"
-        log.info("test_search_with_expression_bool: searching with expression: %s" % expression)
+        log.info("test_search_with_expression_bool: searching with bool expression: %s" % expression)
         vectors = [[random.random() for _ in range(dim)] for _ in range(default_nq)]
 
         search_res, _ = collection_w.search(vectors[:default_nq], default_search_field,

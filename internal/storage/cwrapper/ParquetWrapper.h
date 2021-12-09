@@ -45,7 +45,7 @@ CStatus AddFloatVectorToPayload(CPayloadWriter payloadWriter, float *values, int
 CStatus FinishPayloadWriter(CPayloadWriter payloadWriter);
 CBuffer GetPayloadBufferFromWriter(CPayloadWriter payloadWriter);
 int GetPayloadLengthFromWriter(CPayloadWriter payloadWriter);
-CStatus ReleasePayloadWriter(CPayloadWriter handler);
+void ReleasePayloadWriter(CPayloadWriter handler);
 
 //============= payload reader ======================
 typedef void *CPayloadReader;
@@ -62,7 +62,7 @@ CStatus GetBinaryVectorFromPayload(CPayloadReader payloadReader, uint8_t **value
 CStatus GetFloatVectorFromPayload(CPayloadReader payloadReader, float **values, int *dimension, int *length);
 
 int GetPayloadLengthFromReader(CPayloadReader payloadReader);
-CStatus ReleasePayloadReader(CPayloadReader payloadReader);
+void ReleasePayloadReader(CPayloadReader payloadReader);
 
 #ifdef __cplusplus
 }

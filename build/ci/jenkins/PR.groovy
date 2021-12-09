@@ -20,7 +20,8 @@ pipeline {
                 defaultContainer 'main'
                 yamlFile 'build/ci/jenkins/pod/rte.yaml'
                 customWorkspace '/home/jenkins/agent/workspace'
-                // idleMinutes 120
+                // idle 5 minutes to wait clean up tasks
+                idleMinutes 5
             }
     }
     environment {
@@ -50,7 +51,7 @@ pipeline {
                             sh 'printenv'
                             def date = sh(returnStdout: true, script: 'date +%Y%m%d').trim()
                             def gitShortCommit = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()    
-                            imageTag="${env.BRANCH_NAME}-${date}-${gitShortCommit}"                   
+                            imageTag="${env.BRANCH_NAME}-${date}-${gitShortCommit}"
                             withCredentials([usernamePassword(credentialsId: "${env.CI_DOCKER_CREDENTIAL_ID}", usernameVariable: 'CI_REGISTRY_USERNAME', passwordVariable: 'CI_REGISTRY_PASSWORD')]){
                                 sh """
                                 TAG="${imageTag}" \
@@ -74,7 +75,7 @@ pipeline {
         }
 
 
-        stage ('Install & E2E Test') {
+        stage('Install & E2E Test') {
                 matrix {
                     axes {
                         axis {
@@ -165,6 +166,14 @@ pipeline {
                 }
                 post {
                     always {
+                        container('main') {
+                            dir ('tests/scripts') {  
+                                script {
+                                    def release_name=sh(returnStdout: true, script: './get_release_name.sh')
+                                    sh "./uninstall_milvus.sh --release-name ${release_name}"
+                                }
+                            }
+                        }
                         container('pytest') {
                             dir ('tests/scripts') {
                             script {
@@ -175,10 +184,11 @@ pipeline {
                                         if ("${MILVUS_CLIENT}" == "pymilvus") {
                                             sh "tar -zcvf artifacts-${PROJECT_NAME}-${MILVUS_SERVER_TYPE}-${MILVUS_CLIENT}-pytest-logs.tar.gz /tmp/ci_logs/test --remove-files || true"
                                             }
-                                        archiveArtifacts artifacts: "**.tar.gz", allowEmptyArchive: true
+                                        archiveArtifacts artifacts: "artifacts-${PROJECT_NAME}-${MILVUS_SERVER_TYPE}-${MILVUS_CLIENT}-pytest-logs.tar.gz ", allowEmptyArchive: true
+                                        archiveArtifacts artifacts: "artifacts-${PROJECT_NAME}-${MILVUS_SERVER_TYPE}-${SEMVER}-${env.BUILD_NUMBER}-${MILVUS_CLIENT}-e2e-logs.tar.gz", allowEmptyArchive: true
                                     }
                             }
-                            }
+                        }
                         }
                     }
                     unsuccessful {
@@ -193,20 +203,8 @@ pipeline {
                             }
                         }
                     }
-
-                    // clean up when successful
-                    cleanup{
-                        container('main') {
-                            dir ('tests/scripts') {  
-                                script {
-                                    def release_name=sh(returnStdout: true, script: './get_release_name.sh')
-                                    sh "./uninstall_milvus.sh --release-name ${release_name}"
-                                }
-                            }
-                        }
-                    }
                 }
-                }
+            }
         }
     }
 }

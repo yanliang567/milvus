@@ -118,7 +118,7 @@ type Core struct {
 	CallGetFlushedSegmentsService func(ctx context.Context, collID, partID typeutil.UniqueID) ([]typeutil.UniqueID, error)
 
 	//call index builder's client to build index, return build id
-	CallBuildIndexService func(ctx context.Context, binlog []string, field *schemapb.FieldSchema, idxInfo *etcdpb.IndexInfo) (typeutil.UniqueID, error)
+	CallBuildIndexService func(ctx context.Context, binlog []string, field *schemapb.FieldSchema, idxInfo *etcdpb.IndexInfo, numRows int64) (typeutil.UniqueID, error)
 	CallDropIndexService  func(ctx context.Context, indexID typeutil.UniqueID) error
 
 	NewProxyClient func(sess *sessionutil.Session) (types.Proxy, error)
@@ -449,7 +449,7 @@ func (c *Core) setMsgStreams() error {
 	}
 	timeTickStream, _ := c.msFactory.NewMsgStream(c.ctx)
 	timeTickStream.AsProducer([]string{Params.TimeTickChannel})
-	log.Debug("rootcoord AsProducer: " + Params.TimeTickChannel)
+	log.Debug("RootCoord register timetick producer success", zap.String("channel name", Params.TimeTickChannel))
 
 	c.SendTimeTick = func(t typeutil.Timestamp, reason string) error {
 		msgPack := ms.MsgPack{}
@@ -727,7 +727,7 @@ func (c *Core) SetIndexCoord(s types.IndexCoord) error {
 		}
 	}()
 
-	c.CallBuildIndexService = func(ctx context.Context, binlog []string, field *schemapb.FieldSchema, idxInfo *etcdpb.IndexInfo) (retID typeutil.UniqueID, retErr error) {
+	c.CallBuildIndexService = func(ctx context.Context, binlog []string, field *schemapb.FieldSchema, idxInfo *etcdpb.IndexInfo, numRows int64) (retID typeutil.UniqueID, retErr error) {
 		defer func() {
 			if err := recover(); err != nil {
 				retErr = fmt.Errorf("build index panic, msg = %v", err)
@@ -740,6 +740,8 @@ func (c *Core) SetIndexCoord(s types.IndexCoord) error {
 			IndexParams: idxInfo.IndexParams,
 			IndexID:     idxInfo.IndexID,
 			IndexName:   idxInfo.IndexName,
+			NumRows:     numRows,
+			FieldSchema: field,
 		})
 		if err != nil {
 			return retID, err
@@ -864,7 +866,7 @@ func (c *Core) BuildIndex(ctx context.Context, segID typeutil.UniqueID, field *s
 		if err != nil {
 			return 0, err
 		}
-		bldID, err = c.CallBuildIndexService(ctx, binlogs, field, idxInfo)
+		bldID, err = c.CallBuildIndexService(ctx, binlogs, field, idxInfo, rows)
 		if err != nil {
 			return 0, err
 		}
@@ -1180,8 +1182,8 @@ func (c *Core) Start() error {
 		Params.CreatedTime = time.Now()
 		Params.UpdatedTime = time.Now()
 
-		c.stateCode.Store(internalpb.StateCode_Healthy)
-		log.Debug(typeutil.RootCoordRole+" start successfully ", zap.String("State Code", internalpb.StateCode_name[int32(internalpb.StateCode_Healthy)]))
+		c.UpdateStateCode(internalpb.StateCode_Healthy)
+		log.Debug("RootCoord start successfully ", zap.String("State Code", internalpb.StateCode_Healthy.String()))
 	})
 
 	return nil
@@ -1189,9 +1191,10 @@ func (c *Core) Start() error {
 
 // Stop stop rootcoord
 func (c *Core) Stop() error {
+	c.UpdateStateCode(internalpb.StateCode_Abnormal)
+
 	c.cancel()
 	c.wg.Wait()
-	c.stateCode.Store(internalpb.StateCode_Abnormal)
 	// wait at most one second to revoke
 	c.session.Revoke(time.Second)
 	return nil

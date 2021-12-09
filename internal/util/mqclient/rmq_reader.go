@@ -12,10 +12,12 @@ type rmqReader struct {
 	r rocksmq.Reader
 }
 
+// Topic returns the topic name of a reader
 func (rr *rmqReader) Topic() string {
 	return rr.r.Topic()
 }
 
+// Next returns the next message of reader, blocking until a message is available
 func (rr *rmqReader) Next(ctx context.Context) (Message, error) {
 	rMsg, err := rr.r.Next(ctx)
 	if err != nil {

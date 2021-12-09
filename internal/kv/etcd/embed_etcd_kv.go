@@ -65,6 +65,7 @@ func NewEmbededEtcdKV(cfg *embed.Config, rootPath string) (*EmbedEtcdKV, error) 
 	return kv, nil
 }
 
+// Close closes the embedded etcd
 func (kv *EmbedEtcdKV) Close() {
 	kv.closeOnce.Do(func() {
 		kv.client.Close()
@@ -73,6 +74,7 @@ func (kv *EmbedEtcdKV) Close() {
 
 }
 
+// GetPath returns the full path by given key
 func (kv *EmbedEtcdKV) GetPath(key string) string {
 	return path.Join(kv.rootPath, key)
 }
@@ -97,6 +99,7 @@ func (kv *EmbedEtcdKV) LoadWithPrefix(key string) ([]string, []string, error) {
 	return keys, values, nil
 }
 
+// LoadWithPrefix2 returns all the keys and values with versions by the given key prefix
 func (kv *EmbedEtcdKV) LoadWithPrefix2(key string) ([]string, []string, []int64, error) {
 	key = path.Join(kv.rootPath, key)
 	log.Debug("LoadWithPrefix ", zap.String("prefix", key))

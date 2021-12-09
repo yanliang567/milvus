@@ -23,6 +23,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/proto/schemapb"
+
 	"github.com/milvus-io/milvus/internal/common"
 
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
@@ -97,6 +99,16 @@ func TestIndexCoord(t *testing.T) {
 		req := &indexpb.BuildIndexRequest{
 			IndexID:   indexID,
 			DataPaths: []string{"DataPath-1", "DataPath-2"},
+			NumRows:   0,
+			TypeParams: []*commonpb.KeyValuePair{
+				{
+					Key:   "dim",
+					Value: "128",
+				},
+			},
+			FieldSchema: &schemapb.FieldSchema{
+				DataType: schemapb.DataType_FloatVector,
+			},
 		}
 		resp, err := ic.BuildIndex(ctx, req)
 		assert.Nil(t, err)
@@ -255,4 +267,14 @@ func TestIndexCoord_NotHealthy(t *testing.T) {
 	resp, err := ic.BuildIndex(context.Background(), req)
 	assert.Error(t, err)
 	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp.Status.ErrorCode)
+
+	req2 := &indexpb.DropIndexRequest{}
+	status, err := ic.DropIndex(context.Background(), req2)
+	assert.Nil(t, err)
+	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
+
+	req3 := &indexpb.GetIndexStatesRequest{}
+	resp2, err := ic.GetIndexStates(context.Background(), req3)
+	assert.Nil(t, err)
+	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp2.Status.ErrorCode)
 }

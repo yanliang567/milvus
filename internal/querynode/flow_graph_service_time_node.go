@@ -19,11 +19,11 @@ package querynode
 import (
 	"context"
 
+	"go.uber.org/zap"
+
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/msgstream"
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
-	"github.com/milvus-io/milvus/internal/util/tsoutil"
-	"go.uber.org/zap"
 )
 
 type serviceTimeNode struct {
@@ -74,14 +74,14 @@ func (stNode *serviceTimeNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 	if err != nil {
 		log.Warn(err.Error())
 	}
-	p, _ := tsoutil.ParseTS(serviceTimeMsg.timeRange.timestampMax)
-	log.Debug("update tSafe:",
-		zap.Any("collectionID", stNode.collectionID),
-		zap.Any("tSafe", serviceTimeMsg.timeRange.timestampMax),
-		zap.Any("tSafe_p", p),
-		zap.Any("id", id),
-		zap.Any("channel", stNode.vChannel),
-	)
+	//p, _ := tsoutil.ParseTS(serviceTimeMsg.timeRange.timestampMax)
+	//log.Debug("update tSafe:",
+	//	zap.Any("collectionID", stNode.collectionID),
+	//	zap.Any("tSafe", serviceTimeMsg.timeRange.timestampMax),
+	//	zap.Any("tSafe_p", p),
+	//	zap.Any("id", id),
+	//	zap.Any("channel", stNode.vChannel),
+	//)
 
 	//if err := stNode.sendTimeTick(serviceTimeMsg.timeRange.timestampMax); err != nil {
 	//	log.Warn("Error: send time tick into pulsar channel failed", zap.Error(err))
@@ -133,7 +133,7 @@ func newServiceTimeNode(ctx context.Context,
 		// TODO: use param table
 		timeTickChannel := "query-node-time-tick-0"
 		timeTimeMsgStream.AsProducer([]string{timeTickChannel})
-		log.Debug("query node AsProducer: " + timeTickChannel)
+		log.Debug("QueryNode serviceTimeNode AsProducer succeed", zap.String("channel name", timeTickChannel))
 	}
 
 	return &serviceTimeNode{

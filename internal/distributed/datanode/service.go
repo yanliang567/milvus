@@ -159,6 +159,7 @@ func (s *Server) Stop() error {
 	}
 	s.cancel()
 	if s.grpcServer != nil {
+		log.Debug("Graceful stop grpc server...")
 		// make graceful stop has a timeout
 		stopped := make(chan struct{})
 		go func() {
@@ -287,6 +288,7 @@ func (s *Server) GetStatisticsChannel(ctx context.Context, req *internalpb.GetSt
 	return s.datanode.GetStatisticsChannel(ctx)
 }
 
+// Deprecated
 func (s *Server) WatchDmChannels(ctx context.Context, req *datapb.WatchDmChannelsRequest) (*commonpb.Status, error) {
 	return s.datanode.WatchDmChannels(ctx, req)
 }

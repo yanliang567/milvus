@@ -55,6 +55,7 @@ func (r *reader) Topic() string {
 	return r.topic
 }
 
+// Next return the next message of reader, blocking until a message is available
 func (r *reader) Next(ctx context.Context) (Message, error) {
 	cMsg, err := r.c.server.Next(ctx, r.topic, r.name, r.startMessageIDInclusive)
 	if err != nil {
@@ -68,14 +69,17 @@ func (r *reader) Next(ctx context.Context) (Message, error) {
 	return msg, nil
 }
 
+// HasNext check if there is a message available to read
 func (r *reader) HasNext() bool {
 	return r.c.server.HasNext(r.topic, r.name, r.startMessageIDInclusive)
 }
 
+// Close close the reader and stop the blocking reader
 func (r *reader) Close() {
 	r.c.server.CloseReader(r.topic, r.name)
 }
 
+// Seek seek the reader to the position of message id
 func (r *reader) Seek(msgID UniqueID) error { //nolint:govet
 	r.c.server.ReaderSeek(r.topic, r.name, msgID)
 	return nil

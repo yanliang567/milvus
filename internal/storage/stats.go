@@ -34,14 +34,17 @@ type Int64Stats struct {
 	BF      *bloom.BloomFilter `json:"bf"`
 }
 
+// StatsWriter writes stats to buffer
 type StatsWriter struct {
 	buffer []byte
 }
 
+// GetBuffer returns buffer
 func (sw *StatsWriter) GetBuffer() []byte {
 	return sw.buffer
 }
 
+// StatsInt64 writes Int64Stats from @msgs with @fieldID to @buffer
 func (sw *StatsWriter) StatsInt64(fieldID int64, isPrimaryKey bool, msgs []int64) error {
 	if len(msgs) < 1 {
 		// return error: msgs must has one element at least
@@ -70,14 +73,17 @@ func (sw *StatsWriter) StatsInt64(fieldID int64, isPrimaryKey bool, msgs []int64
 	return nil
 }
 
+// StatsReade reads stats
 type StatsReader struct {
 	buffer []byte
 }
 
+// SetBuffer sets buffer
 func (sr *StatsReader) SetBuffer(buffer []byte) {
 	sr.buffer = buffer
 }
 
+// GetInt64Stats returns buffer as Int64Stats
 func (sr *StatsReader) GetInt64Stats() (*Int64Stats, error) {
 	stats := &Int64Stats{}
 	err := json.Unmarshal(sr.buffer, &stats)
@@ -87,6 +93,7 @@ func (sr *StatsReader) GetInt64Stats() (*Int64Stats, error) {
 	return stats, nil
 }
 
+// DeserializeStats deserialize @blobs as []*Int64Stats
 func DeserializeStats(blobs []*Blob) ([]*Int64Stats, error) {
 	results := make([]*Int64Stats, 0, len(blobs))
 	for _, blob := range blobs {

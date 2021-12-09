@@ -1971,6 +1971,14 @@ func TestProxy(t *testing.T) {
 	})
 
 	wg.Add(1)
+	t.Run("AlterAlias fail, unhealthy", func(t *testing.T) {
+		defer wg.Done()
+		resp, err := proxy.AlterAlias(ctx, &milvuspb.AlterAliasRequest{})
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.ErrorCode)
+	})
+
+	wg.Add(1)
 	t.Run("GetPersistentSegmentInfo fail, unhealthy", func(t *testing.T) {
 		defer wg.Done()
 		resp, err := proxy.GetPersistentSegmentInfo(ctx, &milvuspb.GetPersistentSegmentInfoRequest{})
@@ -2189,6 +2197,14 @@ func TestProxy(t *testing.T) {
 	t.Run("CreateAlias fail, dd queue full", func(t *testing.T) {
 		defer wg.Done()
 		resp, err := proxy.CreateAlias(ctx, &milvuspb.CreateAliasRequest{})
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.ErrorCode)
+	})
+
+	wg.Add(1)
+	t.Run("DropAlias fail, dd queue full", func(t *testing.T) {
+		defer wg.Done()
+		resp, err := proxy.DropAlias(ctx, &milvuspb.DropAliasRequest{})
 		assert.NoError(t, err)
 		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.ErrorCode)
 	})
@@ -2453,6 +2469,14 @@ func TestProxy(t *testing.T) {
 		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.ErrorCode)
 	})
 
+	wg.Add(1)
+	t.Run("DropAlias fail, timeout", func(t *testing.T) {
+		defer wg.Done()
+		resp, err := proxy.DropAlias(shortCtx, &milvuspb.DropAliasRequest{})
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.ErrorCode)
+	})
+
 	wg.Wait()
 	cancel()
 }
@@ -2547,4 +2571,12 @@ func TestProxy_GetComponentStates(t *testing.T) {
 	resp, err = n.GetComponentStates(context.Background())
 	assert.NoError(t, err)
 	assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
+}
+
+func TestProxy_GetComponentStates_state_code(t *testing.T) {
+	p := &Proxy{}
+	p.stateCode.Store("not internalpb.StateCode")
+	states, err := p.GetComponentStates(context.Background())
+	assert.NoError(t, err)
+	assert.NotEqual(t, commonpb.ErrorCode_Success, states.Status.ErrorCode)
 }

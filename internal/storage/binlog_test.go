@@ -61,10 +61,12 @@ func TestInsertBinlog(t *testing.T) {
 
 	_, err = w.GetBuffer()
 	assert.NotNil(t, err)
-	err = w.Close()
+	err = w.Finish()
 	assert.Nil(t, err)
 	buf, err := w.GetBuffer()
 	assert.Nil(t, err)
+
+	w.Close()
 
 	// magic number
 	magicNum := UnsafeReadInt32(buf, 0)
@@ -198,8 +200,7 @@ func TestInsertBinlog(t *testing.T) {
 	e1a, err := e1r.GetInt64FromPayload()
 	assert.Nil(t, err)
 	assert.Equal(t, e1a, []int64{1, 2, 3, 4, 5, 6})
-	err = e1r.Close()
-	assert.Nil(t, err)
+	e1r.Close()
 
 	//start of e2
 	pos = int(e1NxtPos)
@@ -241,8 +242,7 @@ func TestInsertBinlog(t *testing.T) {
 	e2a, err := e2r.GetInt64FromPayload()
 	assert.Nil(t, err)
 	assert.Equal(t, e2a, []int64{7, 8, 9, 10, 11, 12})
-	err = e2r.Close()
-	assert.Nil(t, err)
+	e2r.Close()
 
 	assert.Equal(t, int(e2NxtPos), len(buf))
 
@@ -308,10 +308,12 @@ func TestDeleteBinlog(t *testing.T) {
 
 	_, err = w.GetBuffer()
 	assert.NotNil(t, err)
-	err = w.Close()
+	err = w.Finish()
 	assert.Nil(t, err)
 	buf, err := w.GetBuffer()
 	assert.Nil(t, err)
+
+	w.Close()
 
 	//magic number
 	magicNum := UnsafeReadInt32(buf, 0)
@@ -445,8 +447,7 @@ func TestDeleteBinlog(t *testing.T) {
 	e1a, err := e1r.GetInt64FromPayload()
 	assert.Nil(t, err)
 	assert.Equal(t, e1a, []int64{1, 2, 3, 4, 5, 6})
-	err = e1r.Close()
-	assert.Nil(t, err)
+	e1r.Close()
 
 	//start of e2
 	pos = int(e1NxtPos)
@@ -488,8 +489,7 @@ func TestDeleteBinlog(t *testing.T) {
 	e2a, err := e2r.GetInt64FromPayload()
 	assert.Nil(t, err)
 	assert.Equal(t, e2a, []int64{7, 8, 9, 10, 11, 12})
-	err = e2r.Close()
-	assert.Nil(t, err)
+	e2r.Close()
 
 	assert.Equal(t, int(e2NxtPos), len(buf))
 
@@ -555,10 +555,12 @@ func TestDDLBinlog1(t *testing.T) {
 
 	_, err = w.GetBuffer()
 	assert.NotNil(t, err)
-	err = w.Close()
+	err = w.Finish()
 	assert.Nil(t, err)
 	buf, err := w.GetBuffer()
 	assert.Nil(t, err)
+
+	w.Close()
 
 	//magic number
 	magicNum := UnsafeReadInt32(buf, 0)
@@ -692,8 +694,7 @@ func TestDDLBinlog1(t *testing.T) {
 	e1a, err := e1r.GetInt64FromPayload()
 	assert.Nil(t, err)
 	assert.Equal(t, e1a, []int64{1, 2, 3, 4, 5, 6})
-	err = e1r.Close()
-	assert.Nil(t, err)
+	e1r.Close()
 
 	//start of e2
 	pos = int(e1NxtPos)
@@ -735,8 +736,7 @@ func TestDDLBinlog1(t *testing.T) {
 	e2a, err := e2r.GetInt64FromPayload()
 	assert.Nil(t, err)
 	assert.Equal(t, e2a, []int64{7, 8, 9, 10, 11, 12})
-	err = e2r.Close()
-	assert.Nil(t, err)
+	e2r.Close()
 
 	assert.Equal(t, int(e2NxtPos), len(buf))
 
@@ -802,10 +802,11 @@ func TestDDLBinlog2(t *testing.T) {
 
 	_, err = w.GetBuffer()
 	assert.NotNil(t, err)
-	err = w.Close()
+	err = w.Finish()
 	assert.Nil(t, err)
 	buf, err := w.GetBuffer()
 	assert.Nil(t, err)
+	w.Close()
 
 	//magic number
 	magicNum := UnsafeReadInt32(buf, 0)
@@ -939,8 +940,7 @@ func TestDDLBinlog2(t *testing.T) {
 	e1a, err := e1r.GetInt64FromPayload()
 	assert.Nil(t, err)
 	assert.Equal(t, e1a, []int64{1, 2, 3, 4, 5, 6})
-	err = e1r.Close()
-	assert.Nil(t, err)
+	e1r.Close()
 
 	//start of e2
 	pos = int(e1NxtPos)
@@ -982,8 +982,7 @@ func TestDDLBinlog2(t *testing.T) {
 	e2a, err := e2r.GetInt64FromPayload()
 	assert.Nil(t, err)
 	assert.Equal(t, e2a, []int64{7, 8, 9, 10, 11, 12})
-	err = e2r.Close()
-	assert.Nil(t, err)
+	e2r.Close()
 
 	assert.Equal(t, int(e2NxtPos), len(buf))
 
@@ -1047,10 +1046,12 @@ func TestIndexFileBinlog(t *testing.T) {
 
 	_, err = w.GetBuffer()
 	assert.NotNil(t, err)
-	err = w.Close()
+	err = w.Finish()
 	assert.Nil(t, err)
 	buf, err := w.GetBuffer()
 	assert.Nil(t, err)
+
+	w.Close()
 
 	//magic number
 	magicNum := UnsafeReadInt32(buf, 0)
@@ -1192,11 +1193,12 @@ func TestNewBinlogReaderError(t *testing.T) {
 	sizeTotal := 2000000
 	w.baseBinlogWriter.descriptorEventData.AddExtra(originalSizeKey, fmt.Sprintf("%v", sizeTotal))
 
-	err = w.Close()
+	err = w.Finish()
 	assert.Nil(t, err)
 
 	buf, err := w.GetBuffer()
 	assert.Nil(t, err)
+	w.Close()
 
 	reader, err = NewBinlogReader(buf)
 	assert.Nil(t, err)
@@ -1206,8 +1208,7 @@ func TestNewBinlogReaderError(t *testing.T) {
 	assert.Nil(t, event1)
 	assert.NotNil(t, err)
 
-	err = reader.Close()
-	assert.Nil(t, err)
+	reader.Close()
 }
 
 func TestNewBinlogWriterTsError(t *testing.T) {
@@ -1215,7 +1216,7 @@ func TestNewBinlogWriterTsError(t *testing.T) {
 
 	_, err := w.GetBuffer()
 	assert.NotNil(t, err)
-	err = w.Close()
+	err = w.Finish()
 	assert.NotNil(t, err)
 
 	sizeTotal := 2000000
@@ -1224,17 +1225,18 @@ func TestNewBinlogWriterTsError(t *testing.T) {
 	w.SetEventTimeStamp(1000, 0)
 	_, err = w.GetBuffer()
 	assert.NotNil(t, err)
-	err = w.Close()
+	err = w.Finish()
 	assert.NotNil(t, err)
 
 	w.SetEventTimeStamp(1000, 2000)
 	_, err = w.GetBuffer()
 	assert.NotNil(t, err)
-	err = w.Close()
+	err = w.Finish()
 	assert.Nil(t, err)
 
 	_, err = w.GetBuffer()
 	assert.Nil(t, err)
+	w.Close()
 }
 
 func TestInsertBinlogWriterCloseError(t *testing.T) {
@@ -1249,12 +1251,13 @@ func TestInsertBinlogWriterCloseError(t *testing.T) {
 	assert.Nil(t, err)
 	e1.SetEventTimestamp(100, 200)
 	insertWriter.SetEventTimeStamp(1000, 2000)
-	err = insertWriter.Close()
+	err = insertWriter.Finish()
 	assert.Nil(t, err)
 	assert.NotNil(t, insertWriter.buffer)
 	insertEventWriter, err := insertWriter.NextInsertEventWriter()
 	assert.Nil(t, insertEventWriter)
 	assert.NotNil(t, err)
+	insertWriter.Close()
 }
 
 func TestDeleteBinlogWriteCloseError(t *testing.T) {
@@ -1267,12 +1270,13 @@ func TestDeleteBinlogWriteCloseError(t *testing.T) {
 	assert.Nil(t, err)
 	e1.SetEventTimestamp(100, 200)
 	deleteWriter.SetEventTimeStamp(1000, 2000)
-	err = deleteWriter.Close()
+	err = deleteWriter.Finish()
 	assert.Nil(t, err)
 	assert.NotNil(t, deleteWriter.buffer)
 	deleteEventWriter, err := deleteWriter.NextDeleteEventWriter()
 	assert.Nil(t, deleteEventWriter)
 	assert.NotNil(t, err)
+	deleteWriter.Close()
 }
 
 func TestDDBinlogWriteCloseError(t *testing.T) {
@@ -1288,7 +1292,7 @@ func TestDDBinlogWriteCloseError(t *testing.T) {
 	e1.SetEventTimestamp(100, 200)
 
 	ddBinlogWriter.SetEventTimeStamp(1000, 2000)
-	err = ddBinlogWriter.Close()
+	err = ddBinlogWriter.Finish()
 	assert.Nil(t, err)
 	assert.NotNil(t, ddBinlogWriter.buffer)
 
@@ -1307,6 +1311,8 @@ func TestDDBinlogWriteCloseError(t *testing.T) {
 	dropPartitionEventWriter, err := ddBinlogWriter.NextDropPartitionEventWriter()
 	assert.Nil(t, dropPartitionEventWriter)
 	assert.NotNil(t, err)
+
+	ddBinlogWriter.Close()
 }
 
 type testEvent struct {
@@ -1315,7 +1321,6 @@ type testEvent struct {
 	writeError            bool
 	getMemoryError        bool
 	getPayloadLengthError bool
-	releasePayloadError   bool
 }
 
 func (e *testEvent) Finish() error {
@@ -1325,8 +1330,7 @@ func (e *testEvent) Finish() error {
 	return nil
 }
 
-func (e *testEvent) Close() error {
-	return nil
+func (e *testEvent) Close() {
 }
 
 func (e *testEvent) Write(buffer *bytes.Buffer) error {
@@ -1349,11 +1353,7 @@ func (e *testEvent) GetPayloadLengthFromWriter() (int, error) {
 	return 0, nil
 }
 
-func (e *testEvent) ReleasePayloadWriter() error {
-	if e.releasePayloadError {
-		return fmt.Errorf("releasePayload error")
-	}
-	return nil
+func (e *testEvent) ReleasePayloadWriter() {
 }
 
 func (e *testEvent) SetOffset(offset int32) {
@@ -1369,23 +1369,20 @@ func TestWriterListError(t *testing.T) {
 	errorEvent := &testEvent{}
 	insertWriter.eventWriters = append(insertWriter.eventWriters, errorEvent)
 	insertWriter.SetEventTimeStamp(1000, 2000)
-	errorEvent.releasePayloadError = true
-	err := insertWriter.Close()
-	assert.NotNil(t, err)
 	insertWriter.buffer = nil
 	errorEvent.getPayloadLengthError = true
-	err = insertWriter.Close()
+	err := insertWriter.Finish()
 	assert.NotNil(t, err)
 	insertWriter.buffer = nil
 	errorEvent.getMemoryError = true
-	err = insertWriter.Close()
+	err = insertWriter.Finish()
 	assert.NotNil(t, err)
 	insertWriter.buffer = nil
 	errorEvent.writeError = true
-	err = insertWriter.Close()
+	err = insertWriter.Finish()
 	assert.NotNil(t, err)
 	insertWriter.buffer = nil
 	errorEvent.finishError = true
-	err = insertWriter.Close()
+	err = insertWriter.Finish()
 	assert.NotNil(t, err)
 }

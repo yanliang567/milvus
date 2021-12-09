@@ -64,6 +64,7 @@ func NewMetaTable(kv *etcdkv.EtcdKV) (*metaTable, error) {
 	return mt, nil
 }
 
+// reloadFromKV reloads the index meta from ETCD.
 func (mt *metaTable) reloadFromKV() error {
 	mt.indexBuildID2Meta = make(map[UniqueID]Meta)
 	key := "indexes"
@@ -78,7 +79,7 @@ func (mt *metaTable) reloadFromKV() error {
 		indexMeta := indexpb.IndexMeta{}
 		err = proto.Unmarshal([]byte(values[i]), &indexMeta)
 		if err != nil {
-			return fmt.Errorf("IndexCoord metaTable reloadFromKV UnmarshalText indexpb.IndexMeta err:%w", err)
+			return fmt.Errorf("indexCoord metaTable reloadFromKV UnmarshalText indexpb.IndexMeta err:%w", err)
 		}
 
 		meta := &Meta{
@@ -90,6 +91,7 @@ func (mt *metaTable) reloadFromKV() error {
 	return nil
 }
 
+// saveIndexMeta saves the index meta to ETCD.
 // metaTable.lock.Lock() before call this function
 func (mt *metaTable) saveIndexMeta(meta *Meta) error {
 	value, err := proto.Marshal(meta.indexMeta)
@@ -109,6 +111,7 @@ func (mt *metaTable) saveIndexMeta(meta *Meta) error {
 	return nil
 }
 
+// reloadMeta reloads the index meta corresponding indexBuildID from ETCD.
 func (mt *metaTable) reloadMeta(indexBuildID UniqueID) (*Meta, error) {
 	key := "indexes/" + strconv.FormatInt(indexBuildID, 10)
 
@@ -138,6 +141,7 @@ func (mt *metaTable) reloadMeta(indexBuildID UniqueID) (*Meta, error) {
 	return m, nil
 }
 
+// AddIndex adds the index meta corresponding the indexBuildID to meta table.
 func (mt *metaTable) AddIndex(indexBuildID UniqueID, req *indexpb.BuildIndexRequest) error {
 	mt.lock.Lock()
 	defer mt.lock.Unlock()
@@ -159,6 +163,7 @@ func (mt *metaTable) AddIndex(indexBuildID UniqueID, req *indexpb.BuildIndexRequ
 	return mt.saveIndexMeta(meta)
 }
 
+// BuildIndex set the index state to be InProgress. It means IndexNode is building the index.
 func (mt *metaTable) BuildIndex(indexBuildID UniqueID, nodeID int64) error {
 	mt.lock.Lock()
 	defer mt.lock.Unlock()
@@ -201,6 +206,7 @@ func (mt *metaTable) BuildIndex(indexBuildID UniqueID, nodeID int64) error {
 	return nil
 }
 
+// UpdateVersion updates the version of the index meta, whenever the task is built once, the version will be updated once.
 func (mt *metaTable) UpdateVersion(indexBuildID UniqueID) error {
 	mt.lock.Lock()
 	defer mt.lock.Unlock()
@@ -237,6 +243,7 @@ func (mt *metaTable) UpdateVersion(indexBuildID UniqueID) error {
 	return nil
 }
 
+// MarkIndexAsDeleted will mark the corresponding index as deleted, and recycleUnusedIndexFiles will recycle these tasks.
 func (mt *metaTable) MarkIndexAsDeleted(indexID UniqueID) error {
 	mt.lock.Lock()
 	defer mt.lock.Unlock()
@@ -270,6 +277,7 @@ func (mt *metaTable) MarkIndexAsDeleted(indexID UniqueID) error {
 	return nil
 }
 
+// GetIndexStates gets the index states from meta table.
 func (mt *metaTable) GetIndexStates(indexBuildIDs []UniqueID) []*indexpb.IndexInfo {
 	mt.lock.Lock()
 	defer mt.lock.Unlock()
@@ -294,6 +302,7 @@ func (mt *metaTable) GetIndexStates(indexBuildIDs []UniqueID) []*indexpb.IndexIn
 	return indexStates
 }
 
+// GetIndexFilePathInfo gets the index file paths from meta table.
 func (mt *metaTable) GetIndexFilePathInfo(indexBuildID UniqueID) (*indexpb.IndexFilePathInfo, error) {
 	mt.lock.Lock()
 	defer mt.lock.Unlock()

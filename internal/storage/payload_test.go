@@ -339,10 +339,8 @@ func TestPayload_ReaderandWriter(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, str3, "hello3")
 
-		err = r.ReleasePayloadReader()
-		assert.Nil(t, err)
-		err = w.ReleasePayloadWriter()
-		assert.Nil(t, err)
+		r.ReleasePayloadReader()
+		w.ReleasePayloadWriter()
 	})
 
 	t.Run("TestBinaryVector", func(t *testing.T) {
@@ -912,7 +910,6 @@ func TestPayload_ReaderandWriter(t *testing.T) {
 		_, err = w.GetPayloadBufferFromWriter()
 		assert.Nil(t, err)
 
-		err = w.ReleasePayloadWriter()
-		assert.Nil(t, err)
+		w.ReleasePayloadWriter()
 	})
 }
