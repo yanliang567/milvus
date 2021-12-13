@@ -37,11 +37,13 @@ import (
 	"github.com/milvus-io/milvus/internal/util/trace"
 )
 
+// insertNode is one of the nodes in query flow graph
 type insertNode struct {
 	baseNode
 	streamingReplica ReplicaInterface
 }
 
+// insertData stores the valid insert data
 type insertData struct {
 	insertIDs        map[UniqueID][]int64
 	insertTimestamps map[UniqueID][]Timestamp
@@ -50,16 +52,19 @@ type insertData struct {
 	insertPKs        map[UniqueID][]int64
 }
 
+// deleteData stores the valid delete data
 type deleteData struct {
 	deleteIDs        map[UniqueID][]int64
 	deleteTimestamps map[UniqueID][]Timestamp
 	deleteOffset     map[UniqueID]int64
 }
 
+// Name returns the name of insertNode
 func (iNode *insertNode) Name() string {
 	return "iNode"
 }
 
+// Operate handles input messages, to execute insert operations
 func (iNode *insertNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 	//log.Debug("Do insertNode operation")
 
@@ -198,6 +203,7 @@ func (iNode *insertNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 	return []Msg{res}
 }
 
+// processDeleteMessages would execute delete operations for growing segments
 func processDeleteMessages(replica ReplicaInterface, msg *msgstream.DeleteMsg, delData *deleteData) {
 	var partitionIDs []UniqueID
 	var err error
@@ -238,6 +244,7 @@ func processDeleteMessages(replica ReplicaInterface, msg *msgstream.DeleteMsg, d
 	}
 }
 
+// filterSegmentsByPKs would filter segments by primary keys
 func filterSegmentsByPKs(pks []int64, segment *Segment) ([]int64, error) {
 	if pks == nil {
 		return nil, fmt.Errorf("pks is nil when getSegmentsByPKs")
@@ -258,6 +265,7 @@ func filterSegmentsByPKs(pks []int64, segment *Segment) ([]int64, error) {
 	return res, nil
 }
 
+// insert would execute insert operations for specific growing segment
 func (iNode *insertNode) insert(iData *insertData, segmentID UniqueID, wg *sync.WaitGroup) {
 	log.Debug("QueryNode::iNode::insert", zap.Any("SegmentID", segmentID))
 	var targetSegment, err = iNode.streamingReplica.getSegmentByID(segmentID)
@@ -286,10 +294,11 @@ func (iNode *insertNode) insert(iData *insertData, segmentID UniqueID, wg *sync.
 		return
 	}
 
-	log.Debug("Do insert done", zap.Int("len", len(iData.insertIDs[segmentID])), zap.Int64("segmentID", segmentID))
+	log.Debug("Do insert done", zap.Int("len", len(iData.insertIDs[segmentID])), zap.Int64("collectionID", targetSegment.collectionID), zap.Int64("segmentID", segmentID))
 	wg.Done()
 }
 
+// delete would execute delete operations for specific growing segment
 func (iNode *insertNode) delete(deleteData *deleteData, segmentID UniqueID, wg *sync.WaitGroup) {
 	defer wg.Done()
 	log.Debug("QueryNode::iNode::delete", zap.Any("SegmentID", segmentID))
@@ -317,7 +326,7 @@ func (iNode *insertNode) delete(deleteData *deleteData, segmentID UniqueID, wg *
 }
 
 // TODO: remove this function to proper file
-// TODO: why not return error?
+// getPrimaryKeys would get primary keys by insert messages
 func getPrimaryKeys(msg *msgstream.InsertMsg, streamingReplica ReplicaInterface) ([]int64, error) {
 	if len(msg.RowIDs) != len(msg.Timestamps) || len(msg.RowIDs) != len(msg.RowData) {
 		log.Warn("misaligned messages detected")
@@ -393,6 +402,8 @@ func getPrimaryKeys(msg *msgstream.InsertMsg, streamingReplica ReplicaInterface)
 
 	return pks, nil
 }
+
+// newInsertNode returns a new insertNode
 func newInsertNode(streamingReplica ReplicaInterface) *insertNode {
 	maxQueueLength := Params.FlowGraphMaxQueueLength
 	maxParallelism := Params.FlowGraphMaxParallelism

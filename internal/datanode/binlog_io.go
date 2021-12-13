@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/kv"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/storage"
@@ -122,6 +123,15 @@ func (b *binlogIO) upload(
 	kvs := make(map[string]string)
 
 	for _, iData := range iDatas {
+		tf, ok := iData.Data[common.TimeStampField]
+		if !ok || tf.RowNum() == 0 {
+			log.Warn("binlog io uploading empty insert data",
+				zap.Int64("segmentID", segID),
+				zap.Int64("collectionID", meta.GetID()),
+			)
+			continue
+		}
+
 		kv, inpaths, statspaths, err := b.genInsertBlobs(iData, partID, segID, meta)
 		if err != nil {
 			log.Warn("generate insert blobs wrong", zap.Error(err))
@@ -185,7 +195,7 @@ func (b *binlogIO) genDeltaBlobs(data *DeleteData, collID, partID, segID UniqueI
 		return "", nil, err
 	}
 
-	k, err := b.genKey(true, collID, partID, segID)
+	k, err := b.genKey(collID, partID, segID)
 	if err != nil {
 		return "", nil, err
 	}

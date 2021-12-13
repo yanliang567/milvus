@@ -370,7 +370,7 @@ func (s *Server) initServiceDiscovery() error {
 
 	s.cluster.Startup(datanodes)
 
-	s.eventCh = s.session.WatchServices(typeutil.DataNodeRole, rev+1)
+	s.eventCh = s.session.WatchServices(typeutil.DataNodeRole, rev+1, nil)
 	return nil
 }
 
@@ -406,7 +406,7 @@ func (s *Server) startServerLoop() {
 	s.startFlushLoop(s.serverLoopCtx)
 	s.garbageCollector.start()
 	go s.session.LivenessCheck(s.serverLoopCtx, func() {
-		log.Error("Data Coord disconnected from etcd, process will exit", zap.Int64("Server Id", s.session.ServerID))
+		log.Error("DataCoord disconnected from etcd, process will exit", zap.Int64("ServerID", s.session.ServerID))
 		if err := s.Stop(); err != nil {
 			log.Fatal("failed to stop server", zap.Error(err))
 		}
@@ -418,9 +418,9 @@ func (s *Server) startServerLoop() {
 func (s *Server) startStatsChannel(ctx context.Context) {
 	statsStream, _ := s.msFactory.NewMsgStream(ctx)
 	statsStream.AsConsumer([]string{Params.StatisticsChannelName}, Params.DataCoordSubscriptionName)
-	log.Debug("dataCoord create stats channel consumer",
-		zap.String("channelName", Params.StatisticsChannelName),
-		zap.String("descriptionName", Params.DataCoordSubscriptionName))
+	log.Debug("DataCoord creates statistics channel consumer",
+		zap.String("channel", Params.StatisticsChannelName),
+		zap.String("description", Params.DataCoordSubscriptionName))
 	statsStream.Start()
 	go func() {
 		defer logutil.LogPanic()
@@ -429,7 +429,7 @@ func (s *Server) startStatsChannel(ctx context.Context) {
 		for {
 			select {
 			case <-ctx.Done():
-				log.Debug("stats channel shutdown")
+				log.Debug("statistics channel shutdown")
 				return
 			default:
 			}

@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"math/rand"
 	"strconv"
-	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -164,7 +163,7 @@ func (r *addQueryChannelTask) Execute(ctx context.Context) error {
 		sc.queryMsgStream.AsConsumer(consumeChannels, consumeSubName)
 		if r.req.SeekPosition == nil || len(r.req.SeekPosition.MsgID) == 0 {
 			// as consumer
-			log.Debug("querynode AsConsumer: " + strings.Join(consumeChannels, ", ") + " : " + consumeSubName)
+			log.Debug("QueryNode AsConsumer", zap.Strings("channels", consumeChannels), zap.String("sub name", consumeSubName))
 		} else {
 			// seek query channel
 			err = sc.queryMsgStream.Seek([]*internalpb.MsgPosition{r.req.SeekPosition})
@@ -179,7 +178,7 @@ func (r *addQueryChannelTask) Execute(ctx context.Context) error {
 	// add result channel
 	producerChannels := []string{r.req.ResultChannelID}
 	sc.queryResultMsgStream.AsProducer(producerChannels)
-	log.Debug("querynode AsProducer: " + strings.Join(producerChannels, ", "))
+	log.Debug("QueryNode AsProducer", zap.Strings("channels", producerChannels))
 
 	// init global sealed segments
 	for _, segment := range r.req.GlobalSealedSegments {
@@ -787,6 +786,16 @@ func (r *releaseCollectionTask) Execute(ctx context.Context) error {
 	log.Debug("Execute release collection task", zap.Any("collectionID", r.req.CollectionID))
 	errMsg := "release collection failed, collectionID = " + strconv.FormatInt(r.req.CollectionID, 10) + ", err = "
 	log.Debug("release streaming", zap.Any("collectionID", r.req.CollectionID))
+	// sleep to wait for query tasks done
+	const gracefulReleaseTime = 1
+	time.Sleep(gracefulReleaseTime * time.Second)
+	log.Debug("Starting release collection...",
+		zap.Any("collectionID", r.req.CollectionID),
+	)
+
+	// remove query collection
+	r.node.queryService.stopQueryCollection(r.req.CollectionID)
+
 	err := r.releaseReplica(r.node.streaming.replica, replicaStreaming)
 	if err != nil {
 		return errors.New(errMsg + err.Error())
@@ -799,8 +808,6 @@ func (r *releaseCollectionTask) Execute(ctx context.Context) error {
 		return errors.New(errMsg + err.Error())
 	}
 	r.node.historical.removeGlobalSegmentIDsByCollectionID(r.req.CollectionID)
-	// remove query collection
-	r.node.queryService.stopQueryCollection(r.req.CollectionID)
 
 	log.Debug("ReleaseCollection done", zap.Int64("collectionID", r.req.CollectionID))
 	return nil
@@ -815,12 +822,6 @@ func (r *releaseCollectionTask) releaseReplica(replica ReplicaInterface, replica
 	log.Debug("set release time", zap.Any("collectionID", r.req.CollectionID))
 	collection.setReleaseTime(r.req.Base.Timestamp)
 
-	// sleep to wait for query tasks done
-	const gracefulReleaseTime = 1
-	time.Sleep(gracefulReleaseTime * time.Second)
-	log.Debug("Starting release collection...",
-		zap.Any("collectionID", r.req.CollectionID),
-	)
 	if replicaType == replicaStreaming {
 		r.node.dataSyncService.removeCollectionFlowGraph(r.req.CollectionID)
 		// remove partition flow graphs which partitions belong to the target collection

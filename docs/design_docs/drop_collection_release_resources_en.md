@@ -28,18 +28,18 @@ DataNode ignites Flush&Drop
 
 Add a `dropped` flag in `SaveBinlogPathRequest` proto
 
-DN
+DataNode
 - Flush all segments in this vChannel, When Flush&Drop, set the `dropped` flag true.
     - If fails, retry at most 10 times and restart
 
-DC
+DataCoord
 - DataCoord marks segmentInfo as `dropped`, doesn't remove segmentInfos from etcd
 - When recovery, check if the segments in the vchannel are all dropped
     - if not, recover before the drop
     - if so, no need to recover the vchannel
 
 Pros:
-    1. The easiest approach in both DN and DC
+    1. The easiest approach in both DataNode and DataCoord
     2. DN can reuse the current flush manager procedure
 Cons:
     1. The No. rpc call is equal to the No. segments in a collection, expensive
@@ -52,9 +52,9 @@ Add a new rpc `FlushAndDrop`, it's a vchannel scope rpc.
 
 Pros:
     1. much lesser rpc calls, equal to shard-numbers.
-    2. More clarity of flush procedure in DN.
+    2. More clarity of flush procedure in DataNode.
 Cons:
-    1. More efforts in DN and DC.
+    1. More efforts in DataNode and DataCoord.
 
 ```
 message FlushAndDropRequest {

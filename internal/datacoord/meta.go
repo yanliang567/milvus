@@ -49,7 +49,7 @@ type meta struct {
 	segments    *SegmentsInfo                       // segment id to segment info
 }
 
-// NewMeta create meta from provided `kv.TxnKV`
+// NewMeta creates meta from provided `kv.TxnKV`
 func newMeta(kv kv.TxnKV) (*meta, error) {
 	mt := &meta{
 		client:      kv,
@@ -63,7 +63,7 @@ func newMeta(kv kv.TxnKV) (*meta, error) {
 	return mt, nil
 }
 
-// reloadFromKV load meta from KV storage
+// reloadFromKV loads meta from KV storage
 func (m *meta) reloadFromKV() error {
 	_, values, err := m.client.LoadWithPrefix(segmentPrefix)
 	if err != nil {
@@ -74,7 +74,7 @@ func (m *meta) reloadFromKV() error {
 		segmentInfo := &datapb.SegmentInfo{}
 		err = proto.Unmarshal([]byte(value), segmentInfo)
 		if err != nil {
-			return fmt.Errorf("DataCoord reloadFromKV UnMarshal datapb.SegmentInfo err:%w", err)
+			return fmt.Errorf("dataCoord reloadFromKV UnMarshal datapb.SegmentInfo err:%w", err)
 		}
 		m.segments.SetSegment(segmentInfo.GetID(), NewSegmentInfo(segmentInfo))
 	}
@@ -82,7 +82,7 @@ func (m *meta) reloadFromKV() error {
 	return nil
 }
 
-// AddCollection add collection into meta
+// AddCollection adds a collection into meta
 // Note that collection info is just for caching and will not be set into etcd from datacoord
 func (m *meta) AddCollection(collection *datapb.CollectionInfo) {
 	m.Lock()
@@ -316,7 +316,7 @@ func (m *meta) UpdateFlushSegmentsInfo(
 	for _, segment := range modSegments {
 		segBytes, err := proto.Marshal(segment.SegmentInfo)
 		if err != nil {
-			return fmt.Errorf("DataCoord UpdateFlushSegmentsInfo segmentID:%d, marshal failed:%w", segment.GetID(), err)
+			return fmt.Errorf("dataCoord UpdateFlushSegmentsInfo segmentID:%d, marshal failed:%w", segment.GetID(), err)
 		}
 		key := buildSegmentPath(segment.GetCollectionID(), segment.GetPartitionID(), segment.GetID())
 		kv[key] = string(segBytes)

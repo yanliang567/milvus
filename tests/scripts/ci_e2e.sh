@@ -52,7 +52,8 @@ cd ${ROOT}/tests/python_client
 
 # print python3 version, python version 3.6.8 is more stable for test
 python3 -V
- 
+
+# pytest will try to get ${CI_LOG_PATH} from environment variables first,then use default path
 export CI_LOG_PATH=/tmp/ci_logs/test
 
 if [ ! -d "${CI_LOG_PATH}" ]; then
@@ -61,9 +62,9 @@ fi
 trace "prepare e2e test"  install_pytest_requirements  
 
 if [[ -n "${TEST_TIMEOUT:-}" ]]; then
-  timeout  "${TEST_TIMEOUT}" pytest -n ${PARALLEL_NUM} --host ${MILVUS_SERVICE_NAME} --port ${MILVUS_SERVICE_PORT} \
+  timeout  "${TEST_TIMEOUT}" pytest --host ${MILVUS_SERVICE_NAME} --port ${MILVUS_SERVICE_PORT} \
                                       --html=${CI_LOG_PATH}/report.html  --self-contained-html ${@:-}
 else
-  pytest -n ${PARALLEL_NUM} --host ${MILVUS_SERVICE_NAME} --port ${MILVUS_SERVICE_PORT} \
+  pytest --host ${MILVUS_SERVICE_NAME} --port ${MILVUS_SERVICE_PORT} \
                                       --html=${CI_LOG_PATH}/report.html --self-contained-html ${@:-}
 fi

@@ -1,13 +1,18 @@
-// Copyright (C) 2019-2020 Zilliz. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
 // with the License. You may obtain a copy of the License at
 //
-// http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// Unless required by applicable law or agreed to in writing, software distributed under the License
-// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
-// or implied. See the License for the specific language governing permissions and limitations under the License.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package querynode
 
@@ -44,6 +49,7 @@ type queryMsg interface {
 	msgstream.TsMsg
 	GuaranteeTs() Timestamp
 	TravelTs() Timestamp
+	TimeoutTs() Timestamp
 }
 
 type queryCollection struct {
@@ -269,12 +275,12 @@ func (q *queryCollection) waitNewTSafe() (Timestamp, error) {
 			t = ts
 		}
 	}
-	p, _ := tsoutil.ParseTS(t)
-	log.Debug("waitNewTSafe",
-		zap.Any("collectionID", q.collectionID),
-		zap.Any("tSafe", t),
-		zap.Any("tSafe_p", p),
-	)
+	//p, _ := tsoutil.ParseTS(t)
+	//log.Debug("waitNewTSafe",
+	//	zap.Any("collectionID", q.collectionID),
+	//	zap.Any("tSafe", t),
+	//	zap.Any("tSafe_p", p),
+	//)
 	return t, nil
 }
 
@@ -297,6 +303,21 @@ func (q *queryCollection) setServiceableTime(t Timestamp) {
 		return
 	}
 	q.serviceableTime = t
+}
+
+func (q *queryCollection) checkTimeout(msg queryMsg) bool {
+	curTime := tsoutil.GetCurrentTime()
+	//curTimePhysical, _ := tsoutil.ParseTS(curTime)
+	//timeoutTsPhysical, _ := tsoutil.ParseTS(msg.TimeoutTs())
+	//log.Debug("check if query timeout",
+	//	zap.Any("collectionID", q.collectionID),
+	//	zap.Any("msgID", msg.ID()),
+	//	zap.Any("TimeoutTs", msg.TimeoutTs()),
+	//	zap.Any("curTime", curTime),
+	//	zap.Any("timeoutTsPhysical", timeoutTsPhysical),
+	//	zap.Any("curTimePhysical", curTimePhysical),
+	//)
+	return msg.TimeoutTs() > typeutil.ZeroTimestamp && curTime >= msg.TimeoutTs()
 }
 
 func (q *queryCollection) consumeQuery() {
@@ -426,6 +447,17 @@ func (q *queryCollection) receiveQueryMsg(msg queryMsg) error {
 	sp, ctx := trace.StartSpanFromContext(msg.TraceCtx())
 	msg.SetTraceCtx(ctx)
 	tr := timerecord.NewTimeRecorder(fmt.Sprintf("receiveQueryMsg %d", msg.ID()))
+
+	if q.checkTimeout(msg) {
+		err := errors.New(fmt.Sprintln("do query failed in receiveQueryMsg because timeout"+
+			", collectionID = ", collectionID,
+			", msgID = ", msg.ID()))
+		publishErr := q.publishFailedQueryResult(msg, err.Error())
+		if publishErr != nil {
+			return fmt.Errorf("first err = %s, second err = %s", err, publishErr)
+		}
+		return err
+	}
 
 	// check if collection has been released
 	collection, err := q.historical.replica.getCollectionByID(collectionID)
@@ -561,6 +593,19 @@ func (q *queryCollection) doUnsolvedQueryMsg() {
 					zap.Any("guaranteeTime_l", guaranteeTs),
 					zap.Any("serviceTime_l", serviceTime),
 				)
+
+				if q.checkTimeout(m) {
+					err := errors.New(fmt.Sprintln("do query failed in doUnsolvedQueryMsg because timeout"+
+						", collectionID = ", q.collectionID,
+						", msgID = ", m.ID()))
+					log.Warn(err.Error())
+					publishErr := q.publishFailedQueryResult(m, err.Error())
+					if publishErr != nil {
+						log.Error(publishErr.Error())
+					}
+					continue
+				}
+
 				if guaranteeTs <= q.getServiceableTime() {
 					unSolvedMsg = append(unSolvedMsg, m)
 					continue
@@ -908,6 +953,7 @@ func (q *queryCollection) search(msg queryMsg) error {
 	defer q.streaming.replica.queryRUnlock()
 
 	searchMsg := msg.(*msgstream.SearchMsg)
+	collectionID := searchMsg.CollectionID
 	sp, ctx := trace.StartSpanFromContext(searchMsg.TraceCtx())
 	defer sp.Finish()
 	searchMsg.SetTraceCtx(ctx)
@@ -940,10 +986,10 @@ func (q *queryCollection) search(msg queryMsg) error {
 	}
 	topK := plan.getTopK()
 	if topK == 0 {
-		return fmt.Errorf("limit must be greater than 0")
+		return fmt.Errorf("limit must be greater than 0, msgID = %d", searchMsg.ID())
 	}
 	if topK >= 16385 {
-		return fmt.Errorf("limit %d is too large", topK)
+		return fmt.Errorf("limit %d is too large, msgID = %d", topK, searchMsg.ID())
 	}
 	searchRequestBlob := searchMsg.PlaceholderGroup
 	searchReq, err := parseSearchRequest(plan, searchRequestBlob)
@@ -964,7 +1010,7 @@ func (q *queryCollection) search(msg queryMsg) error {
 			oplog.Object("dsl", searchMsg.Dsl))
 	}
 
-	tr := timerecord.NewTimeRecorder(fmt.Sprintf("search %d(nq=%d, k=%d)", searchMsg.CollectionID, queryNum, topK))
+	tr := timerecord.NewTimeRecorder(fmt.Sprintf("search %d(nq=%d, k=%d), msgID = %d", searchMsg.CollectionID, queryNum, topK, searchMsg.ID()))
 
 	// get global sealed segments
 	var globalSealedSegments []UniqueID
@@ -977,22 +1023,26 @@ func (q *queryCollection) search(msg queryMsg) error {
 	searchResults := make([]*SearchResult, 0)
 
 	// historical search
-	hisSearchResults, sealedSegmentSearched, err := q.historical.search(searchRequests, collection.id, searchMsg.PartitionIDs, plan, travelTimestamp)
+	log.Debug("historical search start", zap.Int64("msgID", searchMsg.ID()))
+	hisSearchResults, sealedSegmentSearched, sealedPartitionSearched, err := q.historical.search(searchRequests, collection.id, searchMsg.PartitionIDs, plan, travelTimestamp)
 	if err != nil {
 		return err
 	}
 	searchResults = append(searchResults, hisSearchResults...)
-	tr.Record("historical search done")
+	log.Debug("historical search", zap.Int64("msgID", searchMsg.ID()), zap.Int64("collectionID", collectionID), zap.Int64s("searched partitionIDs", sealedPartitionSearched), zap.Int64s("searched segmentIDs", sealedSegmentSearched))
+	tr.Record(fmt.Sprintf("historical search done, msgID = %d", searchMsg.ID()))
 
+	log.Debug("streaming search start", zap.Int64("msgID", searchMsg.ID()))
 	for _, channel := range collection.getVChannels() {
 		var strSearchResults []*SearchResult
-		strSearchResults, err := q.streaming.search(searchRequests, collection.id, searchMsg.PartitionIDs, channel, plan, travelTimestamp)
+		strSearchResults, growingSegmentSearched, growingPartitionSearched, err := q.streaming.search(searchRequests, collection.id, searchMsg.PartitionIDs, channel, plan, travelTimestamp)
 		if err != nil {
 			return err
 		}
 		searchResults = append(searchResults, strSearchResults...)
+		log.Debug("streaming search", zap.Int64("msgID", searchMsg.ID()), zap.Int64("collectionID", collectionID), zap.String("searched dmChannel", channel), zap.Int64s("searched partitionIDs", growingPartitionSearched), zap.Int64s("searched segmentIDs", growingSegmentSearched))
 	}
-	tr.Record("streaming search done")
+	tr.Record(fmt.Sprintf("streaming search done, msgID = %d", searchMsg.ID()))
 
 	sp.LogFields(oplog.String("statistical time", "segment search end"))
 	if len(searchResults) <= 0 {
@@ -1030,8 +1080,8 @@ func (q *queryCollection) search(msg queryMsg) error {
 			if err != nil {
 				return err
 			}
-			tr.Record("publish empty search result done")
-			tr.Elapse("all done")
+			tr.Record(fmt.Sprintf("publish empty search result done, msgID = %d", searchMsg.ID()))
+			tr.Elapse(fmt.Sprintf("all done, msgID = %d", searchMsg.ID()))
 			return nil
 		}
 	}
@@ -1054,7 +1104,7 @@ func (q *queryCollection) search(msg queryMsg) error {
 	if err != nil {
 		return err
 	}
-	tr.Record("reduce result done")
+	tr.Record(fmt.Sprintf("reduce result done, msgID = %d", searchMsg.ID()))
 
 	var offset int64 = 0
 	for index := range searchRequests {
@@ -1134,7 +1184,7 @@ func (q *queryCollection) search(msg queryMsg) error {
 		if err != nil {
 			return err
 		}
-		tr.Record("publish search result")
+		tr.Record(fmt.Sprintf("publish search result, msgID = %d", searchMsg.ID()))
 	}
 
 	sp.LogFields(oplog.String("statistical time", "before free c++ memory"))
@@ -1143,7 +1193,7 @@ func (q *queryCollection) search(msg queryMsg) error {
 	sp.LogFields(oplog.String("statistical time", "stats done"))
 	plan.delete()
 	searchReq.delete()
-	tr.Elapse("all done")
+	tr.Elapse(fmt.Sprintf("all done, msgID = %d", searchMsg.ID()))
 	return nil
 }
 
@@ -1186,10 +1236,10 @@ func (q *queryCollection) retrieve(msg queryMsg) error {
 
 	if q.vectorChunkManager == nil {
 		if q.localChunkManager == nil {
-			return fmt.Errorf("can not create vector chunk manager for local chunk manager is nil")
+			return fmt.Errorf("can not create vector chunk manager for local chunk manager is nil, msgID = %d", retrieveMsg.ID())
 		}
 		if q.remoteChunkManager == nil {
-			return fmt.Errorf("can not create vector chunk manager for remote chunk manager is nil")
+			return fmt.Errorf("can not create vector chunk manager for remote chunk manager is nil, msgID = %d", retrieveMsg.ID())
 		}
 		q.vectorChunkManager = storage.NewVectorChunkManager(q.localChunkManager, q.remoteChunkManager,
 			&etcdpb.CollectionMeta{
@@ -1199,26 +1249,30 @@ func (q *queryCollection) retrieve(msg queryMsg) error {
 	}
 
 	// historical retrieve
-	hisRetrieveResults, sealedSegmentRetrieved, err := q.historical.retrieve(collectionID, retrieveMsg.PartitionIDs, q.vectorChunkManager, plan)
+	log.Debug("historical retrieve start", zap.Int64("msgID", retrieveMsg.ID()))
+	hisRetrieveResults, sealedSegmentRetrieved, sealedPartitionRetrieved, err := q.historical.retrieve(collectionID, retrieveMsg.PartitionIDs, q.vectorChunkManager, plan)
 	if err != nil {
 		return err
 	}
 	mergeList = append(mergeList, hisRetrieveResults...)
-	tr.Record("historical retrieve done")
+	log.Debug("historical retrieve", zap.Int64("msgID", retrieveMsg.ID()), zap.Int64("collectionID", collectionID), zap.Int64s("retrieve partitionIDs", sealedPartitionRetrieved), zap.Int64s("retrieve segmentIDs", sealedSegmentRetrieved))
+	tr.Record(fmt.Sprintf("historical retrieve done, msgID = %d", retrieveMsg.ID()))
 
 	// streaming retrieve
-	strRetrieveResults, _, err := q.streaming.retrieve(collectionID, retrieveMsg.PartitionIDs, plan)
+	log.Debug("streaming retrieve start", zap.Int64("msgID", retrieveMsg.ID()))
+	strRetrieveResults, streamingSegmentRetrived, streamingPartitionRetrived, err := q.streaming.retrieve(collectionID, retrieveMsg.PartitionIDs, plan)
 	if err != nil {
 		return err
 	}
 	mergeList = append(mergeList, strRetrieveResults...)
-	tr.Record("streaming retrieve done")
+	log.Debug("streaming retrieve", zap.Int64("msgID", retrieveMsg.ID()), zap.Int64("collectionID", collectionID), zap.Int64s("retrieve partitionIDs", streamingPartitionRetrived), zap.Int64s("retrieve segmentIDs", streamingSegmentRetrived))
+	tr.Record(fmt.Sprintf("streaming retrieve done, msgID = %d", retrieveMsg.ID()))
 
 	result, err := mergeRetrieveResults(mergeList)
 	if err != nil {
 		return err
 	}
-	tr.Record("merge result done")
+	tr.Record(fmt.Sprintf("merge result done, msgID = %d", retrieveMsg.ID()))
 
 	resultChannelInt := 0
 	retrieveResultMsg := &msgstream.RetrieveResultMsg{
@@ -1244,11 +1298,12 @@ func (q *queryCollection) retrieve(msg queryMsg) error {
 		return err
 	}
 	log.Debug("QueryNode publish RetrieveResultMsg",
+		zap.Int64("msgID", retrieveMsg.ID()),
 		zap.Any("vChannels", collection.getVChannels()),
 		zap.Any("collectionID", collection.ID()),
 		zap.Any("sealedSegmentRetrieved", sealedSegmentRetrieved),
 	)
-	tr.Elapse("all done")
+	tr.Elapse(fmt.Sprintf("all done, msgID = %d", retrieveMsg.ID()))
 	return nil
 }
 
@@ -1368,10 +1423,5 @@ func (q *queryCollection) publishFailedQueryResult(msg msgstream.TsMsg, errMsg s
 		return fmt.Errorf("publish invalid msgType %d", msgType)
 	}
 
-	err := q.queryResultMsgStream.Produce(&msgPack)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return q.queryResultMsgStream.Produce(&msgPack)
 }

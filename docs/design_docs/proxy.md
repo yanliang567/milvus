@@ -26,7 +26,7 @@ parameters check, constraints check, etc. Dynamic check will check some related 
 search requests for example, Proxy should check if the related collection exists in Milvus.
 
 Also, Proxy will do some preprocessing for every request. Proxy will do little things for some requests in the
-preprocessing stage and a lot more for other requests. Every object in Milvus will be assigned with a `ID`, such as
+preprocessing stage and a lot more for other requests. Every object in Milvus will be assigned with an `ID`, such as
 `CollectionID`, `PartitionID`, `IndexID`, `SegmentID`, etc. Components in Milvus communicate with each other by the
 object IDs, however, users only know the object name. So as a user access layer of Milvus, Proxy should translate
 the object name into object ID. Also taking search request as example, Proxy should translate the `CollectionName` into
@@ -155,7 +155,7 @@ allocation logic of segment ID is the responsibility of the Data Coordinator. Th
 written needs to be determined before writing to DmChannel. For a write operation, the proxy will hash each row of data
 again according to the hash value of its primary key, and then determine into which DmChannel each row of data enters. After
 collecting the number of pieces to be written by each DmChannel, apply to the data coordinator for which SegmentIDs the
-newly written data of these dmchannels belong. In the specific implementation, the proxy need to preallocate some
+newly written data of these dmchannels belong. In the specific implementation, the proxy needs to preallocate some
 quotas to the Data Coordinator to avoid frequent direct GRPC communication with the Data Coordinator.
 
 One consideration for uniformly assigning SegmentIDs by Data Coordinator is that Data Coordinator is responsible for
@@ -415,8 +415,7 @@ closed because maybe there are some data needs to be written into stream current
 
 ##### 6.6.3 channelsTimeTicker
 
-channelsTimeTicker is responsible for regularly collecting the synchronization timestamp information of all physical
-channels.
+channelsTimeTicker is responsible for regularly collecting the synchronization timestamp information of all physical channels.
 
 ```go
 type channelsTimeTicker interface {

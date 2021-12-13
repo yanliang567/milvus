@@ -2,21 +2,12 @@
 # Use Internal docker mirror to solve  https://www.docker.com/increase-rate-limits
 set -e
 
-MIRROR_URL="http://10.201.177.237:5000"
+# Use nexus as docker mirror registry
+MIRROR_URL="http://nexus-nexus-repository-manager-docker-5000.nexus:5000"
 set_daemon_json_file(){
     DOCKER_DAEMON_JSON_FILE="/etc/docker/daemon.json"
-    if test -f ${DOCKER_DAEMON_JSON_FILE}
-    then
-        cp  ${DOCKER_DAEMON_JSON_FILE} "${DOCKER_DAEMON_JSON_FILE}.bak"
-        if  grep -q registry-mirrors "${DOCKER_DAEMON_JSON_FILE}.bak";then
-             cat "${DOCKER_DAEMON_JSON_FILE}.bak" | sed -n "1h;1"'!'"H;\${g;s|\"registry-mirrors\":\s*\[[^]]*\]|\"registry-mirrors\": [\"${MIRROR_URL}\"]|g;p;}" |  tee ${DOCKER_DAEMON_JSON_FILE}
-        else
-            cat "${DOCKER_DAEMON_JSON_FILE}.bak" | sed -n "s|{|{\"registry-mirrors\": [\"${MIRROR_URL}\"],|g;p;" |  tee ${DOCKER_DAEMON_JSON_FILE}
-        fi
-    else
-        mkdir -p "/etc/docker"
-        echo "{\"registry-mirrors\": [\"${MIRROR_URL}\"]}" | tee ${DOCKER_DAEMON_JSON_FILE}
-    fi
+    mkdir -p "/etc/docker"
+    echo "{\"registry-mirrors\": [\"${MIRROR_URL}\"],\"insecure-registries\":[\"${MIRROR_URL}\"]}" | tee ${DOCKER_DAEMON_JSON_FILE}
 }
 restart_docker () {
     echo "set-mirror.sh] service docker start"

@@ -30,9 +30,9 @@ import (
 	"strings"
 	"unsafe"
 
+	"github.com/golang/protobuf/proto"
 	"go.uber.org/zap"
 
-	"github.com/golang/protobuf/proto"
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
@@ -51,6 +51,7 @@ import (
 	"github.com/milvus-io/milvus/internal/util/indexparamcheck"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
 	"github.com/milvus-io/milvus/internal/util/trace"
+	"github.com/milvus-io/milvus/internal/util/tsoutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
@@ -1575,6 +1576,10 @@ func (st *searchTask) PreExecute(ctx context.Context) error {
 	}
 	st.SearchRequest.TravelTimestamp = travelTimestamp
 	st.SearchRequest.GuaranteeTimestamp = guaranteeTimestamp
+	deadline, ok := st.TraceCtx().Deadline()
+	if ok {
+		st.SearchRequest.TimeoutTimestamp = tsoutil.ComposeTSByTime(deadline, 0)
+	}
 
 	st.SearchRequest.ResultChannelID = Params.SearchResultChannelNames[0]
 	st.SearchRequest.DbID = 0 // todo
@@ -1671,6 +1676,7 @@ func (st *searchTask) Execute(ctx context.Context) error {
 		zap.Any("collectionID", st.CollectionID),
 		zap.Any("msgID", tsMsg.ID()),
 		zap.Int("length of search msg", len(msgPack.Msgs)),
+		zap.Any("timeoutTs", st.SearchRequest.TimeoutTimestamp),
 	)
 	return err
 }
@@ -2175,6 +2181,10 @@ func (qt *queryTask) PreExecute(ctx context.Context) error {
 	}
 	qt.TravelTimestamp = travelTimestamp
 	qt.GuaranteeTimestamp = guaranteeTimestamp
+	deadline, ok := qt.TraceCtx().Deadline()
+	if ok {
+		qt.RetrieveRequest.TimeoutTimestamp = tsoutil.ComposeTSByTime(deadline, 0)
+	}
 
 	qt.ResultChannelID = Params.RetrieveResultChannelNames[0]
 	qt.DbID = 0 // todo(yukun)
@@ -2255,7 +2265,12 @@ func (qt *queryTask) Execute(ctx context.Context) error {
 		}
 	}
 	err = stream.Produce(&msgPack)
-	log.Debug("proxy", zap.Int("length of retrieveMsg", len(msgPack.Msgs)))
+	log.Debug("proxy sent one retrieveMsg",
+		zap.Any("collectionID", qt.CollectionID),
+		zap.Any("msgID", tsMsg.ID()),
+		zap.Int("length of search msg", len(msgPack.Msgs)),
+		zap.Any("timeoutTs", qt.RetrieveRequest.TimeoutTimestamp),
+	)
 	if err != nil {
 		log.Debug("Failed to send retrieve request.",
 			zap.Any("requestID", qt.Base.MsgID), zap.Any("requestType", "query"))
@@ -4132,7 +4147,7 @@ func (lct *loadCollectionTask) OnEnqueue() error {
 }
 
 func (lct *loadCollectionTask) PreExecute(ctx context.Context) error {
-	log.Debug("loadCollectionTask PreExecute", zap.String("role", Params.RoleName), zap.Int64("msgID", lct.Base.MsgID))
+	log.Debug("loadCollectionTask PreExecute", zap.String("role", typeutil.ProxyRole), zap.Int64("msgID", lct.Base.MsgID))
 	lct.Base.MsgType = commonpb.MsgType_LoadCollection
 	lct.Base.SourceID = Params.ProxyID
 
@@ -4146,7 +4161,7 @@ func (lct *loadCollectionTask) PreExecute(ctx context.Context) error {
 }
 
 func (lct *loadCollectionTask) Execute(ctx context.Context) (err error) {
-	log.Debug("loadCollectionTask Execute", zap.String("role", Params.RoleName), zap.Int64("msgID", lct.Base.MsgID))
+	log.Debug("loadCollectionTask Execute", zap.String("role", typeutil.ProxyRole), zap.Int64("msgID", lct.Base.MsgID))
 	collID, err := globalMetaCache.GetCollectionID(ctx, lct.CollectionName)
 	if err != nil {
 		return err
@@ -4167,7 +4182,8 @@ func (lct *loadCollectionTask) Execute(ctx context.Context) (err error) {
 		CollectionID: collID,
 		Schema:       collSchema,
 	}
-	log.Debug("send LoadCollectionRequest to query coordinator", zap.String("role", Params.RoleName), zap.Int64("msgID", request.Base.MsgID), zap.Int64("collectionID", request.CollectionID),
+	log.Debug("send LoadCollectionRequest to query coordinator", zap.String("role", typeutil.ProxyRole),
+		zap.Int64("msgID", request.Base.MsgID), zap.Int64("collectionID", request.CollectionID),
 		zap.Any("schema", request.Schema))
 	lct.result, err = lct.queryCoord.LoadCollection(ctx, request)
 	if err != nil {
@@ -4177,7 +4193,8 @@ func (lct *loadCollectionTask) Execute(ctx context.Context) (err error) {
 }
 
 func (lct *loadCollectionTask) PostExecute(ctx context.Context) error {
-	log.Debug("loadCollectionTask PostExecute", zap.String("role", Params.RoleName), zap.Int64("msgID", lct.Base.MsgID))
+	log.Debug("loadCollectionTask PostExecute", zap.String("role", typeutil.ProxyRole),
+		zap.Int64("msgID", lct.Base.MsgID))
 	return nil
 }
 

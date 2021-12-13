@@ -1,7 +1,4 @@
-<a href="https://milvus.io/hacktoberfest-2021">
-    <img src="https://assets.zilliz.com/milvus_hacktoberfest_15ba8e5083.jpeg" alt="Join Hacktoberfest with Milvus">
-</a>
-
+<img src="https://zilliz-cms.s3.us-west-2.amazonaws.com/readme_en_6c5b3a1466.png" alt="milvus banner">
 
 <div class="column" align="middle">
   <a href="https://join.slack.com/t/milvusio/shared_invite/zt-e0u4qu3k-bI2GDNys3ZqX1YCJ9OM~GQ">
@@ -155,7 +152,7 @@ Contributions to Milvus are welcome from everyone. See [Guidelines for Contribut
 ### All contributors
 
 <br><!-- Do not remove start of hero-bot -->
-<img src="https://img.shields.io/badge/all--contributors-205-orange"><br>
+<img src="https://img.shields.io/badge/all--contributors-206-orange"><br>
 <a href="https://github.com/0xflotus"><img src="https://avatars.githubusercontent.com/u/26602940?v=4" width="30px" /></a>
 <a href="https://github.com/ABNER-1"><img src="https://avatars.githubusercontent.com/u/24547351?v=4" width="30px" /></a>
 <a href="https://github.com/Accagain2014"><img src="https://avatars.githubusercontent.com/u/9635216?v=4" width="30px" /></a>
@@ -281,6 +278,7 @@ Contributions to Milvus are welcome from everyone. See [Guidelines for Contribut
 <a href="https://github.com/jkx8fc"><img src="https://avatars.githubusercontent.com/u/31717785?v=4" width="30px" /></a>
 <a href="https://github.com/kartikcho"><img src="https://avatars.githubusercontent.com/u/48270786?v=4" width="30px" /></a>
 <a href="https://github.com/kateshaowanjou"><img src="https://avatars.githubusercontent.com/u/58837504?v=4" width="30px" /></a>
+<a href="https://github.com/kilianovski"><img src="https://avatars.githubusercontent.com/u/22048793?v=4" width="30px" /></a>
 <a href="https://github.com/lee-eve"><img src="https://avatars.githubusercontent.com/u/9720105?v=4" width="30px" /></a>
 <a href="https://github.com/leonardokidd"><img src="https://avatars.githubusercontent.com/u/14940941?v=4" width="30px" /></a>
 <a href="https://github.com/lhotari"><img src="https://avatars.githubusercontent.com/u/66864?v=4" width="30px" /></a>
@@ -372,8 +370,9 @@ For guidance on installation, development, deployment, and administration, check
 The implemented SDK and its API documentation are listed below:
 
 - [PyMilvus SDK](https://github.com/milvus-io/pymilvus)
-- [Java SDK](https://github.com/milvus-io/milvus-sdk-java)(under development)
-- [Go SDK](https://github.com/milvus-io/milvus-sdk-go)(under development)
+- [Java SDK](https://github.com/milvus-io/milvus-sdk-java)(ready for test)
+- [Go SDK](https://github.com/milvus-io/milvus-sdk-go)(ready for test)
+- [Cpp SDK](https://github.com/milvus-io/milvus-sdk-go)(under development)
 - [Node SDK](https://github.com/milvus-io/milvus-sdk-node)
 
 ### Milvus insight

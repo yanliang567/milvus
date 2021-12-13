@@ -307,7 +307,8 @@ CStatus FinishPayloadWriter(CPayloadWriter payloadWriter) {
     }
     auto table = arrow::Table::Make(p->schema, {array});
     p->output = std::make_shared<wrapper::PayloadOutputStream>();
-    ast = parquet::arrow::WriteTable(*table, arrow::default_memory_pool(), p->output, 1024 * 1024 * 1024);
+    auto mem_pool = arrow::default_memory_pool();
+    ast = parquet::arrow::WriteTable(*table, mem_pool, p->output, 1024 * 1024 * 1024);
     if (!ast.ok()) {
       st.error_code = static_cast<int>(ErrorCode::UNEXPECTED_ERROR);
       st.error_msg = ErrorMsg(ast.message());
@@ -338,13 +339,10 @@ int GetPayloadLengthFromWriter(CPayloadWriter payloadWriter) {
 }
 
 extern "C"
-CStatus ReleasePayloadWriter(CPayloadWriter handler) {
-  CStatus st;
-  st.error_code = static_cast<int>(ErrorCode::SUCCESS);
-  st.error_msg = nullptr;
+void ReleasePayloadWriter(CPayloadWriter handler) {
   auto p = reinterpret_cast<wrapper::PayloadWriter *>(handler);
   if (p != nullptr) delete p;
-  return st;
+  arrow::default_memory_pool()->ReleaseUnused();
 }
 
 extern "C"
@@ -352,7 +350,8 @@ CPayloadReader NewPayloadReader(int columnType, uint8_t *buffer, int64_t buf_siz
   auto p = new wrapper::PayloadReader;
   p->bValues = nullptr;
   p->input = std::make_shared<wrapper::PayloadInputStream>(buffer, buf_size);
-  auto st = parquet::arrow::OpenFile(p->input, arrow::default_memory_pool(), &p->reader);
+  auto mem_pool = arrow::default_memory_pool();
+  auto st = parquet::arrow::OpenFile(p->input, mem_pool, &p->reader);
   if (!st.ok()) {
     delete p;
     return nullptr;
@@ -366,7 +365,6 @@ CPayloadReader NewPayloadReader(int columnType, uint8_t *buffer, int64_t buf_siz
   assert(p->column != nullptr);
   assert(p->column->chunks().size() == 1);
   p->array = p->column->chunk(0);
-
   switch (columnType) {
     case ColumnType::BOOL :
     case ColumnType::INT8 :
@@ -526,12 +524,11 @@ int GetPayloadLengthFromReader(CPayloadReader payloadReader) {
 }
 
 extern "C"
-CStatus ReleasePayloadReader(CPayloadReader payloadReader) {
-  CStatus st;
-  st.error_code = static_cast<int>(ErrorCode::SUCCESS);
-  st.error_msg = nullptr;
+void ReleasePayloadReader(CPayloadReader payloadReader) {
   auto p = reinterpret_cast<wrapper::PayloadReader *>(payloadReader);
-  delete[] p->bValues;
-  delete p;
-  return st;
+  if (p != nullptr) {
+    delete[] p->bValues;
+    delete p;
+  }
+  arrow::default_memory_pool()->ReleaseUnused();
 }

@@ -21,6 +21,7 @@ all: build-cpp build-go
 get-build-deps:
 	@(env bash $(PWD)/scripts/install_deps.sh)
 
+# attention: upgrade golangci-lint should also change Dockerfiles in build/docker/builder/cpu/<os>
 getdeps:
 	@mkdir -p ${GOPATH}/bin
 	@which golangci-lint 1>/dev/null || (echo "Installing golangci-lint" && curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(GOPATH)/bin v1.43.0)
@@ -106,6 +107,7 @@ build-cpp-with-unittest:
 	@echo "Building Milvus cpp library with unittest ..."
 	@(env bash $(PWD)/scripts/core_build.sh -u -c -f "$(CUSTOM_THIRDPARTY_PATH)")
 	@(env bash $(PWD)/scripts/cwrapper_build.sh -t Release -f "$(CUSTOM_THIRDPARTY_PATH)")
+	@(env bash $(PWD)/scripts/cwrapper_rocksdb_build.sh -t Release -f "$(CUSTOM_THIRDPARTY_PATH)")
 
 # Run the tests.
 unittest: test-cpp test-go
@@ -122,13 +124,11 @@ test-querycoord:
 
 test-go: build-cpp-with-unittest
 	@echo "Running go unittests..."
-	@(env bash $(PWD)/scripts/run_go_codecov.sh)
-# 	@(env bash $(PWD)/scripts/run_go_unittest.sh)
+	@(env bash $(PWD)/scripts/run_go_unittest.sh)
 
 test-cpp: build-cpp-with-unittest
 	@echo "Running cpp unittests..."
-	@(env bash $(PWD)/scripts/run_cpp_codecov.sh)
-#	@(env bash $(PWD)/scripts/run_cpp_unittest.sh)
+	@(env bash $(PWD)/scripts/run_cpp_unittest.sh)
 
 # Run code coverage.
 codecov: codecov-go codecov-cpp

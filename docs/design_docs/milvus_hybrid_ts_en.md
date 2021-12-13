@@ -1,7 +1,7 @@
 # Hybrid Timestamp in Milvus
 
 In chapter [Milvus TimeSync Mechanism](./milvus_timesync_en.md), we have already known why we need TSO in Milvus. Milvus
-borrows the [TiKV's](https://github.com/tikv/tikv) implementation into TSO. So if you are interested in how TSO was
+uses the [TiKV's](https://github.com/tikv/tikv) implementation into TSO. So if you are interested in how TSO is
 implemented, you can look into the official documentation of TiKV.
 
 This chapter will only introduce two points:
@@ -22,13 +22,13 @@ Note, physical part is the UTC time in Milliseconds.
 
 ![Timestamp struct](./graphs/time_stamp_struct.jpg)
 
-For some users such as DBAs, they will want to sort the operations and list them in UTC time order.
+For some users such as DBAs, they would want to sort the operations and list them in UTC time order.
 
 Actually, we can use the TSO order to sort the `Insert` operations or `Delete` operations.
 
 So the question becomes how we get the UTC time from TSO.
 
-As we have described above, physical part consists the front 46 bits of TSO.
+As we have described above, physical part consists of the front 46 bits of TSO.
 
 So given a TSO which is returned by `Insert` or `Delete`, we can directly shift left 18 bits to get the UTC time.
 

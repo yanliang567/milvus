@@ -350,7 +350,7 @@ func (m *rendezvousFlushManager) flushBufferData(data *BufferData, segmentID Uni
 		logidx := start + int64(idx)
 
 		// no error raise if alloc=false
-		k, _ := m.genKey(false, collID, partID, segmentID, fieldID, logidx)
+		k := JoinIDPath(collID, partID, segmentID, fieldID, logidx)
 
 		key := path.Join(Params.InsertBinlogRootPath, k)
 		paths = append(paths, key)
@@ -371,7 +371,7 @@ func (m *rendezvousFlushManager) flushBufferData(data *BufferData, segmentID Uni
 		logidx := field2Logidx[fieldID]
 
 		// no error raise if alloc=false
-		k, _ := m.genKey(false, collID, partID, segmentID, fieldID, logidx)
+		k := JoinIDPath(collID, partID, segmentID, fieldID, logidx)
 
 		key := path.Join(Params.StatsBinlogRootPath, k)
 		kvs[key] = string(blob.Value[:])
@@ -422,7 +422,7 @@ func (m *rendezvousFlushManager) flushDelData(data *DelDataBuf, segmentID Unique
 		return err
 	}
 
-	blobKey, _ := m.genKey(false, collID, partID, segmentID, logID)
+	blobKey := JoinIDPath(collID, partID, segmentID, logID)
 	blobPath := path.Join(Params.DeleteBinlogRootPath, blobKey)
 	kvs := map[string]string{blobPath: string(blob.Value[:])}
 	data.fileSize = int64(len(blob.Value))
@@ -451,7 +451,7 @@ func (m *rendezvousFlushManager) injectFlush(injection *taskInjection, segments 
 // fetch meta info for segment
 func (m *rendezvousFlushManager) getSegmentMeta(segmentID UniqueID, pos *internalpb.MsgPosition) (UniqueID, UniqueID, *etcdpb.CollectionMeta, error) {
 	if !m.hasSegment(segmentID, true) {
-		return -1, -1, nil, fmt.Errorf("No such segment %d in the replica", segmentID)
+		return -1, -1, nil, fmt.Errorf("no such segment %d in the replica", segmentID)
 	}
 
 	// fetch meta information of segment

@@ -7,6 +7,7 @@ String cron_string = BRANCH_NAME == "master" ? "50 22 * * * " : ""
 
 int total_timeout_minutes = 660
 def imageTag=''
+
 pipeline {
     triggers {
         cron """${cron_timezone}
@@ -26,6 +27,8 @@ pipeline {
             defaultContainer 'main'
             yamlFile "build/ci/jenkins/pod/rte.yaml"
             customWorkspace '/home/jenkins/agent/workspace'
+            // idle 5 minutes to wait clean up tasks
+            idleMinutes 5
         }
     }
     environment {
@@ -129,6 +132,8 @@ pipeline {
                                                     --install-extra-arg "--set etcd.persistence.storageClass=local-path \
                                                     --set minio.persistence.storageClass=local-path \
                                                     --set etcd.metrics.enabled=true \
+                                                    --set etcd.metrics.podMonitor.enabled=true \
+                                                    --set etcd.nodeSelector.disk=fast \
                                                     --set metrics.serviceMonitor.enabled=true" 
                                                     """
                                                 }
@@ -157,7 +162,7 @@ pipeline {
                                                         MILVUS_HELM_RELEASE_NAME="${release_name}" \
                                                         MILVUS_CLUSTER_ENABLED="${clusterEnabled}" \
                                                         TEST_TIMEOUT="${e2e_timeout_seconds}" \
-                                                        ./ci_e2e.sh  "-n 4 --tags L0 L1 L2 --repeat-scope=session"
+                                                        ./ci_e2e.sh  "--workers 4 --tags L0 L1 L2 --repeat-scope=session --random-order-bucket=global"
                                                         """
                                                     } else {
                                                     error "Error: Unsupported Milvus client: ${MILVUS_CLIENT}"
@@ -199,31 +204,30 @@ pipeline {
                             }
                         }
                     }
-                    always {
-                        container('pytest') {
-                            dir ('tests/scripts') {
-                            script {
-                                    def release_name=sh(returnStdout: true, script: './get_release_name.sh')
-                                    sh "./ci_logs.sh --log-dir /ci-logs  --artifacts-name ${env.ARTIFACTS}/artifacts-${PROJECT_NAME}-${MILVUS_SERVER_TYPE}-${SEMVER}-${env.BUILD_NUMBER}-${MILVUS_CLIENT}-e2e-logs \
-                                    --release-name ${release_name} "
-                                    dir("${env.ARTIFACTS}") {
-                                          if ("${MILVUS_CLIENT}" == "pymilvus") {
-                                            sh "tar -zcvf artifacts-${PROJECT_NAME}-${MILVUS_SERVER_TYPE}-${MILVUS_CLIENT}-pytest-logs.tar.gz /tmp/ci_logs/test --remove-files || true"
-                                        }
-                                        archiveArtifacts artifacts: "**.tar.gz", allowEmptyArchive: true
-                                    }
-                            }
-                            }
-                        }
-                    }
-                    cleanup {
+                     always {
                         container('main') {
                             dir ('tests/scripts') {  
                                 script {
-                                def release_name=sh(returnStdout: true, script: './get_release_name.sh')
-                                sh "./uninstall_milvus.sh --release-name ${release_name}"
+                                    def release_name=sh(returnStdout: true, script: './get_release_name.sh')
+                                    sh "./uninstall_milvus.sh --release-name ${release_name}"
                                 }
                             }
+                        }
+                        container('pytest') {
+                            dir ('tests/scripts') {
+                            script {
+                                    def release_name = sh(returnStdout: true, script: './get_release_name.sh ')
+                                    sh "./ci_logs.sh --log-dir /ci-logs  --artifacts-name ${env.ARTIFACTS}/artifacts-${PROJECT_NAME}-${MILVUS_SERVER_TYPE}-${SEMVER}-${env.BUILD_NUMBER}-${MILVUS_CLIENT}-e2e-logs \
+                                    --release-name ${release_name}"
+                                    dir("${env.ARTIFACTS}") {
+                                        if ("${MILVUS_CLIENT}" == "pymilvus") {
+                                            sh "tar -zcvf artifacts-${PROJECT_NAME}-${MILVUS_SERVER_TYPE}-${MILVUS_CLIENT}-pytest-logs.tar.gz /tmp/ci_logs/test --remove-files || true"
+                                            }
+                                        archiveArtifacts artifacts: "artifacts-${PROJECT_NAME}-${MILVUS_SERVER_TYPE}-${MILVUS_CLIENT}-pytest-logs.tar.gz ", allowEmptyArchive: true
+                                        archiveArtifacts artifacts: "artifacts-${PROJECT_NAME}-${MILVUS_SERVER_TYPE}-${SEMVER}-${env.BUILD_NUMBER}-${MILVUS_CLIENT}-e2e-logs.tar.gz", allowEmptyArchive: true
+                                    }
+                            }
+                        }
                         }
                     }
                 }

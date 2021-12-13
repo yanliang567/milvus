@@ -1,3 +1,4 @@
+import os.path
 import time
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
@@ -55,5 +56,58 @@ def wait_pods_ready(namespace, label_selector, expected_num=None, timeout=360):
     return all_pos_ready_flag
 
 
+def get_pod_list(namespace, label_selector):
+    """
+    get pod list with label selector
+
+    :param namespace: the namespace where the release
+    :type namespace: str
+
+    :param label_selector: labels to restrict which pods to list
+    :type label_selector: str
+
+    :example:
+            >>> get_pod_list("chaos-testing", "app.kubernetes.io/instance=test-proxy-pod-failure, component=proxy")
+    """
+    config.load_kube_config()
+    api_instance = client.CoreV1Api()
+    try:
+        api_response = api_instance.list_namespaced_pod(namespace=namespace, label_selector=label_selector)
+        return api_response.items
+    except ApiException as e:
+        log.error("Exception when calling CoreV1Api->list_namespaced_pod: %s\n" % e)
+        raise Exception(str(e))
+
+
+def export_pods_log(namespace, label_selector):
+    """
+    export pod logs with label selector to '/tmp/milvus'
+
+    :param namespace: the namespace where the release
+    :type namespace: str
+
+    :param label_selector: labels to restrict which pods logs to export
+    :type label_selector: str
+
+    :example:
+            >>> export_logs("chaos-testing", "app.kubernetes.io/instance=mic-milvus")
+    """
+    pod_log_path = '/tmp/milvus'
+    if not os.path.isdir(pod_log_path):
+        os.makedirs(pod_log_path)
+
+    # get pods and export logs
+    items = get_pod_list("chaos-testing", label_selector=label)
+    try:
+        for item in items:
+            pod_name = item.metadata.name
+            os.system(f'kubectl logs {pod_name} > {pod_log_path}/{pod_name}.log 2>&1')
+    except Exception as e:
+        log.error(f"Exception when export pod {pod_name} logs: %s\n" % e)
+        raise Exception(str(e))
+
+
 if __name__ == '__main__':
-    wait_pods_ready("chaos-testing", "app.kubernetes.io/instance=scale-query")
+    label = "app.kubernetes.io/instance=test-proxy-pod-failure, component=proxy"
+    res = get_pod_list("chaos-testing", label_selector=label)
+    export_pods_log(namespace='chaos-testing', label_selector=label)

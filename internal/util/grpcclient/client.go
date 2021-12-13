@@ -33,6 +33,7 @@ type GrpcClient interface {
 	Close() error
 }
 
+// ClientBase is a base of grpc client
 type ClientBase struct {
 	getAddrFunc   func() (string, error)
 	newGrpcClient func(cc *grpc.ClientConn) interface{}
@@ -45,18 +46,22 @@ type ClientBase struct {
 	ClientMaxRecvSize int
 }
 
+// SetRole sets role of client
 func (c *ClientBase) SetRole(role string) {
 	c.role = role
 }
 
+// GetRole returns role of client
 func (c *ClientBase) GetRole() string {
 	return c.role
 }
 
+// SetGetAddrFunc sets getAddrFunc of client
 func (c *ClientBase) SetGetAddrFunc(f func() (string, error)) {
 	c.getAddrFunc = f
 }
 
+// SetNewGrpcClientFunc sets newGrpcClient of client
 func (c *ClientBase) SetNewGrpcClientFunc(f func(cc *grpc.ClientConn) interface{}) {
 	c.newGrpcClient = f
 }

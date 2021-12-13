@@ -263,7 +263,7 @@ func (scheduler *TaskScheduler) unmarshalTask(taskID UniqueID, t string) (task, 
 	header := commonpb.MsgHeader{}
 	err := proto.Unmarshal([]byte(t), &header)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to unmarshal message header, err %s ", err.Error())
+		return nil, fmt.Errorf("failed to unmarshal message header, err %s ", err.Error())
 	}
 	var newTask task
 	baseTask := newBaseTask(scheduler.ctx, querypb.TriggerCondition_grpcRequest)
@@ -597,7 +597,7 @@ func (scheduler *TaskScheduler) scheduleLoop() {
 			childTaskKeys = append(childTaskKeys, taskKey)
 			childTaskKeys = append(childTaskKeys, stateKey)
 			err := scheduler.client.MultiRemove(childTaskKeys)
-			// after recover, child Task's state will be TaskDone, will not be repeat executed
+			// after recover, child Task's state will be TaskDone, will not be repeatedly executed
 			if err != nil {
 				panic(err)
 			}
@@ -860,7 +860,9 @@ func (scheduler *TaskScheduler) Start() error {
 
 // Close function stops the scheduleLoop and the processActivateTaskLoop
 func (scheduler *TaskScheduler) Close() {
-	scheduler.cancel()
+	if scheduler.cancel != nil {
+		scheduler.cancel()
+	}
 	scheduler.wg.Wait()
 }
 

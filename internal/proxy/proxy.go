@@ -22,6 +22,7 @@ import (
 	"math/rand"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
@@ -118,6 +119,7 @@ func (node *Proxy) Register() error {
 		if err := node.Stop(); err != nil {
 			log.Fatal("failed to stop server", zap.Error(err))
 		}
+		syscall.Kill(syscall.Getpid(), syscall.SIGINT)
 	})
 	// TODO Reset the logger
 	//Params.initLogCfg()
@@ -347,18 +349,25 @@ func (node *Proxy) Stop() error {
 
 	if node.idAllocator != nil {
 		node.idAllocator.Close()
+		log.Info("close id allocator", zap.String("role", typeutil.ProxyRole))
 	}
+
 	if node.segAssigner != nil {
 		node.segAssigner.Close()
+		log.Info("close segment id assigner", zap.String("role", typeutil.ProxyRole))
 	}
+
 	if node.sched != nil {
 		node.sched.Close()
+		log.Info("close scheduler", zap.String("role", typeutil.ProxyRole))
 	}
+
 	if node.chTicker != nil {
 		err := node.chTicker.close()
 		if err != nil {
 			return err
 		}
+		log.Info("close channels time ticker", zap.String("role", typeutil.ProxyRole))
 	}
 
 	node.wg.Wait()

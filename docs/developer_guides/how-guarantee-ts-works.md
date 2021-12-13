@@ -3,7 +3,7 @@
 [中文文档](./how-guarantee-ts-works-cn.md)
 
 Users and developers may feel confused by the so many parameters in the search requests, especially for those developers
-who develop sdk client for Milvus.
+who develop SDK client for Milvus.
 
 This document will explain a special parameter in the search request-"Guarantee Timestamp", hereinafter referred to as
 "GuaranteeTs".
@@ -76,4 +76,4 @@ As shown in the figure below, different GuaranteeTs correspond to four different
 - Read your own write (Session): Set GuaranteeTs to the client last write, in this way, every client will see all their
   own data.
 
-Milvus provides the strong consistency by default.
+Milvus provides strong consistency by default.

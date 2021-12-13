@@ -14,7 +14,7 @@ package storage
 /*
 #cgo CFLAGS: -I${SRCDIR}/cwrapper
 
-#cgo LDFLAGS: -L${SRCDIR}/cwrapper/output -lwrapper -lparquet -larrow -lthrift -lutf8proc -lstdc++ -lm
+#cgo LDFLAGS: -L${SRCDIR}/cwrapper/output/lib -lwrapper -lparquet -larrow -larrow_bundled_dependencies -lstdc++ -lm
 #include <stdlib.h>
 #include "ParquetWrapper.h"
 */
@@ -45,8 +45,8 @@ type PayloadWriterInterface interface {
 	FinishPayloadWriter() error
 	GetPayloadBufferFromWriter() ([]byte, error)
 	GetPayloadLengthFromWriter() (int, error)
-	ReleasePayloadWriter() error
-	Close() error
+	ReleasePayloadWriter()
+	Close()
 }
 
 type PayloadReaderInterface interface {
@@ -62,8 +62,8 @@ type PayloadReaderInterface interface {
 	GetBinaryVectorFromPayload() ([]byte, int, error)
 	GetFloatVectorFromPayload() ([]float32, int, error)
 	GetPayloadLengthFromReader() (int, error)
-	ReleasePayloadReader() error
-	Close() error
+	ReleasePayloadReader()
+	Close()
 }
 
 type PayloadWriter struct {
@@ -328,13 +328,12 @@ func (w *PayloadWriter) GetPayloadLengthFromWriter() (int, error) {
 	return int(length), nil
 }
 
-func (w *PayloadWriter) ReleasePayloadWriter() error {
-	status := C.ReleasePayloadWriter(w.payloadWriterPtr)
-	return HandleCStatus(&status, "ReleasePayloadWriter failed")
+func (w *PayloadWriter) ReleasePayloadWriter() {
+	C.ReleasePayloadWriter(w.payloadWriterPtr)
 }
 
-func (w *PayloadWriter) Close() error {
-	return w.ReleasePayloadWriter()
+func (w *PayloadWriter) Close() {
+	w.ReleasePayloadWriter()
 }
 
 func NewPayloadReader(colType schemapb.DataType, buf []byte) (*PayloadReader, error) {
@@ -399,11 +398,12 @@ func (r *PayloadReader) GetDataFromPayload(idx ...int) (interface{}, int, error)
 	}
 }
 
-func (r *PayloadReader) ReleasePayloadReader() error {
-	status := C.ReleasePayloadReader(r.payloadReaderPtr)
-	return HandleCStatus(&status, "ReleasePayloadReader failed")
+// ReleasePayloadReader release payload reader.
+func (r *PayloadReader) ReleasePayloadReader() {
+	C.ReleasePayloadReader(r.payloadReaderPtr)
 }
 
+// GetBoolFromPayload returns bool slice from payload.
 func (r *PayloadReader) GetBoolFromPayload() ([]bool, error) {
 	if r.colType != schemapb.DataType_Bool {
 		return nil, errors.New("incorrect data type")
@@ -421,6 +421,7 @@ func (r *PayloadReader) GetBoolFromPayload() ([]bool, error) {
 	return slice, nil
 }
 
+// GetInt8FromPayload returns int8 slice from payload
 func (r *PayloadReader) GetInt8FromPayload() ([]int8, error) {
 	if r.colType != schemapb.DataType_Int8 {
 		return nil, errors.New("incorrect data type")
@@ -583,8 +584,8 @@ func (r *PayloadReader) GetPayloadLengthFromReader() (int, error) {
 	return int(length), nil
 }
 
-func (r *PayloadReader) Close() error {
-	return r.ReleasePayloadReader()
+func (r *PayloadReader) Close() {
+	r.ReleasePayloadReader()
 }
 
 // HandleCStatus deal with the error returned from CGO

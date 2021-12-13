@@ -208,7 +208,7 @@ func (qc *QueryCoord) Start() error {
 	}
 
 	go qc.session.LivenessCheck(qc.loopCtx, func() {
-		log.Error("Query Coord disconnected from etcd, process will exit", zap.Int64("Server Id", qc.session.ServerID))
+		log.Error("QueryCoord disconnected from etcd, process will exit", zap.Int64("Server Id", qc.session.ServerID))
 		if err := qc.Stop(); err != nil {
 			log.Fatal("failed to stop server", zap.Error(err))
 		}
@@ -221,12 +221,13 @@ func (qc *QueryCoord) Start() error {
 
 // Stop function stops watching the meta and node updates
 func (qc *QueryCoord) Stop() error {
+	qc.UpdateStateCode(internalpb.StateCode_Abnormal)
+
 	qc.scheduler.Close()
 	log.Debug("close scheduler ...")
 	qc.indexChecker.close()
 	log.Debug("close index checker ...")
 	qc.loopCancel()
-	qc.UpdateStateCode(internalpb.StateCode_Abnormal)
 
 	qc.loopWg.Wait()
 	qc.session.Revoke(time.Second)
@@ -269,7 +270,7 @@ func NewQueryCoord(ctx context.Context, factory msgstream.Factory) (*QueryCoord,
 // SetRootCoord sets root coordinator's client
 func (qc *QueryCoord) SetRootCoord(rootCoord types.RootCoord) error {
 	if rootCoord == nil {
-		return errors.New("null root coordinator interface")
+		return errors.New("null RootCoord interface")
 	}
 
 	qc.rootCoordClient = rootCoord
@@ -279,7 +280,7 @@ func (qc *QueryCoord) SetRootCoord(rootCoord types.RootCoord) error {
 // SetDataCoord sets data coordinator's client
 func (qc *QueryCoord) SetDataCoord(dataCoord types.DataCoord) error {
 	if dataCoord == nil {
-		return errors.New("null data coordinator interface")
+		return errors.New("null DataCoord interface")
 	}
 
 	qc.dataCoordClient = dataCoord
@@ -288,7 +289,7 @@ func (qc *QueryCoord) SetDataCoord(dataCoord types.DataCoord) error {
 
 func (qc *QueryCoord) SetIndexCoord(indexCoord types.IndexCoord) error {
 	if indexCoord == nil {
-		return errors.New("null index coordinator interface")
+		return errors.New("null IndexCoord interface")
 	}
 
 	qc.indexCoordClient = indexCoord
@@ -299,7 +300,7 @@ func (qc *QueryCoord) watchNodeLoop() {
 	ctx, cancel := context.WithCancel(qc.loopCtx)
 	defer cancel()
 	defer qc.loopWg.Done()
-	log.Debug("query coordinator start watch node loop")
+	log.Debug("QueryCoord start watch node loop")
 
 	offlineNodes, err := qc.cluster.offlineNodes()
 	if err == nil {
@@ -330,7 +331,7 @@ func (qc *QueryCoord) watchNodeLoop() {
 		log.Debug("start a loadBalance task", zap.Any("task", loadBalanceTask))
 	}
 
-	qc.eventChan = qc.session.WatchServices(typeutil.QueryNodeRole, qc.cluster.getSessionVersion()+1)
+	qc.eventChan = qc.session.WatchServices(typeutil.QueryNodeRole, qc.cluster.getSessionVersion()+1, nil)
 	for {
 		select {
 		case <-ctx.Done():
@@ -342,18 +343,18 @@ func (qc *QueryCoord) watchNodeLoop() {
 			switch event.EventType {
 			case sessionutil.SessionAddEvent:
 				serverID := event.Session.ServerID
-				log.Debug("start add a queryNode to cluster", zap.Any("nodeID", serverID))
+				log.Debug("start add a QueryNode to cluster", zap.Any("nodeID", serverID))
 				err := qc.cluster.registerNode(ctx, event.Session, serverID, disConnect)
 				if err != nil {
-					log.Error("query node failed to register", zap.Int64("nodeID", serverID), zap.String("error info", err.Error()))
+					log.Error("QueryCoord failed to register a QueryNode", zap.Int64("nodeID", serverID), zap.String("error info", err.Error()))
 				}
 				qc.metricsCacheManager.InvalidateSystemInfoMetrics()
 			case sessionutil.SessionDelEvent:
 				serverID := event.Session.ServerID
-				log.Debug("get a del event after queryNode down", zap.Int64("nodeID", serverID))
+				log.Debug("get a del event after QueryNode down", zap.Int64("nodeID", serverID))
 				nodeExist := qc.cluster.hasNode(serverID)
 				if !nodeExist {
-					log.Error("queryNode not exist", zap.Int64("nodeID", serverID))
+					log.Error("QueryNode not exist", zap.Int64("nodeID", serverID))
 					continue
 				}
 

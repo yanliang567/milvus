@@ -20,6 +20,8 @@ import (
 	"context"
 	"sync"
 
+	"github.com/milvus-io/milvus/internal/util/metricsinfo"
+
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 
 	grpcindexnodeclient "github.com/milvus-io/milvus/internal/distributed/indexnode/client"
@@ -40,12 +42,14 @@ type NodeManager struct {
 func NewNodeManager() *NodeManager {
 	return &NodeManager{
 		nodeClients: make(map[UniqueID]types.IndexNode),
-		pq:          &PriorityQueue{},
-		lock:        sync.RWMutex{},
+		pq: &PriorityQueue{
+			policy: PeekClientV1,
+		},
+		lock: sync.RWMutex{},
 	}
 }
 
-func (nm *NodeManager) setClient(nodeID UniqueID, client types.IndexNode) {
+func (nm *NodeManager) setClient(nodeID UniqueID, client types.IndexNode) error {
 	nm.lock.Lock()
 	defer nm.lock.Unlock()
 
@@ -55,9 +59,11 @@ func (nm *NodeManager) setClient(nodeID UniqueID, client types.IndexNode) {
 		key:      nodeID,
 		priority: 0,
 		weight:   0,
+		totalMem: 0,
 	}
 	nm.nodeClients[nodeID] = client
 	nm.pq.Push(item)
+	return nil
 }
 
 // RemoveNode removes the unused client of IndexNode.
@@ -88,16 +94,27 @@ func (nm *NodeManager) AddNode(nodeID UniqueID, address string) error {
 		log.Error("IndexCoord NodeManager", zap.Any("Add node err", err))
 		return err
 	}
-	nm.setClient(nodeID, nodeClient)
-	return nil
+	return nm.setClient(nodeID, nodeClient)
 }
 
 // PeekClient peeks the client with the least load.
-func (nm *NodeManager) PeekClient() (UniqueID, types.IndexNode) {
+func (nm *NodeManager) PeekClient(meta Meta) (UniqueID, types.IndexNode) {
 	nm.lock.Lock()
 	defer nm.lock.Unlock()
 
-	nodeID := nm.pq.Peek()
+	log.Debug("IndexCoord NodeManager PeekClient")
+
+	dim, err := getDimension(meta.indexMeta.Req)
+	if err != nil {
+		log.Error(err.Error())
+		return UniqueID(-1), nil
+	}
+	indexSize, err := estimateIndexSize(dim, meta.indexMeta.Req.NumRows, meta.indexMeta.Req.FieldSchema.DataType)
+	if err != nil {
+		log.Warn(err.Error())
+		return UniqueID(-1), nil
+	}
+	nodeID := nm.pq.Peek(indexSize, meta.indexMeta.Req.IndexParams, meta.indexMeta.Req.TypeParams)
 	client, ok := nm.nodeClients[nodeID]
 	if !ok {
 		log.Error("IndexCoord NodeManager PeekClient", zap.Any("There is no IndexNode client corresponding to NodeID", nodeID))
@@ -113,6 +130,27 @@ func (nm *NodeManager) ListNode() []UniqueID {
 	clients := []UniqueID{}
 	for id := range nm.nodeClients {
 		clients = append(clients, id)
+		if item := (nm.pq.getItemByKey(id)).(*PQItem); item.totalMem == 0 {
+			req, err := metricsinfo.ConstructRequestByMetricType(metricsinfo.SystemInfoMetrics)
+			if err != nil {
+				log.Error("create metrics request failed", zap.Error(err))
+				continue
+			}
+			metrics, err := nm.nodeClients[id].GetMetrics(context.Background(), req)
+			if err != nil {
+				log.Error("get indexnode metrics failed", zap.Error(err))
+				continue
+			}
+
+			infos := &metricsinfo.IndexNodeInfos{}
+			err = metricsinfo.UnmarshalComponentInfos(metrics.Response, infos)
+			if err != nil {
+				log.Error("get indexnode metrics info failed", zap.Error(err))
+				continue
+			}
+			nm.pq.SetMemory(id, infos.HardwareInfos.Memory)
+		}
+
 	}
 	return clients
 }

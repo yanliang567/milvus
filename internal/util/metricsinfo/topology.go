@@ -47,15 +47,19 @@ type QueryClusterTopology struct {
 	ConnectedNodes []QueryNodeInfos `json:"connected_nodes"`
 }
 
+// ConnectionType is the type of connection between nodes
 type ConnectionType = string
 
+// ConnectionType definitions
 const (
 	CoordConnectToNode ConnectionType = "manage"
 	Forward            ConnectionType = "forward"
 )
 
+// ConnectionTargetType is the type of connection target
 type ConnectionTargetType = string
 
+// ConnectionInfo contains info of connection target
 type ConnectionInfo struct {
 	TargetName string               `json:"target_name"`
 	TargetType ConnectionTargetType `json:"target_type"`

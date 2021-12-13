@@ -11,7 +11,9 @@
 
 package rocksmq
 
-import "context"
+import (
+	"context"
+)
 
 type reader struct {
 	c                       *client
@@ -51,12 +53,14 @@ func newReader(c *client, readerOptions *ReaderOptions) (*reader, error) {
 	return reader, nil
 }
 
+//Topic return the topic name of the reader
 func (r *reader) Topic() string {
 	return r.topic
 }
 
+// Next return the next message of reader, blocking until a message is available
 func (r *reader) Next(ctx context.Context) (Message, error) {
-	cMsg, err := r.c.server.Next(ctx, r.topic, r.name, r.startMessageIDInclusive)
+	cMsg, err := r.c.server.Next(ctx, r.topic, r.name)
 	if err != nil {
 		return Message{}, err
 	}
@@ -68,14 +72,17 @@ func (r *reader) Next(ctx context.Context) (Message, error) {
 	return msg, nil
 }
 
+// HasNext check if there is a message available to read
 func (r *reader) HasNext() bool {
-	return r.c.server.HasNext(r.topic, r.name, r.startMessageIDInclusive)
+	return r.c.server.HasNext(r.topic, r.name)
 }
 
+// Close close the reader and stop the blocking reader
 func (r *reader) Close() {
 	r.c.server.CloseReader(r.topic, r.name)
 }
 
+// Seek seek the reader to the position of message id
 func (r *reader) Seek(msgID UniqueID) error { //nolint:govet
 	r.c.server.ReaderSeek(r.topic, r.name, msgID)
 	return nil
