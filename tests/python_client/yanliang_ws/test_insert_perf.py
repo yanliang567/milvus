@@ -32,6 +32,17 @@ def do_insert(data, threads_num, ins_times_per_thread, collection):
             t2 = round(time.time() - t1, 3)
             logging.info(f"assert insert thread{thread_no} round{r}: {t2}")
 
+    def insert_pro(coll_name, data, rounds, thread_no):
+        port = 19530
+        alias = 'default' + str(thread_no)
+        conn1 = connections.connect(alias, host=host, port=port)
+        coll = Collection(name=collection_name, using=alias)
+        for r in range(rounds):
+            t1 = time.time()
+            res = coll.insert(data)
+            t2 = round(time.time() - t1, 3)
+            logging.info(f"assert insert process{thread_no} round{r}: {t2}")
+
     # insert
     sub_tasks = []
     logging.info(f"ready to insert {collection.name}, insert {ins_times_per_thread} times per thread")
@@ -42,7 +53,7 @@ def do_insert(data, threads_num, ins_times_per_thread, collection):
                 sub_tasks.append(t)
                 t.start()
             else:
-                p = multiprocessing.Process(target=insert_th, args=(collection, data, int(ins_times_per_thread), i))
+                p = multiprocessing.Process(target=insert_pro, args=(collection.name, data, int(ins_times_per_thread), i))
                 p.start()
                 sub_tasks.append(p)
         for t in sub_tasks:
