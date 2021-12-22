@@ -28,25 +28,23 @@ import (
 
 	datanodeclient "github.com/milvus-io/milvus/internal/distributed/datanode/client"
 	rootcoordclient "github.com/milvus-io/milvus/internal/distributed/rootcoord/client"
-	"github.com/milvus-io/milvus/internal/logutil"
-	"github.com/milvus-io/milvus/internal/util/metricsinfo"
-	"github.com/milvus-io/milvus/internal/util/mqclient"
-	"github.com/milvus-io/milvus/internal/util/tsoutil"
-	"github.com/minio/minio-go/v7"
-	"github.com/minio/minio-go/v7/pkg/credentials"
-	"go.uber.org/zap"
-
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/logutil"
 	"github.com/milvus-io/milvus/internal/msgstream"
-	"github.com/milvus-io/milvus/internal/types"
-	"github.com/milvus-io/milvus/internal/util/retry"
-	"github.com/milvus-io/milvus/internal/util/sessionutil"
-	"github.com/milvus-io/milvus/internal/util/typeutil"
-
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
+	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/metricsinfo"
+	"github.com/milvus-io/milvus/internal/util/mqclient"
+	"github.com/milvus-io/milvus/internal/util/retry"
+	"github.com/milvus-io/milvus/internal/util/sessionutil"
+	"github.com/milvus-io/milvus/internal/util/tsoutil"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
+	"go.uber.org/zap"
 )
 
 const (
@@ -175,7 +173,7 @@ func SetSegmentManager(manager Manager) Option {
 	}
 }
 
-// CreateServer create `Server` instance
+// CreateServer creates a `Server` instance
 func CreateServer(ctx context.Context, factory msgstream.Factory, opts ...Option) (*Server, error) {
 	rand.Seed(time.Now().UnixNano())
 	s := &Server{
@@ -209,22 +207,35 @@ func (s *Server) QuitSignal() <-chan struct{} {
 	return s.quitCh
 }
 
-// Register register data service at etcd
+// Register registers data service at etcd
 func (s *Server) Register() error {
+	s.session.Register()
+	go s.session.LivenessCheck(s.serverLoopCtx, func() {
+		log.Error("DataCoord disconnected from etcd, process will exit", zap.Int64("ServerID", s.session.ServerID))
+		if err := s.Stop(); err != nil {
+			log.Fatal("failed to stop server", zap.Error(err))
+		}
+		// manually send signal to starter goroutine
+		syscall.Kill(syscall.Getpid(), syscall.SIGINT)
+	})
+	return nil
+}
+
+func (s *Server) initSession() error {
 	s.session = sessionutil.NewSession(s.ctx, Params.MetaRootPath, Params.EtcdEndpoints)
 	if s.session == nil {
 		return errors.New("failed to initialize session")
 	}
 	s.session.Init(typeutil.DataCoordRole, Params.Address, true)
 	Params.NodeID = s.session.ServerID
-	Params.SetLogger(typeutil.UniqueID(-1))
+	Params.SetLogger(Params.NodeID)
 	return nil
 }
 
 // Init change server state to Initializing
 func (s *Server) Init() error {
 	atomic.StoreInt64(&s.isServing, ServerStateInitializing)
-	return nil
+	return s.initSession()
 }
 
 // Start initialize `Server` members and start loops, follow steps are taken:
@@ -277,7 +288,7 @@ func (s *Server) Start() error {
 	Params.CreatedTime = time.Now()
 	Params.UpdatedTime = time.Now()
 	atomic.StoreInt64(&s.isServing, ServerStateHealthy)
-	log.Debug("dataCoordinator startup success")
+	log.Debug("DataCoord startup success")
 
 	return nil
 }
@@ -357,7 +368,7 @@ func (s *Server) initServiceDiscovery() error {
 		log.Debug("dataCoord initServiceDiscovery failed", zap.Error(err))
 		return err
 	}
-	log.Debug("registered sessions", zap.Any("sessions", sessions))
+	log.Debug("DataCoord success to get DataNode sessions", zap.Any("sessions", sessions))
 
 	datanodes := make([]*NodeInfo, 0, len(sessions))
 	for _, session := range sessions {
@@ -399,58 +410,11 @@ func (s *Server) initMeta() error {
 
 func (s *Server) startServerLoop() {
 	s.serverLoopCtx, s.serverLoopCancel = context.WithCancel(s.ctx)
-	s.serverLoopWg.Add(4)
-	s.startStatsChannel(s.serverLoopCtx)
+	s.serverLoopWg.Add(3)
 	s.startDataNodeTtLoop(s.serverLoopCtx)
 	s.startWatchService(s.serverLoopCtx)
 	s.startFlushLoop(s.serverLoopCtx)
 	s.garbageCollector.start()
-	go s.session.LivenessCheck(s.serverLoopCtx, func() {
-		log.Error("DataCoord disconnected from etcd, process will exit", zap.Int64("ServerID", s.session.ServerID))
-		if err := s.Stop(); err != nil {
-			log.Fatal("failed to stop server", zap.Error(err))
-		}
-		// manually send signal to starter goroutine
-		syscall.Kill(syscall.Getpid(), syscall.SIGINT)
-	})
-}
-
-func (s *Server) startStatsChannel(ctx context.Context) {
-	statsStream, _ := s.msFactory.NewMsgStream(ctx)
-	statsStream.AsConsumer([]string{Params.StatisticsChannelName}, Params.DataCoordSubscriptionName)
-	log.Debug("DataCoord creates statistics channel consumer",
-		zap.String("channel", Params.StatisticsChannelName),
-		zap.String("description", Params.DataCoordSubscriptionName))
-	statsStream.Start()
-	go func() {
-		defer logutil.LogPanic()
-		defer s.serverLoopWg.Done()
-		defer statsStream.Close()
-		for {
-			select {
-			case <-ctx.Done():
-				log.Debug("statistics channel shutdown")
-				return
-			default:
-			}
-			msgPack := statsStream.Consume()
-			if msgPack == nil {
-				log.Debug("receive nil stats msg, shutdown stats channel")
-				return
-			}
-			for _, msg := range msgPack.Msgs {
-				if msg.Type() != commonpb.MsgType_SegmentStatistics {
-					log.Warn("receive unknown msg from segment statistics channel",
-						zap.Stringer("msgType", msg.Type()))
-					continue
-				}
-				ssMsg := msg.(*msgstream.SegmentStatisticsMsg)
-				for _, stat := range ssMsg.SegStats {
-					s.meta.SetCurrentRows(stat.GetSegmentID(), stat.GetNumRows())
-				}
-			}
-		}
-	}()
 }
 
 // startDataNodeTtLoop start a goroutine to recv data node tt msg from msgstream
@@ -458,14 +422,14 @@ func (s *Server) startStatsChannel(ctx context.Context) {
 func (s *Server) startDataNodeTtLoop(ctx context.Context) {
 	ttMsgStream, err := s.msFactory.NewMsgStream(ctx)
 	if err != nil {
-		log.Error("new msg stream failed", zap.Error(err))
+		log.Error("DataCoord failed to create timetick channel", zap.Error(err))
 		return
 	}
 	ttMsgStream.AsConsumerWithPosition([]string{Params.TimeTickChannelName},
 		Params.DataCoordSubscriptionName, mqclient.SubscriptionPositionLatest)
-	log.Debug("dataCoord create time tick channel consumer",
-		zap.String("timeTickChannelName", Params.TimeTickChannelName),
-		zap.String("subscriptionName", Params.DataCoordSubscriptionName))
+	log.Debug("DataCoord creates the timetick channel consumer",
+		zap.String("timeTickChannel", Params.TimeTickChannelName),
+		zap.String("subscription", Params.DataCoordSubscriptionName))
 	ttMsgStream.Start()
 
 	go func() {
@@ -475,89 +439,134 @@ func (s *Server) startDataNodeTtLoop(ctx context.Context) {
 			checker.Start()
 			defer checker.Stop()
 		}
+
 		defer logutil.LogPanic()
 		defer s.serverLoopWg.Done()
 		defer ttMsgStream.Close()
 		for {
 			select {
 			case <-ctx.Done():
-				log.Debug("data node tt loop shutdown")
+				log.Debug("DataNode timetick loop shutdown")
 				return
 			default:
 			}
 			msgPack := ttMsgStream.Consume()
 			if msgPack == nil {
-				log.Debug("receive nil tt msg, shutdown tt channel")
+				log.Debug("receive nil timetick msg and shutdown timetick channel")
 				return
 			}
 			for _, msg := range msgPack.Msgs {
-				if msg.Type() != commonpb.MsgType_DataNodeTt {
-					log.Warn("receive unexpected msg type from tt channel",
-						zap.Stringer("msgType", msg.Type()))
+				ttMsg, ok := msg.(*msgstream.DataNodeTtMsg)
+				if !ok {
+					log.Warn("receive unexpected msg type from tt channel")
 					continue
 				}
-				ttMsg := msg.(*msgstream.DataNodeTtMsg)
 				if enableTtChecker {
 					checker.Check()
 				}
 
-				ch := ttMsg.ChannelName
-				ts := ttMsg.Timestamp
-				if err := s.segmentManager.ExpireAllocations(ch, ts); err != nil {
-					log.Warn("failed to expire allocations", zap.Error(err))
+				if err := s.handleTimetickMessage(ctx, ttMsg); err != nil {
+					log.Error("failed to handle timetick message", zap.Error(err))
 					continue
-				}
-				physical, _ := tsoutil.ParseTS(ts)
-				if time.Since(physical).Minutes() > 1 {
-					// if lag behind, log every 1 mins about
-					log.RatedWarn(60.0, "Time tick lag behind for more than 1 minutes", zap.String("channel", ch), zap.Time("tt", physical))
-				}
-				segments, err := s.segmentManager.GetFlushableSegments(ctx, ch, ts)
-				if err != nil {
-					log.Warn("get flushable segments failed", zap.Error(err))
-					continue
-				}
-
-				staleSegments := s.meta.SelectSegments(func(info *SegmentInfo) bool {
-					return isSegmentHealthy(info) &&
-						info.GetInsertChannel() == ch &&
-						!info.lastFlushTime.IsZero() &&
-						time.Since(info.lastFlushTime).Minutes() >= segmentTimedFlushDuration
-				})
-
-				if len(segments)+len(staleSegments) == 0 {
-					continue
-				}
-				log.Debug("flush segments", zap.Int64s("segmentIDs", segments), zap.Int("markSegments count", len(staleSegments)))
-				segmentInfos := make([]*datapb.SegmentInfo, 0, len(segments))
-				for _, id := range segments {
-					sInfo := s.meta.GetSegment(id)
-					if sInfo == nil {
-						log.Error("get segment from meta error", zap.Int64("id", id),
-							zap.Error(err))
-						continue
-					}
-					segmentInfos = append(segmentInfos, sInfo.SegmentInfo)
-					s.meta.SetLastFlushTime(id, time.Now())
-				}
-				markSegments := make([]*datapb.SegmentInfo, 0, len(staleSegments))
-				for _, segment := range staleSegments {
-					for _, fSeg := range segmentInfos {
-						// check segment needs flush first
-						if segment.GetID() == fSeg.GetID() {
-							continue
-						}
-					}
-					markSegments = append(markSegments, segment.SegmentInfo)
-					s.meta.SetLastFlushTime(segment.GetID(), time.Now())
-				}
-				if len(segmentInfos)+len(markSegments) > 0 {
-					s.cluster.Flush(s.ctx, segmentInfos, markSegments)
 				}
 			}
 			s.helper.eventAfterHandleDataNodeTt()
 		}
 	}()
+}
+
+func (s *Server) handleTimetickMessage(ctx context.Context, ttMsg *msgstream.DataNodeTtMsg) error {
+	ch := ttMsg.GetChannelName()
+	ts := ttMsg.GetTimestamp()
+	physical, _ := tsoutil.ParseTS(ts)
+	if time.Since(physical).Minutes() > 1 {
+		// if lag behind, log every 1 mins about
+		log.RatedWarn(60.0, "time tick lag behind for more than 1 minutes", zap.String("channel", ch), zap.Time("timetick", physical))
+	}
+
+	s.updateSegmentStatistics(ttMsg.GetSegmentsStats())
+
+	if err := s.segmentManager.ExpireAllocations(ch, ts); err != nil {
+		return fmt.Errorf("expire allocations: %w", err)
+	}
+
+	flushableIDs, err := s.segmentManager.GetFlushableSegments(ctx, ch, ts)
+	if err != nil {
+		return fmt.Errorf("get flushable segments: %w", err)
+	}
+	flushableSegments := s.getFlushableSegmentsInfo(flushableIDs)
+
+	staleSegments := s.getStaleSegmentsInfo(ch)
+	staleSegments = s.filterWithFlushableSegments(staleSegments, flushableIDs)
+
+	if len(flushableSegments)+len(staleSegments) == 0 {
+		return nil
+	}
+
+	log.Debug("flush segments", zap.Int64s("segmentIDs", flushableIDs), zap.Int("markSegments count", len(staleSegments)))
+
+	s.setLastFlushTime(flushableSegments)
+	s.setLastFlushTime(staleSegments)
+
+	finfo, minfo := make([]*datapb.SegmentInfo, 0, len(flushableSegments)), make([]*datapb.SegmentInfo, 0, len(staleSegments))
+	for _, info := range flushableSegments {
+		finfo = append(finfo, info.SegmentInfo)
+	}
+	for _, info := range staleSegments {
+		minfo = append(minfo, info.SegmentInfo)
+	}
+	s.cluster.Flush(s.ctx, finfo, minfo)
+	return nil
+}
+
+func (s *Server) updateSegmentStatistics(stats []*datapb.SegmentStats) {
+	for _, stat := range stats {
+		s.meta.SetCurrentRows(stat.GetSegmentID(), stat.GetNumRows())
+	}
+}
+
+func (s *Server) getFlushableSegmentsInfo(flushableIDs []int64) []*SegmentInfo {
+	res := make([]*SegmentInfo, 0, len(flushableIDs))
+	for _, id := range flushableIDs {
+		sinfo := s.meta.GetSegment(id)
+		if sinfo == nil {
+			log.Error("get segment from meta error", zap.Int64("id", id))
+			continue
+		}
+		res = append(res, sinfo)
+	}
+	return res
+}
+
+func (s *Server) getStaleSegmentsInfo(ch string) []*SegmentInfo {
+	return s.meta.SelectSegments(func(info *SegmentInfo) bool {
+		return isSegmentHealthy(info) &&
+			info.GetInsertChannel() == ch &&
+			!info.lastFlushTime.IsZero() &&
+			time.Since(info.lastFlushTime).Minutes() >= segmentTimedFlushDuration
+	})
+}
+
+func (s *Server) filterWithFlushableSegments(staleSegments []*SegmentInfo, flushableIDs []int64) []*SegmentInfo {
+	filter := map[int64]struct{}{}
+	for _, sid := range flushableIDs {
+		filter[sid] = struct{}{}
+	}
+
+	res := make([]*SegmentInfo, 0, len(staleSegments))
+	for _, sinfo := range staleSegments {
+		if _, ok := filter[sinfo.GetID()]; ok {
+			continue
+		}
+		res = append(res, sinfo)
+	}
+	return res
+}
+
+func (s *Server) setLastFlushTime(segments []*SegmentInfo) {
+	for _, sinfo := range segments {
+		s.meta.SetLastFlushTime(sinfo.GetID(), time.Now())
+	}
 }
 
 // start a goroutine wto watch services
@@ -632,6 +641,8 @@ func (s *Server) handleSessionEvent(ctx context.Context, event *sessionutil.Sess
 	return nil
 }
 
+// startFlushLoop starts a goroutine to handle post func process
+// which is to notify `RootCoord` that this segment is flushed
 func (s *Server) startFlushLoop(ctx context.Context) {
 	go func() {
 		defer logutil.LogPanic()

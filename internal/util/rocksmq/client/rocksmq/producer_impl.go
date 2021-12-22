@@ -21,12 +21,14 @@ import (
 // assertion make sure implementation
 var _ Producer = (*producer)(nil)
 
+// producer contains a client instance and topic name
 type producer struct {
 	// client which the producer belong to
 	c     *client
 	topic string
 }
 
+// newProducer creates a rocksmq producer from options
 func newProducer(c *client, options ProducerOptions) (*producer, error) {
 	if c == nil {
 		return nil, newError(InvalidConfiguration, "client is nil")
@@ -42,6 +44,7 @@ func newProducer(c *client, options ProducerOptions) (*producer, error) {
 	}, nil
 }
 
+// Topic returns the topic name of producer
 func (p *producer) Topic() string {
 	return p.topic
 }

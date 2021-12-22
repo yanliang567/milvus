@@ -67,7 +67,7 @@ type Replica interface {
 
 	updateStatistics(segID UniqueID, numRows int64)
 	refreshFlushedSegStatistics(segID UniqueID, numRows int64)
-	getSegmentStatisticsUpdates(segID UniqueID) (*internalpb.SegmentStatisticsUpdates, error)
+	getSegmentStatisticsUpdates(segID UniqueID) (*datapb.SegmentStats, error)
 	segmentFlushed(segID UniqueID)
 }
 
@@ -170,7 +170,7 @@ func (replica *SegmentReplica) segmentFlushed(segID UniqueID) {
 }
 
 func (replica *SegmentReplica) new2NormalSegment(segID UniqueID) {
-	var seg Segment = *replica.newSegments[segID]
+	var seg = *replica.newSegments[segID]
 
 	seg.isNew.Store(false)
 	replica.normalSegments[segID] = &seg
@@ -179,7 +179,7 @@ func (replica *SegmentReplica) new2NormalSegment(segID UniqueID) {
 }
 
 func (replica *SegmentReplica) new2FlushedSegment(segID UniqueID) {
-	var seg Segment = *replica.newSegments[segID]
+	var seg = *replica.newSegments[segID]
 
 	seg.isNew.Store(false)
 	seg.isFlushed.Store(true)
@@ -191,7 +191,7 @@ func (replica *SegmentReplica) new2FlushedSegment(segID UniqueID) {
 // normal2FlushedSegment transfers a segment from *normal* to *flushed* by changing *isFlushed*
 //  flag into true, and mv the segment from normalSegments map to flushedSegments map.
 func (replica *SegmentReplica) normal2FlushedSegment(segID UniqueID) {
-	var seg Segment = *replica.normalSegments[segID]
+	var seg = *replica.normalSegments[segID]
 
 	seg.isFlushed.Store(true)
 	replica.flushedSegments[segID] = &seg
@@ -296,7 +296,7 @@ func (replica *SegmentReplica) addNormalSegment(segID, collID, partitionID Uniqu
 		log.Warn("Mismatch collection",
 			zap.Int64("input ID", collID),
 			zap.Int64("expected ID", replica.collectionID))
-		return fmt.Errorf("Mismatch collection, ID=%d", collID)
+		return fmt.Errorf("mismatch collection, ID=%d", collID)
 	}
 
 	log.Debug("Add Normal segment",
@@ -401,12 +401,14 @@ func (replica *SegmentReplica) initPKBloomFilter(s *Segment, statsBinlogs []*dat
 	}
 
 	// filter stats binlog files which is pk field stats log
-	bloomFilterFiles := make([]string, 0)
+	var bloomFilterFiles []string
 	for _, binlog := range statsBinlogs {
 		if binlog.FieldID != pkField {
 			continue
 		}
-		bloomFilterFiles = append(bloomFilterFiles, binlog.Binlogs...)
+		for _, log := range binlog.GetBinlogs() {
+			bloomFilterFiles = append(bloomFilterFiles, log.GetLogPath())
+		}
 	}
 
 	values, err := replica.minIOKV.MultiLoad(bloomFilterFiles)
@@ -580,12 +582,10 @@ func (replica *SegmentReplica) updateStatistics(segID UniqueID, numRows int64) {
 }
 
 // getSegmentStatisticsUpdates gives current segment's statistics updates.
-func (replica *SegmentReplica) getSegmentStatisticsUpdates(segID UniqueID) (*internalpb.SegmentStatisticsUpdates, error) {
+func (replica *SegmentReplica) getSegmentStatisticsUpdates(segID UniqueID) (*datapb.SegmentStats, error) {
 	replica.segMu.Lock()
 	defer replica.segMu.Unlock()
-	updates := &internalpb.SegmentStatisticsUpdates{
-		SegmentID: segID,
-	}
+	updates := &datapb.SegmentStats{SegmentID: segID}
 
 	if seg, ok := replica.newSegments[segID]; ok {
 		updates.NumRows = seg.numRows
@@ -602,7 +602,7 @@ func (replica *SegmentReplica) getSegmentStatisticsUpdates(segID UniqueID) (*int
 		return updates, nil
 	}
 
-	return nil, fmt.Errorf("Error, there's no segment %v", segID)
+	return nil, fmt.Errorf("error, there's no segment %v", segID)
 }
 
 // --- collection ---
@@ -618,7 +618,7 @@ func (replica *SegmentReplica) getCollectionSchema(collID UniqueID, ts Timestamp
 			zap.Int64("Want", replica.collectionID),
 			zap.Int64("Actual", collID),
 		)
-		return nil, fmt.Errorf("Not supported collection %v", collID)
+		return nil, fmt.Errorf("not supported collection %v", collID)
 	}
 
 	if replica.collSchema == nil {

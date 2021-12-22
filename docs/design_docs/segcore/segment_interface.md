@@ -5,14 +5,14 @@
 1. `get_row_count`: Get the number of entities in the segment
 2. `get_schema`: Get the corresponding collection schema in the segment
 3. `GetMemoryUsageInBytes`: Get memory usage of a segment
-4. `Search(plan, placeholderGroup, timestamp) -> QueryResult`: Perform search operations according to the plan containing search parameters and predicate conditions, and return search results. Ensure that the time of all search results is before specified timestamp(MVCC)
+4. `Search(plan, placeholderGroup, timestamp) -> QueryResult`: Perform search operations according to the plan containing search parameters and predicate conditions, and return search results. Ensure that the time of all search results is before the specified timestamp(MVCC)
 5. `FillTargetEntry(plan, &queryResult)`: Fill the missing column data for search results based on target columns in the plan
 
 See design details `${milvus_root}/internal/core/src/segcore/SegmentInterface.h`
 
 ## Basic Concepts：
 
-1. Segment: Data sharded into segment based on written timestamp, and the sharding logic is controlled by data coordinator.
+1. Segment: Data is sharded into segments based on written timestamp, and the sharding logic is controlled by data coordinator.
 2. Chunk: Further division of segment data, chunk is continuous data for each column
    - There will be only one chunk in each sealed segment.
    - In growing segment, chunks are currently divided by a fixed number of rows. With data ingestion, the number of chunks will increase

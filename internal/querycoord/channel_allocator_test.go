@@ -36,6 +36,7 @@ func TestShuffleChannelsToQueryNode(t *testing.T) {
 	assert.Nil(t, err)
 	clusterSession := sessionutil.NewSession(context.Background(), Params.MetaRootPath, Params.EtcdEndpoints)
 	clusterSession.Init(typeutil.QueryCoordRole, Params.Address, true)
+	clusterSession.Register()
 	meta, err := newMeta(baseCtx, kv, nil, nil)
 	assert.Nil(t, err)
 	cluster := &queryNodeCluster{
@@ -50,7 +51,7 @@ func TestShuffleChannelsToQueryNode(t *testing.T) {
 
 	firstReq := &querypb.WatchDmChannelsRequest{
 		CollectionID: defaultCollectionID,
-		PartitionID:  defaultPartitionID,
+		PartitionIDs: []UniqueID{defaultPartitionID},
 		Infos: []*datapb.VchannelInfo{
 			{
 				ChannelName: "test1",
@@ -59,7 +60,7 @@ func TestShuffleChannelsToQueryNode(t *testing.T) {
 	}
 	secondReq := &querypb.WatchDmChannelsRequest{
 		CollectionID: defaultCollectionID,
-		PartitionID:  defaultPartitionID,
+		PartitionIDs: []UniqueID{defaultPartitionID},
 		Infos: []*datapb.VchannelInfo{
 			{
 				ChannelName: "test2",
@@ -68,7 +69,7 @@ func TestShuffleChannelsToQueryNode(t *testing.T) {
 	}
 	reqs := []*querypb.WatchDmChannelsRequest{firstReq, secondReq}
 
-	err = shuffleChannelsToQueryNode(baseCtx, reqs, cluster, false, nil)
+	err = shuffleChannelsToQueryNode(baseCtx, reqs, cluster, meta, false, nil)
 	assert.NotNil(t, err)
 
 	node, err := startQueryNodeServer(baseCtx)
@@ -78,7 +79,7 @@ func TestShuffleChannelsToQueryNode(t *testing.T) {
 	cluster.registerNode(baseCtx, nodeSession, nodeID, disConnect)
 	waitQueryNodeOnline(cluster, nodeID)
 
-	err = shuffleChannelsToQueryNode(baseCtx, reqs, cluster, false, nil)
+	err = shuffleChannelsToQueryNode(baseCtx, reqs, cluster, meta, false, nil)
 	assert.Nil(t, err)
 
 	assert.Equal(t, nodeID, firstReq.NodeID)

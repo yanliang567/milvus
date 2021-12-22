@@ -24,7 +24,7 @@ import (
 // errNilKvClient stands for a nil kv client is detected when initialized
 var errNilKvClient = errors.New("kv client not initialized")
 
-// serverNotServingErrMsg used for Status Reason when datacoord is not healthy
+// serverNotServingErrMsg used for Status Reason when DataCoord is not healthy
 const serverNotServingErrMsg = "DataCoord is not serving"
 
 // errors for VerifyResponse
@@ -33,7 +33,7 @@ var errNilStatusResponse = errors.New("response has nil status")
 var errUnknownResponseType = errors.New("unknown response type")
 
 func msgDataCoordIsUnhealthy(coordID UniqueID) string {
-	return fmt.Sprintf("data coord %d is not ready", coordID)
+	return fmt.Sprintf("DataCoord %d is not ready", coordID)
 }
 
 func errDataCoordIsUnhealthy(coordID UniqueID) error {

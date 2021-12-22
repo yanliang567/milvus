@@ -52,6 +52,13 @@ type queryMsg interface {
 	TimeoutTs() Timestamp
 }
 
+// queryCollection manages and executes the retrieve and search tasks, it can be created
+// by LoadCollection or LoadPartition, but can only be destroyed by ReleaseCollection.
+// Currently query behaviors are defined below, if:
+// 1. LoadCollection --> ReleaseCollection: Query would be failed in proxy because collection is not loaded;
+// 2. LoadCollection --> ReleasePartition: Not allowed, release would failed;
+// 3. LoadPartition --> ReleaseCollection: Query would be failed in proxy because collection is not loaded;
+// 4. LoadPartition --> ReleasePartition: Query in collection should return empty results, and query in partition should return notLoaded error.
 type queryCollection struct {
 	releaseCtx context.Context
 	cancel     context.CancelFunc
@@ -386,7 +393,7 @@ func (q *queryCollection) adjustByChangeInfo(msg *msgstream.SealedSegmentsChange
 					ID:            segment.SegmentID,
 					CollectionID:  segment.CollectionID,
 					PartitionID:   segment.PartitionID,
-					InsertChannel: segment.ChannelID,
+					InsertChannel: segment.DmChannel,
 					NumOfRows:     segment.NumRows,
 					// TODO: add status, remove query pb segment status, use common pb segment status?
 					DmlPosition: &internalpb.MsgPosition{
@@ -1087,7 +1094,7 @@ func (q *queryCollection) search(msg queryMsg) error {
 	}
 
 	numSegment := int64(len(searchResults))
-	var marshaledHits *MarshaledHits = nil
+	var marshaledHits *MarshaledHits
 	err = reduceSearchResultsAndFillData(plan, searchResults, numSegment)
 	sp.LogFields(oplog.String("statistical time", "reduceSearchResults end"))
 	if err != nil {
@@ -1106,7 +1113,7 @@ func (q *queryCollection) search(msg queryMsg) error {
 	}
 	tr.Record(fmt.Sprintf("reduce result done, msgID = %d", searchMsg.ID()))
 
-	var offset int64 = 0
+	var offset int64
 	for index := range searchRequests {
 		hitBlobSizePeerQuery, err := marshaledHits.hitBlobSizeInGroup(int64(index))
 		if err != nil {
@@ -1309,7 +1316,7 @@ func (q *queryCollection) retrieve(msg queryMsg) error {
 
 func mergeRetrieveResults(retrieveResults []*segcorepb.RetrieveResults) (*segcorepb.RetrieveResults, error) {
 	var ret *segcorepb.RetrieveResults
-	var skipDupCnt int64 = 0
+	var skipDupCnt int64
 	var idSet = make(map[int64]struct{})
 
 	// merge results and remove duplicates

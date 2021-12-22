@@ -19,6 +19,7 @@ package datacoord
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand"
 	"os"
 	"path"
@@ -28,26 +29,21 @@ import (
 	"time"
 
 	"github.com/milvus-io/milvus/internal/common"
-
 	memkv "github.com/milvus-io/milvus/internal/kv/mem"
-	"github.com/milvus-io/milvus/internal/proto/milvuspb"
-
 	"github.com/milvus-io/milvus/internal/log"
-	"go.uber.org/zap"
-
-	"github.com/milvus-io/milvus/internal/util/metricsinfo"
-
 	"github.com/milvus-io/milvus/internal/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
+	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.uber.org/zap"
 )
 
 func TestMain(m *testing.M) {
@@ -194,6 +190,8 @@ func TestFlush(t *testing.T) {
 		resp, err := svr.Flush(context.TODO(), req)
 		assert.Nil(t, err)
 		assert.EqualValues(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
+
+		svr.meta.SetCurrentRows(segID, 1)
 		ids, err := svr.segmentManager.GetFlushableSegments(context.TODO(), "channel-1", expireTs)
 		assert.Nil(t, err)
 		assert.EqualValues(t, 1, len(ids))
@@ -248,15 +246,6 @@ func TestGetTimeTickChannel(t *testing.T) {
 	assert.Nil(t, err)
 	assert.EqualValues(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
 	assert.EqualValues(t, Params.TimeTickChannelName, resp.Value)
-}
-
-func TestGetStatisticsChannel(t *testing.T) {
-	svr := newTestServer(t, nil)
-	defer closeTestServer(t, svr)
-	resp, err := svr.GetStatisticsChannel(context.TODO())
-	assert.Nil(t, err)
-	assert.EqualValues(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
-	assert.EqualValues(t, Params.StatisticsChannelName, resp.Value)
 }
 
 func TestGetSegmentStates(t *testing.T) {
@@ -340,9 +329,13 @@ func TestGetInsertBinlogPaths(t *testing.T) {
 			Binlogs: []*datapb.FieldBinlog{
 				{
 					FieldID: 1,
-					Binlogs: []string{
-						"dev/datacoord/testsegment/1/part1",
-						"dev/datacoord/testsegment/1/part2",
+					Binlogs: []*datapb.Binlog{
+						{
+							LogPath: "dev/datacoord/testsegment/1/part1",
+						},
+						{
+							LogPath: "dev/datacoord/testsegment/1/part2",
+						},
 					},
 				},
 			},
@@ -367,9 +360,13 @@ func TestGetInsertBinlogPaths(t *testing.T) {
 			Binlogs: []*datapb.FieldBinlog{
 				{
 					FieldID: 1,
-					Binlogs: []string{
-						"dev/datacoord/testsegment/1/part1",
-						"dev/datacoord/testsegment/1/part2",
+					Binlogs: []*datapb.Binlog{
+						{
+							LogPath: "dev/datacoord/testsegment/1/part1",
+						},
+						{
+							LogPath: "dev/datacoord/testsegment/1/part2",
+						},
 					},
 				},
 			},
@@ -720,55 +717,6 @@ func TestServer_getSystemInfoMetrics(t *testing.T) {
 	}
 }
 
-func TestChannel(t *testing.T) {
-	svr := newTestServer(t, nil)
-	defer closeTestServer(t, svr)
-
-	t.Run("Test StatsChannel", func(t *testing.T) {
-		const segID = 0
-		const rowNum = int64(100)
-
-		segInfo := &datapb.SegmentInfo{
-			ID: segID,
-		}
-		err := svr.meta.AddSegment(NewSegmentInfo(segInfo))
-		assert.Nil(t, err)
-
-		stats := &internalpb.SegmentStatisticsUpdates{
-			SegmentID: segID,
-			NumRows:   rowNum,
-		}
-		genMsg := func(msgType commonpb.MsgType, t Timestamp) *msgstream.SegmentStatisticsMsg {
-			return &msgstream.SegmentStatisticsMsg{
-				BaseMsg: msgstream.BaseMsg{
-					HashValues: []uint32{0},
-				},
-				SegmentStatistics: internalpb.SegmentStatistics{
-					Base: &commonpb.MsgBase{
-						MsgType:   msgType,
-						MsgID:     0,
-						Timestamp: t,
-						SourceID:  0,
-					},
-					SegStats: []*internalpb.SegmentStatisticsUpdates{stats},
-				},
-			}
-		}
-
-		statsStream, _ := svr.msFactory.NewMsgStream(svr.ctx)
-		statsStream.AsProducer([]string{Params.StatisticsChannelName})
-		statsStream.Start()
-		defer statsStream.Close()
-
-		msgPack := msgstream.MsgPack{}
-		msgPack.Msgs = append(msgPack.Msgs, genMsg(commonpb.MsgType_SegmentStatistics, 123))
-		msgPack.Msgs = append(msgPack.Msgs, genMsg(commonpb.MsgType_SegmentInfo, 234))
-		msgPack.Msgs = append(msgPack.Msgs, genMsg(commonpb.MsgType_SegmentStatistics, 345))
-		err = statsStream.Produce(&msgPack)
-		assert.Nil(t, err)
-	})
-}
-
 type spySegmentManager struct {
 	spyCh chan struct{}
 }
@@ -842,9 +790,13 @@ func TestSaveBinlogPaths(t *testing.T) {
 			Field2BinlogPaths: []*datapb.FieldBinlog{
 				{
 					FieldID: 1,
-					Binlogs: []string{
-						"/by-dev/test/0/1/2/1/Allo1",
-						"/by-dev/test/0/1/2/1/Allo2",
+					Binlogs: []*datapb.Binlog{
+						{
+							LogPath: "/by-dev/test/0/1/2/1/Allo1",
+						},
+						{
+							LogPath: "/by-dev/test/0/1/2/1/Allo2",
+						},
 					},
 				},
 			},
@@ -873,8 +825,8 @@ func TestSaveBinlogPaths(t *testing.T) {
 		assert.NotNil(t, fieldBinlogs)
 		assert.EqualValues(t, 2, len(fieldBinlogs.GetBinlogs()))
 		assert.EqualValues(t, 1, fieldBinlogs.GetFieldID())
-		assert.EqualValues(t, "/by-dev/test/0/1/2/1/Allo1", fieldBinlogs.GetBinlogs()[0])
-		assert.EqualValues(t, "/by-dev/test/0/1/2/1/Allo2", fieldBinlogs.GetBinlogs()[1])
+		assert.EqualValues(t, "/by-dev/test/0/1/2/1/Allo1", fieldBinlogs.GetBinlogs()[0].GetLogPath())
+		assert.EqualValues(t, "/by-dev/test/0/1/2/1/Allo2", fieldBinlogs.GetBinlogs()[1].GetLogPath())
 
 		segmentInfo := svr.meta.GetSegment(0)
 		assert.NotNil(t, segmentInfo)
@@ -991,25 +943,37 @@ func TestDropVirtualChannel(t *testing.T) {
 				Field2BinlogPaths: []*datapb.FieldBinlog{
 					{
 						FieldID: 1,
-						Binlogs: []string{
-							"/by-dev/test/0/1/2/1/Allo1",
-							"/by-dev/test/0/1/2/1/Allo2",
+						Binlogs: []*datapb.Binlog{
+							{
+								LogPath: "/by-dev/test/0/1/2/1/Allo1",
+							},
+							{
+								LogPath: "/by-dev/test/0/1/2/1/Allo2",
+							},
 						},
 					},
 				},
 				Field2StatslogPaths: []*datapb.FieldBinlog{
 					{
 						FieldID: 1,
-						Binlogs: []string{
-							"/by-dev/test/0/1/2/1/stats1",
-							"/by-dev/test/0/1/2/1/stats2",
+						Binlogs: []*datapb.Binlog{
+							{
+								LogPath: "/by-dev/test/0/1/2/1/stats1",
+							},
+							{
+								LogPath: "/by-dev/test/0/1/2/1/stats2",
+							},
 						},
 					},
 				},
-				Deltalogs: []*datapb.DeltaLogInfo{
+				Deltalogs: []*datapb.FieldBinlog{
 					{
-						RecordEntries: 1,
-						DeltaLogPath:  "/by-dev/test/0/1/2/1/delta1",
+						Binlogs: []*datapb.Binlog{
+							{
+								EntriesNum: 1,
+								LogPath:    "/by-dev/test/0/1/2/1/delta1",
+							},
+						},
 					},
 				},
 				CheckPoint: &internalpb.MsgPosition{
@@ -1143,6 +1107,10 @@ func TestDataNodeTtChannel(t *testing.T) {
 
 		msgPack := msgstream.MsgPack{}
 		msg := genMsg(commonpb.MsgType_DataNodeTt, "ch-1", assign.ExpireTime)
+		msg.SegmentsStats = append(msg.SegmentsStats, &datapb.SegmentStats{
+			SegmentID: assign.GetSegID(),
+			NumRows:   1,
+		})
 		msgPack.Msgs = append(msgPack.Msgs, msg)
 		err = ttMsgStream.Produce(&msgPack)
 		assert.Nil(t, err)
@@ -1217,6 +1185,10 @@ func TestDataNodeTtChannel(t *testing.T) {
 
 		msgPack := msgstream.MsgPack{}
 		msg := genMsg(commonpb.MsgType_DataNodeTt, "ch-1", assign.ExpireTime)
+		msg.SegmentsStats = append(msg.SegmentsStats, &datapb.SegmentStats{
+			SegmentID: assign.GetSegID(),
+			NumRows:   1,
+		})
 		msgPack.Msgs = append(msgPack.Msgs, msg)
 		err = ttMsgStream.Produce(&msgPack)
 		assert.Nil(t, err)
@@ -1659,27 +1631,39 @@ func TestGetRecoveryInfo(t *testing.T) {
 			Field2BinlogPaths: []*datapb.FieldBinlog{
 				{
 					FieldID: 1,
-					Binlogs: []string{
-						"/binlog/file1",
-						"/binlog/file2",
+					Binlogs: []*datapb.Binlog{
+						{
+							LogPath: "/binlog/file1",
+						},
+						{
+							LogPath: "/binlog/file2",
+						},
 					},
 				},
 			},
 			Field2StatslogPaths: []*datapb.FieldBinlog{
 				{
 					FieldID: 1,
-					Binlogs: []string{
-						"/stats_log/file1",
-						"/stats_log/file2",
+					Binlogs: []*datapb.Binlog{
+						{
+							LogPath: "/stats_log/file1",
+						},
+						{
+							LogPath: "/stats_log/file2",
+						},
 					},
 				},
 			},
-			Deltalogs: []*datapb.DeltaLogInfo{
+			Deltalogs: []*datapb.FieldBinlog{
 				{
-					TimestampFrom: 0,
-					TimestampTo:   1,
-					DeltaLogPath:  "/stats_log/file1",
-					DeltaLogSize:  1,
+					Binlogs: []*datapb.Binlog{
+						{
+							TimestampFrom: 0,
+							TimestampTo:   1,
+							LogPath:       "/stats_log/file1",
+							LogSize:       1,
+						},
+					},
 				},
 			},
 		}
@@ -1707,7 +1691,9 @@ func TestGetRecoveryInfo(t *testing.T) {
 		assert.EqualValues(t, 0, resp.GetBinlogs()[0].GetSegmentID())
 		assert.EqualValues(t, 1, len(resp.GetBinlogs()[0].GetFieldBinlogs()))
 		assert.EqualValues(t, 1, resp.GetBinlogs()[0].GetFieldBinlogs()[0].GetFieldID())
-		assert.ElementsMatch(t, []string{"/binlog/file1", "/binlog/file2"}, resp.GetBinlogs()[0].GetFieldBinlogs()[0].GetBinlogs())
+		for i, binlog := range resp.GetBinlogs()[0].GetFieldBinlogs()[0].GetBinlogs() {
+			assert.Equal(t, fmt.Sprintf("/binlog/file%d", i+1), binlog.GetLogPath())
+		}
 	})
 	t.Run("with dropped segments", func(t *testing.T) {
 		svr := newTestServer(t, nil)
@@ -1997,7 +1983,7 @@ func TestOptions(t *testing.T) {
 	})
 	t.Run("SetDataNodeCreator", func(t *testing.T) {
 		var target int64
-		var val int64 = rand.Int63()
+		var val = rand.Int63()
 		opt := SetDataNodeCreator(func(context.Context, string) (types.DataNode, error) {
 			target = val
 			return nil, nil
@@ -2250,7 +2236,6 @@ func TestGetFlushState(t *testing.T) {
 func newTestServer(t *testing.T, receiveCh chan interface{}, opts ...Option) *Server {
 	Params.Init()
 	Params.TimeTickChannelName = Params.TimeTickChannelName + strconv.Itoa(rand.Int())
-	Params.StatisticsChannelName = Params.StatisticsChannelName + strconv.Itoa(rand.Int())
 	var err error
 	factory := msgstream.NewPmsFactory()
 	m := map[string]interface{}{
@@ -2276,11 +2261,11 @@ func newTestServer(t *testing.T, receiveCh chan interface{}, opts ...Option) *Se
 		return newMockRootCoordService(), nil
 	}
 	assert.Nil(t, err)
-	err = svr.Register()
-	assert.Nil(t, err)
 	err = svr.Init()
 	assert.Nil(t, err)
 	err = svr.Start()
+	assert.Nil(t, err)
+	err = svr.Register()
 	assert.Nil(t, err)
 	return svr
 }

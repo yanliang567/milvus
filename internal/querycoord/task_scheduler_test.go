@@ -70,7 +70,7 @@ func (tt *testTask) execute(ctx context.Context) error {
 		binlogs := make([]*datapb.FieldBinlog, 0)
 		binlogs = append(binlogs, &datapb.FieldBinlog{
 			FieldID: 0,
-			Binlogs: []string{funcutil.RandomString(tt.binlogSize)},
+			Binlogs: []*datapb.Binlog{{LogPath: funcutil.RandomString(tt.binlogSize)}},
 		})
 		for id := 0; id < 10; id++ {
 			segmentInfo := &querypb.SegmentLoadInfo{
@@ -83,7 +83,8 @@ func (tt *testTask) execute(ctx context.Context) error {
 				Base: &commonpb.MsgBase{
 					MsgType: commonpb.MsgType_LoadSegments,
 				},
-				Infos: []*querypb.SegmentLoadInfo{segmentInfo},
+				Infos:        []*querypb.SegmentLoadInfo{segmentInfo},
+				CollectionID: defaultCollectionID,
 			}
 			loadTask := &loadSegmentTask{
 				baseTask: &baseTask{
@@ -110,7 +111,8 @@ func (tt *testTask) execute(ctx context.Context) error {
 				Base: &commonpb.MsgBase{
 					MsgType: commonpb.MsgType_LoadSegments,
 				},
-				DstNodeID: tt.nodeID,
+				DstNodeID:    tt.nodeID,
+				CollectionID: defaultCollectionID,
 			},
 			meta:           tt.meta,
 			cluster:        tt.cluster,
@@ -178,7 +180,7 @@ func TestWatchQueryChannel_ClearEtcdInfoAfterAssignedNodeDown(t *testing.T) {
 		baseTask: baseTask{
 			ctx:              baseCtx,
 			condition:        newTaskCondition(baseCtx),
-			triggerCondition: querypb.TriggerCondition_grpcRequest,
+			triggerCondition: querypb.TriggerCondition_GrpcRequest,
 		},
 		baseMsg: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_WatchQueryChannels,
@@ -511,7 +513,7 @@ func Test_saveInternalTaskToEtcd(t *testing.T) {
 		baseTask: baseTask{
 			ctx:              ctx,
 			condition:        newTaskCondition(ctx),
-			triggerCondition: querypb.TriggerCondition_grpcRequest,
+			triggerCondition: querypb.TriggerCondition_GrpcRequest,
 			taskID:           100,
 		},
 		baseMsg: &commonpb.MsgBase{

@@ -35,7 +35,7 @@ on:
 jobs:
   ubuntu:
     name: Build and test AMD64 Ubuntu ${{ matrix.ubuntu }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-${{ matrix.ubuntu }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -74,3 +74,5 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./go_coverage.txt,./lcov_output.info
           name: ubuntu-${{ matrix.ubuntu }}-unittests
+          fail_ci_if_error: true
+

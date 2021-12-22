@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/logutil"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 
 	"github.com/milvus-io/milvus/internal/metrics"
@@ -55,6 +56,7 @@ const channelMgrTickerInterval = 100 * time.Millisecond
 // make sure Proxy implements types.Proxy
 var _ types.Proxy = (*Proxy)(nil)
 
+// Proxy of milvus
 type Proxy struct {
 	ctx    context.Context
 	cancel func()
@@ -102,18 +104,14 @@ func NewProxy(ctx context.Context, factory msgstream.Factory) (*Proxy, error) {
 		msFactory: factory,
 	}
 	node.UpdateStateCode(internalpb.StateCode_Abnormal)
-	log.Debug("Proxy", zap.Any("State", node.stateCode.Load()))
+	logutil.Logger(ctx).Debug("create a new Proxy instance", zap.Any("state", node.stateCode.Load()))
 	return node, nil
 
 }
 
 // Register registers proxy at etcd
 func (node *Proxy) Register() error {
-	node.session = sessionutil.NewSession(node.ctx, Params.MetaRootPath, Params.EtcdEndpoints)
-	node.session.Init(typeutil.ProxyRole, Params.NetworkAddress, false)
-	Params.ProxyID = node.session.ServerID
-	Params.SetLogger(Params.ProxyID)
-	Params.initProxySubName()
+	node.session.Register()
 	go node.session.LivenessCheck(node.ctx, func() {
 		log.Error("Proxy disconnected from etcd, process will exit", zap.Int64("Server Id", node.session.ServerID))
 		if err := node.Stop(); err != nil {
@@ -126,39 +124,56 @@ func (node *Proxy) Register() error {
 	return nil
 }
 
+func (node *Proxy) initSession() error {
+	node.session = sessionutil.NewSession(node.ctx, Params.MetaRootPath, Params.EtcdEndpoints)
+	if node.session == nil {
+		return errors.New("new session failed, maybe etcd cannot be connected")
+	}
+	node.session.Init(typeutil.ProxyRole, Params.NetworkAddress, false)
+	Params.ProxyID = node.session.ServerID
+	Params.SetLogger(Params.ProxyID)
+	return nil
+}
+
 // Init initialize proxy.
 func (node *Proxy) Init() error {
+	err := node.initSession()
+	if err != nil {
+		log.Error("Proxy init session failed", zap.Error(err))
+		return err
+	}
+	Params.initProxySubName()
 	// wait for datacoord state changed to Healthy
 	if node.dataCoord != nil {
-		log.Debug("Proxy wait for dataCoord ready")
+		log.Debug("Proxy wait for DataCoord ready")
 		err := funcutil.WaitForComponentHealthy(node.ctx, node.dataCoord, "DataCoord", 1000000, time.Millisecond*200)
 		if err != nil {
-			log.Debug("Proxy wait for dataCoord ready failed", zap.Error(err))
+			log.Debug("Proxy wait for DataCoord ready failed", zap.Error(err))
 			return err
 		}
-		log.Debug("Proxy dataCoord is ready")
+		log.Debug("Proxy DataCoord is ready")
 	}
 
 	// wait for queryCoord state changed to Healthy
 	if node.queryCoord != nil {
-		log.Debug("Proxy wait for queryCoord ready")
+		log.Debug("Proxy wait for QueryCoord ready")
 		err := funcutil.WaitForComponentHealthy(node.ctx, node.queryCoord, "QueryCoord", 1000000, time.Millisecond*200)
 		if err != nil {
-			log.Debug("Proxy wait for queryCoord ready failed", zap.Error(err))
+			log.Debug("Proxy wait for QueryCoord ready failed", zap.Error(err))
 			return err
 		}
-		log.Debug("Proxy queryCoord is ready")
+		log.Debug("Proxy QueryCoord is ready")
 	}
 
 	// wait for indexcoord state changed to Healthy
 	if node.indexCoord != nil {
-		log.Debug("Proxy wait for indexCoord ready")
+		log.Debug("Proxy wait for IndexCoord ready")
 		err := funcutil.WaitForComponentHealthy(node.ctx, node.indexCoord, "IndexCoord", 1000000, time.Millisecond*200)
 		if err != nil {
-			log.Debug("Proxy wait for indexCoord ready failed", zap.Error(err))
+			log.Debug("Proxy wait for IndexCoord ready failed", zap.Error(err))
 			return err
 		}
-		log.Debug("Proxy indexCoord is ready")
+		log.Debug("Proxy IndexCoord is ready")
 	}
 
 	if node.queryCoord != nil {
@@ -176,8 +191,8 @@ func (node *Proxy) Init() error {
 
 		// TODO SearchResultChannelNames and RetrieveResultChannelNames should not be part in the Param table
 		// we should maintain a separate map for search result
-		Params.SearchResultChannelNames = []string{resp.ResultChannel}
-		Params.RetrieveResultChannelNames = []string{resp.ResultChannel}
+		Params.SearchResultChannelNames = []string{resp.QueryResultChannel}
+		Params.RetrieveResultChannelNames = []string{resp.QueryResultChannel}
 		log.Debug("Proxy CreateQueryChannel success", zap.Any("SearchResultChannelNames", Params.SearchResultChannelNames))
 		log.Debug("Proxy CreateQueryChannel success", zap.Any("RetrieveResultChannelNames", Params.RetrieveResultChannelNames))
 	}
@@ -185,7 +200,7 @@ func (node *Proxy) Init() error {
 	m := map[string]interface{}{
 		"PulsarAddress": Params.PulsarAddress,
 		"PulsarBufSize": 1024}
-	err := node.msFactory.SetParams(m)
+	err = node.msFactory.SetParams(m)
 	if err != nil {
 		return err
 	}

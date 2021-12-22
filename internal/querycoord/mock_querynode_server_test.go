@@ -106,6 +106,7 @@ func (qs *queryNodeServerMock) Register() error {
 	qs.queryNodeID = qs.session.ServerID
 	log.Debug("query nodeID", zap.Int64("nodeID", qs.queryNodeID))
 	log.Debug("query node address", zap.String("address", qs.session.Address))
+	qs.session.Register()
 
 	return nil
 }
@@ -212,7 +213,7 @@ func (qs *queryNodeServerMock) LoadSegments(ctx context.Context, req *querypb.Lo
 			PartitionID:  info.PartitionID,
 			CollectionID: info.CollectionID,
 			NodeID:       qs.queryNodeID,
-			SegmentState: querypb.SegmentState_sealed,
+			SegmentState: commonpb.SegmentState_Sealed,
 			MemSize:      info.NumOfRows * int64(sizePerRecord),
 			NumRows:      info.NumOfRows,
 		}

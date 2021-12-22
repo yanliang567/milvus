@@ -27,6 +27,7 @@ func (rr *rmqReader) Next(ctx context.Context) (Message, error) {
 	return msg, nil
 }
 
+// HasNext returns whether reader has next message
 func (rr *rmqReader) HasNext() bool {
 	return rr.r.HasNext()
 }
@@ -36,6 +37,7 @@ func (rr *rmqReader) Seek(id MessageID) error {
 	return rr.r.Seek(msgID)
 }
 
+// Close closes the rocksmq reader
 func (rr *rmqReader) Close() {
 	rr.r.Close()
 }

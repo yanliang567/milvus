@@ -24,9 +24,7 @@ const (
 	maxBloomFalsePositive float64 = 0.005
 )
 
-type Stats interface {
-}
-
+// Int64Stats contains statistics data for int64 column
 type Int64Stats struct {
 	FieldID int64              `json:"fieldID"`
 	Max     int64              `json:"max"`
@@ -73,7 +71,7 @@ func (sw *StatsWriter) StatsInt64(fieldID int64, isPrimaryKey bool, msgs []int64
 	return nil
 }
 
-// StatsReade reads stats
+// StatsReader reads stats
 type StatsReader struct {
 	buffer []byte
 }

@@ -25,16 +25,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/milvus-io/milvus/internal/util/retry"
-
-	"github.com/milvus-io/milvus/internal/types"
-
-	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/keepalive"
-
-	grpc_opentracing "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
-	isc "github.com/milvus-io/milvus/internal/distributed/indexcoord/client"
+	ot "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
+	icc "github.com/milvus-io/milvus/internal/distributed/indexcoord/client"
 	rcc "github.com/milvus-io/milvus/internal/distributed/rootcoord/client"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/msgstream"
@@ -43,10 +35,18 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	qn "github.com/milvus-io/milvus/internal/querynode"
+	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
+	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/trace"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
+	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 )
+
+var Params paramtable.GrpcServerConfig
 
 // UniqueID is an alias for type typeutil.UniqueID, used as a unique identifier for the request.
 type UniqueID = typeutil.UniqueID
@@ -82,12 +82,12 @@ func NewServer(ctx context.Context, factory msgstream.Factory) (*Server, error) 
 
 // init initializes QueryNode's grpc service.
 func (s *Server) init() error {
-	Params.Init()
+	Params.InitOnce(typeutil.QueryNodeRole)
 
 	qn.Params.InitOnce()
 	qn.Params.QueryNodeIP = Params.IP
 	qn.Params.QueryNodePort = int64(Params.Port)
-	qn.Params.QueryNodeID = Params.QueryNodeID
+	//qn.Params.QueryNodeID = Params.QueryNodeID
 
 	closer := trace.InitTracing(fmt.Sprintf("query_node ip: %s, port: %d", Params.IP, Params.Port))
 	s.closer = closer
@@ -133,7 +133,7 @@ func (s *Server) init() error {
 
 	// --- IndexCoord ---
 	if s.indexCoord == nil {
-		s.indexCoord, err = isc.NewClient(s.ctx, qn.Params.MetaRootPath, qn.Params.EtcdEndpoints)
+		s.indexCoord, err = icc.NewClient(s.ctx, qn.Params.MetaRootPath, qn.Params.EtcdEndpoints)
 		if err != nil {
 			log.Debug("QueryNode new IndexCoordClient failed", zap.Error(err))
 			panic(err)
@@ -169,15 +169,20 @@ func (s *Server) init() error {
 		return err
 	}
 
-	if err := s.querynode.Register(); err != nil {
-		return err
-	}
 	return nil
 }
 
 // start starts QueryNode's grpc service.
 func (s *Server) start() error {
-	return s.querynode.Start()
+	if err := s.querynode.Start(); err != nil {
+		log.Error("QueryNode start failed", zap.Error(err))
+		return err
+	}
+	if err := s.querynode.Register(); err != nil {
+		log.Error("QueryNode register service failed", zap.Error(err))
+		return err
+	}
+	return nil
 }
 
 // startGrpcLoop starts the grpc loop of QueryNode component.
@@ -217,10 +222,8 @@ func (s *Server) startGrpcLoop(grpcPort int) {
 		grpc.KeepaliveParams(kasp),
 		grpc.MaxRecvMsgSize(Params.ServerMaxRecvSize),
 		grpc.MaxSendMsgSize(Params.ServerMaxSendSize),
-		grpc.UnaryInterceptor(
-			grpc_opentracing.UnaryServerInterceptor(opts...)),
-		grpc.StreamInterceptor(
-			grpc_opentracing.StreamServerInterceptor(opts...)))
+		grpc.UnaryInterceptor(ot.UnaryServerInterceptor(opts...)),
+		grpc.StreamInterceptor(ot.StreamServerInterceptor(opts...)))
 	querypb.RegisterQueryNodeServer(s.grpcServer, s)
 
 	ctx, cancel := context.WithCancel(s.ctx)
@@ -251,7 +254,7 @@ func (s *Server) Run() error {
 
 // Stop stops QueryNode's grpc service.
 func (s *Server) Stop() error {
-	log.Debug("QueryNode stop", zap.String("Address", Params.Address))
+	log.Debug("QueryNode stop", zap.String("Address", Params.GetAddress()))
 	if s.closer != nil {
 		if err := s.closer.Close(); err != nil {
 			return err

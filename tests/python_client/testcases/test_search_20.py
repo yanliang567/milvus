@@ -39,8 +39,6 @@ raw_vectors, binary_entities = gen_binary_entities(default_nb)
 default_query, _ = gen_search_vectors_params(field_name, entities, default_top_k, nq)
 
 
-
-
 class TestCollectionSearchInvalid(TestcaseBase):
     """ Test case of search interface """
 
@@ -488,7 +486,7 @@ class TestCollectionSearchInvalid(TestcaseBase):
         """
         # 1. initialize with data
         partition_num = 1
-        collection_w = self.init_collection_general(prefix, True, 10, partition_num)[0]
+        collection_w = self.init_collection_general(prefix, True, 10, partition_num, is_index=True)[0]
         par = collection_w.partitions
         par_name = par[partition_num].name
         # 2. release partition
@@ -504,6 +502,7 @@ class TestCollectionSearchInvalid(TestcaseBase):
                             check_items={"err_code": 1,
                                          "err_msg": "partition has been released"})
 
+    @pytest.mark.skip("enable this later using session/strong consistency")
     @pytest.mark.tags(CaseLabel.L1)
     def test_search_with_empty_collection(self):
         """
@@ -537,6 +536,8 @@ class TestCollectionSearchInvalid(TestcaseBase):
         # 4. search with data inserted but not load again
         data = cf.gen_default_dataframe_data(nb=2000)
         insert_res = collection_w.insert(data)[0]
+        # Using bounded staleness, maybe we cannot search the "inserted" requests,
+        # since the search requests arrived query nodes earlier than query nodes consume the insert requests.
         collection_w.search(vectors[:default_nq], default_search_field, default_search_params,
                             default_limit, default_search_exp,
                             guarantee_timestamp=insert_res.timestamp,
@@ -782,6 +783,7 @@ class TestCollectionSearchInvalid(TestcaseBase):
                             check_items={"err_code": 1,
                                          "err_msg": f"`round_decimal` value {round_decimal} is illegal"})
 
+
 class TestCollectionSearch(TestcaseBase):
     """ Test case of search interface """
 
@@ -871,7 +873,7 @@ class TestCollectionSearch(TestcaseBase):
             assert hits.distances[0] == 0.0
 
     @pytest.mark.tags(CaseLabel.L1)
-    @pytest.mark.parametrize("dup_times", [1,2,3])
+    @pytest.mark.parametrize("dup_times", [1, 2, 3])
     def test_search_with_dup_primary_key(self, dim, auto_id, _async, dup_times):
         """
         target: test search with duplicate primary key
@@ -974,6 +976,7 @@ class TestCollectionSearch(TestcaseBase):
                                          "_async": _async})
 
     @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.xfail(reason="issue #13611")
     def test_search_before_after_delete(self, nq, dim, auto_id, _async):
         """
         target: test search function before and after deletion
@@ -1005,6 +1008,7 @@ class TestCollectionSearch(TestcaseBase):
         log.info("test_search_before_after_delete: deleting a partition")
         par = collection_w.partitions
         deleted_entity_num = par[partition_num].num_entities
+        print(deleted_entity_num)
         entity_num = nb - deleted_entity_num
         collection_w.drop_partition(par[partition_num].name)
         log.info("test_search_before_after_delete: deleted a partition")
@@ -1020,94 +1024,96 @@ class TestCollectionSearch(TestcaseBase):
                                          "limit": limit - deleted_entity_num,
                                          "_async": _async})
 
-    @pytest.mark.tags(CaseLabel.L1)
-    def test_search_partition_after_release_one(self, nq, dim, auto_id, _async):
-        """
-        target: test search function before and after release
-        method: 1. search the collection
-                2. release a partition
-                3. search the collection
-        expected: the deleted entities should not be searched
-        """
-        # 1. initialize with data
-        nb = 1000
-        limit = 1000
-        partition_num = 1
-        collection_w, _, _, insert_ids = self.init_collection_general(prefix, True, nb,
-                                                                      partition_num,
-                                                                      auto_id=auto_id,
-                                                                      dim=dim)[0:4]
-        # 2. search all the partitions before partition deletion
-        vectors = [[random.random() for _ in range(dim)] for _ in range(nq)]
-        log.info("test_search_partition_after_release_one: searching before deleting partitions")
-        collection_w.search(vectors[:nq], default_search_field,
-                            default_search_params, limit,
-                            default_search_exp, _async=_async,
-                            check_task=CheckTasks.check_search_results,
-                            check_items={"nq": nq,
-                                         "ids": insert_ids,
-                                         "limit": limit,
-                                         "_async": _async})
-        # 3. release one partition
-        log.info("test_search_partition_after_release_one: releasing a partition")
-        par = collection_w.partitions
-        deleted_entity_num = par[partition_num].num_entities
-        entity_num = nb - deleted_entity_num
-        conn = self.connection_wrap.get_connection()[0]
-        conn.release_partitions(collection_w.name, [par[partition_num].name])
-        log.info("test_search_partition_after_release_one: released a partition")
-        # 4. search collection after release one partition
-        log.info("test_search_partition_after_release_one: searching after deleting partitions")
-        collection_w.search(vectors[:nq], default_search_field,
-                            default_search_params, limit,
-                            default_search_exp, _async=_async,
-                            check_task=CheckTasks.check_search_results,
-                            check_items={"nq": nq,
-                                         "ids": insert_ids[:entity_num],
-                                         "limit": limit - deleted_entity_num,
-                                         "_async": _async})
+    # @pytest.mark.tags(CaseLabel.L1)
+    # @pytest.mark.skip("https://github.com/milvus-io/milvus/issues/13118")
+    # def test_search_partition_after_release_one(self, nq, dim, auto_id, _async):
+    #     """
+    #     target: test search function before and after release
+    #     method: 1. search the collection
+    #             2. release a partition
+    #             3. search the collection
+    #     expected: the deleted entities should not be searched
+    #     """
+    #     # 1. initialize with data
+    #     nb = 1000
+    #     limit = 1000
+    #     partition_num = 1
+    #     collection_w, _, _, insert_ids = self.init_collection_general(prefix, True, nb,
+    #                                                                   partition_num,
+    #                                                                   auto_id=auto_id,
+    #                                                                   dim=dim)[0:4]                                                            
+    #     # 2. search all the partitions before partition deletion
+    #     vectors = [[random.random() for _ in range(dim)] for _ in range(nq)]
+    #     log.info("test_search_partition_after_release_one: searching before deleting partitions")
+    #     collection_w.search(vectors[:nq], default_search_field,
+    #                         default_search_params, limit,
+    #                         default_search_exp, _async=_async,
+    #                         check_task=CheckTasks.check_search_results,
+    #                         check_items={"nq": nq,
+    #                                      "ids": insert_ids,
+    #                                      "limit": limit,
+    #                                      "_async": _async})
+    #     # 3. release one partition
+    #     log.info("test_search_partition_after_release_one: releasing a partition")
+    #     par = collection_w.partitions
+    #     deleted_entity_num = par[partition_num].num_entities
+    #     entity_num = nb - deleted_entity_num
+    #     conn = self.connection_wrap.get_connection()[0]
+    #     conn.release_partitions(collection_w.name, [par[partition_num].name])
+    #     log.info("test_search_partition_after_release_one: released a partition")
+    #     # 4. search collection after release one partition
+    #     log.info("test_search_partition_after_release_one: searching after deleting partitions")
+    #     collection_w.search(vectors[:nq], default_search_field,
+    #                         default_search_params, limit,
+    #                         default_search_exp, _async=_async,
+    #                         check_task=CheckTasks.check_search_results,
+    #                         check_items={"nq": nq,
+    #                                      "ids": insert_ids[:entity_num],
+    #                                      "limit": limit - deleted_entity_num,
+    #                                      "_async": _async})
 
-    @pytest.mark.tags(CaseLabel.L2)
-    def test_search_partition_after_release_all(self, nq, dim, auto_id, _async):
-        """
-        target: test search function before and after release
-        method: 1. search the collection
-                2. release all partitions
-                3. search the collection
-        expected: 0 entity should be searched
-        """
-        # 1. initialize with data
-        nb = 1000
-        limit = 1000
-        collection_w, _, _, insert_ids = self.init_collection_general(prefix, True, nb,
-                                                                      1, auto_id=auto_id,
-                                                                      dim=dim)[0:4]
-        # 2. search all the partitions before partition deletion
-        vectors = [[random.random() for _ in range(dim)] for _ in range(nq)]
-        log.info("test_search_partition_after_release_all: searching before deleting partitions")
-        collection_w.search(vectors[:nq], default_search_field,
-                            default_search_params, limit,
-                            default_search_exp, _async=_async,
-                            check_task=CheckTasks.check_search_results,
-                            check_items={"nq": nq,
-                                         "ids": insert_ids,
-                                         "limit": limit,
-                                         "_async": _async})
-        # 3. release all partitions
-        log.info("test_search_partition_after_release_all: releasing a partition")
-        par = collection_w.partitions
-        conn = self.connection_wrap.get_connection()[0]
-        conn.release_partitions(collection_w.name, [par[0].name, par[1].name])
-        log.info("test_search_partition_after_release_all: released a partition")
-        # 4. search collection after release all partitions
-        collection_w.search(vectors[:nq], default_search_field,
-                            default_search_params, limit,
-                            default_search_exp, _async=_async,
-                            check_task=CheckTasks.check_search_results,
-                            check_items={"nq": nq,
-                                         "ids": [],
-                                         "limit": 0,
-                                         "_async": _async})
+    # @pytest.mark.tags(CaseLabel.L2)
+    # @pytest.mark.skip("https://github.com/milvus-io/milvus/issues/13118")
+    # def test_search_partition_after_release_all(self, nq, dim, auto_id, _async):
+    #     """
+    #     target: test search function before and after release
+    #     method: 1. search the collection
+    #             2. release all partitions
+    #             3. search the collection
+    #     expected: 0 entity should be searched
+    #     """
+    #     # 1. initialize with data
+    #     nb = 1000
+    #     limit = 1000
+    #     collection_w, _, _, insert_ids = self.init_collection_general(prefix, True, nb,
+    #                                                                   1, auto_id=auto_id,
+    #                                                                   dim=dim)[0:4]
+    #     # 2. search all the partitions before partition deletion
+    #     vectors = [[random.random() for _ in range(dim)] for _ in range(nq)]
+    #     log.info("test_search_partition_after_release_all: searching before deleting partitions")
+    #     collection_w.search(vectors[:nq], default_search_field,
+    #                         default_search_params, limit,
+    #                         default_search_exp, _async=_async,
+    #                         check_task=CheckTasks.check_search_results,
+    #                         check_items={"nq": nq,
+    #                                      "ids": insert_ids,
+    #                                      "limit": limit,
+    #                                      "_async": _async})
+    #     # 3. release all partitions
+    #     log.info("test_search_partition_after_release_all: releasing a partition")
+    #     par = collection_w.partitions
+    #     conn = self.connection_wrap.get_connection()[0]
+    #     conn.release_partitions(collection_w.name, [par[0].name, par[1].name])
+    #     log.info("test_search_partition_after_release_all: released a partition")
+    #     # 4. search collection after release all partitions
+    #     collection_w.search(vectors[:nq], default_search_field,
+    #                         default_search_params, limit,
+    #                         default_search_exp, _async=_async,
+    #                         check_task=CheckTasks.check_search_results,
+    #                         check_items={"nq": nq,
+    #                                      "ids": [],
+    #                                      "limit": 0,
+    #                                      "_async": _async})
 
     @pytest.mark.tags(CaseLabel.L1)
     def test_search_collection_after_release_load(self, nb, nq, dim, auto_id, _async):
@@ -1141,54 +1147,55 @@ class TestCollectionSearch(TestcaseBase):
                                          "limit": default_limit,
                                          "_async": _async})
 
-    @pytest.mark.tags(CaseLabel.L2)
-    @pytest.mark.xfail(reason="issue 6997")
-    def test_search_partition_after_release_load(self, nb, nq, dim, auto_id, _async):
-        """
-        target: search the pre-released collection after load
-        method: 1. create collection
-                2. release a partition
-                3. load partition
-                4. search the pre-released partition
-        expected: search successfully
-        """
-        # 1. initialize without data
-        collection_w, _, _, insert_ids, time_stamp = self.init_collection_general(prefix, True, nb,
-                                                                                  1, auto_id=auto_id,
-                                                                                  dim=dim)[0:5]
-        # 2. release collection
-        log.info("test_search_partition_after_release_load: releasing a partition")
-        par = collection_w.partitions
-        conn = self.connection_wrap.get_connection()[0]
-        conn.release_partitions(collection_w.name, [par[1].name])
-        log.info("test_search_partition_after_release_load: released a partition")
-        # 3. Search the collection after load
-        limit = 1000
-        collection_w.load()
-        log.info("test_search_partition_after_release_load: searching after load")
-        vectors = [[random.random() for _ in range(dim)] for _ in range(nq)]
-        collection_w.search(vectors[:nq], default_search_field, default_search_params,
-                            limit, default_search_exp, _async=_async,
-                            travel_timestamp=time_stamp,
-                            check_task=CheckTasks.check_search_results,
-                            check_items={"nq": nq,
-                                         "ids": insert_ids,
-                                         "limit": limit,
-                                         "_async": _async})
-        # 4. Search the pre-released partition after load
-        if limit > par[1].num_entities:
-            limit_check = par[1].num_entities
-        else:
-            limit_check = limit
-        collection_w.search(vectors[:nq], default_search_field, default_search_params,
-                            limit, default_search_exp,
-                            [par[1].name], _async=_async,
-                            travel_timestamp=time_stamp,
-                            check_task=CheckTasks.check_search_results,
-                            check_items={"nq": nq,
-                                         "ids": insert_ids[par[0].num_entities:],
-                                         "limit": limit_check,
-                                         "_async": _async})
+    # @pytest.mark.tags(CaseLabel.L2)
+    # @pytest.mark.xfail(reason="issue 6997")
+    # @pytest.mark.skip("https://github.com/milvus-io/milvus/issues/13118")
+    # def test_search_partition_after_release_load(self, nb, nq, dim, auto_id, _async):
+    #     """
+    #     target: search the pre-released collection after load
+    #     method: 1. create collection
+    #             2. release a partition
+    #             3. load partition
+    #             4. search the pre-released partition
+    #     expected: search successfully
+    #     """
+    #     # 1. initialize without data
+    #     collection_w, _, _, insert_ids, time_stamp = self.init_collection_general(prefix, True, nb,
+    #                                                                               1, auto_id=auto_id,
+    #                                                                               dim=dim)[0:5]
+    #     # 2. release collection
+    #     log.info("test_search_partition_after_release_load: releasing a partition")
+    #     par = collection_w.partitions
+    #     conn = self.connection_wrap.get_connection()[0]
+    #     conn.release_partitions(collection_w.name, [par[1].name])
+    #     log.info("test_search_partition_after_release_load: released a partition")
+    #     # 3. Search the collection after load
+    #     limit = 1000
+    #     collection_w.load()
+    #     log.info("test_search_partition_after_release_load: searching after load")
+    #     vectors = [[random.random() for _ in range(dim)] for _ in range(nq)]
+    #     collection_w.search(vectors[:nq], default_search_field, default_search_params,
+    #                         limit, default_search_exp, _async=_async,
+    #                         travel_timestamp=time_stamp,
+    #                         check_task=CheckTasks.check_search_results,
+    #                         check_items={"nq": nq,
+    #                                      "ids": insert_ids,
+    #                                      "limit": limit,
+    #                                      "_async": _async})
+    #     # 4. Search the pre-released partition after load
+    #     if limit > par[1].num_entities:
+    #         limit_check = par[1].num_entities
+    #     else:
+    #         limit_check = limit
+    #     collection_w.search(vectors[:nq], default_search_field, default_search_params,
+    #                         limit, default_search_exp,
+    #                         [par[1].name], _async=_async,
+    #                         travel_timestamp=time_stamp,
+    #                         check_task=CheckTasks.check_search_results,
+    #                         check_items={"nq": nq,
+    #                                      "ids": insert_ids[par[0].num_entities:],
+    #                                      "limit": limit_check,
+    #                                      "_async": _async})
 
     @pytest.mark.tags(CaseLabel.L1)
     def test_search_load_flush_load(self, nb, nq, dim, auto_id, _async):
@@ -1219,6 +1226,7 @@ class TestCollectionSearch(TestcaseBase):
                                          "limit": default_limit,
                                          "_async": _async})
 
+    @pytest.mark.skip("enable this later using session/strong consistency")
     @pytest.mark.tags(CaseLabel.L1)
     def test_search_new_data(self, nq, dim, auto_id, _async):
         """
@@ -1254,6 +1262,8 @@ class TestCollectionSearch(TestcaseBase):
                                                              insert_offset=nb_old)
         insert_ids.extend(insert_ids_new)
         # 4. search for new data without load
+        # Using bounded staleness, maybe we could not search the "inserted" entities,
+        # since the search requests arrived query nodes earlier than query nodes consume the insert requests.
         collection_w.search(vectors[:nq], default_search_field,
                             default_search_params, limit,
                             default_search_exp, _async=_async,
@@ -1720,14 +1730,14 @@ class TestCollectionSearch(TestcaseBase):
         collection_w, _, _, insert_ids_1, time_stamp_1 = \
             self.init_collection_general(prefix, True, nb, auto_id=auto_id, dim=default_dim)[0:5]
         # 2. insert for the second time
-        log.info("test_search_without_expression: inserting for the second time")
+        log.info("test_search_travel_time_without_expression: inserting for the second time")
         _, entities, _, insert_ids_2, time_stamp_2 = cf.insert_data(collection_w, nb, auto_id=auto_id,
                                                                     dim=default_dim, insert_offset=nb)[0:5]
         # 3. extract vectors inserted for the second time
         entities_list = np.array(entities[0]).tolist()
         vectors = [entities_list[i][-1] for i in range(default_nq)]
         # 4. search with insert timestamp1
-        log.info("test_search_without_expression: searching collection %s with time_stamp_1 '%d'"
+        log.info("test_search_travel_time_without_expression: searching collection %s with time_stamp_1 '%d'"
                  % (collection_w.name, time_stamp_1))
         search_res = collection_w.search(vectors, default_search_field,
                                          default_search_params, default_limit,
@@ -1736,12 +1746,12 @@ class TestCollectionSearch(TestcaseBase):
                                          check_items={"nq": default_nq,
                                                       "ids": insert_ids_1,
                                                       "limit": default_limit})[0]
-        log.info("test_search_without_expression: checking that data inserted "
+        log.info("test_search_travel_time_without_expression: checking that data inserted "
                  "after time_stamp_2 is not searched at time_stamp_1")
         for i in range(len(search_res)):
             assert insert_ids_2[i] not in search_res[i].ids
         # 5. search with insert timestamp2
-        log.info("test_search_without_expression: searching collection %s with time_stamp_2 '%d'"
+        log.info("test_search_travel_time_without_expression: searching collection %s with time_stamp_2 '%d'"
                  % (collection_w.name, time_stamp_2))
         search_res = collection_w.search(vectors, default_search_field,
                                          default_search_params, default_limit,
@@ -1750,7 +1760,7 @@ class TestCollectionSearch(TestcaseBase):
                                          check_items={"nq": default_nq,
                                                       "ids": insert_ids_1 + insert_ids_2,
                                                       "limit": default_limit})[0]
-        log.info("test_search_without_expression: checking that data inserted "
+        log.info("test_search_travel_time_without_expression: checking that data inserted "
                  "after time_stamp_2 is searched at time_stamp_2")
         for i in range(len(search_res)):
             assert insert_ids_2[i] in search_res[i].ids
@@ -1909,8 +1919,8 @@ class TestCollectionSearch(TestcaseBase):
     @pytest.mark.tags(CaseLabel.L2)
     def test_search_expression_all_data_type(self, nb, nq, dim, auto_id, _async):
         """
-        target: test search using different supported data type
-        method: search using different supported data type
+        target: test search using all supported data types
+        method: search using different supported data types
         expected: search success
         """
         # 1. initialize with data
@@ -2123,9 +2133,9 @@ class TestCollectionSearch(TestcaseBase):
     @pytest.mark.parametrize("round_decimal", [0, 1, 2, 3, 4, 5, 6])
     def test_search_round_decimal(self, round_decimal):
         """
-        target: test search with invalid round decimal
-        method: search with invalid round decimal
-        expected: raise exception and report the error
+        target: test search with valid round decimal
+        method: search with valid round decimal
+        expected: search successfully
         """
         import math
         tmp_nb = 500
@@ -2237,7 +2247,7 @@ class TestSearchBase:
         params=gen_binary_index()
     )
     def get_jaccard_index(self, request, connect):
-        logging.getLogger().info(request.param)
+        log.info(request.param)
         if request.param["index_type"] in binary_support():
             return request.param
         # else:
@@ -2248,7 +2258,7 @@ class TestSearchBase:
         params=gen_binary_index()
     )
     def get_hamming_index(self, request, connect):
-        logging.getLogger().info(request.param)
+        log.info(request.param)
         if request.param["index_type"] in binary_support():
             return request.param
         # else:
@@ -2259,7 +2269,7 @@ class TestSearchBase:
         params=gen_binary_index()
     )
     def get_structure_index(self, request, connect):
-        logging.getLogger().info(request.param)
+        log.info(request.param)
         if request.param["index_type"] == "FLAT":
             return request.param
         # else:

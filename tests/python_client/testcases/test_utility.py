@@ -76,8 +76,8 @@ class TestUtilityParams(TestcaseBase):
                 c_name,
                 check_task=CheckTasks.err_res,
                 check_items={ct.err_code: 1, ct.err_msg: "Invalid collection name"})
-        # elif not isinstance(c_name, str):
-        #     self.utility_wrap.has_collection(c_name, check_task=CheckTasks.err_res, check_items={ct.err_code: 1, ct.err_msg: "illegal"})
+        # elif not isinstance(c_name, str): self.utility_wrap.has_collection(c_name, check_task=CheckTasks.err_res,
+        # check_items={ct.err_code: 1, ct.err_msg: "illegal"})
 
     @pytest.mark.tags(CaseLabel.L2)
     def test_has_partition_collection_name_invalid(self, get_invalid_collection_name):
@@ -141,11 +141,9 @@ class TestUtilityParams(TestcaseBase):
         expected: raise exception
         """
         pass
-        # self._connect()
-        # c_name = get_invalid_collection_name
-        # ut = ApiUtilityWrapper()
-        # if isinstance(c_name, str) and c_name:
-        #     ex, _ = ut.index_building_progress(c_name, check_items={ct.err_code: 1, ct.err_msg: "Invalid collection name"})
+        # self._connect() c_name = get_invalid_collection_name ut = ApiUtilityWrapper() if isinstance(c_name,
+        # str) and c_name: ex, _ = ut.index_building_progress(c_name, check_items={ct.err_code: 1, ct.err_msg:
+        # "Invalid collection name"})
 
     # TODO: not support index name
     @pytest.mark.tags(CaseLabel.L1)
@@ -292,7 +290,7 @@ class TestUtilityParams(TestcaseBase):
         """
         self._connect()
         c_name = cf.gen_unique_str(prefix)
-        error = {ct.err_code: 0, ct.err_msg: "describe collection failed: can't find collection:"}
+        error = {ct.err_code: 1, ct.err_msg: f"DescribeCollection failed: can't find collection: {c_name}"}
         self.utility_wrap.drop_collection(c_name, check_task=CheckTasks.err_res, check_items=error)
 
     @pytest.mark.tags(CaseLabel.L2)
@@ -829,7 +827,7 @@ class TestUtilityBase(TestcaseBase):
         """
         target: test loading progress after release part partitions
         method: 1.insert data into two partitions and flush
-                2.load collection and release onr partition
+                2.load one partiton and release one partition
         expected: loaded one partition entities
         """
         half = ct.default_nb

@@ -19,15 +19,14 @@ package querycoord
 import (
 	"context"
 	"errors"
-	"math"
-	"sort"
-	"syscall"
-
 	"fmt"
+	"math"
 	"math/rand"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/golang/protobuf/proto"
@@ -95,17 +94,33 @@ type QueryCoord struct {
 
 // Register register query service at etcd
 func (qc *QueryCoord) Register() error {
-	log.Debug("query coord session info", zap.String("metaPath", Params.MetaRootPath), zap.Strings("etcdEndPoints", Params.EtcdEndpoints), zap.String("address", Params.Address))
+	qc.session.Register()
+	go qc.session.LivenessCheck(qc.loopCtx, func() {
+		log.Error("Query Coord disconnected from etcd, process will exit", zap.Int64("Server Id", qc.session.ServerID))
+		if err := qc.Stop(); err != nil {
+			log.Fatal("failed to stop server", zap.Error(err))
+		}
+		// manually send signal to starter goroutine
+		syscall.Kill(syscall.Getpid(), syscall.SIGINT)
+	})
+	return nil
+}
+
+func (qc *QueryCoord) initSession() error {
 	qc.session = sessionutil.NewSession(qc.loopCtx, Params.MetaRootPath, Params.EtcdEndpoints)
+	if qc.session == nil {
+		return fmt.Errorf("session is nil, the etcd client connection may have failed")
+	}
 	qc.session.Init(typeutil.QueryCoordRole, Params.Address, true)
 	Params.NodeID = uint64(qc.session.ServerID)
-	Params.SetLogger(typeutil.UniqueID(-1))
+	Params.SetLogger(qc.session.ServerID)
 	return nil
 }
 
 // Init function initializes the queryCoord's meta, cluster, etcdKV and task scheduler
 func (qc *QueryCoord) Init() error {
-	log.Debug("query coordinator start init")
+	log.Debug("query coordinator start init, session info", zap.String("metaPath", Params.MetaRootPath),
+		zap.Strings("etcdEndPoints", Params.EtcdEndpoints), zap.String("address", Params.Address))
 	//connect etcd
 	connectEtcdFn := func() error {
 		etcdKV, err := etcdkv.NewEtcdKV(Params.EtcdEndpoints, Params.MetaRootPath)
@@ -115,9 +130,15 @@ func (qc *QueryCoord) Init() error {
 		qc.kvClient = etcdKV
 		return nil
 	}
-	var initError error = nil
+	var initError error
 	qc.initOnce.Do(func() {
-		log.Debug("query coordinator try to connect etcd")
+		err := qc.initSession()
+		if err != nil {
+			log.Error("queryCoord init session failed", zap.Error(err))
+			initError = err
+			return
+		}
+		log.Debug("queryCoord try to connect etcd")
 		initError = retry.Do(qc.loopCtx, connectEtcdFn, retry.Attempts(300))
 		if initError != nil {
 			log.Debug("query coordinator try to connect etcd failed", zap.Error(initError))
@@ -129,6 +150,7 @@ func (qc *QueryCoord) Init() error {
 		var idAllocatorKV *etcdkv.EtcdKV
 		idAllocatorKV, initError = tsoutil.NewTSOKVBase(Params.EtcdEndpoints, Params.KvRootPath, "queryCoordTaskID")
 		if initError != nil {
+			log.Debug("query coordinator idAllocatorKV initialize failed", zap.Error(initError))
 			return
 		}
 		idAllocator := allocator.NewGlobalIDAllocator("idTimestamp", idAllocatorKV)
@@ -194,8 +216,6 @@ func (qc *QueryCoord) Start() error {
 	Params.CreatedTime = time.Now()
 	Params.UpdatedTime = time.Now()
 
-	qc.UpdateStateCode(internalpb.StateCode_Healthy)
-
 	qc.loopWg.Add(1)
 	go qc.watchNodeLoop()
 
@@ -207,14 +227,7 @@ func (qc *QueryCoord) Start() error {
 		go qc.loadBalanceSegmentLoop()
 	}
 
-	go qc.session.LivenessCheck(qc.loopCtx, func() {
-		log.Error("QueryCoord disconnected from etcd, process will exit", zap.Int64("Server Id", qc.session.ServerID))
-		if err := qc.Stop(); err != nil {
-			log.Fatal("failed to stop server", zap.Error(err))
-		}
-		// manually send signal to starter goroutine
-		syscall.Kill(syscall.Getpid(), syscall.SIGINT)
-	})
+	qc.UpdateStateCode(internalpb.StateCode_Healthy)
 
 	return nil
 }
@@ -302,12 +315,8 @@ func (qc *QueryCoord) watchNodeLoop() {
 	defer qc.loopWg.Done()
 	log.Debug("QueryCoord start watch node loop")
 
-	offlineNodes, err := qc.cluster.offlineNodes()
-	if err == nil {
-		offlineNodeIDs := make([]int64, 0)
-		for id := range offlineNodes {
-			offlineNodeIDs = append(offlineNodeIDs, id)
-		}
+	offlineNodeIDs := qc.cluster.offlineNodeIDs()
+	if len(offlineNodeIDs) != 0 {
 		loadBalanceSegment := &querypb.LoadBalanceRequest{
 			Base: &commonpb.MsgBase{
 				MsgType:  commonpb.MsgType_LoadBalanceSegments,
@@ -316,7 +325,7 @@ func (qc *QueryCoord) watchNodeLoop() {
 			SourceNodeIDs: offlineNodeIDs,
 		}
 
-		baseTask := newBaseTask(qc.loopCtx, querypb.TriggerCondition_nodeDown)
+		baseTask := newBaseTask(qc.loopCtx, querypb.TriggerCondition_NodeDown)
 		loadBalanceTask := &loadBalanceTask{
 			baseTask:           baseTask,
 			LoadBalanceRequest: loadBalanceSegment,
@@ -365,10 +374,10 @@ func (qc *QueryCoord) watchNodeLoop() {
 						SourceID: qc.session.ServerID,
 					},
 					SourceNodeIDs: []int64{serverID},
-					BalanceReason: querypb.TriggerCondition_nodeDown,
+					BalanceReason: querypb.TriggerCondition_NodeDown,
 				}
 
-				baseTask := newBaseTask(qc.loopCtx, querypb.TriggerCondition_nodeDown)
+				baseTask := newBaseTask(qc.loopCtx, querypb.TriggerCondition_NodeDown)
 				loadBalanceTask := &loadBalanceTask{
 					baseTask:           baseTask,
 					LoadBalanceRequest: loadBalanceSegment,
@@ -392,7 +401,7 @@ func (qc *QueryCoord) watchHandoffSegmentLoop() {
 
 	defer cancel()
 	defer qc.loopWg.Done()
-	log.Debug("query coordinator start watch segment loop")
+	log.Debug("QueryCoord start watch segment loop")
 
 	watchChan := qc.kvClient.WatchWithRevision(handoffSegmentPrefix, qc.indexChecker.revision+1)
 
@@ -434,7 +443,7 @@ func (qc *QueryCoord) loadBalanceSegmentLoop() {
 	ctx, cancel := context.WithCancel(qc.loopCtx)
 	defer cancel()
 	defer qc.loopWg.Done()
-	log.Debug("query coordinator start load balance segment loop")
+	log.Debug("QueryCoord start load balance segment loop")
 
 	timer := time.NewTicker(time.Duration(Params.BalanceIntervalSeconds) * time.Second)
 
@@ -443,9 +452,9 @@ func (qc *QueryCoord) loadBalanceSegmentLoop() {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
-			onlineNodes, err := qc.cluster.onlineNodes()
-			if err != nil {
-				log.Warn("loadBalanceSegmentLoop: there are no online query node to balance")
+			onlineNodeIDs := qc.cluster.onlineNodeIDs()
+			if len(onlineNodeIDs) == 0 {
+				log.Error("loadBalanceSegmentLoop: there are no online QueryNode to balance")
 				continue
 			}
 			// get mem info of online nodes from cluster
@@ -453,12 +462,11 @@ func (qc *QueryCoord) loadBalanceSegmentLoop() {
 			nodeID2MemUsage := make(map[int64]uint64)
 			nodeID2TotalMem := make(map[int64]uint64)
 			nodeID2SegmentInfos := make(map[int64]map[UniqueID]*querypb.SegmentInfo)
-			onlineNodeIDs := make([]int64, 0)
-			for nodeID := range onlineNodes {
+			var availableNodeIDs []int64
+			for _, nodeID := range onlineNodeIDs {
 				nodeInfo, err := qc.cluster.getNodeInfoByID(nodeID)
 				if err != nil {
-					log.Warn("loadBalanceSegmentLoop: get node info from query node failed", zap.Int64("nodeID", nodeID), zap.Error(err))
-					delete(onlineNodes, nodeID)
+					log.Warn("loadBalanceSegmentLoop: get node info from QueryNode failed", zap.Int64("nodeID", nodeID), zap.Error(err))
 					continue
 				}
 
@@ -468,8 +476,7 @@ func (qc *QueryCoord) loadBalanceSegmentLoop() {
 				for _, segmentInfo := range segmentInfos {
 					leastInfo, err := qc.cluster.getSegmentInfoByID(ctx, segmentInfo.SegmentID)
 					if err != nil {
-						log.Warn("loadBalanceSegmentLoop: get segment info from query node failed", zap.Int64("nodeID", nodeID), zap.Error(err))
-						delete(onlineNodes, nodeID)
+						log.Warn("loadBalanceSegmentLoop: get segment info from QueryNode failed", zap.Int64("nodeID", nodeID), zap.Error(err))
 						updateSegmentInfoDone = false
 						break
 					}
@@ -479,13 +486,13 @@ func (qc *QueryCoord) loadBalanceSegmentLoop() {
 					nodeID2MemUsageRate[nodeID] = nodeInfo.(*queryNode).memUsageRate
 					nodeID2MemUsage[nodeID] = nodeInfo.(*queryNode).memUsage
 					nodeID2TotalMem[nodeID] = nodeInfo.(*queryNode).totalMem
-					onlineNodeIDs = append(onlineNodeIDs, nodeID)
+					availableNodeIDs = append(availableNodeIDs, nodeID)
 					nodeID2SegmentInfos[nodeID] = leastSegmentInfos
 				}
 			}
-			log.Debug("loadBalanceSegmentLoop: memory usage rate of all online query node", zap.Any("mem rate", nodeID2MemUsageRate))
-			if len(onlineNodeIDs) <= 1 {
-				log.Warn("loadBalanceSegmentLoop: there are too few online query nodes to balance", zap.Int64s("onlineNodeIDs", onlineNodeIDs))
+			log.Debug("loadBalanceSegmentLoop: memory usage rate of all online QueryNode", zap.Any("mem rate", nodeID2MemUsageRate))
+			if len(availableNodeIDs) <= 1 {
+				log.Warn("loadBalanceSegmentLoop: there are too few available query nodes to balance", zap.Int64s("onlineNodeIDs", onlineNodeIDs), zap.Int64s("availableNodeIDs", availableNodeIDs))
 				continue
 			}
 
@@ -493,33 +500,38 @@ func (qc *QueryCoord) loadBalanceSegmentLoop() {
 			memoryInsufficient := false
 			loadBalanceTasks := make([]*loadBalanceTask, 0)
 			for {
-				var selectedSegmentInfo *querypb.SegmentInfo = nil
-				sort.Slice(onlineNodeIDs, func(i, j int) bool {
-					return nodeID2MemUsageRate[onlineNodeIDs[i]] > nodeID2MemUsageRate[onlineNodeIDs[j]]
+				sort.Slice(availableNodeIDs, func(i, j int) bool {
+					return nodeID2MemUsageRate[availableNodeIDs[i]] > nodeID2MemUsageRate[availableNodeIDs[j]]
 				})
 
 				// the memoryUsageRate of the sourceNode is higher than other query node
-				sourceNodeID := onlineNodeIDs[0]
-				dstNodeID := onlineNodeIDs[len(onlineNodeIDs)-1]
+				sourceNodeID := availableNodeIDs[0]
+				dstNodeID := availableNodeIDs[len(availableNodeIDs)-1]
 				memUsageRateDiff := nodeID2MemUsageRate[sourceNodeID] - nodeID2MemUsageRate[dstNodeID]
-				// if memoryUsageRate of source node is greater then 90%, and the max memUsageDiff is greater than 30%
+				// if memoryUsageRate of source node is greater than 90%, and the max memUsageDiff is greater than 30%
 				// then migrate the segments on source node to other query nodes
 				if nodeID2MemUsageRate[sourceNodeID] > Params.OverloadedMemoryThresholdPercentage ||
 					memUsageRateDiff > Params.MemoryUsageMaxDifferencePercentage {
 					segmentInfos := nodeID2SegmentInfos[sourceNodeID]
 					// select the segment that needs balance on the source node
-					selectedSegmentInfo, err = chooseSegmentToBalance(sourceNodeID, dstNodeID, segmentInfos, nodeID2MemUsage, nodeID2TotalMem, nodeID2MemUsageRate)
-					if err == nil && selectedSegmentInfo != nil {
+					selectedSegmentInfo, err := chooseSegmentToBalance(sourceNodeID, dstNodeID, segmentInfos, nodeID2MemUsage, nodeID2TotalMem, nodeID2MemUsageRate)
+					if err != nil {
+						// no enough memory on query nodes to balance, then notify proxy to stop insert
+						memoryInsufficient = true
+						break
+					}
+					// select a segment to balance successfully, then recursive traversal whether there are other segments that can balance
+					if selectedSegmentInfo != nil {
 						req := &querypb.LoadBalanceRequest{
 							Base: &commonpb.MsgBase{
 								MsgType: commonpb.MsgType_LoadBalanceSegments,
 							},
-							BalanceReason:    querypb.TriggerCondition_loadBalance,
+							BalanceReason:    querypb.TriggerCondition_LoadBalance,
 							SourceNodeIDs:    []UniqueID{sourceNodeID},
 							DstNodeIDs:       []UniqueID{dstNodeID},
 							SealedSegmentIDs: []UniqueID{selectedSegmentInfo.SegmentID},
 						}
-						baseTask := newBaseTask(qc.loopCtx, querypb.TriggerCondition_loadBalance)
+						baseTask := newBaseTask(qc.loopCtx, querypb.TriggerCondition_LoadBalance)
 						balanceTask := &loadBalanceTask{
 							baseTask:           baseTask,
 							LoadBalanceRequest: req,
@@ -537,22 +549,20 @@ func (qc *QueryCoord) loadBalanceSegmentLoop() {
 						delete(nodeID2SegmentInfos[sourceNodeID], selectedSegmentInfo.SegmentID)
 						nodeID2SegmentInfos[dstNodeID][selectedSegmentInfo.SegmentID] = selectedSegmentInfo
 						continue
+					} else {
+						// moving any segment will not improve the balance status
+						break
 					}
+				} else {
+					// all query node's memoryUsageRate is less than 90%, and the max memUsageDiff is less than 30%
+					break
 				}
-				if err != nil {
-					// no enough memory on query nodes to balance, then notify proxy to stop insert
-					memoryInsufficient = true
-				}
-				// if memoryInsufficient == false
-				// all query node's memoryUsageRate is less than 90%, and the max memUsageDiff is less than 30%
-				// this balance loop is done
-				break
 			}
 			if !memoryInsufficient {
 				for _, t := range loadBalanceTasks {
 					qc.scheduler.Enqueue(t)
 					log.Debug("loadBalanceSegmentLoop: enqueue a loadBalance task", zap.Any("task", t))
-					err = t.waitToFinish()
+					err := t.waitToFinish()
 					if err != nil {
 						// if failed, wait for next balance loop
 						// it may be that the collection/partition of the balanced segment has been released
@@ -566,7 +576,7 @@ func (qc *QueryCoord) loadBalanceSegmentLoop() {
 			} else {
 				// no enough memory on query nodes to balance, then notify proxy to stop insert
 				//TODO:: xige-16
-				log.Error("loadBalanceSegmentLoop: query node has insufficient memory, stop inserting data")
+				log.Error("loadBalanceSegmentLoop: QueryNode has insufficient memory, stop inserting data")
 			}
 		}
 	}
@@ -579,7 +589,7 @@ func chooseSegmentToBalance(sourceNodeID int64, dstNodeID int64,
 	nodeID2MemUsageRate map[int64]float64) (*querypb.SegmentInfo, error) {
 	memoryInsufficient := true
 	minMemDiffPercentage := 1.0
-	var selectedSegmentInfo *querypb.SegmentInfo = nil
+	var selectedSegmentInfo *querypb.SegmentInfo
 	for _, info := range segmentInfos {
 		dstNodeMemUsageAfterBalance := nodeID2MemUsage[dstNodeID] + uint64(info.MemSize)
 		dstNodeMemUsageRateAfterBalance := float64(dstNodeMemUsageAfterBalance) / float64(nodeID2TotalMem[dstNodeID])
@@ -601,7 +611,7 @@ func chooseSegmentToBalance(sourceNodeID int64, dstNodeID int64,
 	}
 
 	if memoryInsufficient {
-		return nil, errors.New("all query nodes has insufficient memory")
+		return nil, errors.New("all QueryNode has insufficient memory")
 	}
 
 	return selectedSegmentInfo, nil

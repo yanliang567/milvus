@@ -90,7 +90,7 @@ func (t *compactionTask) shadowClone(opts ...compactionTaskOpt) *compactionTask 
 var _ compactionPlanContext = (*compactionPlanHandler)(nil)
 
 type compactionPlanHandler struct {
-	plans            map[int64]*compactionTask // planid -> task
+	plans            map[int64]*compactionTask // planID -> task
 	sessions         *SessionManager
 	meta             *meta
 	chManager        *ChannelManager
@@ -254,9 +254,9 @@ func (c *compactionPlanHandler) expireCompaction(ts Timestamp) error {
 }
 
 func (c *compactionPlanHandler) isTimeout(now Timestamp, start Timestamp, timeout int32) bool {
-	starttime, _ := tsoutil.ParseTS(start)
+	startTime, _ := tsoutil.ParseTS(start)
 	ts, _ := tsoutil.ParseTS(now)
-	return int32(ts.Sub(starttime).Seconds()) >= timeout
+	return int32(ts.Sub(startTime).Seconds()) >= timeout
 }
 
 // isFull return true if the task pool is full

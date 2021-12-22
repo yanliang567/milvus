@@ -6,21 +6,21 @@ update: 9.16.2021, by [xiaofan-luan](https://github.com/xiaofan-luan)
 
 ## Search
 
-Search now supports two modes: json DSL mode and Boolean Expr mode. We will talk about the latter one in details because the former has been deprecated and is only used in test.
+Search now supports two modes: json DSL mode and Boolean Expr mode. We will talk about the latter one in detail because the former has been deprecated and is only used in tests.
 
 The execution mode of Boolean Expr works as follows:
 
-1. client packs search expr, topk and query vector into proto and sends to proxy node.
-2. proxy node unmarshals the proto, parses it to logical plan, makes static check, and generates protobuf IR.
-3. query node unmarshals the plan, generates an executable plan AST, and queries in the segcore.
+1. client packs search expr, topk, and query vector into proto and sends to Proxy node.
+2. Proxy Node unmarshals the proto, parses it to logical plan, makes static check, and generates protobuf IR.
+3. Query Node unmarshals the plan, generates an executable plan AST, and queries in the segcore.
 
 See details of expression usage at [expr_grammar.md](https://milvus.io/docs/v2.0.0/expression.md)
 
 ## Segcore Search Process
 
-After obtaining the AST, execution engine uses the visitor mode to explain and executes the whole AST tree:
+After obtaining the AST, the execution engine uses the visitor mode to explain and executes the whole AST tree:
 
-1. Each Node includes two steps, a mandatory vector search and an optional predicate.
+1. Each node includes two steps, a mandatory vector search and an optional predicate.
 
    1. If Predicate exists, execute predicate expression stage to generate bitset as the vector search bitmask.
    2. If Predicate does not exist, vector search bitmask will be empty.
@@ -33,4 +33,4 @@ After obtaining the AST, execution engine uses the visitor mode to explain and e
    3. TermExpr: in expression `A in [1, 2, 3]`
    4. CompareExpr: compare expression `A > 1` `B <= 1`
 
-3. TermExpr and CompareExpr are leaf nodes of execution
+3. TermExpr and CompareExpr are leaf nodes of execution.

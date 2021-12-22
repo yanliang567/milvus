@@ -9,16 +9,14 @@ import (
 	grpcmiddleware "github.com/grpc-ecosystem/go-grpc-middleware"
 	grpcretry "github.com/grpc-ecosystem/go-grpc-middleware/retry"
 	grpcopentracing "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
-
-	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/keepalive"
-
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/trace"
+	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/keepalive"
 )
 
 // GrpcClient abstracts client of grpc
@@ -66,6 +64,7 @@ func (c *ClientBase) SetNewGrpcClientFunc(f func(cc *grpc.ClientConn) interface{
 	c.newGrpcClient = f
 }
 
+// GetGrpcClient returns grpc client
 func (c *ClientBase) GetGrpcClient(ctx context.Context) (interface{}, error) {
 	c.grpcClientMtx.RLock()
 
@@ -186,6 +185,7 @@ func (c *ClientBase) callOnce(ctx context.Context, caller func(client interface{
 	return ret, err2
 }
 
+// Call does a grpc call
 func (c *ClientBase) Call(ctx context.Context, caller func(client interface{}) (interface{}, error)) (interface{}, error) {
 	if !funcutil.CheckCtxValid(ctx) {
 		return nil, ctx.Err()
@@ -226,6 +226,7 @@ func (c *ClientBase) ReCall(ctx context.Context, caller func(client interface{})
 	return ret, err
 }
 
+// Close close the client connection
 func (c *ClientBase) Close() error {
 	c.grpcClientMtx.Lock()
 	defer c.grpcClientMtx.Unlock()

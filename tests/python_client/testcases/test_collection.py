@@ -929,9 +929,9 @@ class TestCollectionParams(TestcaseBase):
         error = {ct.err_code: -1, ct.err_msg: f"expected one of: int, long"}
         self.collection_wrap.init_collection(c_name, schema=default_schema, shards_num=error_type_shards_num,
                                              check_task=CheckTasks.err_res,
-                                             check_items=error)  
-                                                                                      
-    @pytest.mark.tags(CaseLabel.L2)
+                                             check_items=error)
+
+    @pytest.mark.tags(CaseLabel.L1)
     def test_create_collection_maximum_fields(self):
         """
         target: test create collection with maximum fields
@@ -940,18 +940,18 @@ class TestCollectionParams(TestcaseBase):
         """
         self._connect()
         c_name = cf.gen_unique_str(prefix)
-        int_fields=[]
-        limit_num=254
+        int_fields = []
+        limit_num = ct.max_field_num - 2
         for i in range(limit_num):
-            field_name =cf.gen_unique_str("field_name")
-            field=cf.gen_int64_field(name=field_name)
+            int_field_name = cf.gen_unique_str("field_name")
+            field = cf.gen_int64_field(name=int_field_name)
             int_fields.append(field)
         int_fields.append(cf.gen_float_vec_field())
         int_fields.append(cf.gen_int64_field(is_primary=True))
         schema = cf.gen_collection_schema(fields=int_fields)
         self.collection_wrap.init_collection(c_name, schema=schema, check_task=CheckTasks.check_collection_property,
                                              check_items={exp_name: c_name, exp_schema: schema})
-    
+
     @pytest.mark.tags(CaseLabel.L2)
     def test_create_collection_over_maximum_fields(self):
         """
@@ -961,11 +961,11 @@ class TestCollectionParams(TestcaseBase):
         """
         self._connect()
         c_name = cf.gen_unique_str(prefix)
-        int_fields=[]
-        limit_num=256
+        int_fields = []
+        limit_num = ct.max_field_num
         for i in range(limit_num):
-            field_name =cf.gen_unique_str("field_name")
-            field=cf.gen_int64_field(name=field_name)
+            int_field_name = cf.gen_unique_str("field_name")
+            field = cf.gen_int64_field(name=int_field_name)
             int_fields.append(field)
         int_fields.append(cf.gen_float_vec_field())
         int_fields.append(cf.gen_int64_field(is_primary=True))
@@ -1073,6 +1073,54 @@ class TestCollectionOperation(TestcaseBase):
         c_name = cf.gen_unique_str(prefix)
         self.collection_wrap.init_collection(c_name, schema=schema, check_task=CheckTasks.check_collection_property,
                                              check_items={exp_name: c_name, exp_schema: schema})
+   
+    @pytest.mark.tags(CaseLabel.L2)
+    def test_load_collection_after_load_partition(self):
+        """
+        target: test release the partition after load collection
+        method: load collection and load the partition
+        expected: raise exception
+        """
+        self._connect()
+        collection_w = self.init_collection_wrap()
+        partition_w1 = self.init_partition_wrap(collection_w)
+        partition_w1.insert(cf.gen_default_list_data())
+        collection_w.load()
+        error = {ct.err_code: 1, ct.err_msg: f'load the partition after load collection is not supported'}
+        partition_w1.load(check_task=CheckTasks.err_res,
+                          check_items=error)
+
+    @pytest.mark.tags(CaseLabel.L2)
+    def test_load_collection_release_partition(self):
+        """
+        target: test release the partition after load collection
+        method: load collection and release the partition
+        expected: raise exception
+        """
+        self._connect()
+        collection_w = self.init_collection_wrap()
+        partition_w1 = self.init_partition_wrap(collection_w)
+        partition_w1.insert(cf.gen_default_list_data())
+        collection_w.load()
+        error = {ct.err_code: 1, ct.err_msg: f'releasing the partition after load collection is not supported'}
+        partition_w1.release(check_task=CheckTasks.err_res,
+                             check_items=error)
+
+    @pytest.mark.tags(CaseLabel.L2)
+    def test_load_collection_after_release_collection(self):
+        """
+        target: test release the collection after load collection
+        method: load collection and release the collection
+        expected: no exception
+        """
+        self._connect()
+        c_name = cf.gen_unique_str(prefix)
+        collection_w = self.init_collection_wrap(name=c_name, check_task=CheckTasks.check_collection_property,
+                                                 check_items={exp_name: c_name, exp_schema: default_schema})
+        collection_w.insert(cf.gen_default_list_data())
+        collection_w.load()
+        collection_w.release()
+
 
 
 class TestCollectionDataframe(TestcaseBase):
@@ -1662,7 +1710,7 @@ class TestGetCollectionStats:
         params=gen_binary_index()
     )
     def get_jaccard_index(self, request, connect):
-        logging.getLogger().info(request.param)
+        log.info(request.param)
         if request.param["index_type"] in binary_support():
             request.param["metric_type"] = "JACCARD"
             return request.param
@@ -1782,12 +1830,12 @@ class TestGetCollectionStats:
         connect.delete_entity_by_id(collection, delete_ids)
         connect.flush([collection])
         stats = connect.get_collection_stats(collection)
-        logging.getLogger().info(stats)
+        log.info(stats)
         assert stats["row_count"] == default_nb - delete_length
         compact_before = stats["partitions"][0]["segments"][0]["data_size"]
         connect.compact(collection)
         stats = connect.get_collection_stats(collection)
-        logging.getLogger().info(stats)
+        log.info(stats)
         compact_after = stats["partitions"][0]["segments"][0]["data_size"]
         assert compact_before == compact_after
 
@@ -1804,11 +1852,11 @@ class TestGetCollectionStats:
         connect.delete_entity_by_id(collection, delete_ids)
         connect.flush([collection])
         stats = connect.get_collection_stats(collection)
-        logging.getLogger().info(stats)
+        log.info(stats)
         compact_before = stats["partitions"][0]["row_count"]
         connect.compact(collection)
         stats = connect.get_collection_stats(collection)
-        logging.getLogger().info(stats)
+        log.info(stats)
         compact_after = stats["partitions"][0]["row_count"]
         # pdb.set_trace()
         assert compact_before == compact_after
@@ -2183,7 +2231,7 @@ class TestCreateCollectionInvalid(object):
         fields.pop("segment_row_limit")
         connect.create_collection(collection_name, fields)
         res = connect.get_collection_info(collection_name)
-        logging.getLogger().info(res)
+        log.info(res)
         assert res["segment_row_limit"] == default_server_segment_row_limit
 
     # TODO: assert exception
@@ -2232,7 +2280,7 @@ class TestDescribeCollection:
         params=gen_simple_index()
     )
     def get_simple_index(self, request, connect):
-        logging.getLogger().info(request.param)
+        log.info(request.param)
         # if str(connect._cmd("mode")) == "CPU":
         #     if request.param["index_type"] in index_cpu_not_support():
         #         pytest.skip("sq8h not support in CPU mode")
@@ -2922,6 +2970,7 @@ class TestLoadCollection:
         """
 
     @pytest.mark.tags(CaseLabel.L0)
+    @pytest.mark.skip("https://github.com/milvus-io/milvus/issues/13118")
     def test_load_collection_release_part_partitions(self, connect, collection):
         """
         target: test release part partitions after load collection
@@ -2942,6 +2991,7 @@ class TestLoadCollection:
         assert len(res[0]) == default_top_k
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.skip("https://github.com/milvus-io/milvus/issues/13118")
     def test_load_collection_release_all_partitions(self, connect, collection):
         """
         target: test release all partitions after load collection
@@ -3164,7 +3214,7 @@ class TestLoadPartition:
         params=gen_binary_index()
     )
     def get_binary_index(self, request, connect):
-        logging.getLogger().info(request.param)
+        log.info(request.param)
         if request.param["index_type"] in binary_support():
             return request.param
         else:
@@ -3182,7 +3232,7 @@ class TestLoadPartition:
         assert len(result.primary_keys) == default_nb
         connect.flush([binary_collection])
         for metric_type in binary_metrics():
-            logging.getLogger().info(metric_type)
+            log.info(metric_type)
             get_binary_index["metric_type"] = metric_type
             if get_binary_index["index_type"] == "BIN_IVF_FLAT" and metric_type in structure_metrics():
                 with pytest.raises(Exception) as e:

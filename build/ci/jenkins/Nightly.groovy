@@ -34,7 +34,6 @@ pipeline {
     environment {
         PROJECT_NAME = "milvus"
         SEMVER = "${BRANCH_NAME.contains('/') ? BRANCH_NAME.substring(BRANCH_NAME.lastIndexOf('/') + 1) : BRANCH_NAME}"
-        IMAGE_REPO = "dockerhub-mirror-sh.zilliz.cc/milvusdb"
         DOCKER_BUILDKIT = 1
         ARTIFACTS = "${env.WORKSPACE}/_artifacts"
         DOCKER_CREDENTIALS_ID = "f0aacc8e-33f2-458a-ba9e-2c44f431b4d2"
@@ -58,7 +57,7 @@ pipeline {
                             sh 'printenv'
                             def date = sh(returnStdout: true, script: 'date +%Y%m%d').trim()
                             def gitShortCommit = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()  
-                            imageTag="${env.BRANCH_NAME}-${date}-${gitShortCommit}"                           
+                            imageTag="${env.BRANCH_NAME}-${date}-${gitShortCommit}"
                             withCredentials([usernamePassword(credentialsId: "${env.CI_DOCKER_CREDENTIAL_ID}", usernameVariable: 'CI_REGISTRY_USERNAME', passwordVariable: 'CI_REGISTRY_PASSWORD')]){
                                 sh """
                                 TAG="${imageTag}" \
@@ -67,7 +66,7 @@ pipeline {
                                 --skip-install \
                                 --skip-cleanup \
                                 --skip-setup \
-                                --skip-test                               
+                                --skip-test
                                 """
                             // stash imageTag info for rebuild install & E2E Test only
                             sh "echo ${imageTag} > imageTag.txt"
@@ -134,7 +133,7 @@ pipeline {
                                                     --set etcd.metrics.enabled=true \
                                                     --set etcd.metrics.podMonitor.enabled=true \
                                                     --set etcd.nodeSelector.disk=fast \
-                                                    --set metrics.serviceMonitor.enabled=true" 
+                                                    --set metrics.serviceMonitor.enabled=true"
                                                     """
                                                 }
                                             } else {
@@ -182,7 +181,7 @@ pipeline {
                                 body: '$DEFAULT_CONTENT',
                                 recipientProviders: [requestor()],
                                 replyTo: '$DEFAULT_REPLYTO',
-                                to: "qa@zilliz.com,devops@zilliz.com"
+                                to: 'qa@zilliz.com,devops@zilliz.com'
                             }
                         }
                     }

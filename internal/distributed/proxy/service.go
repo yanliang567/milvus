@@ -25,16 +25,11 @@ import (
 	"sync"
 	"time"
 
-	"go.uber.org/zap"
-	"google.golang.org/grpc"
-
-	grpcdatacoordclient "github.com/milvus-io/milvus/internal/distributed/datacoord/client"
-	grpcindexcoordclient "github.com/milvus-io/milvus/internal/distributed/indexcoord/client"
-	grpcquerycoordclient "github.com/milvus-io/milvus/internal/distributed/querycoord/client"
+	ot "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
+	dcc "github.com/milvus-io/milvus/internal/distributed/datacoord/client"
+	icc "github.com/milvus-io/milvus/internal/distributed/indexcoord/client"
+	qcc "github.com/milvus-io/milvus/internal/distributed/querycoord/client"
 	rcc "github.com/milvus-io/milvus/internal/distributed/rootcoord/client"
-	"github.com/milvus-io/milvus/internal/types"
-
-	grpc_opentracing "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
@@ -42,9 +37,14 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/proxypb"
 	"github.com/milvus-io/milvus/internal/proxy"
+	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/trace"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
 	"github.com/opentracing/opentracing-go"
+	"go.uber.org/zap"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 )
 
@@ -52,6 +52,8 @@ const (
 	// GRPCMaxMagSize is the max size of grpc message.
 	GRPCMaxMagSize = 2 << 30
 )
+
+var Params paramtable.GrpcServerConfig
 
 // Server is the Proxy Server
 type Server struct {
@@ -119,10 +121,8 @@ func (s *Server) startGrpcLoop(grpcPort int) {
 		grpc.MaxRecvMsgSize(Params.ServerMaxRecvSize),
 		grpc.MaxSendMsgSize(Params.ServerMaxSendSize),
 		grpc.MaxRecvMsgSize(GRPCMaxMagSize),
-		grpc.UnaryInterceptor(
-			grpc_opentracing.UnaryServerInterceptor(opts...)),
-		grpc.StreamInterceptor(
-			grpc_opentracing.StreamServerInterceptor(opts...)))
+		grpc.UnaryInterceptor(ot.UnaryServerInterceptor(opts...)),
+		grpc.StreamInterceptor(ot.StreamServerInterceptor(opts...)))
 	proxypb.RegisterProxyServer(s.grpcServer, s)
 	milvuspb.RegisterMilvusServiceServer(s.grpcServer, s)
 
@@ -150,11 +150,7 @@ func (s *Server) Run() error {
 
 func (s *Server) init() error {
 	var err error
-	Params.Init()
-	if !funcutil.CheckPortAvailable(Params.Port) {
-		Params.Port = funcutil.GetAvailablePort()
-		log.Warn("Proxy init", zap.Any("Port", Params.Port))
-	}
+	Params.InitOnce(typeutil.ProxyRole)
 
 	proxy.Params.InitOnce()
 	log.Debug("init params done ...")
@@ -163,20 +159,14 @@ func (s *Server) init() error {
 	proxy.Params.NetworkPort = Params.Port
 	proxy.Params.IP = Params.IP
 
-	proxy.Params.NetworkAddress = Params.Address
+	proxy.Params.NetworkAddress = Params.GetAddress()
 
 	closer := trace.InitTracing(fmt.Sprintf("proxy ip: %s, port: %d", Params.IP, Params.Port))
 	s.closer = closer
 
 	log.Debug("proxy", zap.String("proxy host", Params.IP))
 	log.Debug("proxy", zap.Int("proxy port", Params.Port))
-	log.Debug("proxy", zap.String("proxy address", Params.Address))
-
-	err = s.proxy.Register()
-	if err != nil {
-		log.Debug("Proxy Register etcd failed ", zap.Error(err))
-		return err
-	}
+	log.Debug("proxy", zap.String("proxy address", Params.GetAddress()))
 
 	s.wg.Add(1)
 	go s.startGrpcLoop(Params.Port)
@@ -208,7 +198,7 @@ func (s *Server) init() error {
 	log.Debug("set rootcoord client ...")
 
 	if s.dataCoordClient == nil {
-		s.dataCoordClient, err = grpcdatacoordclient.NewClient(s.ctx, proxy.Params.MetaRootPath, proxy.Params.EtcdEndpoints)
+		s.dataCoordClient, err = dcc.NewClient(s.ctx, proxy.Params.MetaRootPath, proxy.Params.EtcdEndpoints)
 		if err != nil {
 			log.Debug("Proxy new dataCoordClient failed ", zap.Error(err))
 			return err
@@ -224,7 +214,7 @@ func (s *Server) init() error {
 	log.Debug("set data coordinator address ...")
 
 	if s.indexCoordClient == nil {
-		s.indexCoordClient, err = grpcindexcoordclient.NewClient(s.ctx, proxy.Params.MetaRootPath, proxy.Params.EtcdEndpoints)
+		s.indexCoordClient, err = icc.NewClient(s.ctx, proxy.Params.MetaRootPath, proxy.Params.EtcdEndpoints)
 		if err != nil {
 			log.Debug("Proxy new indexCoordClient failed ", zap.Error(err))
 			return err
@@ -240,7 +230,7 @@ func (s *Server) init() error {
 	log.Debug("set index coordinator client ...")
 
 	if s.queryCooedClient == nil {
-		s.queryCooedClient, err = grpcquerycoordclient.NewClient(s.ctx, proxy.Params.MetaRootPath, proxy.Params.EtcdEndpoints)
+		s.queryCooedClient, err = qcc.NewClient(s.ctx, proxy.Params.MetaRootPath, proxy.Params.EtcdEndpoints)
 		if err != nil {
 			return err
 		}
@@ -264,12 +254,21 @@ func (s *Server) init() error {
 }
 
 func (s *Server) start() error {
-	return s.proxy.Start()
+	err := s.proxy.Start()
+	if err != nil {
+		log.Error("Proxy start failed", zap.Error(err))
+	}
+	err = s.proxy.Register()
+	if err != nil {
+		log.Error("Proxy register service failed ", zap.Error(err))
+		return err
+	}
+	return nil
 }
 
 // Stop stop the Proxy Server
 func (s *Server) Stop() error {
-	log.Debug("Proxy stop", zap.String("Address", Params.Address))
+	log.Debug("Proxy stop", zap.String("Address", Params.GetAddress()))
 	var err error
 	if s.closer != nil {
 		if err = s.closer.Close(); err != nil {
@@ -332,16 +331,17 @@ func (s *Server) LoadCollection(ctx context.Context, request *milvuspb.LoadColle
 	return s.proxy.LoadCollection(ctx, request)
 }
 
+// ReleaseCollection notifies Proxy to release a collection's data
 func (s *Server) ReleaseCollection(ctx context.Context, request *milvuspb.ReleaseCollectionRequest) (*commonpb.Status, error) {
 	return s.proxy.ReleaseCollection(ctx, request)
 }
 
-// ReleaseCollection notifies Proxy to release a collection's data
+// DescribeCollection notifies Proxy to describe a collection
 func (s *Server) DescribeCollection(ctx context.Context, request *milvuspb.DescribeCollectionRequest) (*milvuspb.DescribeCollectionResponse, error) {
 	return s.proxy.DescribeCollection(ctx, request)
 }
 
-// ReleaseCollection notifies Proxy to release a collection's data
+// GetCollectionStatistics notifies Proxy to get a collection's Statistics
 func (s *Server) GetCollectionStatistics(ctx context.Context, request *milvuspb.GetCollectionStatisticsRequest) (*milvuspb.GetCollectionStatisticsResponse, error) {
 	return s.proxy.GetCollectionStatistics(ctx, request)
 }
@@ -350,10 +350,12 @@ func (s *Server) ShowCollections(ctx context.Context, request *milvuspb.ShowColl
 	return s.proxy.ShowCollections(ctx, request)
 }
 
+// CreatePartition notifies Proxy to create a partition
 func (s *Server) CreatePartition(ctx context.Context, request *milvuspb.CreatePartitionRequest) (*commonpb.Status, error) {
 	return s.proxy.CreatePartition(ctx, request)
 }
 
+// DropPartition notifies Proxy to drop a partition
 func (s *Server) DropPartition(ctx context.Context, request *milvuspb.DropPartitionRequest) (*commonpb.Status, error) {
 	return s.proxy.DropPartition(ctx, request)
 }
@@ -362,26 +364,32 @@ func (s *Server) HasPartition(ctx context.Context, request *milvuspb.HasPartitio
 	return s.proxy.HasPartition(ctx, request)
 }
 
+// LoadPartitions notifies Proxy to load the partitions data
 func (s *Server) LoadPartitions(ctx context.Context, request *milvuspb.LoadPartitionsRequest) (*commonpb.Status, error) {
 	return s.proxy.LoadPartitions(ctx, request)
 }
 
+// ReleasePartitions notifies Proxy to release the partitions data
 func (s *Server) ReleasePartitions(ctx context.Context, request *milvuspb.ReleasePartitionsRequest) (*commonpb.Status, error) {
 	return s.proxy.ReleasePartitions(ctx, request)
 }
 
+// GetPartitionStatistics notifies Proxy to get the partitions Statistics info.
 func (s *Server) GetPartitionStatistics(ctx context.Context, request *milvuspb.GetPartitionStatisticsRequest) (*milvuspb.GetPartitionStatisticsResponse, error) {
 	return s.proxy.GetPartitionStatistics(ctx, request)
 }
 
+// ShowPartitions notifies Proxy to show the partitions
 func (s *Server) ShowPartitions(ctx context.Context, request *milvuspb.ShowPartitionsRequest) (*milvuspb.ShowPartitionsResponse, error) {
 	return s.proxy.ShowPartitions(ctx, request)
 }
 
+// CreateIndex notifies Proxy to create index
 func (s *Server) CreateIndex(ctx context.Context, request *milvuspb.CreateIndexRequest) (*commonpb.Status, error) {
 	return s.proxy.CreateIndex(ctx, request)
 }
 
+// DropIndex notifies Proxy to drop index
 func (s *Server) DropIndex(ctx context.Context, request *milvuspb.DropIndexRequest) (*commonpb.Status, error) {
 	return s.proxy.DropIndex(ctx, request)
 }
@@ -396,6 +404,7 @@ func (s *Server) GetIndexBuildProgress(ctx context.Context, request *milvuspb.Ge
 	return s.proxy.GetIndexBuildProgress(ctx, request)
 }
 
+// GetIndexStates gets the index states from proxy.
 func (s *Server) GetIndexState(ctx context.Context, request *milvuspb.GetIndexStateRequest) (*milvuspb.GetIndexStateResponse, error) {
 	return s.proxy.GetIndexState(ctx, request)
 }
@@ -432,6 +441,7 @@ func (s *Server) GetPersistentSegmentInfo(ctx context.Context, request *milvuspb
 	return s.proxy.GetPersistentSegmentInfo(ctx, request)
 }
 
+//GetQuerySegmentInfo notifies Proxy to get query segment info.
 func (s *Server) GetQuerySegmentInfo(ctx context.Context, request *milvuspb.GetQuerySegmentInfoRequest) (*milvuspb.GetQuerySegmentInfoResponse, error) {
 	return s.proxy.GetQuerySegmentInfo(ctx, request)
 
@@ -445,6 +455,7 @@ func (s *Server) RegisterLink(ctx context.Context, request *milvuspb.RegisterLin
 	return s.proxy.RegisterLink(ctx, request)
 }
 
+// GetMetrics gets the metrics info of proxy.
 func (s *Server) GetMetrics(ctx context.Context, request *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
 	return s.proxy.GetMetrics(ctx, request)
 }
@@ -453,10 +464,12 @@ func (s *Server) LoadBalance(ctx context.Context, request *milvuspb.LoadBalanceR
 	return s.proxy.LoadBalance(ctx, request)
 }
 
+// CreateAlias notifies Proxy to create alias
 func (s *Server) CreateAlias(ctx context.Context, request *milvuspb.CreateAliasRequest) (*commonpb.Status, error) {
 	return s.proxy.CreateAlias(ctx, request)
 }
 
+// DropAlias notifies Proxy to drop an alias
 func (s *Server) DropAlias(ctx context.Context, request *milvuspb.DropAliasRequest) (*commonpb.Status, error) {
 	return s.proxy.DropAlias(ctx, request)
 }

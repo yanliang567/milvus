@@ -49,9 +49,13 @@ type channelsMgr interface {
 	removeAllDMLStream() error
 }
 
+// getChannelsFuncType returns the channel information according to the collection id.
 type getChannelsFuncType = func(collectionID UniqueID) (map[vChan]pChan, error)
+
+// repackFuncType repacks message into message pack.
 type repackFuncType = func(tsMsgs []msgstream.TsMsg, hashKeys [][]int32) (map[int32]*msgstream.MsgPack, error)
 
+// getDmlChannelsFunc returns a function about how to get dml channels of a collection.
 func getDmlChannelsFunc(ctx context.Context, rc types.RootCoord) getChannelsFuncType {
 	return func(collectionID UniqueID) (map[vChan]pChan, error) {
 		req := &milvuspb.DescribeCollectionRequest{
@@ -102,6 +106,7 @@ func getDmlChannelsFunc(ctx context.Context, rc types.RootCoord) getChannelsFunc
 	}
 }
 
+// getDqlChannelsFunc returns a function about how to get query channels of a collection.
 func getDqlChannelsFunc(ctx context.Context, proxyID int64, qc createQueryChannelInterface) getChannelsFuncType {
 	return func(collectionID UniqueID) (map[vChan]pChan, error) {
 		req := &querypb.CreateQueryChannelRequest{
@@ -117,12 +122,13 @@ func getDqlChannelsFunc(ctx context.Context, proxyID int64, qc createQueryChanne
 		}
 
 		m := make(map[vChan]pChan)
-		m[resp.RequestChannel] = resp.RequestChannel
+		m[resp.QueryChannel] = resp.QueryChannel
 
 		return m, nil
 	}
 }
 
+// streamType indicates which type of message stream should be created.
 type streamType int
 
 const (

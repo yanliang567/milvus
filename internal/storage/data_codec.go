@@ -76,7 +76,7 @@ func (s BlobList) Len() int {
 	return len(s)
 }
 
-// Len implements Less in sort.Interface
+// Less implements Less in sort.Interface
 func (s BlobList) Less(i, j int) bool {
 	leftValues := strings.Split(s[i].Key, "/")
 	rightValues := strings.Split(s[j].Key, "/")
@@ -85,7 +85,7 @@ func (s BlobList) Less(i, j int) bool {
 	return left < right
 }
 
-// Len implements Swap in sort.Interface
+// Swap implements Swap in sort.Interface
 func (s BlobList) Swap(i, j int) {
 	s[i], s[j] = s[j], s[i]
 }
@@ -256,7 +256,7 @@ func NewInsertCodec(schema *etcdpb.CollectionMeta) *InsertCodec {
 
 // Serialize transfer insert data to blob. It will sort insert data by timestamp.
 // From schema, it get all fields.
-// For each field, it will create a binlog writer, and write a event to the binlog.
+// For each field, it will create a binlog writer, and write an event to the binlog.
 // It returns binlog buffer in the end.
 func (insertCodec *InsertCodec) Serialize(partitionID UniqueID, segmentID UniqueID, data *InsertData) ([]*Blob, []*Blob, error) {
 	blobs := make([]*Blob, 0)
@@ -267,7 +267,7 @@ func (insertCodec *InsertCodec) Serialize(partitionID UniqueID, segmentID Unique
 		return nil, nil, fmt.Errorf("data doesn't contains timestamp field")
 	}
 	if timeFieldData.RowNum() <= 0 {
-		return nil, nil, fmt.Errorf("There's no data in InsertData")
+		return nil, nil, fmt.Errorf("there's no data in InsertData")
 	}
 
 	ts := timeFieldData.(*Int64FieldData).Data
@@ -686,7 +686,7 @@ func (deleteCodec *DeleteCodec) Serialize(collectionID UniqueID, partitionID Uni
 		return nil, err
 	}
 	if len(data.Pks) != len(data.Tss) {
-		return nil, fmt.Errorf("The length of pks, and TimeStamps is not equal")
+		return nil, fmt.Errorf("the length of pks, and TimeStamps is not equal")
 	}
 	length := len(data.Pks)
 	sizeTotal := 0
@@ -1038,17 +1038,9 @@ func (codec *IndexFileBinlogCodec) Serialize(
 			return nil, err
 		}
 
-		length := (len(datas[pos].Value) + maxLengthPerRowOfIndexFile - 1) / maxLengthPerRowOfIndexFile
-		for i := 0; i < length; i++ {
-			start := i * maxLengthPerRowOfIndexFile
-			end := (i + 1) * maxLengthPerRowOfIndexFile
-			if end > len(datas[pos].Value) {
-				end = len(datas[pos].Value)
-			}
-			err = eventWriter.AddOneStringToPayload(string(datas[pos].Value[start:end]))
-			if err != nil {
-				return nil, err
-			}
+		err = eventWriter.AddByteToPayload(datas[pos].Value)
+		if err != nil {
+			return nil, err
 		}
 
 		eventWriter.SetEventTimestamp(ts, ts)
@@ -1085,17 +1077,9 @@ func (codec *IndexFileBinlogCodec) Serialize(
 	}
 
 	params, _ := json.Marshal(indexParams)
-	length := (len(params) + maxLengthPerRowOfIndexFile - 1) / maxLengthPerRowOfIndexFile
-	for i := 0; i < length; i++ {
-		start := i * maxLengthPerRowOfIndexFile
-		end := (i + 1) * maxLengthPerRowOfIndexFile
-		if end > len(params) {
-			end = len(params)
-		}
-		err = eventWriter.AddOneStringToPayload(string(params[start:end]))
-		if err != nil {
-			return nil, err
-		}
+	err = eventWriter.AddByteToPayload(params)
+	if err != nil {
+		return nil, err
 	}
 
 	eventWriter.SetEventTimestamp(ts, ts)
@@ -1195,37 +1179,23 @@ func (codec *IndexFileBinlogCodec) DeserializeImpl(blobs []*Blob) (
 				break
 			}
 			switch dataType {
-			case schemapb.DataType_String:
-				length, err := eventReader.GetPayloadLengthFromReader()
+			case schemapb.DataType_Int8:
+				content, err := eventReader.GetByteFromPayload()
 				if err != nil {
-					log.Warn("failed to get payload length",
+					log.Warn("failed to get string from payload",
 						zap.Error(err))
 					eventReader.Close()
 					binlogReader.Close()
 					return 0, 0, 0, 0, 0, 0, nil, "", 0, nil, err
 				}
 
-				var content []byte
-				for i := 0; i < length; i++ {
-					singleString, err := eventReader.GetOneStringFromPayload(i)
-					if err != nil {
-						log.Warn("failed to get string from payload",
-							zap.Error(err))
-						eventReader.Close()
-						binlogReader.Close()
-						return 0, 0, 0, 0, 0, 0, nil, "", 0, nil, err
-					}
-
-					content = append(content, []byte(singleString)...)
-				}
-
 				if key == IndexParamsKey {
 					_ = json.Unmarshal(content, &indexParams)
 				} else {
-					datas = append(datas, &Blob{
-						Key:   key,
-						Value: content,
-					})
+					blob := &Blob{Key: key}
+					blob.Value = make([]byte, len(content))
+					copy(blob.Value, content)
+					datas = append(datas, blob)
 				}
 			}
 			eventReader.Close()
@@ -1248,9 +1218,11 @@ func (codec *IndexFileBinlogCodec) Deserialize(blobs []*Blob) (
 	return datas, indexParams, indexName, indexID, err
 }
 
+// IndexCodec can serialize and deserialize index
 type IndexCodec struct {
 }
 
+// NewIndexCodec creates IndexCodec
 func NewIndexCodec() *IndexCodec {
 	return &IndexCodec{}
 }

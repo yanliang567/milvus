@@ -28,9 +28,9 @@ type timetravel struct {
 type trigger interface {
 	start()
 	stop()
-	// triggerCompaction trigger a compaction if any compaction condition satisfy.
+	// triggerCompaction triggers a compaction if any compaction condition satisfy.
 	triggerCompaction(timetravel *timetravel) error
-	// triggerSingleCompaction trigerr a compaction bundled with collection-partiiton-channel-segment
+	// triggerSingleCompaction triggers a compaction bundled with collection-partition-channel-segment
 	triggerSingleCompaction(collectionID, partitionID, segmentID int64, channel string, timetravel *timetravel) error
 	// forceTriggerCompaction force to start a compaction
 	forceTriggerCompaction(collectionID int64, timetravel *timetravel) (UniqueID, error)
@@ -107,7 +107,7 @@ func (t *compactionTrigger) startGlobalCompactionLoop() {
 	defer logutil.LogPanic()
 	defer t.wg.Done()
 
-	// If AutoCompaction diabled, global loop will not start
+	// If AutoCompaction disabled, global loop will not start
 	if !Params.EnableAutoCompaction {
 		return
 	}
@@ -238,7 +238,8 @@ func (t *compactionTrigger) handleGlobalSignal(signal *compactionSignal) {
 	if t.compactionHandler.isFull() {
 		return
 	}
-	segments := t.meta.segments.GetSegments()
+	// only flushed or flushing(flushed but not notified) segments
+	segments := t.meta.SelectSegments(isFlush)
 	singleCompactionPlans := t.globalSingleCompaction(segments, false, signal)
 	if len(singleCompactionPlans) != 0 {
 		log.Debug("global single compaction plans", zap.Int64("signalID", signal.id), zap.Int64s("plans", getPlanIDs(singleCompactionPlans)))
@@ -304,7 +305,7 @@ func (t *compactionTrigger) globalMergeCompaction(signal *compactionSignal, isFo
 		_, has := colls[segment.GetCollectionID()]
 		return (has || len(collections) == 0) && // if filters collection
 			isSegmentHealthy(segment) &&
-			segment.State == commonpb.SegmentState_Flushed && // flushed only
+			isFlush(segment) &&
 			!segment.isCompacting // not compacting now
 	}) // m is list of chanPartSegments, which is channel-partition organized segments
 	plans := make([]*datapb.CompactionPlan, 0)
@@ -354,7 +355,7 @@ func (t *compactionTrigger) getCandidateSegments(channel string, partitionID Uni
 	segments := t.meta.GetSegmentsByChannel(channel)
 	res := make([]*SegmentInfo, 0)
 	for _, s := range segments {
-		if s.GetState() != commonpb.SegmentState_Flushed || s.GetInsertChannel() != channel ||
+		if !isFlush(s) || s.GetInsertChannel() != channel ||
 			s.GetPartitionID() != partitionID || s.isCompacting {
 			continue
 		}
@@ -375,11 +376,16 @@ func (t *compactionTrigger) shouldDoMergeCompaction(segments []*SegmentInfo) boo
 
 func (t *compactionTrigger) fillOriginPlan(plan *datapb.CompactionPlan) error {
 	// TODO context
-	id, err := t.allocator.allocID(context.Background())
+	id, err := t.allocator.allocID(context.TODO())
+	if err != nil {
+		return err
+	}
+	ts, err := t.allocator.allocTimestamp(context.TODO())
 	if err != nil {
 		return err
 	}
 	plan.PlanID = id
+	plan.StartTime = ts
 	plan.TimeoutInSeconds = maxCompactionTimeoutInSeconds
 	return nil
 }
@@ -395,10 +401,12 @@ func (t *compactionTrigger) shouldDoSingleCompaction(segment *SegmentInfo, timet
 
 	totalDeletedRows := 0
 	totalDeleteLogSize := int64(0)
-	for _, l := range segment.GetDeltalogs() {
-		if l.TimestampTo < timetravel.time {
-			totalDeletedRows += int(l.GetRecordEntries())
-			totalDeleteLogSize += l.GetDeltaLogSize()
+	for _, fbl := range segment.GetDeltalogs() {
+		for _, l := range fbl.GetBinlogs() {
+			if l.TimestampTo < timetravel.time {
+				totalDeletedRows += int(l.GetEntriesNum())
+				totalDeleteLogSize += l.GetLogSize()
+			}
 		}
 	}
 
@@ -443,4 +451,8 @@ func (t *compactionTrigger) singleCompaction(segment *SegmentInfo, isForce bool,
 		return nil, err
 	}
 	return plan, t.compactionHandler.execCompactionPlan(signal, plan)
+}
+
+func isFlush(segment *SegmentInfo) bool {
+	return segment.GetState() == commonpb.SegmentState_Flushed || segment.GetState() == commonpb.SegmentState_Flushing
 }

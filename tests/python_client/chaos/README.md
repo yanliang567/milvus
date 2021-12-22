@@ -15,7 +15,7 @@ Please refer to [Run E2E Tests](https://github.com/milvus-io/milvus/blob/master/
 
 ## Flow Chart
 
-<img src="../graphs/chaos_test_flow_chart.jpg" alt="Chaos Test Flow Chart" width="350"/>
+<img src="../graphs/chaos_test_flow_chart.jpg" alt="Chaos Test Flow Chart" width=50%/>
 
 ## Test Scenarios
 ### Milvus in cluster mode
@@ -73,10 +73,12 @@ Run test scenario automatically:
    ```bash
    cd /milvus/tests/python_client/chaos
    # in this step, script will install milvus and run testcase
-   bash chaos_test.sh
+   bash chaos_test.sh ${pod} ${chaos_type} ${chaos_task}
+   # example: bash chaos_test.sh querynode pod_kill chaos-test
    ```
 ### Github Action
 * [Pod Kill Chaos Test](https://github.com/milvus-io/milvus/actions/workflows/pod-kill-chaos-test.yaml)
+* [Pod Failure Chaos Test](https://github.com/milvus-io/milvus/blob/master/.github/workflows/pod-failure-chaos-test.yaml)
 * [Network Partition Chaos Test](https://github.com/milvus-io/milvus/actions/workflows/network-partition-chaos-test.yaml)
 
 ### Nightly 

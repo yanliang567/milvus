@@ -24,12 +24,9 @@ import (
 	"sync"
 	"time"
 
-	"go.uber.org/zap"
-	"google.golang.org/grpc"
-
-	grpc_opentracing "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
-	dsc "github.com/milvus-io/milvus/internal/distributed/datacoord/client"
-	isc "github.com/milvus-io/milvus/internal/distributed/indexcoord/client"
+	ot "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
+	dcc "github.com/milvus-io/milvus/internal/distributed/datacoord/client"
+	icc "github.com/milvus-io/milvus/internal/distributed/indexcoord/client"
 	rcc "github.com/milvus-io/milvus/internal/distributed/rootcoord/client"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/msgstream"
@@ -40,9 +37,15 @@ import (
 	qc "github.com/milvus-io/milvus/internal/querycoord"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/trace"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
+	"go.uber.org/zap"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 )
+
+var Params paramtable.GrpcServerConfig
 
 // Server is the grpc server of QueryCoord.
 type Server struct {
@@ -99,18 +102,14 @@ func (s *Server) Run() error {
 
 // init initializes QueryCoord's grpc service.
 func (s *Server) init() error {
-	Params.Init()
+	Params.InitOnce(typeutil.QueryCoordRole)
 
 	qc.Params.InitOnce()
-	qc.Params.Address = Params.Address
+	qc.Params.Address = Params.GetAddress()
 	qc.Params.Port = Params.Port
 
 	closer := trace.InitTracing("querycoord")
 	s.closer = closer
-
-	if err := s.queryCoord.Register(); err != nil {
-		return err
-	}
 
 	s.wg.Add(1)
 	go s.startGrpcLoop(Params.Port)
@@ -153,7 +152,7 @@ func (s *Server) init() error {
 
 	// --- Data service client ---
 	if s.dataCoord == nil {
-		s.dataCoord, err = dsc.NewClient(s.loopCtx, qc.Params.MetaRootPath, qc.Params.EtcdEndpoints)
+		s.dataCoord, err = dcc.NewClient(s.loopCtx, qc.Params.MetaRootPath, qc.Params.EtcdEndpoints)
 		if err != nil {
 			log.Debug("QueryCoord try to new DataCoord client failed", zap.Error(err))
 			panic(err)
@@ -181,7 +180,7 @@ func (s *Server) init() error {
 
 	// --- IndexCoord ---
 	if s.indexCoord == nil {
-		s.indexCoord, err = isc.NewClient(s.loopCtx, qc.Params.MetaRootPath, qc.Params.EtcdEndpoints)
+		s.indexCoord, err = icc.NewClient(s.loopCtx, qc.Params.MetaRootPath, qc.Params.EtcdEndpoints)
 		if err != nil {
 			log.Debug("QueryCoord try to new IndexCoord client failed", zap.Error(err))
 			panic(err)
@@ -247,10 +246,8 @@ func (s *Server) startGrpcLoop(grpcPort int) {
 		grpc.KeepaliveParams(kasp),
 		grpc.MaxRecvMsgSize(Params.ServerMaxRecvSize),
 		grpc.MaxSendMsgSize(Params.ServerMaxSendSize),
-		grpc.UnaryInterceptor(
-			grpc_opentracing.UnaryServerInterceptor(opts...)),
-		grpc.StreamInterceptor(
-			grpc_opentracing.StreamServerInterceptor(opts...)))
+		grpc.UnaryInterceptor(ot.UnaryServerInterceptor(opts...)),
+		grpc.StreamInterceptor(ot.StreamServerInterceptor(opts...)))
 	querypb.RegisterQueryCoordServer(s.grpcServer, s)
 
 	go funcutil.CheckGrpcReady(ctx, s.grpcErrChan)
@@ -261,12 +258,16 @@ func (s *Server) startGrpcLoop(grpcPort int) {
 
 // start starts QueryCoord's grpc service.
 func (s *Server) start() error {
-	return s.queryCoord.Start()
+	err := s.queryCoord.Start()
+	if err != nil {
+		return err
+	}
+	return s.queryCoord.Register()
 }
 
 // Stop stops QueryCoord's grpc service.
 func (s *Server) Stop() error {
-	log.Debug("QueryCoord stop", zap.String("Address", Params.Address))
+	log.Debug("QueryCoord stop", zap.String("Address", Params.GetAddress()))
 	if s.closer != nil {
 		if err := s.closer.Close(); err != nil {
 			return err

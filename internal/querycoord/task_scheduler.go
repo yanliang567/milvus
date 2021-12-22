@@ -238,7 +238,7 @@ func (scheduler *TaskScheduler) reloadFromKV() error {
 		triggerTasks[taskID].setState(state)
 	}
 
-	var doneTriggerTask task = nil
+	var doneTriggerTask task
 	for _, t := range triggerTasks {
 		if t.getState() == taskDone {
 			doneTriggerTask = t
@@ -266,7 +266,7 @@ func (scheduler *TaskScheduler) unmarshalTask(taskID UniqueID, t string) (task, 
 		return nil, fmt.Errorf("failed to unmarshal message header, err %s ", err.Error())
 	}
 	var newTask task
-	baseTask := newBaseTask(scheduler.ctx, querypb.TriggerCondition_grpcRequest)
+	baseTask := newBaseTask(scheduler.ctx, querypb.TriggerCondition_GrpcRequest)
 	switch header.Base.MsgType {
 	case commonpb.MsgType_LoadCollection:
 		loadReq := querypb.LoadCollectionRequest{}
@@ -324,6 +324,7 @@ func (scheduler *TaskScheduler) unmarshalTask(taskID UniqueID, t string) (task, 
 			baseTask:                 baseTask,
 			ReleasePartitionsRequest: &loadReq,
 			cluster:                  scheduler.cluster,
+			meta:                     scheduler.meta,
 		}
 		newTask = releasePartitionTask
 	case commonpb.MsgType_LoadSegments:
@@ -906,7 +907,7 @@ func updateSegmentInfoFromTask(ctx context.Context, triggerTask task, meta Meta)
 						CollectionID:   loadInfo.CollectionID,
 						PartitionID:    loadInfo.PartitionID,
 						NodeID:         dstNodeID,
-						SegmentState:   querypb.SegmentState_sealed,
+						SegmentState:   commonpb.SegmentState_Sealed,
 						CompactionFrom: loadInfo.CompactionFrom,
 					}
 					if _, ok := segmentInfosToSave[collectionID]; !ok {
@@ -924,7 +925,8 @@ func updateSegmentInfoFromTask(ctx context.Context, triggerTask task, meta Meta)
 		rollBackSegmentChangeInfoErr := retry.Do(ctx, func() error {
 			rollBackChangeInfos := reverseSealedSegmentChangeInfo(sealedSegmentChangeInfos)
 			for collectionID, infos := range rollBackChangeInfos {
-				_, _, sendErr := meta.sendSealedSegmentChangeInfos(collectionID, infos)
+				channelInfo := meta.getQueryChannelInfoByID(collectionID)
+				_, sendErr := meta.sendSealedSegmentChangeInfos(collectionID, channelInfo.QueryChannel, infos)
 				if sendErr != nil {
 					return sendErr
 				}
@@ -933,8 +935,10 @@ func updateSegmentInfoFromTask(ctx context.Context, triggerTask task, meta Meta)
 		}, retry.Attempts(20))
 		if rollBackSegmentChangeInfoErr != nil {
 			log.Error("scheduleLoop: Restore the information of global sealed segments in query node failed", zap.Error(rollBackSegmentChangeInfoErr))
+			panic(rollBackSegmentChangeInfoErr)
+		} else {
+			log.Info("Successfully roll back segment info change")
 		}
-		log.Info("Successfully roll back segment info change")
 		return err
 	}
 

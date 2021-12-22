@@ -21,6 +21,7 @@ kubectl config set-context --current --namespace=${ns}
 pod=${1:-"querynode"}
 chaos_type=${2:-"pod_kill"} #pod_kill or pod_failure
 chaos_task=${3:-"chaos-test"} # chaos-test or data-consist-test 
+node_num=${4:-1} # cluster_1_node or cluster_n_nodes
 
 release="test"-${pod}-${chaos_type/_/-} # replace pod_kill to pod-kill
 
@@ -40,16 +41,18 @@ then
     echo "install standalone"
     helm install --wait --timeout 360s ${release} milvus/milvus --set service.type=NodePort -f ../standalone-values.yaml -n=${ns}
 fi
-# if chaos_type is pod_failure, update replicas
-if [ "$chaos_type" == "pod_failure" ];
+
+declare -A pod_map=(["querynode"]="queryNode" ["indexnode"]="indexNode" ["datanode"]="dataNode" ["proxy"]="proxy")
+
+if [ "$node_num" -gt "1" ];
 then
-    declare -A pod_map=(["querynode"]="queryNode" ["indexnode"]="indexNode" ["datanode"]="dataNode" ["proxy"]="proxy")
-    helm upgrade ${release} milvus/milvus --set ${pod_map[${pod}]}.replicas=2 --reuse-values
+    echo "install cluster n node"
+    helm upgrade ${release} milvus/milvus --set ${pod_map[${pod}]}.replicas=$node_num --reuse-values
 fi
 
 # wait all pod ready
-kubectl wait --for=condition=Ready pod -l app.kubernetes.io/instance=${release} -n chaos-testing --timeout=360s
-kubectl wait --for=condition=Ready pod -l release=${release} -n chaos-testing --timeout=360s
+kubectl wait --for=condition=Ready pod -l app.kubernetes.io/instance=${release} -n ${ns} --timeout=360s
+kubectl wait --for=condition=Ready pod -l release=${release} -n ${ns} --timeout=360s
 
 popd
 
@@ -87,12 +90,12 @@ then
 fi
 sleep 30
 echo "start running e2e test"
-kubectl wait --for=condition=Ready pod -l app.kubernetes.io/instance=${release} -n chaos-testing --timeout=360s
-kubectl wait --for=condition=Ready pod -l release=${release} -n chaos-testing --timeout=360s
+kubectl wait --for=condition=Ready pod -l app.kubernetes.io/instance=${release} -n ${ns} --timeout=360s
+kubectl wait --for=condition=Ready pod -l release=${release} -n ${ns} --timeout=360s
 
 pytest -s -v ../testcases/test_e2e.py --host "$host" --log-cli-level=INFO --capture=no || echo "e2e test fail"
 python scripts/hello_milvus.py --host "$host" || echo "e2e test fail"
 
 # save logs
-data=`date +%Y-%m-%d-%H-%M-%S`
-bash ../../scripts/export_log_k8s.sh ${ns} ${release} k8s_log/${pod}-${chaos_type}-${chaos_task}-${data}
+cur_time=`date +%Y-%m-%d-%H-%M-%S`
+bash ../../scripts/export_log_k8s.sh ${ns} ${release} k8s_log/${pod}-${chaos_type}-${chaos_task}-${cur_time}

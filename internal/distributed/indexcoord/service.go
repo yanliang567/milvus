@@ -24,12 +24,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/milvus-io/milvus/internal/types"
-
-	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/keepalive"
-
 	ot "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
 	"github.com/milvus-io/milvus/internal/indexcoord"
 	"github.com/milvus-io/milvus/internal/log"
@@ -37,10 +31,17 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
+	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/trace"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
+	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 )
+
+var Params paramtable.GrpcServerConfig
 
 // UniqueID is an alias of int64, is used as a unique identifier for the request.
 type UniqueID = typeutil.UniqueID
@@ -75,19 +76,14 @@ func (s *Server) Run() error {
 
 // init initializes IndexCoord's grpc service.
 func (s *Server) init() error {
-	Params.Init()
+	Params.InitOnce(typeutil.IndexCoordRole)
 
 	indexcoord.Params.InitOnce()
-	indexcoord.Params.Address = Params.Address
+	indexcoord.Params.Address = Params.GetAddress()
 	indexcoord.Params.Port = Params.Port
 
 	closer := trace.InitTracing("IndexCoord")
 	s.closer = closer
-
-	if err := s.indexcoord.Register(); err != nil {
-		log.Error("IndexCoord", zap.Any("register session error", err))
-		return err
-	}
 
 	s.loopWg.Add(1)
 	go s.startGrpcLoop(indexcoord.Params.Port)
@@ -100,6 +96,7 @@ func (s *Server) init() error {
 		log.Error("IndexCoord", zap.Any("init error", err))
 		return err
 	}
+
 	return nil
 }
 
@@ -109,12 +106,17 @@ func (s *Server) start() error {
 		return err
 	}
 	log.Debug("indexCoord started")
+	if err := s.indexcoord.Register(); err != nil {
+		log.Error("IndexCoord", zap.Any("register session error", err))
+		return err
+	}
+	log.Debug("IndexCoord registers service successfully")
 	return nil
 }
 
 // Stop stops IndexCoord's grpc service.
 func (s *Server) Stop() error {
-	log.Debug("Indexcoord stop", zap.String("Address", Params.Address))
+	log.Debug("Indexcoord stop", zap.String("Address", Params.GetAddress()))
 	if s.closer != nil {
 		if err := s.closer.Close(); err != nil {
 			return err

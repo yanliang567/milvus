@@ -8,13 +8,13 @@ SegmentSealed has an extra interface rather than SegmentInterface:
 2. `LoadFieldData(loadFieldDataInfo)`: load column data, could be either scalar column or vector column
     1. Note: indexes and vector data for the same column may coexist. Indexes are prioritized in search
 3. `DropIndex(fieldId)`: drop and release an existing index of a specified field
-4. `DropFieldData(fieldId)`: drop and release existed data for a specified field
+4. `DropFieldData(fieldId)`: drop and release existing data for a specified field
 
 Search is executable as long as all the columns involved in the search are loaded.
 
 # SegmentSealedImpl internal data definition
 1. `row_count_opt_`:
-   1. Fill row count when load the first entity
+   1. Fill row count when loading the first entity
    2. All the other columns loaded must match the same row count
 3. `xxx_ready_bitset_` & `system_ready_count_`
    1. Used to record whether the corresponding column is loaded. Bitset corresponds to FieldOffset
@@ -24,7 +24,7 @@ Search is executable as long as all the columns involved in the search are loade
       3. For the vector columns involved in the query, either the original data or the index is loaded
 4. `scalar_indexings_`: store scalar index
 
-   1. Use StructuredSortedIndex in knowhere
+   1. Use StructuredSortedIndex in Knowhere
 5. `primary_key_index_`: store index for pk column
    1. Use brand new ScalarIndexBase format
    2. **Note: The functions here may overlap with scalar indexes. It is recommended to replace scalar index with ScalarIndexBase**

@@ -24,14 +24,11 @@ import (
 	"sync"
 	"time"
 
-	"go.uber.org/zap"
-	"google.golang.org/grpc"
-
-	grpc_opentracing "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
-	dsc "github.com/milvus-io/milvus/internal/distributed/datacoord/client"
-	isc "github.com/milvus-io/milvus/internal/distributed/indexcoord/client"
+	ot "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
+	dcc "github.com/milvus-io/milvus/internal/distributed/datacoord/client"
+	icc "github.com/milvus-io/milvus/internal/distributed/indexcoord/client"
 	pnc "github.com/milvus-io/milvus/internal/distributed/proxy/client"
-	qsc "github.com/milvus-io/milvus/internal/distributed/querycoord/client"
+	qcc "github.com/milvus-io/milvus/internal/distributed/querycoord/client"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
@@ -43,10 +40,16 @@ import (
 	"github.com/milvus-io/milvus/internal/rootcoord"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 	"github.com/milvus-io/milvus/internal/util/trace"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
+	"go.uber.org/zap"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 )
+
+var Params paramtable.GrpcServerConfig
 
 // Server grpc wrapper
 type Server struct {
@@ -104,21 +107,21 @@ func NewServer(ctx context.Context, factory msgstream.Factory) (*Server, error) 
 
 func (s *Server) setClient() {
 	s.newDataCoordClient = func(etcdMetaRoot string, etcdEndpoints []string) types.DataCoord {
-		dsClient, err := dsc.NewClient(s.ctx, etcdMetaRoot, etcdEndpoints)
+		dsClient, err := dcc.NewClient(s.ctx, etcdMetaRoot, etcdEndpoints)
 		if err != nil {
 			panic(err)
 		}
 		return dsClient
 	}
 	s.newIndexCoordClient = func(metaRootPath string, etcdEndpoints []string) types.IndexCoord {
-		isClient, err := isc.NewClient(s.ctx, metaRootPath, etcdEndpoints)
+		isClient, err := icc.NewClient(s.ctx, metaRootPath, etcdEndpoints)
 		if err != nil {
 			panic(err)
 		}
 		return isClient
 	}
 	s.newQueryCoordClient = func(metaRootPath string, etcdEndpoints []string) types.QueryCoord {
-		qsClient, err := qsc.NewClient(s.ctx, metaRootPath, etcdEndpoints)
+		qsClient, err := qcc.NewClient(s.ctx, metaRootPath, etcdEndpoints)
 		if err != nil {
 			panic(err)
 		}
@@ -141,10 +144,10 @@ func (s *Server) Run() error {
 }
 
 func (s *Server) init() error {
-	Params.Init()
+	Params.InitOnce(typeutil.RootCoordRole)
 
 	rootcoord.Params.InitOnce()
-	rootcoord.Params.Address = Params.Address
+	rootcoord.Params.Address = Params.GetAddress()
 	rootcoord.Params.Port = Params.Port
 	log.Debug("grpc init done ...")
 
@@ -153,12 +156,7 @@ func (s *Server) init() error {
 
 	log.Debug("init params done")
 
-	err := s.rootCoord.Register()
-	if err != nil {
-		return err
-	}
-
-	err = s.startGrpc()
+	err := s.startGrpc(Params.Port)
 	if err != nil {
 		return err
 	}
@@ -209,15 +207,15 @@ func (s *Server) init() error {
 	return s.rootCoord.Init()
 }
 
-func (s *Server) startGrpc() error {
+func (s *Server) startGrpc(port int) error {
 	s.wg.Add(1)
-	go s.startGrpcLoop(Params.Port)
+	go s.startGrpcLoop(port)
 	// wait for grpc server loop start
 	err := <-s.grpcErrChan
 	return err
 }
 
-func (s *Server) startGrpcLoop(grpcPort int) {
+func (s *Server) startGrpcLoop(port int) {
 	defer s.wg.Done()
 	var kaep = keepalive.EnforcementPolicy{
 		MinTime:             5 * time.Second, // If a client pings more than once every 5 seconds, terminate the connection
@@ -228,8 +226,8 @@ func (s *Server) startGrpcLoop(grpcPort int) {
 		Time:    60 * time.Second, // Ping the client if it is idle for 60 seconds to ensure the connection is still active
 		Timeout: 10 * time.Second, // Wait 10 second for the ping ack before assuming the connection is dead
 	}
-	log.Debug("start grpc ", zap.Int("port", grpcPort))
-	lis, err := net.Listen("tcp", ":"+strconv.Itoa(grpcPort))
+	log.Debug("start grpc ", zap.Int("port", port))
+	lis, err := net.Listen("tcp", ":"+strconv.Itoa(port))
 	if err != nil {
 		log.Error("GrpcServer:failed to listen", zap.String("error", err.Error()))
 		s.grpcErrChan <- err
@@ -245,8 +243,8 @@ func (s *Server) startGrpcLoop(grpcPort int) {
 		grpc.KeepaliveParams(kasp),
 		grpc.MaxRecvMsgSize(Params.ServerMaxRecvSize),
 		grpc.MaxSendMsgSize(Params.ServerMaxSendSize),
-		grpc.UnaryInterceptor(grpc_opentracing.UnaryServerInterceptor(opts...)),
-		grpc.StreamInterceptor(grpc_opentracing.StreamServerInterceptor(opts...)))
+		grpc.UnaryInterceptor(ot.UnaryServerInterceptor(opts...)),
+		grpc.StreamInterceptor(ot.StreamServerInterceptor(opts...)))
 	rootcoordpb.RegisterRootCoordServer(s.grpcServer, s)
 
 	go funcutil.CheckGrpcReady(ctx, s.grpcErrChan)
@@ -258,13 +256,18 @@ func (s *Server) startGrpcLoop(grpcPort int) {
 func (s *Server) start() error {
 	log.Debug("RootCoord Core start ...")
 	if err := s.rootCoord.Start(); err != nil {
+		log.Error(err.Error())
+		return err
+	}
+	if err := s.rootCoord.Register(); err != nil {
+		log.Error("RootCoord registers service failed", zap.Error(err))
 		return err
 	}
 	return nil
 }
 
 func (s *Server) Stop() error {
-	log.Debug("Rootcoord stop", zap.String("Address", Params.Address))
+	log.Debug("Rootcoord stop", zap.String("Address", Params.GetAddress()))
 	if s.closer != nil {
 		if err := s.closer.Close(); err != nil {
 			log.Error("Failed to close opentracing", zap.Error(err))

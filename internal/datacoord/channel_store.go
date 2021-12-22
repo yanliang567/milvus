@@ -35,7 +35,7 @@ const (
 	maxOperationsPerTxn = 128
 )
 
-var errUnknownOpType error = errors.New("unknown operation type")
+var errUnknownOpType = errors.New("unknown operation type")
 
 // ChannelOpType type alias uses int8 stands for Channel operation type
 type ChannelOpType int8
@@ -90,7 +90,7 @@ type ROChannelStore interface {
 	GetNodes() []int64
 }
 
-// RWChannelStore is the read write channel store which matains the mapping between channels and node
+// RWChannelStore is the read write channel store which maintains the mapping between channels and node
 type RWChannelStore interface {
 	ROChannelStore
 	// Reload restores the buffer channels and node-channels mapping form kv
@@ -130,7 +130,7 @@ func NewChannelStore(kv kv.TxnKV) *ChannelStore {
 	return c
 }
 
-// Reload restores the buffer channels and node-channels mapping form kv
+// Reload restores the buffer channels and node-channels mapping from kv
 func (c *ChannelStore) Reload() error {
 	keys, values, err := c.store.LoadWithPrefix(Params.ChannelWatchSubPath)
 	if err != nil {

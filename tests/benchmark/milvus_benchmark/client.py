@@ -92,7 +92,7 @@ class MilvusClient(object):
         return 'Milvus collection %s' % self._collection_name
 
     def set_collection(self, collection_name):
-        """ seting collection name """
+        """ Setting collection name """
         self._collection_name = collection_name
 
     # TODO: server not support
@@ -135,7 +135,7 @@ class MilvusClient(object):
                 elif other_field_name.startswith("double"):
                     field_type = DataType.DOUBLE
                 else:
-                    raise Exception("Field name not supported")
+                    raise Exception("Create collection: Field name not supported")
                 fields.append({"name": other_field_name, "type": field_type})
         create_param = {
             "fields": fields,

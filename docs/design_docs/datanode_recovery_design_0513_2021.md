@@ -44,7 +44,7 @@ DataCoord tells DataNode stateful vchannel info through RPC `WatchDmChannels` so
 the same messages over and over again. So flowgraph needs the ability to consume messages in the middle of a vchannel.
 
 DataNode tells DataCoord vchannel states after each flush through RPC `SaveBinlogPaths`, so that DataCoord
-keeps the vchannel states update.
+keeps the vchannel states updated.
 
 
 ## Some interface/proto designs below are outdated, will be updated soon
@@ -155,7 +155,7 @@ WatchDmChannels -> new dataSyncService -> HEALTH
 
 ![datanode_design](graphs/collection_flowgraph_1_n.png)
 
-• If collection:flowgraph = n : 1, in the blue cases, datanode must have ability to scale flowgraph. In the brown cases, flowgraph must be able to scale channels.
+• If collection:flowgraph = n : 1, in the blue cases, datanode must have the ability to scale flowgraph. In the brown cases, flowgraph must be able to scale channels.
 
 ![datanode_design](graphs/collection_flowgraph_n_1.jpg)
 

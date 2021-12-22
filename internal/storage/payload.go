@@ -30,9 +30,11 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
 )
 
+// PayloadWriterInterface abstracts PayloadWriter
 type PayloadWriterInterface interface {
 	AddDataToPayload(msgs interface{}, dim ...int) error
 	AddBoolToPayload(msgs []bool) error
+	AddByteToPayload(msgs []byte) error
 	AddInt8ToPayload(msgs []int8) error
 	AddInt16ToPayload(msgs []int16) error
 	AddInt32ToPayload(msgs []int32) error
@@ -49,9 +51,11 @@ type PayloadWriterInterface interface {
 	Close()
 }
 
+// PayloadReaderInterface abstracts PayloadReader
 type PayloadReaderInterface interface {
 	GetDataFromPayload(idx ...int) (interface{}, int, error)
 	GetBoolFromPayload() ([]bool, error)
+	GetByteFromPayload() ([]byte, error)
 	GetInt8FromPayload() ([]int8, error)
 	GetInt16FromPayload() ([]int16, error)
 	GetInt32FromPayload() ([]int32, error)
@@ -76,6 +80,7 @@ type PayloadReader struct {
 	colType          schemapb.DataType
 }
 
+// NewPayloadWriter is constructor of PayloadWriter
 func NewPayloadWriter(colType schemapb.DataType) (*PayloadWriter, error) {
 	w := C.NewPayloadWriter(C.int(colType))
 	if w == nil {
@@ -172,6 +177,18 @@ func (w *PayloadWriter) AddBoolToPayload(msgs []bool) error {
 
 	status := C.AddBooleanToPayload(w.payloadWriterPtr, cMsgs, cLength)
 	return HandleCStatus(&status, "AddBoolToPayload failed")
+}
+
+func (w *PayloadWriter) AddByteToPayload(msgs []byte) error {
+	length := len(msgs)
+	if length <= 0 {
+		return errors.New("can't add empty msgs into payload")
+	}
+	cMsgs := (*C.int8_t)(unsafe.Pointer(&msgs[0]))
+	cLength := C.int(length)
+
+	status := C.AddInt8ToPayload(w.payloadWriterPtr, cMsgs, cLength)
+	return HandleCStatus(&status, "AddInt8ToPayload failed")
 }
 
 func (w *PayloadWriter) AddInt8ToPayload(msgs []int8) error {
@@ -283,7 +300,7 @@ func (w *PayloadWriter) AddBinaryVectorToPayload(binVec []byte, dim int) error {
 	return HandleCStatus(&status, "AddBinaryVectorToPayload failed")
 }
 
-// dimension > 0 && (%8 == 0)
+// AddFloatVectorToPayload dimension > 0 && (%8 == 0)
 func (w *PayloadWriter) AddFloatVectorToPayload(floatVec []float32, dim int) error {
 	length := len(floatVec)
 	if length <= 0 {
@@ -347,6 +364,7 @@ func NewPayloadReader(colType schemapb.DataType, buf []byte) (*PayloadReader, er
 	return &PayloadReader{payloadReaderPtr: r, colType: colType}, nil
 }
 
+// GetDataFromPayload returns data,length from payload, returns err if failed
 // Params:
 //      `idx`: String index
 // Return:
@@ -418,6 +436,24 @@ func (r *PayloadReader) GetBoolFromPayload() ([]bool, error) {
 	}
 
 	slice := (*[1 << 28]bool)(unsafe.Pointer(cMsg))[:cSize:cSize]
+	return slice, nil
+}
+
+// GetByteFromPayload returns byte slice from payload
+func (r *PayloadReader) GetByteFromPayload() ([]byte, error) {
+	if r.colType != schemapb.DataType_Int8 {
+		return nil, errors.New("incorrect data type")
+	}
+
+	var cMsg *C.int8_t
+	var cSize C.int
+
+	status := C.GetInt8FromPayload(r.payloadReaderPtr, &cMsg, &cSize)
+	if err := HandleCStatus(&status, "GetInt8FromPayload failed"); err != nil {
+		return nil, err
+	}
+
+	slice := (*[1 << 28]byte)(unsafe.Pointer(cMsg))[:cSize:cSize]
 	return slice, nil
 }
 
@@ -584,6 +620,7 @@ func (r *PayloadReader) GetPayloadLengthFromReader() (int, error) {
 	return int(length), nil
 }
 
+// Close closes the payload reader
 func (r *PayloadReader) Close() {
 	r.ReleasePayloadReader()
 }

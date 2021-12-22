@@ -35,6 +35,7 @@ func isAlpha(c uint8) bool {
 	return true
 }
 
+// isNumber check if c is a number.
 func isNumber(c uint8) bool {
 	if c < '0' || c > '9' {
 		return false
@@ -230,6 +231,7 @@ func RepeatedKeyValToMap(kvPairs []*commonpb.KeyValuePair) (map[string]string, e
 	return resMap, nil
 }
 
+// isVector check if dataType belongs to vector type.
 func isVector(dataType schemapb.DataType) (bool, error) {
 	switch dataType {
 	case schemapb.DataType_Bool, schemapb.DataType_Int8,
@@ -346,6 +348,7 @@ func validateSchema(coll *schemapb.CollectionSchema) error {
 	return nil
 }
 
+// validateMultipleVectorFields check if schema has multiple vector fields.
 func validateMultipleVectorFields(schema *schemapb.CollectionSchema) error {
 	vecExist := false
 	var vecName string

@@ -333,7 +333,7 @@ type ChannelTimeTickMsg struct {
 
 #### 6.2 Dd (Data definitions) Message
 
-`RC` would put `Dd Message` into the `DML MsgSteams`
+`RootCoord` would put `Dd Message` into the `DML MsgSteams`
 
 - _BaseMsg_
 
@@ -424,7 +424,7 @@ type DropPartitionMsg struct {
 
 #### 6.3 Create Index automatically
 
-`RC` would notify `IC(Index Coord)` to build index automatically when the segment has been flushed.
+`RootCoord` would notify `IndexCoord(Index Coordinator)` to build index automatically when the segment has been flushed.
 <img src="./figs/root_coord_create_index_automatically.png">
 
 #### 6.4 RootCoord Instance
@@ -461,7 +461,7 @@ type Core struct {
 	//setMsgStreams, send drop partition into dd channel
 	SendDdDropPartitionReq func(ctx context.Context, req *internalpb.DropPartitionRequest, channelNames []string) error
 
-	// if rootcoord create segment, datacoord will put segment msg into this channel
+	// if RootCoord create segment, DataCoord will put segment msg into this channel
 	DataCoordSegmentChan <-chan *ms.MsgPack
 
 	// if segment flush completed, data node would put segment msg into this channel

@@ -41,6 +41,7 @@ import (
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 )
 
 const timeoutForEachRead = 10 * time.Second
@@ -215,7 +216,9 @@ func (loader *segmentLoader) filterPKStatsBinlogs(fieldBinlogs []*datapb.FieldBi
 	result := make([]string, 0)
 	for _, fieldBinlog := range fieldBinlogs {
 		if fieldBinlog.FieldID == pkFieldID {
-			result = append(result, fieldBinlog.Binlogs...)
+			for _, binlog := range fieldBinlog.GetBinlogs() {
+				result = append(result, binlog.GetLogPath())
+			}
 		}
 	}
 	return result
@@ -241,14 +244,13 @@ func (loader *segmentLoader) loadSegmentFieldsData(segment *Segment, fieldBinlog
 			zap.String("paths", fmt.Sprintln(fb.Binlogs)),
 		)
 		for _, path := range fb.Binlogs {
-			p := path
-			binLog, err := loader.minioKV.Load(path)
+			binLog, err := loader.minioKV.Load(path.GetLogPath())
 			if err != nil {
 				// TODO: return or continue?
 				return err
 			}
 			blob := &storage.Blob{
-				Key:   p,
+				Key:   path.GetLogPath(),
 				Value: []byte(binLog),
 			}
 			blobs = append(blobs, blob)
@@ -422,23 +424,25 @@ func (loader *segmentLoader) loadSegmentBloomFilter(segment *Segment, binlogPath
 	return nil
 }
 
-func (loader *segmentLoader) loadDeltaLogs(segment *Segment, deltaLogs []*datapb.DeltaLogInfo) error {
-	if len(deltaLogs) == 0 {
+func (loader *segmentLoader) loadDeltaLogs(segment *Segment, deltaLogs []*datapb.FieldBinlog) error {
+	dCodec := storage.DeleteCodec{}
+	var blobs []*storage.Blob
+	for _, deltaLog := range deltaLogs {
+		for _, log := range deltaLog.GetBinlogs() {
+			value, err := loader.minioKV.Load(log.GetLogPath())
+			if err != nil {
+				return err
+			}
+			blob := &storage.Blob{
+				Key:   log.GetLogPath(),
+				Value: []byte(value),
+			}
+			blobs = append(blobs, blob)
+		}
+	}
+	if len(blobs) == 0 {
 		log.Info("there are no delta logs saved with segment", zap.Any("segmentID", segment.segmentID))
 		return nil
-	}
-	dCodec := storage.DeleteCodec{}
-	blobs := make([]*storage.Blob, 0)
-	for _, deltaLog := range deltaLogs {
-		value, err := loader.minioKV.Load(deltaLog.DeltaLogPath)
-		if err != nil {
-			return err
-		}
-		blob := &storage.Blob{
-			Key:   deltaLog.DeltaLogPath,
-			Value: []byte(value),
-		}
-		blobs = append(blobs, blob)
 	}
 	_, _, deltaData, err := dCodec.Deserialize(blobs)
 	if err != nil {
@@ -593,9 +597,9 @@ func (loader *segmentLoader) estimateSegmentSize(segment *Segment,
 			zap.Any("paths", fb.Binlogs),
 		)
 		for _, binlogPath := range fb.Binlogs {
-			logSize, err := storage.EstimateMemorySize(loader.minioKV, binlogPath)
+			logSize, err := storage.EstimateMemorySize(loader.minioKV, binlogPath.GetLogPath())
 			if err != nil {
-				logSize, err = storage.GetBinlogSize(loader.minioKV, binlogPath)
+				logSize, err = storage.GetBinlogSize(loader.minioKV, binlogPath.GetLogPath())
 				if err != nil {
 					return 0, err
 				}
@@ -615,13 +619,11 @@ func (loader *segmentLoader) estimateSegmentSize(segment *Segment,
 }
 
 func (loader *segmentLoader) checkSegmentSize(collectionID UniqueID, segmentSizes map[UniqueID]int64) error {
-	usedMem, err := getUsedMemory()
-	if err != nil {
-		return err
-	}
-	totalMem, err := getTotalMemory()
-	if err != nil {
-		return err
+	usedMem := metricsinfo.GetUsedMemoryCount()
+	totalMem := metricsinfo.GetMemoryCount()
+
+	if usedMem == 0 || totalMem == 0 {
+		return errors.New(fmt.Sprintln("get memory failed when checkSegmentSize, collectionID = ", collectionID))
 	}
 
 	segmentTotalSize := int64(0)

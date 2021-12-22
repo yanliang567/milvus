@@ -419,11 +419,6 @@ func TestProxy(t *testing.T) {
 	Params.Init()
 	log.Info("Initialize parameter table of proxy")
 
-	// register proxy
-	err = proxy.Register()
-	assert.NoError(t, err)
-	log.Info("Register proxy done")
-
 	rootCoordClient, err := rcc.NewClient(ctx, Params.MetaRootPath, Params.EtcdEndpoints)
 	assert.NoError(t, err)
 	err = rootCoordClient.Init()
@@ -468,6 +463,11 @@ func TestProxy(t *testing.T) {
 	err = proxy.Start()
 	assert.NoError(t, err)
 	assert.Equal(t, internalpb.StateCode_Healthy, proxy.stateCode.Load().(internalpb.StateCode))
+
+	// register proxy
+	err = proxy.Register()
+	assert.NoError(t, err)
+	log.Info("Register proxy done")
 	defer func() {
 		err := proxy.Stop()
 		assert.NoError(t, err)
@@ -1545,7 +1545,7 @@ func TestProxy(t *testing.T) {
 			Type:           milvuspb.ShowType_InMemory,
 		})
 		assert.NoError(t, err)
-		assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
+		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp.Status.ErrorCode)
 		// default partition
 		assert.Equal(t, 0, len(resp.PartitionNames))
 
@@ -2209,6 +2209,14 @@ func TestProxy(t *testing.T) {
 		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.ErrorCode)
 	})
 
+	wg.Add(1)
+	t.Run("AlterAlias fail, dd queue full", func(t *testing.T) {
+		defer wg.Done()
+		resp, err := proxy.AlterAlias(ctx, &milvuspb.AlterAliasRequest{})
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.ErrorCode)
+	})
+
 	proxy.sched.ddQueue.setMaxTaskNum(ddParallel)
 
 	dmParallelism := proxy.sched.dmQueue.getMaxTaskNum()
@@ -2473,6 +2481,14 @@ func TestProxy(t *testing.T) {
 	t.Run("DropAlias fail, timeout", func(t *testing.T) {
 		defer wg.Done()
 		resp, err := proxy.DropAlias(shortCtx, &milvuspb.DropAliasRequest{})
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.ErrorCode)
+	})
+
+	wg.Add(1)
+	t.Run("AlterAlias fail, timeout", func(t *testing.T) {
+		defer wg.Done()
+		resp, err := proxy.AlterAlias(shortCtx, &milvuspb.AlterAliasRequest{})
 		assert.NoError(t, err)
 		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.ErrorCode)
 	})

@@ -126,12 +126,12 @@ func (ms *mqMsgStream) AsProducer(channels []string) {
 	}
 }
 
-// Create consumer to receive message from channels
+// AsConsumer Create consumer to receive message from channels
 func (ms *mqMsgStream) AsConsumer(channels []string, subName string) {
 	ms.AsConsumerWithPosition(channels, subName, mqclient.SubscriptionPositionEarliest)
 }
 
-// Create consumer to receive message from channels, with initial position
+// AsConsumerWithPosition Create consumer to receive message from channels, with initial position
 // if initial position is set to latest, last message in the channel is exclusive
 func (ms *mqMsgStream) AsConsumerWithPosition(channels []string, subName string, position mqclient.SubscriptionInitialPosition) {
 	for _, channel := range channels {
@@ -915,7 +915,7 @@ func (ms *MqTtMsgStream) consumeToTtMsg(consumer mqclient.Consumer) {
 // return true only when all channels reach same timetick
 func (ms *MqTtMsgStream) allChanReachSameTtMsg(chanTtMsgSync map[mqclient.Consumer]bool) (Timestamp, bool) {
 	tsMap := make(map[Timestamp]int)
-	var maxTime Timestamp = 0
+	var maxTime Timestamp
 	for _, t := range ms.chanTtMsgTime {
 		tsMap[t]++
 		if t > maxTime {
@@ -995,11 +995,11 @@ func (ms *MqTtMsgStream) Seek(msgPositions []*internalpb.MsgPosition) error {
 				headerMsg := commonpb.MsgHeader{}
 				err := proto.Unmarshal(msg.Payload(), &headerMsg)
 				if err != nil {
-					return fmt.Errorf("Failed to unmarshal message header, err %s", err.Error())
+					return fmt.Errorf("failed to unmarshal message header, err %s", err.Error())
 				}
 				tsMsg, err := ms.unmarshal.Unmarshal(msg.Payload(), headerMsg.Base.MsgType)
 				if err != nil {
-					return fmt.Errorf("Failed to unmarshal tsMsg, err %s", err.Error())
+					return fmt.Errorf("failed to unmarshal tsMsg, err %s", err.Error())
 				}
 				if tsMsg.Type() == commonpb.MsgType_TimeTick && tsMsg.BeginTs() >= mp.Timestamp {
 					runLoop = false

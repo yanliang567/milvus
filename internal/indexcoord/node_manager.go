@@ -49,6 +49,7 @@ func NewNodeManager() *NodeManager {
 	}
 }
 
+// setClient sets IndexNode client to node manager.
 func (nm *NodeManager) setClient(nodeID UniqueID, client types.IndexNode) error {
 	nm.lock.Lock()
 	defer nm.lock.Unlock()
@@ -109,21 +110,26 @@ func (nm *NodeManager) PeekClient(meta Meta) (UniqueID, types.IndexNode) {
 		log.Error(err.Error())
 		return UniqueID(-1), nil
 	}
-	indexSize, err := estimateIndexSize(dim, meta.indexMeta.Req.NumRows, meta.indexMeta.Req.FieldSchema.DataType)
+	dataSize, err := estimateIndexSize(dim, meta.indexMeta.Req.NumRows, meta.indexMeta.Req.FieldSchema.DataType)
 	if err != nil {
 		log.Warn(err.Error())
 		return UniqueID(-1), nil
 	}
-	nodeID := nm.pq.Peek(indexSize, meta.indexMeta.Req.IndexParams, meta.indexMeta.Req.TypeParams)
+	nodeID := nm.pq.Peek(dataSize*indexSizeFactor, meta.indexMeta.Req.IndexParams, meta.indexMeta.Req.TypeParams)
+	if nodeID == -1 {
+		log.Error("No IndexNode available", zap.Uint64("data size", dataSize),
+			zap.Uint64("IndexNode must have memory size", dataSize*indexSizeFactor))
+	}
 	client, ok := nm.nodeClients[nodeID]
 	if !ok {
-		log.Error("IndexCoord NodeManager PeekClient", zap.Any("There is no IndexNode client corresponding to NodeID", nodeID))
+		log.Error("IndexCoord NodeManager PeekClient", zap.Int64("There is no IndexNode client corresponding to NodeID", nodeID))
 		return nodeID, nil
 	}
-	log.Debug("IndexCoord NodeManager PeekClient ", zap.Int64("node", nodeID))
+	log.Debug("IndexCoord NodeManager PeekClient ", zap.Int64("node", nodeID), zap.Uint64("data size", dataSize))
 	return nodeID, client
 }
 
+// ListNode list all IndexNodes in node manager.
 func (nm *NodeManager) ListNode() []UniqueID {
 	nm.lock.Lock()
 	defer nm.lock.Unlock()
@@ -155,11 +161,13 @@ func (nm *NodeManager) ListNode() []UniqueID {
 	return clients
 }
 
+// indexNodeGetMetricsResponse record the metrics information of IndexNode.
 type indexNodeGetMetricsResponse struct {
 	resp *milvuspb.GetMetricsResponse
 	err  error
 }
 
+// getMetrics get metrics information of all IndexNode.
 func (nm *NodeManager) getMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) []indexNodeGetMetricsResponse {
 	nm.lock.RLock()
 	defer nm.lock.RUnlock()

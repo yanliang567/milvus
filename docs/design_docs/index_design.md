@@ -4,10 +4,7 @@ update: 7.31.2021, by [Cai.Zhang](https://github.com/xiaocai2333)
 
 ## 8.0 Component Description
 
-IndexCoord is a component responsible for scheduling index construction tasks and maintaining index status.
-IndexCoord accepts requests from rootCoord to build indexes, delete indexes, and query index information.
-IndexCoord is responsible for assigning IndexBuildID to the request to build the index, and forwarding the
-request to build the index to IndexNode. IndexCoord records the status of the index, and the index file.
+IndexCoord is a component responsible for scheduling index construction tasks and maintaining index status. IndexCoord accepts requests from rootCoord to build indexes, delete indexes, and query index information. IndexCoord is responsible for assigning IndexBuildID to the request to build the index, and forwarding the request to build the index to IndexNode. IndexCoord records the status of the index, and the index file.
 
 The following figure shows the design of the indexCoord component:
 
@@ -18,7 +15,7 @@ The following figure shows the design of the indexCoord component:
 IndexCoord, like the other Milvus components, relies on etcd to implement
 service discovery. IndexCoord relies on the lease mechanism of etcd to sense the online and offline news of IndexNode.
 
-In addition to service discovery, Milvus also uses etcd as a reliable meta storage, and writes all
+In addition to service discovery, Milvus also uses etcd as a reliable meta storage and writes all
 persistent status information to etcd. The purpose is to restore a certain Milvus component to its original
 state after power off and restart.
 
@@ -32,7 +29,7 @@ return the IndexBuildID of the existing task. Otherwise, it would assign a globa
 record the task in the MetaTable, write the MetaTable to etcd, and then return the IndexBuildID to RootCoord.
 RootCoord confirms that the index building is generated successfully by the IndexBuildID. At this time, the index construction
 is not completed yet. IndexCoord starts a background process to find all the index tasks that need to be
-allocated periodically, and then allocates them to IndexNode for actual execution.
+allocated periodically and then allocates them to IndexNode for actual execution.
 
 When IndexCoord receives a request to delete an index from RootCoord, IndexCoord traverses the MetaTable,
 marks the corresponding index task as deleted, and returns. It is not really deleted from the MetaTable at this time.
@@ -79,10 +76,10 @@ To maintain the status information of the index, we introduced MetaTable to reco
 of the index. In order to ensure that the MetaTable information is not lost after IndexCoord is powered off and
 restarted, we write the MetaTable information into etcd. When the IndexCoord service starts, it will first load the
 existing Meta information from etcd, and then monitor the changes of Meta through watchNodeLoop. In order to distinguish
-whether the modification of Meta was initiated by IndexCoord or IndexNode, revision was introduced in Meta.
+whether the modification of Meta was initiated by IndexCoord or IndexNode, the revision was introduced in Meta.
 When watchMetaLoop detects that the Meta in etcd is updated, compare the revision in Meta with the Event.Kv.Version
-of the etcd event. If the revision is equal to Event.Kv.Version, it means that the update was initiated by IndexCoord.
-If the revision is less than Event. .Kv.Version means that this Meta update was initiated by IndexNode, and IndexCoord
+of the etcd event. If the revision equals to Event.Kv.Version, it means that the update was initiated by IndexCoord.
+If the revision is less than Event.Kv.Version, it means that this Meta update was initiated by IndexNode, and IndexCoord
 needs to update Meta. There will be no situation where revision is greater than Event.Kv.Version.
 
 In order to prevent IndexNode from appearing in a suspended animation state, Version is introduced. When IndexCoord
@@ -109,7 +106,7 @@ IndexNode in NodeManager, and the task amount is reduced by one.
 `assignTaskLoop` is used to assign index construction tasks. There is a timer here to traverse the MetaTable regularly
 to filter out the tasks that need to be allocated, including unallocated tasks and tasks that have been failed due to
 indexNode crash. Then sort according to the version size of each task, and assign tasks with a smaller
-version first. The purpose is to prevent certain special tasks from occupying resources all the time and always fail
+version first. The purpose is to prevent certain special tasks from occupying resources all the time and always failing
 to execute successfully. When a task is assigned, its corresponding Version is increased by one. Then send the task to
 IndexNode for execution, and update the index status in the MetaTable.
 

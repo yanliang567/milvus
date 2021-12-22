@@ -86,7 +86,7 @@ func (writer *baseBinlogWriter) GetBuffer() ([]byte, error) {
 	return writer.buffer.Bytes(), nil
 }
 
-// Close allocate buffer and release resource
+// Finish allocate buffer and release resource
 func (writer *baseBinlogWriter) Finish() error {
 	if writer.buffer != nil {
 		return nil
@@ -95,9 +95,9 @@ func (writer *baseBinlogWriter) Finish() error {
 		return fmt.Errorf("invalid start/end timestamp")
 	}
 
-	var offset int32 = 0
+	var offset int32
 	writer.buffer = new(bytes.Buffer)
-	if err := binary.Write(writer.buffer, common.Endian, int32(MagicNumber)); err != nil {
+	if err := binary.Write(writer.buffer, common.Endian, MagicNumber); err != nil {
 		return err
 	}
 	offset += int32(binary.Size(MagicNumber))
@@ -320,7 +320,7 @@ func NewIndexFileBinlogWriter(
 	descriptorEvent.PartitionID = partitionID
 	descriptorEvent.SegmentID = segmentID
 	descriptorEvent.FieldID = fieldID
-	descriptorEvent.PayloadDataType = schemapb.DataType_String
+	descriptorEvent.PayloadDataType = schemapb.DataType_Int8
 	descriptorEvent.AddExtra("indexBuildID", fmt.Sprintf("%d", indexBuildID))
 	descriptorEvent.AddExtra("version", fmt.Sprintf("%d", version))
 	descriptorEvent.AddExtra("indexName", indexName)

@@ -58,7 +58,7 @@ func NewMinIOKV(ctx context.Context, option *Option) (*MinIOKV, error) {
 		Creds:  credentials.NewStaticV4(option.AccessKeyID, option.SecretAccessKeyID, ""),
 		Secure: option.UseSSL,
 	})
-	// options nil or invalid formatted endpoint, don't need retry
+	// options nil or invalid formatted endpoint, don't need to retry
 	if err != nil {
 		return nil, err
 	}
@@ -240,7 +240,7 @@ func (kv *MinIOKV) Remove(key string) error {
 	return err
 }
 
-// MultiRemove deletes a objects with @keys.
+// MultiRemove deletes an objects with @keys.
 func (kv *MinIOKV) MultiRemove(keys []string) error {
 	var resultErr error
 	for _, key := range keys {

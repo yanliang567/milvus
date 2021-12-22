@@ -68,7 +68,7 @@ func (data *descriptorEventData) AddExtra(k string, v interface{}) {
 }
 
 // FinishExtra marshal extras to json format.
-// Call before GetMemoryUsageInBytes to get a accurate length of description event.
+// Call before GetMemoryUsageInBytes to get an accurate length of description event.
 func (data *descriptorEventData) FinishExtra() error {
 	var err error
 
@@ -143,7 +143,7 @@ type eventData interface {
 }
 
 // all event types' fixed part only have start Timestamp and end Timestamp yet, but maybe different events will
-// have different fields later, so we just create a event data struct per event type.
+// have different fields later, so we just create an event data struct per event type.
 type insertEventData struct {
 	StartTimestamp typeutil.Timestamp
 	EndTimestamp   typeutil.Timestamp

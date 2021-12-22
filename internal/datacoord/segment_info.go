@@ -52,8 +52,8 @@ func NewSegmentInfo(info *datapb.SegmentInfo) *SegmentInfo {
 	}
 }
 
-// NewSegmentsInfo create `SegmentsInfo` instance, which makes sure internal map is initialized
-// note that no mutex is wrapper so external concurrent control is needed
+// NewSegmentsInfo creates a `SegmentsInfo` instance, which makes sure internal map is initialized
+// note that no mutex is wrapped so external concurrent control is needed
 func NewSegmentsInfo() *SegmentsInfo {
 	return &SegmentsInfo{segments: make(map[UniqueID]*SegmentInfo)}
 }
@@ -168,7 +168,7 @@ func (s *SegmentsInfo) SetFlushTime(segmentID UniqueID, t time.Time) {
 // AddSegmentBinlogs adds binlogs for segment
 // if the segment is not found, do nothing
 // uses `Clone` since internal SegmentInfo's Binlogs is changed
-func (s *SegmentsInfo) AddSegmentBinlogs(segmentID UniqueID, field2Binlogs map[UniqueID][]string) {
+func (s *SegmentsInfo) AddSegmentBinlogs(segmentID UniqueID, field2Binlogs map[UniqueID][]*datapb.Binlog) {
 	if segment, ok := s.segments[segmentID]; ok {
 		s.segments[segmentID] = segment.Clone(addSegmentBinlogs(field2Binlogs))
 	}
@@ -285,14 +285,14 @@ func SetFlushTime(t time.Time) SegmentInfoOption {
 	}
 }
 
-// SetIsCompacting is the option to set compacton state for segment info
+// SetIsCompacting is the option to set compaction state for segment info
 func SetIsCompacting(isCompacting bool) SegmentInfoOption {
 	return func(segment *SegmentInfo) {
 		segment.isCompacting = isCompacting
 	}
 }
 
-func addSegmentBinlogs(field2Binlogs map[UniqueID][]string) SegmentInfoOption {
+func addSegmentBinlogs(field2Binlogs map[UniqueID][]*datapb.Binlog) SegmentInfoOption {
 	return func(segment *SegmentInfo) {
 		for fieldID, binlogPaths := range field2Binlogs {
 			found := false

@@ -21,11 +21,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jarcoal/httpmock"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
-
-	"github.com/jarcoal/httpmock"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -98,15 +97,6 @@ func Test_CheckGrpcReady(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Millisecond)
 	CheckGrpcReady(ctx, errChan)
 	cancel()
-}
-
-func Test_CheckPortAvailable(t *testing.T) {
-	num := 10
-
-	for i := 0; i < num; i++ {
-		port := GetAvailablePort()
-		assert.Equal(t, CheckPortAvailable(port), true)
-	}
 }
 
 func Test_GetLocalIP(t *testing.T) {

@@ -7,16 +7,16 @@ Growing segment has the following additional interfaces:
 2. `Insert(reseveredOffset, size, ...Data...)`: write `...Data...` into range `[reseveredOffset, reseveredOffset + size)`. This interface is allowed to be called concurrently.
 
    1. `...Data...` contains row_ids, timestamps two system attributes, and other columns
-   2. data column can be stored either row based or column based.
+   2. data columns can be stored either row-based or column-based.
    3. `PreDelete & Delete(reseveredOffset, row_ids, timestamps)` is a delete interface similar to insert interface.
 
 Growing segment stores data in the form of chunk. The number of rows in each chunk is restricted by configs.
 
-Rows per segment is controlled by parameters `size_per_Chunk ` config
+Rows per segment are controlled by parameters `size_per_Chunk ` config
 
 When inserting, first allocate enough space to ensure `total_size <= num_chunk * size_per_chunk`, and then convert data from row format to column format.
 
-During search, each 'chunk' will be searched, and the search results will be saved as 'subquery result', then reduced into TopK.
+During a search, each 'chunk' will be searched, and the search results will be saved as 'subquery result', then reduced into TopK.
 
 Growing Segment also implements small batch index for vectors. The parameters of small batch index are preset in `segcore config`
 
@@ -56,7 +56,7 @@ The following steps are executed when insert,
 
 ### ConcurrentVector
 
-This is a column data storage that can be inserted concurrently. It is composed of multi data chunks.
+This is a column data storage that can be inserted concurrently. It is composed of multi-data chunks.
 
 1. After`grow_to_at_least(size)` called, reserve space no less than `size`
 2. `set_data_raw(element_offset, source, element_count)` point source to continuous piece of data

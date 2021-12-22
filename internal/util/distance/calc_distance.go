@@ -62,7 +62,7 @@ func ValidateFloatArrayLength(dim int64, length int) error {
 
 // CalcL2 returns the Euclidean distance of input vectors
 func CalcL2(dim int64, left []float32, lIndex int64, right []float32, rIndex int64) float32 {
-	var sum float32 = 0.0
+	var sum float32
 	lFrom := lIndex * dim
 	rFrom := rIndex * dim
 	for i := int64(0); i < dim; i++ {
@@ -75,7 +75,7 @@ func CalcL2(dim int64, left []float32, lIndex int64, right []float32, rIndex int
 
 // CalcIP returns the inner product distance of input vectors
 func CalcIP(dim int64, left []float32, lIndex int64, right []float32, rIndex int64) float32 {
-	var sum float32 = 0.0
+	var sum float32
 	lFrom := lIndex * dim
 	rFrom := rIndex * dim
 	for i := int64(0); i < dim; i++ {
@@ -144,6 +144,8 @@ func CalcFloatDistance(dim int64, left, right []float32, metric string) ([]float
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+
+// SingleBitLen returns the bit length of @dim
 func SingleBitLen(dim int64) int64 {
 	if dim%8 == 0 {
 		return dim
@@ -187,9 +189,9 @@ func CalcHamming(dim int64, left []byte, lIndex int64, right []byte, rIndex int6
 	lFrom := lIndex * numBytes
 	rFrom := rIndex * numBytes
 
-	var hamming int32 = 0
+	var hamming int32
 	for i := int64(0); i < numBytes; i++ {
-		var xor uint8 = left[lFrom+i] ^ right[rFrom+i]
+		var xor = left[lFrom+i] ^ right[rFrom+i]
 
 		// The dimension "dim" may not be an integer multiple of 8
 		// For example:

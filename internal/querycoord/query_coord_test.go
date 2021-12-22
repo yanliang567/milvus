@@ -30,10 +30,12 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
+	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
+	"go.uber.org/zap"
 )
 
 func setup() {
@@ -90,16 +92,16 @@ func startQueryCoord(ctx context.Context) (*QueryCoord, error) {
 	coord.SetDataCoord(dataCoord)
 	coord.SetIndexCoord(indexCoord)
 
-	err = coord.Register()
-	if err != nil {
-		return nil, err
-	}
 	err = coord.Init()
 	if err != nil {
 		return nil, err
 	}
 	coord.cluster.(*queryNodeCluster).segSizeEstimator = segSizeEstimateForTest
 	err = coord.Start()
+	if err != nil {
+		return nil, err
+	}
+	err = coord.Register()
 	if err != nil {
 		return nil, err
 	}
@@ -131,11 +133,11 @@ func startUnHealthyQueryCoord(ctx context.Context) (*QueryCoord, error) {
 	coord.SetRootCoord(rootCoord)
 	coord.SetDataCoord(dataCoord)
 
-	err = coord.Register()
+	err = coord.Init()
 	if err != nil {
 		return nil, err
 	}
-	err = coord.Init()
+	err = coord.Register()
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +168,7 @@ func TestWatchNodeLoop(t *testing.T) {
 		}
 		collectionBlobs, err := proto.Marshal(collectionInfo)
 		assert.Nil(t, err)
-		nodeKey := fmt.Sprintf("%s/%d", queryNodeMetaPrefix, 100)
+		nodeKey := fmt.Sprintf("%s/%d", collectionMetaPrefix, 100)
 		kvs[nodeKey] = string(collectionBlobs)
 
 		err = kv.MultiSave(kvs)
@@ -176,10 +178,18 @@ func TestWatchNodeLoop(t *testing.T) {
 		assert.Nil(t, err)
 
 		for {
-			_, err = queryCoord.cluster.offlineNodes()
-			if err == nil {
+			offlineNodeIDs := queryCoord.cluster.offlineNodeIDs()
+			if len(offlineNodeIDs) != 0 {
+				log.Warn("find offline Nodes", zap.Int64s("offlineNodeIDs", offlineNodeIDs))
 				break
 			}
+			// if session id not exist, means querycoord already handled it and remove
+			_, err = kv.Load(nodeKey)
+			if err != nil {
+				log.Warn("already handled by querycoord", zap.Error(err))
+				break
+			}
+			time.Sleep(time.Duration(1) * time.Second)
 		}
 
 		queryCoord.Stop()
@@ -214,14 +224,14 @@ func TestWatchNodeLoop(t *testing.T) {
 
 		nodeID := queryNode1.queryNodeID
 		waitQueryNodeOnline(queryCoord.cluster, nodeID)
-		nodes, err := queryCoord.cluster.onlineNodes()
-		assert.Nil(t, err)
+		onlineNodeIDs := queryCoord.cluster.onlineNodeIDs()
+		assert.Equal(t, 1, len(onlineNodeIDs))
 
 		queryNode1.stop()
 		err = removeNodeSession(nodeID)
 		assert.Nil(t, err)
 
-		waitAllQueryNodeOffline(queryCoord.cluster, nodes)
+		waitAllQueryNodeOffline(queryCoord.cluster, onlineNodeIDs)
 
 		queryCoord.Stop()
 		err = removeAllSession()
@@ -248,7 +258,7 @@ func TestHandoffSegmentLoop(t *testing.T) {
 			SegmentID:    defaultSegmentID,
 			CollectionID: defaultCollectionID,
 			PartitionID:  defaultPartitionID,
-			SegmentState: querypb.SegmentState_sealed,
+			SegmentState: commonpb.SegmentState_Sealed,
 		}
 
 		key := fmt.Sprintf("%s/%d/%d/%d", handoffSegmentPrefix, defaultCollectionID, defaultPartitionID, defaultSegmentID)
@@ -270,12 +280,12 @@ func TestHandoffSegmentLoop(t *testing.T) {
 	waitTaskFinalState(loadPartitionTask, taskExpired)
 
 	t.Run("Test partitionNotLoaded", func(t *testing.T) {
-		baseTask := newBaseTask(baseCtx, querypb.TriggerCondition_handoff)
+		baseTask := newBaseTask(baseCtx, querypb.TriggerCondition_Handoff)
 		segmentInfo := &querypb.SegmentInfo{
 			SegmentID:    defaultSegmentID,
 			CollectionID: defaultCollectionID,
 			PartitionID:  defaultPartitionID + 1,
-			SegmentState: querypb.SegmentState_sealed,
+			SegmentState: commonpb.SegmentState_Sealed,
 		}
 		handoffReq := &querypb.HandoffSegmentsRequest{
 			Base: &commonpb.MsgBase{
@@ -300,18 +310,19 @@ func TestHandoffSegmentLoop(t *testing.T) {
 	err = queryCoord.scheduler.Enqueue(loadCollectionTask)
 	assert.Nil(t, err)
 	waitTaskFinalState(loadCollectionTask, taskExpired)
+	queryCoord.meta.setLoadType(defaultCollectionID, querypb.LoadType_loadCollection)
 
 	t.Run("Test handoffGrowingSegment", func(t *testing.T) {
 		infos := queryCoord.meta.showSegmentInfos(defaultCollectionID, nil)
 		assert.NotEqual(t, 0, len(infos))
 		segmentID := defaultSegmentID + 4
-		baseTask := newBaseTask(baseCtx, querypb.TriggerCondition_handoff)
+		baseTask := newBaseTask(baseCtx, querypb.TriggerCondition_Handoff)
 
 		segmentInfo := &querypb.SegmentInfo{
 			SegmentID:    segmentID,
 			CollectionID: defaultCollectionID,
 			PartitionID:  defaultPartitionID + 2,
-			SegmentState: querypb.SegmentState_sealed,
+			SegmentState: commonpb.SegmentState_Sealed,
 		}
 		handoffReq := &querypb.HandoffSegmentsRequest{
 			Base: &commonpb.MsgBase{
@@ -333,12 +344,12 @@ func TestHandoffSegmentLoop(t *testing.T) {
 	})
 
 	t.Run("Test binlogNotExist", func(t *testing.T) {
-		baseTask := newBaseTask(baseCtx, querypb.TriggerCondition_handoff)
+		baseTask := newBaseTask(baseCtx, querypb.TriggerCondition_Handoff)
 		segmentInfo := &querypb.SegmentInfo{
 			SegmentID:    defaultSegmentID + 100,
 			CollectionID: defaultCollectionID,
 			PartitionID:  defaultPartitionID,
-			SegmentState: querypb.SegmentState_sealed,
+			SegmentState: commonpb.SegmentState_Sealed,
 		}
 		handoffReq := &querypb.HandoffSegmentsRequest{
 			Base: &commonpb.MsgBase{
@@ -360,12 +371,12 @@ func TestHandoffSegmentLoop(t *testing.T) {
 	})
 
 	t.Run("Test sealedSegmentExist", func(t *testing.T) {
-		baseTask := newBaseTask(baseCtx, querypb.TriggerCondition_handoff)
+		baseTask := newBaseTask(baseCtx, querypb.TriggerCondition_Handoff)
 		segmentInfo := &querypb.SegmentInfo{
 			SegmentID:    defaultSegmentID,
 			CollectionID: defaultCollectionID,
 			PartitionID:  defaultPartitionID,
-			SegmentState: querypb.SegmentState_sealed,
+			SegmentState: commonpb.SegmentState_Sealed,
 		}
 		handoffReq := &querypb.HandoffSegmentsRequest{
 			Base: &commonpb.MsgBase{
@@ -390,13 +401,13 @@ func TestHandoffSegmentLoop(t *testing.T) {
 		infos := queryCoord.meta.showSegmentInfos(defaultCollectionID, nil)
 		assert.NotEqual(t, 0, len(infos))
 		segmentID := defaultSegmentID + 5
-		baseTask := newBaseTask(baseCtx, querypb.TriggerCondition_handoff)
+		baseTask := newBaseTask(baseCtx, querypb.TriggerCondition_Handoff)
 
 		segmentInfo := &querypb.SegmentInfo{
 			SegmentID:      segmentID,
 			CollectionID:   defaultCollectionID,
 			PartitionID:    defaultPartitionID + 2,
-			SegmentState:   querypb.SegmentState_sealed,
+			SegmentState:   commonpb.SegmentState_Sealed,
 			CompactionFrom: []UniqueID{defaultSegmentID, defaultSegmentID + 1},
 		}
 		handoffReq := &querypb.HandoffSegmentsRequest{
@@ -429,13 +440,13 @@ func TestHandoffSegmentLoop(t *testing.T) {
 		infos := queryCoord.meta.showSegmentInfos(defaultCollectionID, nil)
 		assert.NotEqual(t, 0, len(infos))
 		segmentID := defaultSegmentID + 6
-		baseTask := newBaseTask(baseCtx, querypb.TriggerCondition_handoff)
+		baseTask := newBaseTask(baseCtx, querypb.TriggerCondition_Handoff)
 
 		segmentInfo := &querypb.SegmentInfo{
 			SegmentID:      segmentID,
 			CollectionID:   defaultCollectionID,
 			PartitionID:    defaultPartitionID + 2,
-			SegmentState:   querypb.SegmentState_sealed,
+			SegmentState:   commonpb.SegmentState_Sealed,
 			CompactionFrom: []UniqueID{defaultSegmentID + 2, defaultSegmentID + 100},
 		}
 		handoffReq := &querypb.HandoffSegmentsRequest{
@@ -470,12 +481,12 @@ func TestHandoffSegmentLoop(t *testing.T) {
 	waitTaskFinalState(releasePartitionTask, taskExpired)
 
 	t.Run("Test handoffReleasedPartition", func(t *testing.T) {
-		baseTask := newBaseTask(baseCtx, querypb.TriggerCondition_handoff)
+		baseTask := newBaseTask(baseCtx, querypb.TriggerCondition_Handoff)
 		segmentInfo := &querypb.SegmentInfo{
 			SegmentID:    defaultSegmentID,
 			CollectionID: defaultCollectionID,
 			PartitionID:  defaultPartitionID,
-			SegmentState: querypb.SegmentState_sealed,
+			SegmentState: commonpb.SegmentState_Sealed,
 		}
 		handoffReq := &querypb.HandoffSegmentsRequest{
 			Base: &commonpb.MsgBase{
@@ -529,7 +540,7 @@ func TestLoadBalanceSegmentLoop(t *testing.T) {
 			PartitionIDs: []UniqueID{partitionID},
 			Schema:       genCollectionSchema(defaultCollectionID, false),
 		}
-		baseTask := newBaseTask(baseCtx, querypb.TriggerCondition_grpcRequest)
+		baseTask := newBaseTask(baseCtx, querypb.TriggerCondition_GrpcRequest)
 		loadPartitionTask := &loadPartitionTask{
 			baseTask:              baseTask,
 			LoadPartitionsRequest: req,

@@ -9,12 +9,15 @@
 // is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
-#include "common/Schema.h"
-#include "query/PlanNode.h"
-#include "pb/plan.pb.h"
-#include "query/Plan.h"
+#pragma once
+
 #include <boost/dynamic_bitset.hpp>
 #include <memory>
+
+#include "Plan.h"
+#include "PlanNode.h"
+#include "common/Schema.h"
+#include "pb/plan.pb.h"
 
 namespace milvus::query {
 

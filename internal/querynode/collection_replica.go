@@ -357,12 +357,12 @@ func (colReplica *collectionReplica) getSegmentInfosByColID(collectionID UniqueI
 	for _, partitionID := range collection.partitionIDs {
 		partition, ok := colReplica.partitions[partitionID]
 		if !ok {
-			return nil, errors.New("the meta of collection and partition are inconsistent in query node")
+			return nil, errors.New("the meta of collection and partition are inconsistent in QueryNode")
 		}
 		for _, segmentID := range partition.segmentIDs {
 			segment, ok := colReplica.segments[segmentID]
 			if !ok {
-				return nil, errors.New("the meta of partition and segment are inconsistent in query node")
+				return nil, errors.New("the meta of partition and segment are inconsistent in QueryNode")
 			}
 			segmentInfo := getSegmentInfo(segment)
 			segmentInfos = append(segmentInfos, segmentInfo)
@@ -579,7 +579,7 @@ func (colReplica *collectionReplica) getSegmentByID(segmentID UniqueID) (*Segmen
 func (colReplica *collectionReplica) getSegmentByIDPrivate(segmentID UniqueID) (*Segment, error) {
 	segment, ok := colReplica.segments[segmentID]
 	if !ok {
-		return nil, errors.New("cannot find segment in query node, id = " + strconv.FormatInt(segmentID, 10))
+		return nil, errors.New("cannot find segment in QueryNode, id = " + strconv.FormatInt(segmentID, 10))
 	}
 
 	return segment, nil
@@ -715,8 +715,8 @@ func getSegmentInfo(segment *Segment) *querypb.SegmentInfo {
 		NumRows:      segment.getRowCount(),
 		IndexName:    indexName,
 		IndexID:      indexID,
-		ChannelID:    segment.vChannelID,
-		State:        getSegmentStateBySegmentType(segment.segmentType),
+		DmChannel:    segment.vChannelID,
+		SegmentState: getSegmentStateBySegmentType(segment.segmentType),
 	}
 	return info
 }

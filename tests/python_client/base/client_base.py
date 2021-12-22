@@ -1,3 +1,4 @@
+from numpy.core.fromnumeric import _partition_dispatcher
 import pytest
 import sys
 from pymilvus import DefaultConfig
@@ -132,7 +133,7 @@ class TestcaseBase(Base):
                                       check_task=check_task, check_items=check_items,
                                       **kwargs)
         return partition_wrap
-
+ 
     def init_collection_general(self, prefix, insert_data=False, nb=ct.default_nb,
                                 partition_num=0, is_binary=False, is_all_data_type=False,
                                 auto_id=False, dim=ct.default_dim, is_index=False):
@@ -193,8 +194,31 @@ class TestcaseBase(Base):
         df_default = cf.gen_default_dataframe_data(nb=half, start=half)
         collection_w.insert(df_default)
         conn.flush([collection_w.name])
-        collection_w.load()
-        return collection_w, partition_w, df_partition, df_default
+        collection_w.load(partition_names=[partition_w.name, "_default"])
+        return collection_w, partition_w,df_partition, df_default
+   
+
+    def insert_entities_into_two_partitions(self, half, prefix='query'):
+        """
+        insert default entities into two partitions(partition_w and _default) in half(int64 and float fields values)
+        :param half: half of nb
+        :return: collection wrap and partition wrap
+        """
+        conn = self._connect()
+        collection_w = self.init_collection_wrap(name=cf.gen_unique_str(prefix))
+        partition_w = self.init_partition_wrap(collection_wrap=collection_w)
+        partition_e = self.init_partition_wrap(collection_wrap=collection_w)
+        # insert [0, half) into partition_w
+        df_partition = cf.gen_default_dataframe_data(nb=half, start=0)
+        partition_w.insert(df_partition)
+        # insert [half, nb) into _default
+        df_default = cf.gen_default_dataframe_data(nb=half, start=half)
+        partition_e.insert(df_default)
+        conn.flush([collection_w.name])
+        partition_w.load()
+        # partition_e.load()
+        return collection_w, partition_w, partition_e,df_default
+
 
     def collection_insert_multi_segments_one_shard(self, collection_prefix, num_of_segment=2, nb_of_segment=1,
                                                    is_dup=True):

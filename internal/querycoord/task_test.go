@@ -30,6 +30,7 @@ import (
 )
 
 func genLoadCollectionTask(ctx context.Context, queryCoord *QueryCoord) *loadCollectionTask {
+	queryCoord.meta.setDeltaChannel(defaultCollectionID, nil)
 	req := &querypb.LoadCollectionRequest{
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadCollection,
@@ -37,7 +38,7 @@ func genLoadCollectionTask(ctx context.Context, queryCoord *QueryCoord) *loadCol
 		CollectionID: defaultCollectionID,
 		Schema:       genCollectionSchema(defaultCollectionID, false),
 	}
-	baseTask := newBaseTask(ctx, querypb.TriggerCondition_grpcRequest)
+	baseTask := newBaseTask(ctx, querypb.TriggerCondition_GrpcRequest)
 	loadCollectionTask := &loadCollectionTask{
 		baseTask:              baseTask,
 		LoadCollectionRequest: req,
@@ -51,6 +52,7 @@ func genLoadCollectionTask(ctx context.Context, queryCoord *QueryCoord) *loadCol
 }
 
 func genLoadPartitionTask(ctx context.Context, queryCoord *QueryCoord) *loadPartitionTask {
+	queryCoord.meta.setDeltaChannel(defaultCollectionID, nil)
 	req := &querypb.LoadPartitionsRequest{
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadPartitions,
@@ -59,7 +61,7 @@ func genLoadPartitionTask(ctx context.Context, queryCoord *QueryCoord) *loadPart
 		PartitionIDs: []UniqueID{defaultPartitionID},
 		Schema:       genCollectionSchema(defaultCollectionID, false),
 	}
-	baseTask := newBaseTask(ctx, querypb.TriggerCondition_grpcRequest)
+	baseTask := newBaseTask(ctx, querypb.TriggerCondition_GrpcRequest)
 	loadPartitionTask := &loadPartitionTask{
 		baseTask:              baseTask,
 		LoadPartitionsRequest: req,
@@ -79,7 +81,7 @@ func genReleaseCollectionTask(ctx context.Context, queryCoord *QueryCoord) *rele
 		},
 		CollectionID: defaultCollectionID,
 	}
-	baseTask := newBaseTask(ctx, querypb.TriggerCondition_grpcRequest)
+	baseTask := newBaseTask(ctx, querypb.TriggerCondition_GrpcRequest)
 	releaseCollectionTask := &releaseCollectionTask{
 		baseTask:                 baseTask,
 		ReleaseCollectionRequest: req,
@@ -99,11 +101,12 @@ func genReleasePartitionTask(ctx context.Context, queryCoord *QueryCoord) *relea
 		CollectionID: defaultCollectionID,
 		PartitionIDs: []UniqueID{defaultPartitionID},
 	}
-	baseTask := newBaseTask(ctx, querypb.TriggerCondition_grpcRequest)
+	baseTask := newBaseTask(ctx, querypb.TriggerCondition_GrpcRequest)
 	releasePartitionTask := &releasePartitionTask{
 		baseTask:                 baseTask,
 		ReleasePartitionsRequest: req,
 		cluster:                  queryCoord.cluster,
+		meta:                     queryCoord.meta,
 	}
 
 	return releasePartitionTask
@@ -119,7 +122,7 @@ func genReleaseSegmentTask(ctx context.Context, queryCoord *QueryCoord, nodeID i
 		PartitionIDs: []UniqueID{defaultPartitionID},
 		SegmentIDs:   []UniqueID{defaultSegmentID},
 	}
-	baseTask := newBaseTask(ctx, querypb.TriggerCondition_grpcRequest)
+	baseTask := newBaseTask(ctx, querypb.TriggerCondition_GrpcRequest)
 	releaseSegmentTask := &releaseSegmentTask{
 		baseTask:               baseTask,
 		ReleaseSegmentsRequest: req,
@@ -140,11 +143,11 @@ func genWatchDmChannelTask(ctx context.Context, queryCoord *QueryCoord, nodeID i
 		},
 		NodeID:       nodeID,
 		CollectionID: defaultCollectionID,
-		PartitionID:  defaultPartitionID,
+		PartitionIDs: []UniqueID{defaultPartitionID},
 		Schema:       schema,
 		Infos:        []*datapb.VchannelInfo{vChannelInfo},
 	}
-	baseTask := newBaseTask(ctx, querypb.TriggerCondition_grpcRequest)
+	baseTask := newBaseTask(ctx, querypb.TriggerCondition_GrpcRequest)
 	baseTask.taskID = 100
 	watchDmChannelTask := &watchDmChannelTask{
 		baseTask:               baseTask,
@@ -161,7 +164,7 @@ func genWatchDmChannelTask(ctx context.Context, queryCoord *QueryCoord, nodeID i
 		CollectionID: defaultCollectionID,
 		Schema:       genCollectionSchema(defaultCollectionID, false),
 	}
-	baseParentTask := newBaseTask(ctx, querypb.TriggerCondition_grpcRequest)
+	baseParentTask := newBaseTask(ctx, querypb.TriggerCondition_GrpcRequest)
 	baseParentTask.taskID = 10
 	baseParentTask.setState(taskDone)
 	parentTask := &loadCollectionTask{
@@ -178,10 +181,11 @@ func genWatchDmChannelTask(ctx context.Context, queryCoord *QueryCoord, nodeID i
 	parentTask.addChildTask(watchDmChannelTask)
 	watchDmChannelTask.setParentTask(parentTask)
 
-	queryCoord.meta.addCollection(defaultCollectionID, schema)
+	queryCoord.meta.addCollection(defaultCollectionID, querypb.LoadType_loadCollection, schema)
 	return watchDmChannelTask
 }
 func genLoadSegmentTask(ctx context.Context, queryCoord *QueryCoord, nodeID int64) *loadSegmentTask {
+	queryCoord.meta.setDeltaChannel(defaultCollectionID, nil)
 	schema := genCollectionSchema(defaultCollectionID, false)
 	segmentInfo := &querypb.SegmentLoadInfo{
 		SegmentID:    defaultSegmentID,
@@ -197,7 +201,7 @@ func genLoadSegmentTask(ctx context.Context, queryCoord *QueryCoord, nodeID int6
 		Infos:        []*querypb.SegmentLoadInfo{segmentInfo},
 		CollectionID: defaultCollectionID,
 	}
-	baseTask := newBaseTask(ctx, querypb.TriggerCondition_grpcRequest)
+	baseTask := newBaseTask(ctx, querypb.TriggerCondition_GrpcRequest)
 	baseTask.taskID = 100
 	loadSegmentTask := &loadSegmentTask{
 		baseTask:            baseTask,
@@ -214,7 +218,7 @@ func genLoadSegmentTask(ctx context.Context, queryCoord *QueryCoord, nodeID int6
 		CollectionID: defaultCollectionID,
 		Schema:       genCollectionSchema(defaultCollectionID, false),
 	}
-	baseParentTask := newBaseTask(ctx, querypb.TriggerCondition_grpcRequest)
+	baseParentTask := newBaseTask(ctx, querypb.TriggerCondition_GrpcRequest)
 	baseParentTask.taskID = 10
 	baseParentTask.setState(taskDone)
 	parentTask := &loadCollectionTask{
@@ -231,7 +235,7 @@ func genLoadSegmentTask(ctx context.Context, queryCoord *QueryCoord, nodeID int6
 	parentTask.addChildTask(loadSegmentTask)
 	loadSegmentTask.setParentTask(parentTask)
 
-	queryCoord.meta.addCollection(defaultCollectionID, schema)
+	queryCoord.meta.addCollection(defaultCollectionID, querypb.LoadType_loadCollection, schema)
 	return loadSegmentTask
 }
 
@@ -688,7 +692,7 @@ func Test_AssignInternalTask(t *testing.T) {
 	binlogs := make([]*datapb.FieldBinlog, 0)
 	binlogs = append(binlogs, &datapb.FieldBinlog{
 		FieldID: 0,
-		Binlogs: []string{funcutil.RandomString(1000)},
+		Binlogs: []*datapb.Binlog{{LogPath: funcutil.RandomString(1000)}},
 	})
 	for id := 0; id < 3000; id++ {
 		segmentInfo := &querypb.SegmentLoadInfo{
@@ -701,14 +705,15 @@ func Test_AssignInternalTask(t *testing.T) {
 			Base: &commonpb.MsgBase{
 				MsgType: commonpb.MsgType_LoadSegments,
 			},
-			DstNodeID: node1.queryNodeID,
-			Schema:    schema,
-			Infos:     []*querypb.SegmentLoadInfo{segmentInfo},
+			DstNodeID:    node1.queryNodeID,
+			Schema:       schema,
+			Infos:        []*querypb.SegmentLoadInfo{segmentInfo},
+			CollectionID: defaultCollectionID,
 		}
 		loadSegmentRequests = append(loadSegmentRequests, req)
 	}
 
-	internalTasks, err := assignInternalTask(queryCoord.loopCtx, defaultCollectionID, loadCollectionTask, queryCoord.meta, queryCoord.cluster, loadSegmentRequests, nil, nil, false, nil, nil)
+	internalTasks, err := assignInternalTask(queryCoord.loopCtx, loadCollectionTask, queryCoord.meta, queryCoord.cluster, loadSegmentRequests, nil, false, nil, nil)
 	assert.Nil(t, err)
 
 	assert.NotEqual(t, 1, len(internalTasks))
@@ -773,13 +778,13 @@ func Test_handoffSegmentFail(t *testing.T) {
 	infos := queryCoord.meta.showSegmentInfos(defaultCollectionID, nil)
 	assert.NotEqual(t, 0, len(infos))
 	segmentID := defaultSegmentID + 4
-	baseTask := newBaseTask(ctx, querypb.TriggerCondition_handoff)
+	baseTask := newBaseTask(ctx, querypb.TriggerCondition_Handoff)
 
 	segmentInfo := &querypb.SegmentInfo{
 		SegmentID:    segmentID,
 		CollectionID: defaultCollectionID,
 		PartitionID:  defaultPartitionID + 2,
-		SegmentState: querypb.SegmentState_sealed,
+		SegmentState: commonpb.SegmentState_Sealed,
 	}
 	handoffReq := &querypb.HandoffSegmentsRequest{
 		Base: &commonpb.MsgBase{
@@ -827,7 +832,7 @@ func TestLoadBalanceSegmentsTask(t *testing.T) {
 	waitQueryNodeOnline(queryCoord.cluster, node2.queryNodeID)
 
 	t.Run("Test LoadBalanceBySegmentID", func(t *testing.T) {
-		baseTask := newBaseTask(ctx, querypb.TriggerCondition_loadBalance)
+		baseTask := newBaseTask(ctx, querypb.TriggerCondition_LoadBalance)
 		loadBalanceTask := &loadBalanceTask{
 			baseTask: baseTask,
 			LoadBalanceRequest: &querypb.LoadBalanceRequest{
@@ -849,7 +854,7 @@ func TestLoadBalanceSegmentsTask(t *testing.T) {
 	})
 
 	t.Run("Test LoadBalanceByNotExistSegmentID", func(t *testing.T) {
-		baseTask := newBaseTask(ctx, querypb.TriggerCondition_loadBalance)
+		baseTask := newBaseTask(ctx, querypb.TriggerCondition_LoadBalance)
 		loadBalanceTask := &loadBalanceTask{
 			baseTask: baseTask,
 			LoadBalanceRequest: &querypb.LoadBalanceRequest{
@@ -871,7 +876,7 @@ func TestLoadBalanceSegmentsTask(t *testing.T) {
 	})
 
 	t.Run("Test LoadBalanceByNode", func(t *testing.T) {
-		baseTask := newBaseTask(ctx, querypb.TriggerCondition_loadBalance)
+		baseTask := newBaseTask(ctx, querypb.TriggerCondition_LoadBalance)
 		loadBalanceTask := &loadBalanceTask{
 			baseTask: baseTask,
 			LoadBalanceRequest: &querypb.LoadBalanceRequest{
@@ -892,7 +897,7 @@ func TestLoadBalanceSegmentsTask(t *testing.T) {
 	})
 
 	t.Run("Test LoadBalanceWithEmptySourceNode", func(t *testing.T) {
-		baseTask := newBaseTask(ctx, querypb.TriggerCondition_loadBalance)
+		baseTask := newBaseTask(ctx, querypb.TriggerCondition_LoadBalance)
 		loadBalanceTask := &loadBalanceTask{
 			baseTask: baseTask,
 			LoadBalanceRequest: &querypb.LoadBalanceRequest{
@@ -912,7 +917,7 @@ func TestLoadBalanceSegmentsTask(t *testing.T) {
 	})
 
 	t.Run("Test LoadBalanceByNotExistNode", func(t *testing.T) {
-		baseTask := newBaseTask(ctx, querypb.TriggerCondition_loadBalance)
+		baseTask := newBaseTask(ctx, querypb.TriggerCondition_LoadBalance)
 		loadBalanceTask := &loadBalanceTask{
 			baseTask: baseTask,
 			LoadBalanceRequest: &querypb.LoadBalanceRequest{
@@ -968,7 +973,7 @@ func TestLoadBalanceIndexedSegmentsTask(t *testing.T) {
 	assert.Nil(t, err)
 	waitQueryNodeOnline(queryCoord.cluster, node2.queryNodeID)
 
-	baseTask := newBaseTask(ctx, querypb.TriggerCondition_loadBalance)
+	baseTask := newBaseTask(ctx, querypb.TriggerCondition_LoadBalance)
 	loadBalanceTask := &loadBalanceTask{
 		baseTask: baseTask,
 		LoadBalanceRequest: &querypb.LoadBalanceRequest{

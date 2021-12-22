@@ -157,14 +157,12 @@ def update_values(src_values_file, deploy_params_file):
     except Exception as e:
         logging.error(str(e))
         raise Exception("File not found")
+
     deploy_mode = utils.get_deploy_mode(deploy_params)
     print("[benchmark update] deploy_mode: %s" % str(deploy_mode))
+
     cluster = False
-    values_dict["service"]["type"] = "ClusterIP"
-    if deploy_mode != config.DEFUALT_DEPLOY_MODE:
-        cluster = True
-        # values_dict["cluster"]["enabled"] = True
-    elif deploy_mode == config.CLUSTER_3RD_DEPLOY_MODE:
+    if deploy_mode in [config.CLUSTER_DEPLOY_MODE, config.CLUSTER_3RD_DEPLOY_MODE]:
         cluster = True
     elif deploy_mode == config.SINGLE_DEPLOY_MODE:
         values_dict["cluster"]["enabled"] = False
@@ -175,7 +173,6 @@ def update_values(src_values_file, deploy_params_file):
     print(server_tag)
     # TODO: update milvus config
     # # update values.yaml with the given host
-    # node_config = None
     perf_tolerations = [{
             "key": "node-role.kubernetes.io/benchmark",
             "operator": "Exists",

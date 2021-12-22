@@ -2,7 +2,7 @@
 
 ## Background
 
-In Milvus, a collection has multiple fields, mainly there are two kinds of fields: vector field and scalar field. We call a row as an entity, one entity encapsulates multiple vectors and scalar values.
+In Milvus, a collection has multiple fields, mainly there are two kinds of fields: vector field and scalar field. We call a row an entity, one entity encapsulates multiple vectors and scalar values.
 
 When creating a collection, you can specify using the auto-generated primary key, or using the user-provided primary key.
 If a user sets to use the user-provided primary key, each entity inserted must contain the primary key field. Otherwise, the insertion fails.
@@ -33,7 +33,7 @@ Once DataNode receives a Flush command from DataCoord, it sorts the data in the 
 - Key of statistics file: `${tenant}/insert_log/${collection_id}/${partition_id}/${segment_id}/${field_id}/stats_${log_idx}`
 - Key of bloom filter file: `${tenant}/insert_log/${collection_id}/${partition_id}/${segment_id}/${field_id}/bf_${log_idx}`
 
-QueryNode maintains mapping from primary key to entities in each segment. This mapping updates every time an insert request is processed.
+QueryNode maintains a mapping from primary key to entities in each segment. This mapping updates every time an insert request is processed.
 
 After receiving the Get request from the client, the Proxy sends the request to the `search` channel and waits for the result returned from the `searchResult` channel.
 
@@ -45,7 +45,7 @@ The processing flow after QueryNode reads the Get request from `search` channel:
 4. Convert the statistics into an inverted index from Range to SegmentID for each `Sealed` segment;
 5. Check whether the requested primary key exists in any inverted index of `Sealed` segment, return empty if not found;
 6. [optional] Use the bloomfilter to filter out segments where the primary key does not exist;
-7. Use binary search to find specified entity in each segment where the primary key may exist;
+7. Use binary search to find the specified entity in each segment where the primary key may exist;
 
 ### APIs
 
@@ -98,7 +98,7 @@ In the newly created collection, insert a record with a primary key of 107, call
 
 ### Testcase 3
 
-In the newly created collection, insert the records with the primary keys of 105, 106, 107, call the Get interface to query the records with the primary keys of 101, 102, 103, 104, 105, 106, 107, the retrieved result only contains the primary keys of 105, 106, 107 records.
+In the newly created collection, insert the records with the primary keys of 105, 106, 107, call the Get interface to query the records with the primary keys of 101, 102, 103, 104, 105, 106, 107, the retrieved result only contains the records with primary keys of 105, 106, 107.
 
 ### Testcase 4
 

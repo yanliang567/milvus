@@ -27,13 +27,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/milvus-io/milvus/internal/common"
-
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.uber.org/zap"
 
 	"github.com/golang/protobuf/proto"
 	"github.com/milvus-io/milvus/internal/allocator"
+	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/kv"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	miniokv "github.com/milvus-io/milvus/internal/kv/minio"
@@ -54,6 +53,10 @@ import (
 
 // make sure IndexCoord implements types.IndexCoord
 var _ types.IndexCoord = (*IndexCoord)(nil)
+
+const (
+	indexSizeFactor = 6
+)
 
 // IndexCoord is a component responsible for scheduling index construction tasks and maintaining index status.
 // IndexCoord accepts requests from rootcoord to build indexes, delete indexes, and query index information.
@@ -116,22 +119,42 @@ func NewIndexCoord(ctx context.Context) (*IndexCoord, error) {
 
 // Register register IndexCoord role at etcd.
 func (i *IndexCoord) Register() error {
+	i.session.Register()
+	go i.session.LivenessCheck(i.loopCtx, func() {
+		log.Error("Index Coord disconnected from etcd, process will exit", zap.Int64("Server Id", i.session.ServerID))
+		if err := i.Stop(); err != nil {
+			log.Fatal("failed to stop server", zap.Error(err))
+		}
+		// manually send signal to starter goroutine
+		syscall.Kill(syscall.Getpid(), syscall.SIGINT)
+	})
+	return nil
+}
+
+func (i *IndexCoord) initSession() error {
 	i.session = sessionutil.NewSession(i.loopCtx, Params.MetaRootPath, Params.EtcdEndpoints)
 	if i.session == nil {
 		return errors.New("failed to initialize session")
 	}
 	i.session.Init(typeutil.IndexCoordRole, Params.Address, true)
-	Params.SetLogger(typeutil.UniqueID(-1))
+	Params.SetLogger(i.session.ServerID)
 	return nil
 }
 
 // Init initializes the IndexCoord component.
 func (i *IndexCoord) Init() error {
-	var initErr error = nil
+	var initErr error
 	Params.InitOnce()
 	i.initOnce.Do(func() {
-		log.Debug("IndexCoord", zap.Strings("etcd endpoints", Params.EtcdEndpoints))
 		i.UpdateStateCode(internalpb.StateCode_Initializing)
+		log.Debug("IndexCoord init", zap.Any("stateCode", i.stateCode.Load().(internalpb.StateCode)))
+
+		err := i.initSession()
+		if err != nil {
+			log.Error(err.Error())
+			initErr = err
+			return
+		}
 
 		connectEtcdFn := func() error {
 			etcdKV, err := etcdkv.NewEtcdKV(Params.EtcdEndpoints, Params.MetaRootPath)
@@ -146,7 +169,7 @@ func (i *IndexCoord) Init() error {
 			return err
 		}
 		log.Debug("IndexCoord try to connect etcd")
-		err := retry.Do(i.loopCtx, connectEtcdFn, retry.Attempts(300))
+		err = retry.Do(i.loopCtx, connectEtcdFn, retry.Attempts(300))
 		if err != nil {
 			log.Error("IndexCoord try to connect etcd failed", zap.Error(err))
 			initErr = err
@@ -229,7 +252,7 @@ func (i *IndexCoord) Init() error {
 
 // Start starts the IndexCoord component.
 func (i *IndexCoord) Start() error {
-	var startErr error = nil
+	var startErr error
 	i.startOnce.Do(func() {
 		i.loopWg.Add(1)
 		go i.tsLoop()
@@ -245,15 +268,6 @@ func (i *IndexCoord) Start() error {
 
 		i.loopWg.Add(1)
 		go i.watchMetaLoop()
-
-		go i.session.LivenessCheck(i.loopCtx, func() {
-			log.Error("Index Coord disconnected from etcd, process will exit", zap.Int64("Server Id", i.session.ServerID))
-			if err := i.Stop(); err != nil {
-				log.Fatal("failed to stop server", zap.Error(err))
-			}
-			// manually send signal to starter goroutine
-			syscall.Kill(syscall.Getpid(), syscall.SIGINT)
-		})
 
 		startErr = i.sched.Start()
 
@@ -420,10 +434,11 @@ func (i *IndexCoord) BuildIndex(ctx context.Context, req *indexpb.BuildIndexRequ
 		ret.Status.Reason = err.Error()
 		return ret, nil
 	}
-	log.Debug("IndexCoord BuildIndex Enqueue successfully", zap.Any("IndexBuildID", t.indexBuildID))
+	log.Debug("IndexCoord BuildIndex Enqueue successfully", zap.Int64("IndexBuildID", t.indexBuildID))
 
 	err = t.WaitToFinish()
 	if err != nil {
+		log.Error("IndexCoord scheduler index task failed", zap.Int64("IndexBuildID", t.indexBuildID))
 		ret.Status.ErrorCode = commonpb.ErrorCode_UnexpectedError
 		ret.Status.Reason = err.Error()
 		return ret, nil
@@ -526,9 +541,20 @@ func (i *IndexCoord) DropIndex(ctx context.Context, req *indexpb.DropIndexReques
 // GetIndexFilePaths gets the index file paths from IndexCoord.
 func (i *IndexCoord) GetIndexFilePaths(ctx context.Context, req *indexpb.GetIndexFilePathsRequest) (*indexpb.GetIndexFilePathsResponse, error) {
 	log.Debug("IndexCoord GetIndexFilePaths", zap.Int64s("IndexBuildIds", req.IndexBuildIDs))
+	if !i.isHealthy() {
+		errMsg := "IndexCoord is not healthy"
+		log.Warn(errMsg)
+		return &indexpb.GetIndexFilePathsResponse{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+				Reason:    errMsg,
+			},
+			FilePaths: nil,
+		}, nil
+	}
 	sp, _ := trace.StartSpanFromContextWithOperationName(ctx, "IndexCoord-BuildIndex")
 	defer sp.Finish()
-	var indexPaths []*indexpb.IndexFilePathInfo = nil
+	var indexPaths []*indexpb.IndexFilePathInfo
 
 	for _, indexID := range req.IndexBuildIDs {
 		indexPathInfo, err := i.metaTable.GetIndexFilePathInfo(indexID)
@@ -558,12 +584,12 @@ func (i *IndexCoord) GetIndexFilePaths(ctx context.Context, req *indexpb.GetInde
 // GetMetrics gets the metrics info of IndexCoord.
 func (i *IndexCoord) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
 	log.Debug("IndexCoord.GetMetrics",
-		zap.Int64("node_id", i.session.ServerID),
+		zap.Int64("node id", i.session.ServerID),
 		zap.String("req", req.Request))
 
 	if !i.isHealthy() {
 		log.Warn("IndexCoord.GetMetrics failed",
-			zap.Int64("node_id", i.session.ServerID),
+			zap.Int64("node id", i.session.ServerID),
 			zap.String("req", req.Request),
 			zap.Error(errIndexCoordIsUnhealthy(i.session.ServerID)))
 
@@ -579,7 +605,7 @@ func (i *IndexCoord) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsReq
 	metricType, err := metricsinfo.ParseMetricType(req.Request)
 	if err != nil {
 		log.Error("IndexCoord.GetMetrics failed to parse metric type",
-			zap.Int64("node_id", i.session.ServerID),
+			zap.Int64("node id", i.session.ServerID),
 			zap.String("req", req.Request),
 			zap.Error(err))
 
@@ -593,7 +619,7 @@ func (i *IndexCoord) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsReq
 	}
 
 	log.Debug("IndexCoord.GetMetrics",
-		zap.String("metric_type", metricType))
+		zap.String("metric type", metricType))
 
 	if metricType == metricsinfo.SystemInfoMetrics {
 		ret, err := i.metricsCacheManager.GetSystemInfoMetrics()
@@ -606,10 +632,10 @@ func (i *IndexCoord) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsReq
 		metrics, err := getSystemInfoMetrics(ctx, req, i)
 
 		log.Debug("IndexCoord.GetMetrics",
-			zap.Int64("node_id", i.session.ServerID),
+			zap.Int64("node id", i.session.ServerID),
 			zap.String("req", req.Request),
-			zap.String("metric_type", metricType),
-			zap.Any("metrics", metrics), // TODO(dragondriver): necessary? may be very large
+			zap.String("metric type", metricType),
+			zap.String("metrics", metrics.Response), // TODO(dragondriver): necessary? may be very large
 			zap.Error(err))
 
 		i.metricsCacheManager.UpdateSystemInfoMetrics(metrics)
@@ -618,9 +644,9 @@ func (i *IndexCoord) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsReq
 	}
 
 	log.Debug("IndexCoord.GetMetrics failed, request metric type is not implemented yet",
-		zap.Int64("node_id", i.session.ServerID),
+		zap.Int64("node id", i.session.ServerID),
 		zap.String("req", req.Request),
-		zap.String("metric_type", metricType))
+		zap.String("metric type", metricType))
 
 	return &milvuspb.GetMetricsResponse{
 		Status: &commonpb.Status{

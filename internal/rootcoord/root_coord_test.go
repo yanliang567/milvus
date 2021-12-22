@@ -1,13 +1,18 @@
-// Copyright (C) 2019-2020 Zilliz. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
 // with the License. You may obtain a copy of the License at
 //
-// http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// Unless required by applicable law or agreed to in writing, software distributed under the License
-// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
-// or implied. See the License for the specific language governing permissions and limitations under the License.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package rootcoord
 
@@ -436,9 +441,10 @@ func TestRootCoordInit(t *testing.T) {
 	Params.MetaRootPath = fmt.Sprintf("/%d/%s", randVal, Params.MetaRootPath)
 	Params.KvRootPath = fmt.Sprintf("/%d/%s", randVal, Params.KvRootPath)
 
-	err = core.Register()
-	assert.Nil(t, err)
 	err = core.Init()
+	assert.Nil(t, err)
+
+	err = core.Register()
 	assert.Nil(t, err)
 
 	// inject kvBaseCreate fail
@@ -450,13 +456,14 @@ func TestRootCoordInit(t *testing.T) {
 	Params.MetaRootPath = fmt.Sprintf("/%d/%s", randVal, Params.MetaRootPath)
 	Params.KvRootPath = fmt.Sprintf("/%d/%s", randVal, Params.KvRootPath)
 
-	err = core.Register()
-	assert.Nil(t, err)
 	core.kvBaseCreate = func(string) (kv.TxnKV, error) {
 		return nil, retry.Unrecoverable(errors.New("injected"))
 	}
 	err = core.Init()
 	assert.NotNil(t, err)
+
+	err = core.Register()
+	assert.Nil(t, err)
 
 	// inject metaKV create fail
 	core, err = NewCore(ctx, coreFactory)
@@ -467,8 +474,6 @@ func TestRootCoordInit(t *testing.T) {
 	Params.MetaRootPath = fmt.Sprintf("/%d/%s", randVal, Params.MetaRootPath)
 	Params.KvRootPath = fmt.Sprintf("/%d/%s", randVal, Params.KvRootPath)
 
-	err = core.Register()
-	assert.Nil(t, err)
 	core.kvBaseCreate = func(root string) (kv.TxnKV, error) {
 		if root == Params.MetaRootPath {
 			return nil, retry.Unrecoverable(errors.New("injected"))
@@ -477,6 +482,9 @@ func TestRootCoordInit(t *testing.T) {
 	}
 	err = core.Init()
 	assert.NotNil(t, err)
+
+	err = core.Register()
+	assert.Nil(t, err)
 
 	// inject newSuffixSnapshot failure
 	core, err = NewCore(ctx, coreFactory)
@@ -487,13 +495,14 @@ func TestRootCoordInit(t *testing.T) {
 	Params.MetaRootPath = fmt.Sprintf("/%d/%s", randVal, Params.MetaRootPath)
 	Params.KvRootPath = fmt.Sprintf("/%d/%s", randVal, Params.KvRootPath)
 
-	err = core.Register()
-	assert.Nil(t, err)
 	core.kvBaseCreate = func(string) (kv.TxnKV, error) {
 		return nil, nil
 	}
 	err = core.Init()
 	assert.NotNil(t, err)
+
+	err = core.Register()
+	assert.Nil(t, err)
 
 	// inject newMetaTable failure
 	core, err = NewCore(ctx, coreFactory)
@@ -504,14 +513,15 @@ func TestRootCoordInit(t *testing.T) {
 	Params.MetaRootPath = fmt.Sprintf("/%d/%s", randVal, Params.MetaRootPath)
 	Params.KvRootPath = fmt.Sprintf("/%d/%s", randVal, Params.KvRootPath)
 
-	err = core.Register()
-	assert.Nil(t, err)
 	core.kvBaseCreate = func(string) (kv.TxnKV, error) {
 		kv := memkv.NewMemoryKV()
 		return &loadPrefixFailKV{TxnKV: kv}, nil
 	}
 	err = core.Init()
 	assert.NotNil(t, err)
+
+	err = core.Register()
+	assert.Nil(t, err)
 
 }
 
@@ -542,9 +552,6 @@ func TestRootCoord(t *testing.T) {
 	Params.MsgChannelSubName = fmt.Sprintf("subname-%d", randVal)
 	Params.DmlChannelName = fmt.Sprintf("rootcoord-dml-test-%d", randVal)
 	Params.DeltaChannelName = fmt.Sprintf("rootcoord-delta-test-%d", randVal)
-
-	err = core.Register()
-	assert.Nil(t, err)
 
 	etcdCli, err := clientv3.New(clientv3.Config{Endpoints: Params.EtcdEndpoints, DialTimeout: 5 * time.Second})
 	assert.Nil(t, err)
@@ -612,7 +619,7 @@ func TestRootCoord(t *testing.T) {
 	err = core.Init()
 	assert.Nil(t, err)
 
-	var localTSO uint64 = 0
+	var localTSO uint64
 	localTSOLock := sync.RWMutex{}
 	core.TSOAllocator = func(c uint32) (uint64, error) {
 		localTSOLock.Lock()
@@ -622,6 +629,9 @@ func TestRootCoord(t *testing.T) {
 	}
 
 	err = core.Start()
+	assert.Nil(t, err)
+
+	err = core.Register()
 	assert.Nil(t, err)
 
 	time.Sleep(100 * time.Millisecond)
@@ -919,7 +929,7 @@ func TestRootCoord(t *testing.T) {
 		assert.Equal(t, collMeta.PartitionIDs[1], ddReq.PartitionID)
 
 		err = core.reSendDdMsg(core.ctx, true)
-		assert.NotNil(t, err)
+		assert.Nil(t, err)
 	})
 
 	t.Run("has partition", func(t *testing.T) {
@@ -1254,7 +1264,7 @@ func TestRootCoord(t *testing.T) {
 		assert.Equal(t, dropPartID, ddReq.PartitionID)
 
 		err = core.reSendDdMsg(core.ctx, true)
-		assert.NotNil(t, err)
+		assert.Nil(t, err)
 	})
 
 	t.Run("remove DQL msgstream", func(t *testing.T) {
@@ -1343,7 +1353,7 @@ func TestRootCoord(t *testing.T) {
 		assert.Equal(t, collMeta.ID, ddReq.CollectionID)
 
 		err = core.reSendDdMsg(core.ctx, true)
-		assert.NotNil(t, err)
+		assert.Nil(t, err)
 	})
 
 	t.Run("context_cancel", func(t *testing.T) {
@@ -2213,9 +2223,6 @@ func TestRootCoord2(t *testing.T) {
 	Params.KvRootPath = fmt.Sprintf("/%d/%s", randVal, Params.KvRootPath)
 	Params.MsgChannelSubName = fmt.Sprintf("subname-%d", randVal)
 
-	err = core.Register()
-	assert.Nil(t, err)
-
 	dm := &dataMock{randVal: randVal}
 	err = core.SetDataCoord(ctx, dm)
 	assert.Nil(t, err)
@@ -2245,6 +2252,9 @@ func TestRootCoord2(t *testing.T) {
 	assert.Nil(t, err)
 
 	err = core.Start()
+	assert.Nil(t, err)
+
+	err = core.Register()
 	assert.Nil(t, err)
 
 	m := map[string]interface{}{
@@ -2481,9 +2491,6 @@ func TestCheckFlushedSegments(t *testing.T) {
 	Params.KvRootPath = fmt.Sprintf("/%d/%s", randVal, Params.KvRootPath)
 	Params.MsgChannelSubName = fmt.Sprintf("subname-%d", randVal)
 
-	err = core.Register()
-	assert.Nil(t, err)
-
 	dm := &dataMock{randVal: randVal}
 	err = core.SetDataCoord(ctx, dm)
 	assert.Nil(t, err)
@@ -2513,6 +2520,9 @@ func TestCheckFlushedSegments(t *testing.T) {
 	assert.Nil(t, err)
 
 	err = core.Start()
+	assert.Nil(t, err)
+
+	err = core.Register()
 	assert.Nil(t, err)
 
 	m := map[string]interface{}{
@@ -2638,9 +2648,6 @@ func TestRootCoord_CheckZeroShardsNum(t *testing.T) {
 	Params.KvRootPath = fmt.Sprintf("/%d/%s", randVal, Params.KvRootPath)
 	Params.MsgChannelSubName = fmt.Sprintf("subname-%d", randVal)
 
-	err = core.Register()
-	assert.Nil(t, err)
-
 	dm := &dataMock{randVal: randVal}
 	err = core.SetDataCoord(ctx, dm)
 	assert.Nil(t, err)
@@ -2670,6 +2677,9 @@ func TestRootCoord_CheckZeroShardsNum(t *testing.T) {
 	assert.Nil(t, err)
 
 	err = core.Start()
+	assert.Nil(t, err)
+
+	err = core.Register()
 	assert.Nil(t, err)
 
 	m := map[string]interface{}{

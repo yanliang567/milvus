@@ -5,13 +5,13 @@ update: 6.21.2021, by [Goose](https://github.com/XuanYang-cn)
 
 ## 1. Common Sense
 
-A. One message stream to one vchannel, so there are one start position and one end position in one message pack.
+A. One message stream to one vchannel, so there are one start and one end position in one message pack.
 
-B. Only when datanode flushes, datanode will update every segment's position.
+B. Only when DataNode flushes, DataNode will update every segment's position.
 An optimization: update position of
 
-- a. Current flushing segment
-- b. StartPosition of segments has never been flushed.
+1. Current flushing segment
+2. StartPosition of segments has never been flushed.
 
 C. DataNode auto-flush is a valid flush.
 
@@ -29,11 +29,11 @@ When a flowgraph flushes a segment, we need to save these things:
 
 - current segment's binlog paths.
 - current segment positions.
-- all other segments' current positions from the replica (If a segment hasn't been flushed, save the position when datanode first meets it).
+- all other segments' current positions from the replica (If a segment hasn't been flushed, save the position when DataNode first meets it).
 
 Whether save successfully:
 
-- If succeeded, flowgraph updates all segments' positions to the replica
+- If succeeded, flowgraph updates all segments' positions to the replica.
 - If not
   - For a grpc failure(this failure will appear after many times retry internally), crush itself.
   - For a normal failure, retry save 10 times, if still fails, crush itself.

@@ -17,18 +17,15 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
-	"net"
 	"net/http"
-	"strconv"
 	"time"
 
+	"github.com/go-basic/ipv4"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/retry"
-
-	"github.com/go-basic/ipv4"
 	"go.uber.org/zap"
 )
 
@@ -40,27 +37,6 @@ func CheckGrpcReady(ctx context.Context, targetCh chan error) {
 	case <-ctx.Done():
 		return
 	}
-}
-
-// CheckPortAvailable check if a port is available to be listened on
-func CheckPortAvailable(port int) bool {
-	addr := ":" + strconv.Itoa(port)
-	listener, err := net.Listen("tcp", addr)
-	if listener != nil {
-		listener.Close()
-	}
-	return err == nil
-}
-
-// GetAvailablePort return an available port that can be listened on
-func GetAvailablePort() int {
-	listener, err := net.Listen("tcp", ":0")
-	if err != nil {
-		panic(err)
-	}
-	defer listener.Close()
-
-	return listener.Addr().(*net.TCPAddr).Port
 }
 
 // GetLocalIP return the local ip address
@@ -88,8 +64,10 @@ func WaitForComponentStates(ctx context.Context, service types.Component, servic
 			}
 		}
 		if !meet {
-			msg := fmt.Sprintf("WaitForComponentStates, not meet, %s current state:%d", serviceName, resp.State.StateCode)
-			return errors.New(msg)
+			return fmt.Errorf(
+				"WaitForComponentStates, not meet, %s current state: %s",
+				serviceName,
+				resp.State.StateCode.String())
 		}
 		return nil
 	}
@@ -143,7 +121,7 @@ func GetPulsarConfig(protocol, ip, port, url string, args ...int64) (map[string]
 	}
 
 	var attempt uint = 10
-	var interval time.Duration = time.Second
+	var interval = time.Second
 	if len(args) > 0 && args[0] > 0 {
 		attempt = uint(args[0])
 	}

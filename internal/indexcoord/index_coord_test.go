@@ -63,10 +63,10 @@ func TestIndexCoord(t *testing.T) {
 	ic.assignTaskInterval = 200 * time.Millisecond
 	ic.taskLimit = 20
 	Params.Init()
-	err = ic.Register()
-	assert.Nil(t, err)
 
 	err = ic.Init()
+	assert.Nil(t, err)
+	err = ic.Register()
 	assert.Nil(t, err)
 	err = ic.Start()
 	assert.Nil(t, err)
@@ -277,4 +277,11 @@ func TestIndexCoord_NotHealthy(t *testing.T) {
 	resp2, err := ic.GetIndexStates(context.Background(), req3)
 	assert.Nil(t, err)
 	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp2.Status.ErrorCode)
+
+	req4 := &indexpb.GetIndexFilePathsRequest{
+		IndexBuildIDs: []UniqueID{1, 2},
+	}
+	resp4, err := ic.GetIndexFilePaths(context.Background(), req4)
+	assert.Nil(t, err)
+	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp4.Status.ErrorCode)
 }

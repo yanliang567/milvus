@@ -26,14 +26,10 @@ import (
 	"sync"
 	"time"
 
-	"go.uber.org/zap"
-	"google.golang.org/grpc"
-
+	ot "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
 	dn "github.com/milvus-io/milvus/internal/datanode"
-	dsc "github.com/milvus-io/milvus/internal/distributed/datacoord/client"
+	dcc "github.com/milvus-io/milvus/internal/distributed/datacoord/client"
 	rcc "github.com/milvus-io/milvus/internal/distributed/rootcoord/client"
-
-	grpc_opentracing "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
@@ -42,9 +38,15 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/trace"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
+	"go.uber.org/zap"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 )
+
+var Params paramtable.GrpcServerConfig
 
 type Server struct {
 	datanode    types.DataNodeComponent
@@ -77,7 +79,7 @@ func NewServer(ctx context.Context, factory msgstream.Factory) (*Server, error) 
 			return rcc.NewClient(ctx1, etcdMetaRoot, etcdEndpoints)
 		},
 		newDataCoordClient: func(etcdMetaRoot string, etcdEndpoints []string) (types.DataCoord, error) {
-			return dsc.NewClient(ctx1, etcdMetaRoot, etcdEndpoints)
+			return dcc.NewClient(ctx1, etcdMetaRoot, etcdEndpoints)
 		},
 	}
 
@@ -88,12 +90,13 @@ func NewServer(ctx context.Context, factory msgstream.Factory) (*Server, error) 
 
 func (s *Server) startGrpc() error {
 	s.wg.Add(1)
-	go s.startGrpcLoop(Params.listener)
+	go s.startGrpcLoop(Params.Listener)
 	// wait for grpc server loop start
 	err := <-s.grpcErrChan
 	return err
 }
 
+// startGrpcLoop starts the grep loop of datanode component.
 func (s *Server) startGrpcLoop(listener net.Listener) {
 	defer s.wg.Done()
 	var kaep = keepalive.EnforcementPolicy{
@@ -112,10 +115,8 @@ func (s *Server) startGrpcLoop(listener net.Listener) {
 		grpc.KeepaliveParams(kasp),
 		grpc.MaxRecvMsgSize(Params.ServerMaxRecvSize),
 		grpc.MaxSendMsgSize(Params.ServerMaxSendSize),
-		grpc.UnaryInterceptor(
-			grpc_opentracing.UnaryServerInterceptor(opts...)),
-		grpc.StreamInterceptor(
-			grpc_opentracing.StreamServerInterceptor(opts...)))
+		grpc.UnaryInterceptor(ot.UnaryServerInterceptor(opts...)),
+		grpc.StreamInterceptor(ot.StreamServerInterceptor(opts...)))
 	datapb.RegisterDataNodeServer(s.grpcServer, s)
 
 	ctx, cancel := context.WithCancel(s.ctx)
@@ -137,6 +138,7 @@ func (s *Server) SetDataCoordInterface(ds types.DataCoord) error {
 	return s.datanode.SetDataCoord(ds)
 }
 
+// Run initializes and starts Datanode's grpc service.
 func (s *Server) Run() error {
 	if err := s.init(); err != nil {
 		return err
@@ -152,7 +154,7 @@ func (s *Server) Run() error {
 
 // Stop stops Datanode's grpc service.
 func (s *Server) Stop() error {
-	log.Debug("Datanode stop", zap.String("Address", Params.Address))
+	log.Debug("Datanode stop", zap.String("Address", Params.GetAddress()))
 	if s.closer != nil {
 		if err := s.closer.Close(); err != nil {
 			return err
@@ -186,9 +188,10 @@ func (s *Server) Stop() error {
 	return nil
 }
 
+// init initializes Datanode's grpc service.
 func (s *Server) init() error {
 	ctx := context.Background()
-	Params.Init()
+	Params.InitOnce(typeutil.DataNodeRole)
 
 	dn.Params.InitOnce()
 	dn.Params.Port = Params.Port

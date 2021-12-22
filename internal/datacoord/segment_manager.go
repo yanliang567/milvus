@@ -42,7 +42,7 @@ var (
 	}
 )
 
-// getAllocation unified way to retrieve allocation struct
+// getAllocation unifies way to retrieve allocation struct
 func getAllocation(numOfRows int64) *Allocation {
 	v := allocPool.Get()
 	a, ok := v.(*Allocation)
@@ -60,7 +60,7 @@ func getAllocation(numOfRows int64) *Allocation {
 	return a
 }
 
-// putAllocation put allocation for recycling
+// putAllocation puts an allocation for recycling
 func putAllocation(a *Allocation) {
 	allocPool.Put(a)
 }
@@ -69,7 +69,7 @@ func putAllocation(a *Allocation) {
 // TODO needs to be configurable
 const segmentMaxLifetime = 24 * time.Hour
 
-// Manager manage segment related operations.
+// Manager manages segment related operations.
 type Manager interface {
 	// AllocSegment allocates rows and record the allocation.
 	AllocSegment(ctx context.Context, collectionID, partitionID UniqueID, channelName string, requestRows int64) ([]*Allocation, error)
@@ -113,7 +113,7 @@ type allocHelper struct {
 	afterCreateSegment func(segment *datapb.SegmentInfo) error
 }
 
-// allocOption allction option applies to `SegmentManager`
+// allocOption allocation option applies to `SegmentManager`
 type allocOption interface {
 	apply(manager *SegmentManager)
 }
@@ -173,7 +173,7 @@ func defaultCalUpperLimitPolicy() calUpperLimitPolicy {
 	return calBySchemaPolicy
 }
 
-func defaultAlocatePolicy() AllocatePolicy {
+func defaultAllocatePolicy() AllocatePolicy {
 	return AllocatePolicyV1
 }
 
@@ -196,7 +196,7 @@ func newSegmentManager(meta *meta, allocator allocator, opts ...allocOption) *Se
 		helper:              defaultAllocHelper(),
 		segments:            make([]UniqueID, 0),
 		estimatePolicy:      defaultCalUpperLimitPolicy(),
-		allocPolicy:         defaultAlocatePolicy(),
+		allocPolicy:         defaultAllocatePolicy(),
 		segmentSealPolicies: defaultSegmentSealPolicy(), // default only segment size policy
 		channelSealPolicies: []channelSealPolicy{},      // no default channel seal policy
 		flushPolicy:         defaultFlushPolicy(),
@@ -369,7 +369,7 @@ func (s *SegmentManager) SealAllSegments(ctx context.Context, collectionID Uniqu
 	defer sp.Finish()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ret := make([]UniqueID, 0)
+	var ret []UniqueID
 	for _, id := range s.segments {
 		info := s.meta.GetSegment(id)
 		if info == nil {

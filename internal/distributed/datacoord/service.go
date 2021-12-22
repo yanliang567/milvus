@@ -25,27 +25,27 @@ import (
 	"sync"
 	"time"
 
-	"github.com/milvus-io/milvus/internal/logutil"
-	"github.com/milvus-io/milvus/internal/types"
-
-	"go.uber.org/zap"
-
-	"google.golang.org/grpc"
-
-	grpc_opentracing "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
+	ot "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
 	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
 	"github.com/milvus-io/milvus/internal/datacoord"
 	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/logutil"
 	"github.com/milvus-io/milvus/internal/msgstream"
-	"github.com/milvus-io/milvus/internal/util/funcutil"
-	"github.com/milvus-io/milvus/internal/util/trace"
-	"google.golang.org/grpc/keepalive"
-
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
+	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
+	"github.com/milvus-io/milvus/internal/util/trace"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
+	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 )
+
+var Params paramtable.GrpcServerConfig
 
 // Server is the grpc server of datacoord
 type Server struct {
@@ -78,7 +78,7 @@ func NewServer(ctx context.Context, factory msgstream.Factory, opts ...datacoord
 }
 
 func (s *Server) init() error {
-	Params.Init()
+	Params.InitOnce(typeutil.DataCoordRole)
 
 	closer := trace.InitTracing("datacoord")
 	s.closer = closer
@@ -86,16 +86,9 @@ func (s *Server) init() error {
 	datacoord.Params.InitOnce()
 	datacoord.Params.IP = Params.IP
 	datacoord.Params.Port = Params.Port
-	datacoord.Params.Address = Params.Address
+	datacoord.Params.Address = Params.GetAddress()
 
-	err := s.dataCoord.Register()
-	if err != nil {
-		log.Debug("DataCoord Register etcd failed", zap.Error(err))
-		return err
-	}
-	log.Debug("DataCoord Register etcd success")
-
-	err = s.startGrpc()
+	err := s.startGrpc()
 	if err != nil {
 		log.Debug("DataCoord startGrpc failed", zap.Error(err))
 		return err
@@ -147,10 +140,8 @@ func (s *Server) startGrpcLoop(grpcPort int) {
 		grpc.KeepaliveParams(kasp),
 		grpc.MaxRecvMsgSize(Params.ServerMaxRecvSize),
 		grpc.MaxSendMsgSize(Params.ServerMaxSendSize),
-		grpc.UnaryInterceptor(
-			grpc_opentracing.UnaryServerInterceptor(opts...)),
-		grpc.StreamInterceptor(
-			grpc_opentracing.StreamServerInterceptor(opts...)))
+		grpc.UnaryInterceptor(ot.UnaryServerInterceptor(opts...)),
+		grpc.StreamInterceptor(ot.StreamServerInterceptor(opts...)))
 	//grpc.UnaryInterceptor(grpc_prometheus.UnaryServerInterceptor))
 	datapb.RegisterDataCoordServer(s.grpcServer, s)
 	grpc_prometheus.Register(s.grpcServer)
@@ -161,13 +152,23 @@ func (s *Server) startGrpcLoop(grpcPort int) {
 }
 
 func (s *Server) start() error {
-	return s.dataCoord.Start()
+	err := s.dataCoord.Start()
+	if err != nil {
+		log.Error("DataCoord start failed", zap.Error(err))
+		return err
+	}
+	err = s.dataCoord.Register()
+	if err != nil {
+		log.Debug("DataCoord register service failed", zap.Error(err))
+		return err
+	}
+	return nil
 }
 
 // Stop stops the DataCoord server gracefully.
 // Need to call the GracefulStop interface of grpc server and call the stop method of the inner DataCoord object.
 func (s *Server) Stop() error {
-	log.Debug("Datacoord stop", zap.String("Address", Params.Address))
+	log.Debug("Datacoord stop", zap.String("Address", Params.GetAddress()))
 	var err error
 	if s.closer != nil {
 		if err = s.closer.Close(); err != nil {

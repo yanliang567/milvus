@@ -90,7 +90,7 @@ type BaseComponentInfos struct {
 	ID            int64           `json:"id"`
 }
 
-// QueryNodeConfiguration records the configuration of query node.
+// QueryNodeConfiguration records the configuration of QueryNode.
 type QueryNodeConfiguration struct {
 	SearchReceiveBufSize       int64 `json:"search_receive_buf_size"`
 	SearchPulsarBufSize        int64 `json:"search_pulsar_buf_size"`
@@ -109,7 +109,7 @@ type QueryNodeInfos struct {
 	SystemConfigurations QueryNodeConfiguration `json:"system_configurations"`
 }
 
-// QueryCoordConfiguration records the configuration of query coordinator.
+// QueryCoordConfiguration records the configuration of QueryCoord.
 type QueryCoordConfiguration struct {
 	SearchChannelPrefix       string `json:"search_channel_prefix"`
 	SearchResultChannelPrefix string `json:"search_result_channel_prefix"`
@@ -121,7 +121,7 @@ type QueryCoordInfos struct {
 	SystemConfigurations QueryCoordConfiguration `json:"system_configurations"`
 }
 
-// ProxyConfiguration records the configuration of proxy.
+// ProxyConfiguration records the configuration of Proxy.
 type ProxyConfiguration struct {
 	DefaultPartitionName string `json:"default_partition_name"`
 	DefaultIndexName     string `json:"default_index_name"`
@@ -133,7 +133,7 @@ type ProxyInfos struct {
 	SystemConfigurations ProxyConfiguration `json:"system_configurations"`
 }
 
-// IndexNodeConfiguration records the configuration of index node.
+// IndexNodeConfiguration records the configuration of IndexNode.
 type IndexNodeConfiguration struct {
 	MinioBucketName string `json:"minio_bucket_name"`
 
@@ -146,7 +146,7 @@ type IndexNodeInfos struct {
 	SystemConfigurations IndexNodeConfiguration `json:"system_configurations"`
 }
 
-// IndexCoordConfiguration records the configuration of index coordinator.
+// IndexCoordConfiguration records the configuration of IndexCoord.
 type IndexCoordConfiguration struct {
 	MinioBucketName string `json:"minio_bucket_name"`
 }
@@ -157,7 +157,7 @@ type IndexCoordInfos struct {
 	SystemConfigurations IndexCoordConfiguration `json:"system_configurations"`
 }
 
-// DataNodeConfiguration records the configuration of data node.
+// DataNodeConfiguration records the configuration of DataNode.
 type DataNodeConfiguration struct {
 	FlushInsertBufferSize int64 `json:"flush_insert_buffer_size"`
 }
@@ -168,7 +168,7 @@ type DataNodeInfos struct {
 	SystemConfigurations DataNodeConfiguration `json:"system_configurations"`
 }
 
-// DataCoordConfiguration records the configuration of data coordinator.
+// DataCoordConfiguration records the configuration of DataCoord.
 type DataCoordConfiguration struct {
 	SegmentMaxSize float64 `json:"segment_max_size"`
 }
@@ -179,7 +179,7 @@ type DataCoordInfos struct {
 	SystemConfigurations DataCoordConfiguration `json:"system_configurations"`
 }
 
-// RootCoordConfiguration records the configuration of root coordinator.
+// RootCoordConfiguration records the configuration of RootCoord.
 type RootCoordConfiguration struct {
 	MinSegmentSizeToEnableIndex int64 `json:"min_segment_size_to_enable_index"`
 }

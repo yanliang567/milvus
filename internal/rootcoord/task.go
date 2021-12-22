@@ -1,13 +1,18 @@
-// Copyright (C) 2019-2020 Zilliz. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
 // with the License. You may obtain a copy of the License at
 //
-// http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// Unless required by applicable law or agreed to in writing, software distributed under the License
-// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
-// or implied. See the License for the specific language governing permissions and limitations under the License.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package rootcoord
 
@@ -97,7 +102,8 @@ func (t *CreateCollectionReqTask) Execute(ctx context.Context) error {
 		t.Req.ShardsNum = common.DefaultShardsNum
 	}
 	log.Debug("CreateCollectionReqTask Execute", zap.Any("CollectionName", t.Req.CollectionName),
-		zap.Any("ShardsNum", t.Req.ShardsNum))
+		zap.Int32("ShardsNum", t.Req.ShardsNum),
+		zap.String("ConsistencyLevel", t.Req.ConsistencyLevel.String()))
 
 	for idx, field := range schema.Fields {
 		field.FieldID = int64(idx + StartOfUserFieldID)
@@ -156,6 +162,7 @@ func (t *CreateCollectionReqTask) Execute(ctx context.Context) error {
 		PhysicalChannelNames:       chanNames,
 		ShardsNum:                  t.Req.ShardsNum,
 		PartitionCreatedTimestamps: []uint64{0},
+		ConsistencyLevel:           t.Req.ConsistencyLevel,
 	}
 
 	idxInfo := make([]*etcdpb.IndexInfo, 0, 16)
@@ -220,27 +227,26 @@ func (t *CreateCollectionReqTask) Execute(ctx context.Context) error {
 				Data: ids[pchan],
 			})
 		}
-		err = t.core.MetaTable.AddCollection(&collInfo, ts, idxInfo, ddOpStr)
-		if err != nil {
+
+		// update meta table after send dd operation
+		if err = t.core.MetaTable.AddCollection(&collInfo, ts, idxInfo, ddOpStr); err != nil {
 			t.core.chanTimeTick.removeDmlChannels(chanNames...)
 			t.core.chanTimeTick.removeDeltaChannels(deltaChanNames...)
 			// it's ok just to leave create collection message sent, datanode and querynode does't process CreateCollection logic
 			return fmt.Errorf("meta table add collection failed,error = %w", err)
 		}
 
+		// use addDdlTimeTick and removeDdlTimeTick to mark DDL operation in process
 		t.core.chanTimeTick.removeDdlTimeTick(ts, reason)
 		t.core.SendTimeTick(ts, reason)
-
 		return nil
 	}
 
-	err = createCollectionFn()
-	if err != nil {
+	if err = createCollectionFn(); err != nil {
 		return err
 	}
 
-	err = t.core.CallWatchChannels(ctx, collID, vchanNames)
-	if err != nil {
+	if err = t.core.CallWatchChannels(ctx, collID, vchanNames); err != nil {
 		return err
 	}
 
@@ -313,16 +319,16 @@ func (t *DropCollectionReqTask) Execute(ctx context.Context) error {
 		// clear ddl timetick in all conditions
 		defer t.core.chanTimeTick.removeDdlTimeTick(ts, reason)
 
-		err = t.core.MetaTable.DeleteCollection(collMeta.ID, ts, ddOpStr)
-		if err != nil {
+		if err = t.core.SendDdDropCollectionReq(ctx, &ddReq, collMeta.PhysicalChannelNames); err != nil {
 			return err
 		}
 
-		err = t.core.SendDdDropCollectionReq(ctx, &ddReq, collMeta.PhysicalChannelNames)
-		if err != nil {
+		// update meta table after send dd operation
+		if err = t.core.MetaTable.DeleteCollection(collMeta.ID, ts, ddOpStr); err != nil {
 			return err
 		}
 
+		// use addDdlTimeTick and removeDdlTimeTick to mark DDL operation in process
 		t.core.chanTimeTick.removeDdlTimeTick(ts, reason)
 		t.core.SendTimeTick(ts, reason)
 
@@ -343,8 +349,7 @@ func (t *DropCollectionReqTask) Execute(ctx context.Context) error {
 		return nil
 	}
 
-	err = dropCollectionFn()
-	if err != nil {
+	if err = dropCollectionFn(); err != nil {
 		return err
 	}
 
@@ -427,6 +432,7 @@ func (t *DescribeCollectionReqTask) Execute(ctx context.Context) error {
 		collInfo.ShardsNum = int32(len(collInfo.VirtualChannelNames))
 	}
 	t.Rsp.ShardsNum = collInfo.ShardsNum
+	t.Rsp.ConsistencyLevel = collInfo.ConsistencyLevel
 
 	t.Rsp.CreatedTimestamp = collInfo.CreateTime
 	createdPhysicalTime, _ := tsoutil.ParseHybridTs(collInfo.CreateTime)
@@ -526,23 +532,22 @@ func (t *CreatePartitionReqTask) Execute(ctx context.Context) error {
 		// clear ddl timetick in all conditions
 		defer t.core.chanTimeTick.removeDdlTimeTick(ts, reason)
 
-		err = t.core.MetaTable.AddPartition(collMeta.ID, t.Req.PartitionName, partID, ts, ddOpStr)
-		if err != nil {
+		if err = t.core.SendDdCreatePartitionReq(ctx, &ddReq, collMeta.PhysicalChannelNames); err != nil {
 			return err
 		}
 
-		err = t.core.SendDdCreatePartitionReq(ctx, &ddReq, collMeta.PhysicalChannelNames)
-		if err != nil {
+		// update meta table after send dd operation
+		if err = t.core.MetaTable.AddPartition(collMeta.ID, t.Req.PartitionName, partID, ts, ddOpStr); err != nil {
 			return err
 		}
 
+		// use addDdlTimeTick and removeDdlTimeTick to mark DDL operation in process
 		t.core.chanTimeTick.removeDdlTimeTick(ts, reason)
 		t.core.SendTimeTick(ts, reason)
 		return nil
 	}
 
-	err = createPartitionFn()
-	if err != nil {
+	if err = createPartitionFn(); err != nil {
 		return err
 	}
 
@@ -611,33 +616,33 @@ func (t *DropPartitionReqTask) Execute(ctx context.Context) error {
 		// clear ddl timetick in all conditions
 		defer t.core.chanTimeTick.removeDdlTimeTick(ts, reason)
 
-		_, err = t.core.MetaTable.DeletePartition(collInfo.ID, t.Req.PartitionName, ts, ddOpStr)
-		if err != nil {
+		if err = t.core.SendDdDropPartitionReq(ctx, &ddReq, collInfo.PhysicalChannelNames); err != nil {
 			return err
 		}
 
-		err = t.core.SendDdDropPartitionReq(ctx, &ddReq, collInfo.PhysicalChannelNames)
-		if err != nil {
+		// update meta table after send dd operation
+		if _, err = t.core.MetaTable.DeletePartition(collInfo.ID, t.Req.PartitionName, ts, ddOpStr); err != nil {
 			return err
 		}
 
+		// use addDdlTimeTick and removeDdlTimeTick to mark DDL operation in process
 		t.core.chanTimeTick.removeDdlTimeTick(ts, reason)
 		t.core.SendTimeTick(ts, reason)
 		return nil
 	}
 
-	err = dropPartitionFn()
-	if err != nil {
+	if err = dropPartitionFn(); err != nil {
 		return err
 	}
 
 	t.core.ExpireMetaCache(ctx, []string{t.Req.CollectionName}, ts)
 
 	//notify query service to release partition
-	if err = t.core.CallReleasePartitionService(t.core.ctx, ts, 0, collInfo.ID, []typeutil.UniqueID{partID}); err != nil {
-		log.Error("Failed to CallReleaseCollectionService", zap.Error(err))
-		return err
-	}
+	// TODO::xige-16, reOpen when queryCoord support release partitions after load collection
+	//if err = t.core.CallReleasePartitionService(t.core.ctx, ts, 0, collInfo.ID, []typeutil.UniqueID{partID}); err != nil {
+	//	log.Error("Failed to CallReleaseCollectionService", zap.Error(err))
+	//	return err
+	//}
 
 	// Update DDOperation in etcd
 	return t.core.setDdMsgSendFlag(true)

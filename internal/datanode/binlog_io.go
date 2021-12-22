@@ -27,11 +27,9 @@ import (
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/kv"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/storage"
-
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/etcdpb"
-
+	"github.com/milvus-io/milvus/internal/storage"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
@@ -104,7 +102,7 @@ func (b *binlogIO) download(ctx context.Context, paths []string) ([]*Blob, error
 type cpaths struct {
 	inPaths    []*datapb.FieldBinlog
 	statsPaths []*datapb.FieldBinlog
-	deltaInfo  *datapb.DeltaLogInfo
+	deltaInfo  []*datapb.FieldBinlog
 }
 
 func (b *binlogIO) upload(
@@ -114,11 +112,7 @@ func (b *binlogIO) upload(
 	dData *DeleteData,
 	meta *etcdpb.CollectionMeta) (*cpaths, error) {
 
-	var p = &cpaths{
-		inPaths:    make([]*datapb.FieldBinlog, 0),
-		statsPaths: make([]*datapb.FieldBinlog, 0),
-		deltaInfo:  &datapb.DeltaLogInfo{},
-	}
+	p := &cpaths{}
 
 	kvs := make(map[string]string)
 
@@ -156,8 +150,16 @@ func (b *binlogIO) upload(
 		}
 
 		kvs[k] = bytes.NewBuffer(v).String()
-		p.deltaInfo.RecordEntries = uint64(len(v))
-		p.deltaInfo.DeltaLogPath = k
+		p.deltaInfo = append(p.deltaInfo, &datapb.FieldBinlog{
+			//Field id shall be primary key id
+			Binlogs: []*datapb.Binlog{
+				{
+					EntriesNum: dData.RowCount,
+					LogPath:    k,
+					LogSize:    int64(len(v)),
+				},
+			},
+		})
 	}
 
 	var err = errStart
@@ -231,10 +233,18 @@ func (b *binlogIO) genInsertBlobs(data *InsertData, partID, segID UniqueID, meta
 		k := JoinIDPath(meta.GetID(), partID, segID, fID, <-generator)
 		key := path.Join(Params.InsertBinlogRootPath, k)
 
-		kvs[key] = bytes.NewBuffer(blob.GetValue()).String()
+		value := bytes.NewBuffer(blob.GetValue()).String()
+		fileLen := len(value)
+
+		kvs[key] = value
 		inpaths = append(inpaths, &datapb.FieldBinlog{
 			FieldID: fID,
-			Binlogs: []string{key},
+			Binlogs: []*datapb.Binlog{
+				{
+					LogSize: int64(fileLen),
+					LogPath: key,
+				},
+			},
 		})
 	}
 
@@ -245,10 +255,19 @@ func (b *binlogIO) genInsertBlobs(data *InsertData, partID, segID UniqueID, meta
 		k := JoinIDPath(meta.GetID(), partID, segID, fID, <-generator)
 		key := path.Join(Params.StatsBinlogRootPath, k)
 
-		kvs[key] = bytes.NewBuffer(blob.GetValue()).String()
+		value := bytes.NewBuffer(blob.GetValue()).String()
+		fileLen := len(value)
+
+		kvs[key] = value
 		statspaths = append(statspaths, &datapb.FieldBinlog{
+
 			FieldID: fID,
-			Binlogs: []string{key},
+			Binlogs: []*datapb.Binlog{
+				{
+					LogSize: int64(fileLen),
+					LogPath: key,
+				},
+			},
 		})
 	}
 

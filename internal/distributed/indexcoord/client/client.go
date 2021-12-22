@@ -20,9 +20,6 @@ import (
 	"context"
 	"fmt"
 
-	"go.uber.org/zap"
-	"google.golang.org/grpc"
-
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
@@ -30,9 +27,14 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/grpcclient"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
+	"go.uber.org/zap"
+	"google.golang.org/grpc"
 )
+
+var ClientParams paramtable.GrpcClientConfig
 
 // Client is the grpc client of IndexCoord.
 type Client struct {
@@ -48,11 +50,11 @@ func NewClient(ctx context.Context, metaRoot string, etcdEndpoints []string) (*C
 		log.Debug("IndexCoordClient NewClient failed", zap.Error(err))
 		return nil, err
 	}
-	Params.Init()
+	ClientParams.InitOnce(typeutil.IndexCoordRole)
 	client := &Client{
 		grpcClient: &grpcclient.ClientBase{
-			ClientMaxRecvSize: Params.ClientMaxRecvSize,
-			ClientMaxSendSize: Params.ClientMaxSendSize,
+			ClientMaxRecvSize: ClientParams.ClientMaxRecvSize,
+			ClientMaxSendSize: ClientParams.ClientMaxSendSize,
 		},
 		sess: sess,
 	}

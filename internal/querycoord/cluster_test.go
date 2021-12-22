@@ -25,7 +25,6 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/golang/protobuf/proto"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
 
@@ -34,6 +33,7 @@ import (
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	minioKV "github.com/milvus-io/milvus/internal/kv/minio"
 	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/etcdpb"
@@ -269,7 +269,7 @@ func saveBinLog(ctx context.Context,
 		kvs[key] = string(blob.Value[:])
 		fieldBinlog = append(fieldBinlog, &datapb.FieldBinlog{
 			FieldID: fieldID,
-			Binlogs: []string{key},
+			Binlogs: []*datapb.Binlog{{LogPath: key}},
 		})
 	}
 	log.Debug("[query coord unittest] save binlog file to MinIO/S3")
@@ -397,6 +397,7 @@ func TestReloadClusterFromKV(t *testing.T) {
 		assert.Nil(t, err)
 		clusterSession := sessionutil.NewSession(context.Background(), Params.MetaRootPath, Params.EtcdEndpoints)
 		clusterSession.Init(typeutil.QueryCoordRole, Params.Address, true)
+		clusterSession.Register()
 		cluster := &queryNodeCluster{
 			ctx:              baseCtx,
 			client:           kv,
@@ -425,6 +426,7 @@ func TestReloadClusterFromKV(t *testing.T) {
 		assert.Nil(t, err)
 		clusterSession := sessionutil.NewSession(context.Background(), Params.MetaRootPath, Params.EtcdEndpoints)
 		clusterSession.Init(typeutil.QueryCoordRole, Params.Address, true)
+		clusterSession.Register()
 		cluster := &queryNodeCluster{
 			client:           kv,
 			nodes:            make(map[int64]Node),
@@ -443,22 +445,11 @@ func TestReloadClusterFromKV(t *testing.T) {
 		sessionKey := fmt.Sprintf("%s/%d", queryNodeInfoPrefix, 100)
 		kvs[sessionKey] = string(sessionBlob)
 
-		collectionInfo := &querypb.CollectionInfo{
-			CollectionID: defaultCollectionID,
-		}
-		collectionBlobs, err := proto.Marshal(collectionInfo)
-		assert.Nil(t, err)
-		nodeKey := fmt.Sprintf("%s/%d", queryNodeMetaPrefix, 100)
-		kvs[nodeKey] = string(collectionBlobs)
-
 		err = kv.MultiSave(kvs)
 		assert.Nil(t, err)
 
 		cluster.reloadFromKV()
-
 		assert.Equal(t, 1, len(cluster.nodes))
-		collection := cluster.getCollectionInfosByID(context.Background(), 100)
-		assert.Equal(t, defaultCollectionID, collection[0].CollectionID)
 
 		err = removeAllSession()
 		assert.Nil(t, err)
@@ -472,8 +463,20 @@ func TestGrpcRequest(t *testing.T) {
 	assert.Nil(t, err)
 	clusterSession := sessionutil.NewSession(context.Background(), Params.MetaRootPath, Params.EtcdEndpoints)
 	clusterSession.Init(typeutil.QueryCoordRole, Params.Address, true)
-	meta, err := newMeta(baseCtx, kv, nil, nil)
+	clusterSession.Register()
+	factory := msgstream.NewPmsFactory()
+	m := map[string]interface{}{
+		"PulsarAddress":  Params.PulsarAddress,
+		"ReceiveBufSize": 1024,
+		"PulsarBufSize":  1024}
+	err = factory.SetParams(m)
 	assert.Nil(t, err)
+	idAllocator := func() (UniqueID, error) {
+		return 0, nil
+	}
+	meta, err := newMeta(baseCtx, kv, factory, idAllocator)
+	assert.Nil(t, err)
+
 	cluster := &queryNodeCluster{
 		ctx:              baseCtx,
 		cancel:           cancel,
@@ -509,8 +512,8 @@ func TestGrpcRequest(t *testing.T) {
 	waitQueryNodeOnline(cluster, nodeID)
 
 	t.Run("Test GetComponentInfos", func(t *testing.T) {
-		_, err := cluster.getComponentInfos(baseCtx)
-		assert.Nil(t, err)
+		infos := cluster.getComponentInfos(baseCtx)
+		assert.Equal(t, 1, len(infos))
 	})
 
 	t.Run("Test LoadSegments", func(t *testing.T) {
@@ -520,9 +523,10 @@ func TestGrpcRequest(t *testing.T) {
 			CollectionID: defaultCollectionID,
 		}
 		loadSegmentReq := &querypb.LoadSegmentsRequest{
-			DstNodeID: nodeID,
-			Infos:     []*querypb.SegmentLoadInfo{segmentLoadInfo},
-			Schema:    genCollectionSchema(defaultCollectionID, false),
+			DstNodeID:    nodeID,
+			Infos:        []*querypb.SegmentLoadInfo{segmentLoadInfo},
+			Schema:       genCollectionSchema(defaultCollectionID, false),
+			CollectionID: defaultCollectionID,
 		}
 		err := cluster.loadSegments(baseCtx, nodeID, loadSegmentReq)
 		assert.Nil(t, err)
@@ -540,26 +544,24 @@ func TestGrpcRequest(t *testing.T) {
 	})
 
 	t.Run("Test AddQueryChannel", func(t *testing.T) {
-		info, err := cluster.clusterMeta.getQueryChannelInfoByID(defaultCollectionID)
-		assert.Nil(t, err)
+		info := cluster.clusterMeta.getQueryChannelInfoByID(defaultCollectionID)
 		addQueryChannelReq := &querypb.AddQueryChannelRequest{
-			NodeID:           nodeID,
-			CollectionID:     defaultCollectionID,
-			RequestChannelID: info.QueryChannelID,
-			ResultChannelID:  info.QueryResultChannelID,
+			NodeID:             nodeID,
+			CollectionID:       defaultCollectionID,
+			QueryChannel:       info.QueryChannel,
+			QueryResultChannel: info.QueryResultChannel,
 		}
 		err = cluster.addQueryChannel(baseCtx, nodeID, addQueryChannelReq)
 		assert.Nil(t, err)
 	})
 
 	t.Run("Test RemoveQueryChannel", func(t *testing.T) {
-		info, err := cluster.clusterMeta.getQueryChannelInfoByID(defaultCollectionID)
-		assert.Nil(t, err)
+		info := cluster.clusterMeta.getQueryChannelInfoByID(defaultCollectionID)
 		removeQueryChannelReq := &querypb.RemoveQueryChannelRequest{
-			NodeID:           nodeID,
-			CollectionID:     defaultCollectionID,
-			RequestChannelID: info.QueryChannelID,
-			ResultChannelID:  info.QueryResultChannelID,
+			NodeID:             nodeID,
+			CollectionID:       defaultCollectionID,
+			QueryChannel:       info.QueryChannel,
+			QueryResultChannel: info.QueryResultChannel,
 		}
 		err = cluster.removeQueryChannel(baseCtx, nodeID, removeQueryChannelReq)
 		assert.Nil(t, err)
@@ -662,7 +664,7 @@ func TestEstimateSegmentSize(t *testing.T) {
 	binlog := []*datapb.FieldBinlog{
 		{
 			FieldID: simpleConstField.id,
-			Binlogs: []string{"^&^%*&%&&(*^*&"},
+			Binlogs: []*datapb.Binlog{{LogPath: "by-dev/rand/path", LogSize: 1024}},
 		},
 	}
 
@@ -675,13 +677,14 @@ func TestEstimateSegmentSize(t *testing.T) {
 	}
 
 	loadReq := &querypb.LoadSegmentsRequest{
-		Schema: schema,
-		Infos:  []*querypb.SegmentLoadInfo{loadInfo},
+		Schema:       schema,
+		Infos:        []*querypb.SegmentLoadInfo{loadInfo},
+		CollectionID: defaultCollectionID,
 	}
 
 	size, err := estimateSegmentsSize(loadReq, dataKV)
-	assert.Error(t, err)
-	assert.Equal(t, int64(0), size)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1024), size)
 
 	binlog, err = saveSimpleBinLog(baseCtx, schema, dataKV)
 	assert.NoError(t, err)
@@ -690,7 +693,7 @@ func TestEstimateSegmentSize(t *testing.T) {
 
 	size, err = estimateSegmentsSize(loadReq, dataKV)
 	assert.NoError(t, err)
-	assert.NotEqual(t, int64(0), size)
+	assert.NotEqual(t, int64(1024), size)
 
 	indexPath, err := generateIndex(defaultSegmentID)
 	assert.NoError(t, err)

@@ -16,7 +16,6 @@ import (
 	"testing"
 
 	"github.com/milvus-io/milvus/internal/msgstream"
-
 	"github.com/stretchr/testify/assert"
 )
 
@@ -95,7 +94,7 @@ func TestMsgStreamMsg(t *testing.T) {
 		Ctx: context.TODO(),
 	}
 
-	var timestampMin Timestamp = 0
+	var timestampMin Timestamp
 	var timestampMax Timestamp = 100
 	streamMsg := &MsgStreamMsg{
 		tsMessages:     messages,

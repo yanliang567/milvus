@@ -1,6 +1,6 @@
 # Brief
 
-This document will help sdk developers to understand each API of milvus RPC proto.
+This document will help SDK developers to understand each API of Milvus RPC proto.
 
 # Table of contents
 =================
@@ -1433,12 +1433,13 @@ message CompactionMergeInfo {
 ```
 
 ## ShowType
+Used by [ShowCollections()]](#showcollections) and [ShowPartitions()](#showpartitions).
 ```
 enum ShowType {
-  // Will return all colloections 
+  // Will return all colloections/partitions
   All = 0;
 
-  // Will return loaded collections with their inMemory_percentages
+  // Will return loaded collections/partitions with their inMemory_percentages
   InMemory = 1;
 }
 ```

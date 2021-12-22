@@ -56,7 +56,7 @@ func TestManagerOptions(t *testing.T) {
 	})
 
 	t.Run("test withAllocPolicy", func(t *testing.T) {
-		opt := withAllocPolicy(defaultAlocatePolicy())
+		opt := withAllocPolicy(defaultAllocatePolicy())
 		assert.NotNil(t, opt)
 		// manual set nil
 		segmentManager.allocPolicy = nil
@@ -302,6 +302,7 @@ func TestGetFlushableSegments(t *testing.T) {
 		assert.EqualValues(t, 1, len(ids))
 		assert.EqualValues(t, allocations[0].SegmentID, ids[0])
 
+		meta.SetCurrentRows(allocations[0].SegmentID, 1)
 		ids, err = segmentManager.GetFlushableSegments(context.TODO(), "c1", allocations[0].ExpireTime)
 		assert.Nil(t, err)
 		assert.EqualValues(t, 1, len(ids))
@@ -468,7 +469,7 @@ func TestAllocationPool(t *testing.T) {
 	})
 
 	t.Run("put nil", func(t *testing.T) {
-		var allo *Allocation = nil
+		var allo *Allocation
 		allocPool = sync.Pool{
 			New: func() interface{} {
 				return &Allocation{}
