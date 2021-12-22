@@ -74,10 +74,17 @@ if __name__ == '__main__':
     logging.info(f"index param: {index_params}")
     logging.info(f"search_param: {search_params}")
 
+    # flush before indexing
+    t1 = time.time()
+    num = collection.num_entities
+    t2 = round(time.time() - t1, 3)
+    logging.info(f"assert {collection_name} flushed num_entities {num}: {t2}")
+
     t1 = time.time()
     collection.create_index(field_name=field_name, index_params=index_params)
     t2 = round(time.time() - t1, 3)
     logging.info(f"assert build index {collection_name}: {t2}")
+    logging.info(utility.index_building_progress(collection_name))
 
     # load collection
     t1 = time.time()

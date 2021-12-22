@@ -3,6 +3,7 @@ import sys
 import random
 
 import threading
+import multiprocessing
 import logging
 from pymilvus import utility, connections, DataType, \
     Collection, FieldSchema, CollectionSchema
@@ -14,11 +15,12 @@ prefix = "ins_"
 # nbs = [1, 100, 1000, 10*1000, 20*1000, 40*1000, 60*1000, 80*1000, 100*1000]
 nbs = [50000]
 dim = 128
-auto_id = False
-build = True
+auto_id = True
+build = False
 # index_params = {"index_type": "IVF_SQ8", "params": {"nlist": 1024}, "metric_type": "L2"}
 # index_params = {"index_type": "IVF_FLAT", "params": {"nlist": 2048}, "metric_type": "L2"}
 index_params = {"index_type": "HNSW", "params": {"M": 8, "efConstruction": 200}, "metric_type": "L2"}
+use_multi_processes = True
 
 
 def do_insert(data, threads_num, ins_times_per_thread, collection):
@@ -31,14 +33,19 @@ def do_insert(data, threads_num, ins_times_per_thread, collection):
             logging.info(f"assert insert thread{thread_no} round{r}: {t2}")
 
     # insert
-    threads = []
+    sub_tasks = []
     logging.info(f"ready to insert {collection.name}, insert {ins_times_per_thread} times per thread")
     if threads_num > 1:
         for i in range(threads_num):
-            t = threading.Thread(target=insert_th, args=(collection, data, int(ins_times_per_thread), i))
-            threads.append(t)
-            t.start()
-        for t in threads:
+            if use_multi_processes is False:
+                t = threading.Thread(target=insert_th, args=(collection, data, int(ins_times_per_thread), i))
+                sub_tasks.append(t)
+                t.start()
+            else:
+                p = multiprocessing.Process(target=insert_th, args=(collection, data, int(ins_times_per_thread), i))
+                p.start()
+                sub_tasks.append(p)
+        for t in sub_tasks:
             t.join()
     else:
         for r in range(ins_times_per_thread):
@@ -72,9 +79,9 @@ if __name__ == '__main__':
         if auto_id is True:
             collection_name = f"insert_nb{nb1}_shards{shards}_threads{th}_per{per_thread}_t"
             id = FieldSchema(name="id", dtype=DataType.INT64, description="auto primary id")
-            age_field = FieldSchema(name="age", dtype=DataType.INT64, description="age")
+            # age_field = FieldSchema(name="age", dtype=DataType.INT64, description="age")
             embedding_field = FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim)
-            schema = CollectionSchema(fields=[id, age_field, embedding_field],
+            schema = CollectionSchema(fields=[id, embedding_field],
                                       auto_id=True, primary_field=id.name,
                                       description="collection of insert perf")
             collection = Collection(name=collection_name, schema=schema, shards_num=shards)
@@ -82,15 +89,15 @@ if __name__ == '__main__':
             logging.info(f"assert create {collection_name}: {tt}")
 
             # prepare data
-            ages = [random.randint(1, 100) for i in range(nb1)]
+            # ages = [random.randint(1, 100) for i in range(nb1)]
             embeddings = [[random.random() for _ in range(dim)] for _ in range(nb1)]
-            data = [ages, embeddings]
+            data = [embeddings]
         else:
             collection_name = f"insert_nb{nb1}_shards{shards}_threads{th}_per{per_thread}_f"
             id = FieldSchema(name="id", dtype=DataType.INT64, description="custom primary id")
-            age_field = FieldSchema(name="age", dtype=DataType.INT64, description="age")
+            # age_field = FieldSchema(name="age", dtype=DataType.INT64, description="age")
             embedding_field = FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim)
-            schema = CollectionSchema(fields=[id, age_field, embedding_field],
+            schema = CollectionSchema(fields=[id, embedding_field],
                                       auto_id=False, primary_field=id.name,
                                       description="collection of insert perf")
             collection = Collection(name=collection_name, schema=schema, shards_num=shards)
@@ -99,9 +106,9 @@ if __name__ == '__main__':
 
             # prepare data
             ids = [i for i in range(nb1)]
-            ages = [random.randint(1, 100) for i in range(nb1)]
+            # ages = [random.randint(1, 100) for i in range(nb1)]
             embeddings = [[random.random() for _ in range(dim)] for _ in range(nb1)]
-            data = [ids, ages, embeddings]
+            data = [ids, embeddings]
 
         if build is True:
             collection.create_index(field_name=embedding_field.name, index_params=index_params)
