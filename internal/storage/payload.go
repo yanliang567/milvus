@@ -14,7 +14,7 @@ package storage
 /*
 #cgo CFLAGS: -I${SRCDIR}/cwrapper
 
-#cgo LDFLAGS: -L${SRCDIR}/cwrapper/output/lib -lwrapper -lparquet -larrow -larrow_bundled_dependencies -lstdc++ -lm
+#cgo LDFLAGS: -L${SRCDIR}/cwrapper/output/lib -L${SRCDIR}/cwrapper/output/lib64 -lwrapper -lparquet -larrow -larrow_bundled_dependencies -lstdc++ -lm
 #include <stdlib.h>
 #include "ParquetWrapper.h"
 */
@@ -89,6 +89,7 @@ func NewPayloadWriter(colType schemapb.DataType) (*PayloadWriter, error) {
 	return &PayloadWriter{payloadWriterPtr: w, colType: colType}, nil
 }
 
+// AddDataToPayload adds @msgs into payload, if @msgs is vector, dimension should be specified by @dim
 func (w *PayloadWriter) AddDataToPayload(msgs interface{}, dim ...int) error {
 	switch len(dim) {
 	case 0:

@@ -360,6 +360,7 @@ func (s *Server) DropPartition(ctx context.Context, request *milvuspb.DropPartit
 	return s.proxy.DropPartition(ctx, request)
 }
 
+// HasPartition notifies Proxy to check a partition's existence
 func (s *Server) HasPartition(ctx context.Context, request *milvuspb.HasPartitionRequest) (*milvuspb.BoolResponse, error) {
 	return s.proxy.HasPartition(ctx, request)
 }
@@ -478,6 +479,7 @@ func (s *Server) AlterAlias(ctx context.Context, request *milvuspb.AlterAliasReq
 	return s.proxy.AlterAlias(ctx, request)
 }
 
+// GetCompactionState gets the state of a compaction
 func (s *Server) GetCompactionState(ctx context.Context, req *milvuspb.GetCompactionStateRequest) (*milvuspb.GetCompactionStateResponse, error) {
 	return s.proxy.GetCompactionState(ctx, req)
 }
@@ -486,10 +488,12 @@ func (s *Server) ManualCompaction(ctx context.Context, req *milvuspb.ManualCompa
 	return s.proxy.ManualCompaction(ctx, req)
 }
 
+// GetCompactionStateWithPlans gets the state of a compaction by plan
 func (s *Server) GetCompactionStateWithPlans(ctx context.Context, req *milvuspb.GetCompactionPlansRequest) (*milvuspb.GetCompactionPlansResponse, error) {
 	return s.proxy.GetCompactionStateWithPlans(ctx, req)
 }
 
+// GetFlushState gets the flush state of multiple segments
 func (s *Server) GetFlushState(ctx context.Context, req *milvuspb.GetFlushStateRequest) (*milvuspb.GetFlushStateResponse, error) {
 	return s.proxy.GetFlushState(ctx, req)
 }

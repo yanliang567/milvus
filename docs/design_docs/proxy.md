@@ -23,7 +23,7 @@ For every request, Proxy will first check if it's valid to be executed by Milvus
 Proxy will return the error to clients and won't continue to forward this request to other components. The check
 operation of Proxy includes two parts, one part is static check and another is dynamic check. The static check includes
 parameters check, constraints check, etc. The dynamic check will check some related dependencies of the request, take
-search requests for example, Proxy should check if the related collection exists in Milvus.
+search requests as an example, Proxy should check if the related collection exists in Milvus.
 
 Also, Proxy will do some preprocessing for every request. Proxy will do little things for some requests in the
 preprocessing stage and a lot more for other requests. Every object in Milvus will be assigned with an `ID`, such as
@@ -85,13 +85,13 @@ the `ts` and inform Root Coordinator that updates the timestamp statistics.
 
 Proxy holds a cache about meta information of collections. The meta information includes `CollectionID`, `Schema`,
 `PartitionID`, etc. Components in Milvus communicate with each other using `CollectionID` and `PartitionID`, so the
-object name in a request will be translated to object ID in Proxy. When the meta is not hit in cache, Proxy will update
+object name in a request will be translated to object ID in Proxy. When the meta is not hit in the cache, Proxy will update
 the cache from Root Coordinator. At the same time, in order to keep the consistency of cache, when there are any changes
 of meta information in Root Coordinator, it will inform all Proxies to clear the related meta cache, and any newer
 requests will get the latest meta information.
 
 For inserts to a collection that is auto_id configured in the collection schema, Proxy assigns a primary key for
-every row of insert request. For now the only supported data type of auto-generated primary field is `int64`. Proxy 
+every row of insert requests. For now the only supported data type of auto-generated primary field is `int64`. Proxy 
 applies for a batch of primary keys from Root Coordinator, and caches them for local assignments. When the primary keys in cache
 is not enough, Proxy will continue to apply for another batch of primary keys.
 
@@ -107,7 +107,7 @@ complexity by moving core functions such as data persistence and flashback down 
 make the system even more flexible and better positioned for future scaling.
 
 So, we should configure a group of Virtual Channels for every collection. Now every virtual channel has a unique related
-physical channel. Take pulsar as example, the physical channel mentioned here means the topic of pulsar.
+physical channel. Take pulsar as an example, the physical channel mentioned here means the topic of pulsar.
 
 For DmRequest, data will be written to DmChannels, while for DqRequest, requests will be written to DqRequestChannel,
 and the corresponding results of query requests will be written to DqResultChannel.
@@ -115,7 +115,7 @@ and the corresponding results of query requests will be written to DqResultChann
 As the number of tables increases, the number of DmChannels increases on demand, and the number of physical channels
 also increases on demand. In the future, the number of physical channels in the system can also be limited to a fixed
 number, such as 1024. In this case, the same physical channel will be mapped to virtual channels of different
-collections. Shown as the figure below.
+collections. Shown in the figure below.
 
 ![collection_dm_channels](./graphs/collection_dm_channels.png)
 
@@ -135,11 +135,11 @@ The result is then returned to the client.
 The allocation logic of DqRequestChannel and DqResultChannel of a collection is allocated by the Query Coordinator. Proxy needs to ask the Query Coordinator for the names of DqRequestChannel and DqResultChannel of a collection.
 DqRequestChannel and DqResultChannel do not need to be persisted and can be freely allocated by Query Coordinator. In
 the actual implementation, the DqRequestChannel of each collection can be exclusive, and the DqResultChannel can be
-exclusive or shared by all collections on the proxy. When Proxy applies for the DqRequestChannel and DqResultChannel
+exclusive or shared by all collections on Proxy. When Proxy applies for the DqRequestChannel and DqResultChannel
 information of the collection from the Query Coordinator, it can attach Proxy's own ID: ProxyID.
 
 With DqRequestChannel of the collection, the proxy will create a msgstream object to generate data into
-DqRequestChannel. With the DqResultChannel of the collection, the proxy will create a msgstream object, and Proxy will
+DqRequestChannel. With the DqResultChannel of the collection, Proxy will create a msgstream object, and Proxy will
 consume the data in the DqResultChannel. When these msgstream objects are closed, messages cannot be written to or
 consumed from them.
 
@@ -183,7 +183,7 @@ The semantics of the Release operation is the reverse operation of the Load oper
 data of the Collection or Partition from the memory. For Release operations, Query Coordinator is responsible for
 notifying query nodes to unload the corresponding Collection or Partition in memory, and then sending the
 ReleaseDqlMessageStream command to Root Coordinator, and Root Coordinator is responsible for broadcasting the
-ReleaseDqlMessageStream command to all Proxies, so that all related stream used to send search request and receive
+ReleaseDqlMessageStream command to all Proxies, so that all related streams used to send search request and receive
 search result in Proxy will be closed.
 
 The other interaction between Proxy and Query Coordinator is that Proxy needs to query from Query Coordinator for statistics

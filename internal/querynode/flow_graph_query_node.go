@@ -189,6 +189,7 @@ func (q *queryNodeFlowGraph) newDmInputNode(ctx context.Context, factory msgstre
 	return node
 }
 
+// consumerFlowGraph would consume by channel and subName
 func (q *queryNodeFlowGraph) consumerFlowGraph(channel Channel, subName ConsumeSubName) error {
 	if q.dmlStream == nil {
 		return errors.New("null dml message stream in flow graph")
@@ -202,6 +203,7 @@ func (q *queryNodeFlowGraph) consumerFlowGraph(channel Channel, subName ConsumeS
 	return nil
 }
 
+// consumerFlowGraphLatest would consume from latest by channel and subName
 func (q *queryNodeFlowGraph) consumerFlowGraphLatest(channel Channel, subName ConsumeSubName) error {
 	if q.dmlStream == nil {
 		return errors.New("null dml message stream in flow graph")
@@ -215,6 +217,7 @@ func (q *queryNodeFlowGraph) consumerFlowGraphLatest(channel Channel, subName Co
 	return nil
 }
 
+// seekQueryNodeFlowGraph would seek by position
 func (q *queryNodeFlowGraph) seekQueryNodeFlowGraph(position *internalpb.MsgPosition) error {
 	q.dmlStream.AsConsumer([]string{position.ChannelName}, position.MsgGroup)
 	err := q.dmlStream.Seek([]*internalpb.MsgPosition{position})

@@ -1,13 +1,9 @@
 import time
-import random
-import pdb
-import threading
 import logging
-from multiprocessing import Pool, Process
 import pytest
 from pymilvus import IndexType
 
-from utils.utils import get_milvus, gen_vectors, default_dim
+from utils.util_pymilvus import get_milvus, gen_vectors, default_dim
 from common.common_type import CaseLabel
 
 
