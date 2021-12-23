@@ -36,7 +36,7 @@ def do_insert(data, threads_num, ins_times_per_thread, collection):
         port = 19530
         alias = 'default' + str(thread_no)
         conn1 = connections.connect(alias, host=host, port=port)
-        coll = Collection(name=collection_name, using=alias)
+        coll = Collection(name=coll_name, using=alias)
         for r in range(rounds):
             t1 = time.time()
             res = coll.insert(data)
