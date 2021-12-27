@@ -1895,7 +1895,7 @@
       "dashLength": 10,
       "dashes": false,
       "datasource": "$datasource",
-      "description": "Pulsar Client Consumer Processing Time",
+      "description": "Pulsar Client Consumer Processing Time.",
       "fieldConfig": {
         "defaults": {},
         "overrides": []
@@ -1991,7 +1991,7 @@
       "dashLength": 10,
       "dashes": false,
       "datasource": "$datasource",
-      "description": "0.95 quantile of Pulsar client producer latency",
+      "description": "0.95 quantile of Pulsar client producer latency.",
       "fieldConfig": {
         "defaults": {},
         "overrides": []
@@ -2087,7 +2087,7 @@
       "dashLength": 10,
       "dashes": false,
       "datasource": "$datasource",
-      "description": "0.95 quantile of Pulsar client producer rpc latency",
+      "description": "0.95 quantile of Pulsar client producer rpc latency.",
       "fieldConfig": {
         "defaults": {},
         "overrides": []
@@ -2183,7 +2183,7 @@
       "dashLength": 10,
       "dashes": false,
       "datasource": "$datasource",
-      "description": "Pulsar client received bytes by topic",
+      "description": "Pulsar client received bytes by topic.",
       "fieldConfig": {
         "defaults": {},
         "overrides": []
@@ -2584,7 +2584,7 @@
       "dashLength": 10,
       "dashes": false,
       "datasource": "$datasource",
-      "description": "process cpu usage",
+      "description": "process cpu usage.",
       "fieldConfig": {
         "defaults": {},
         "overrides": []
@@ -2983,7 +2983,7 @@
       "dashLength": 10,
       "dashes": false,
       "datasource": "$datasource",
-      "description": "GC Max duration seconds",
+      "description": "GC Max duration seconds.",
       "fieldConfig": {
         "defaults": {},
         "overrides": []

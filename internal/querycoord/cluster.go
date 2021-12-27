@@ -131,12 +131,12 @@ func newQueryNodeCluster(ctx context.Context, clusterMeta Meta, kv *etcdkv.EtcdK
 	}
 
 	option := &minioKV.Option{
-		Address:           Params.MinioEndPoint,
-		AccessKeyID:       Params.MinioAccessKeyID,
-		SecretAccessKeyID: Params.MinioSecretAccessKey,
-		UseSSL:            Params.MinioUseSSLStr,
+		Address:           Params.QueryCoordCfg.MinioEndPoint,
+		AccessKeyID:       Params.QueryCoordCfg.MinioAccessKeyID,
+		SecretAccessKeyID: Params.QueryCoordCfg.MinioSecretAccessKey,
+		UseSSL:            Params.QueryCoordCfg.MinioUseSSLStr,
 		CreateBucket:      true,
-		BucketName:        Params.MinioBucketName,
+		BucketName:        Params.QueryCoordCfg.MinioBucketName,
 	}
 
 	c.dataKV, err = minioKV.NewMinIOKV(ctx, option)
@@ -292,7 +292,7 @@ func (c *queryNodeCluster) watchDmChannels(ctx context.Context, nodeID int64, in
 
 		return nil
 	}
-	return fmt.Errorf("watchDmChannels: can't find query node by nodeID, nodeID = %d", nodeID)
+	return fmt.Errorf("watchDmChannels: can't find QueryNode by nodeID, nodeID = %d", nodeID)
 }
 
 func (c *queryNodeCluster) watchDeltaChannels(ctx context.Context, nodeID int64, in *querypb.WatchDeltaChannelsRequest) error {
@@ -401,7 +401,7 @@ func (c *queryNodeCluster) releaseCollection(ctx context.Context, nodeID int64, 
 		return nil
 	}
 
-	return fmt.Errorf("releaseCollection: can't find query node by nodeID, nodeID = %d", nodeID)
+	return fmt.Errorf("releaseCollection: can't find QueryNode by nodeID, nodeID = %d", nodeID)
 }
 
 func (c *queryNodeCluster) releasePartitions(ctx context.Context, nodeID int64, in *querypb.ReleasePartitionsRequest) error {
@@ -455,7 +455,7 @@ func (c *queryNodeCluster) getSegmentInfoByID(ctx context.Context, segmentID Uni
 		}
 	}
 
-	return nil, fmt.Errorf("updateSegmentInfo: can't find segment %d on query node %d", segmentID, segmentInfo.NodeID)
+	return nil, fmt.Errorf("updateSegmentInfo: can't find segment %d on QueryNode %d", segmentID, segmentInfo.NodeID)
 }
 
 func (c *queryNodeCluster) getSegmentInfo(ctx context.Context, in *querypb.GetSegmentInfoRequest) ([]*querypb.SegmentInfo, error) {
@@ -582,7 +582,7 @@ func (c *queryNodeCluster) getNodeInfoByID(nodeID int64) (Node, error) {
 	node, ok := c.nodes[nodeID]
 	c.RUnlock()
 	if !ok {
-		return nil, fmt.Errorf("getNodeInfoByID: query node %d not exist", nodeID)
+		return nil, fmt.Errorf("getNodeInfoByID: QueryNode %d not exist", nodeID)
 	}
 
 	nodeInfo, err := node.getNodeInfo()
@@ -665,7 +665,7 @@ func (c *queryNodeCluster) isOnline(nodeID int64) (bool, error) {
 		return node.isOnline(), nil
 	}
 
-	return false, fmt.Errorf("isOnline: query node %d not exist", nodeID)
+	return false, fmt.Errorf("isOnline: QueryNode %d not exist", nodeID)
 }
 
 //func (c *queryNodeCluster) printMeta() {

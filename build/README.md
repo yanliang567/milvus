@@ -68,7 +68,7 @@ The following scripts are found in the [`build/`](.) directory. Note that all sc
 
 You can specify different OS for builder by setting `OS_NAME` which defaults to `ubuntu18.04`. Valid OS are `ubuntu18.04`, `centos7`.
 
-To specify `centos7` builder, use these command:
+To specify `centos7` builder, use these commands:
 
 ```shell
 export OS_NAME=centos7
@@ -143,7 +143,7 @@ or
 build/builder.sh /bin/bash -c "./scripts/start_cluster.sh && cat"
 ```
 
-To run E2E tests, use these command:
+To run E2E tests, use these commands:
 
 ```shell
 MILVUS_SERVICE_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(docker-compose ps -q builder))

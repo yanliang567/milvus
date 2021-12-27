@@ -79,7 +79,7 @@ void IndexIVFPQ::train_residual_o (idx_t n, const float *x, float *residuals_2)
     ScopeDeleter<float> del_residuals;
     if (by_residual) {
         if(verbose) printf("computing residuals\n");
-        idx_t * assign = new idx_t [n]; // assignement to coarse centroids
+        idx_t * assign = new idx_t [n]; // assignment to coarse centroids
         ScopeDeleter<idx_t> del (assign);
         quantizer->assign (n, x, assign);
         float *residuals = new float [n * d];
@@ -804,7 +804,7 @@ struct KnnSearchResults {
     inline void add (idx_t j, float dis, const BitsetView bitset = nullptr) {
         if (C::cmp (heap_sim[0], dis)) {
             idx_t id = ids ? ids[j] : lo_build (key, j);
-            if (!bitset.empty() && bitset.test((faiss::ConcurrentBitset::id_type_t)id))
+            if (!bitset.empty() && bitset.test((int64_t)id))
                 return;
             heap_swap_top<C> (k, heap_sim, heap_ids, dis, id);
             nup++;

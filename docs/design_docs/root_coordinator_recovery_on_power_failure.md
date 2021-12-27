@@ -35,7 +35,7 @@
 1. In the processing of `create index`, `RootCoord` calls `metaTable`'s `GetNotIndexedSegments` to get all segment ids that are not indexed.
 2. After getting the segment ids, `RootCoord` calls `IndexCoord` to create index on these segment ids.
 3. In the current implementation, the `create index` requests will return after the segment ids are put into a go channel.
-4. The `RC` starts a background task that keeps reading the segment ids from the go channel, and then calls the `IndexCoord` to create the index.
+4. The `RootCoord` starts a background task that keeps reading the segment ids from the go channel, and then calls the `IndexCoord` to create the index.
 5. There is a fault here, the segment ids have been put into the go channel in the processing function of the grpc request, and then the grpc returns, but the `RootCoord`'s background task has not yet read them from the go channel, then `RootCoord` crashes. At this time, the client thinks that the index is created, but the `RootCoord` does not call `IndexCoord` to create the index.
 6. The solution for the fault mentioned in item 5:
    - Remove the go channel and `RootCoord`'s background task.
@@ -59,12 +59,12 @@
 
 ### 2.6 Failed to call external grpc service
 
-1. `RC` depends on `DC` and `IC`, if the grpc call failed, it needs to reconnect.
-2. `RC` does not listen to the status of the `DC` and `IC` in real time.
+1. `RootCoord` depends on `DataCoord` and `IndexCoord`, if the grpc call failed, it needs to reconnect.
+2. `RootCoord` does not listen to the status of the `DataCoord` and `IndexCoord` in real time.
 
 ### 2.7 Add virtual channel assignment when creating a collection
 
-1. Add a new field, "number of shards" in the `create collection` request. The "num of shards" tells the `RC` to create the number of virtual channels for this collection.
+1. Add a new field, "number of shards" in the `create collection` request. The "num of shards" tells the `RootCoord` to create the number of virtual channels for this collection.
 2. In the current implementation, virtual channels and physical channels have a one-to-one relationship, and the total number of physical channels increases as the number of virtual channels increases; later, the total number of physical channels needs to be fixed, and multiple virtual channels share one physical channel.
 3. The name of the virtual channel is globally unique, and the `collection meta` records the correspondence between the virtual channel and the physical channel.
 

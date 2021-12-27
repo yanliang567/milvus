@@ -19,17 +19,20 @@ package querynode
 import (
 	"sync"
 
+	"go.uber.org/zap"
+
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
-	"go.uber.org/zap"
 )
 
+// globalSealedSegmentManager manages the globalSealedSegments
 type globalSealedSegmentManager struct {
 	collectionID         UniqueID
 	mu                   sync.Mutex                        // guards globalSealedSegments
 	globalSealedSegments map[UniqueID]*querypb.SegmentInfo // map[segmentID]SegmentInfo
 }
 
+// newGlobalSealedSegmentManager returns a new globalSealedSegmentManager
 func newGlobalSealedSegmentManager(collectionID UniqueID) *globalSealedSegmentManager {
 	return &globalSealedSegmentManager{
 		collectionID:         collectionID,
@@ -37,6 +40,7 @@ func newGlobalSealedSegmentManager(collectionID UniqueID) *globalSealedSegmentMa
 	}
 }
 
+// addGlobalSegmentInfo adds a new segmentInfo
 func (g *globalSealedSegmentManager) addGlobalSegmentInfo(segmentInfo *querypb.SegmentInfo) {
 	g.mu.Lock()
 	defer g.mu.Unlock()

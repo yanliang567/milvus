@@ -15,11 +15,9 @@
 #include <cmath>
 
 #include <omp.h>
-#include <faiss/BuilderSuspend.h>
 #include <faiss/FaissHook.h>
 #include <faiss/impl/AuxIndexStructures.h>
 #include <faiss/impl/FaissAssert.h>
-#include <faiss/utils/ConcurrentBitset.h>
 
 
 #ifndef FINTEGER
@@ -866,7 +864,7 @@ static void range_search_blas (
 
                 for (size_t j = j0; j < j1; j++) {
                     float ip = *ip_line++;
-                    if (bitset.empty() || !bitset.test((faiss::ConcurrentBitset::id_type_t)(j))) {
+                    if (bitset.empty() || !bitset.test((int64_t)j)) {
                         if (compute_l2) {
                             float dis =  x_norms[i] + y_norms[j] - 2 * ip;
                             if (dis < radius) {
@@ -913,7 +911,7 @@ static void range_search_sse (const float * x,
             RangeQueryResult & qres = pres->new_result (i);
 
             for (j = 0; j < ny; j++) {
-                if (bitset.empty() || !bitset.test((faiss::ConcurrentBitset::id_type_t)(j))) {
+                if (bitset.empty() || !bitset.test((int64_t)j)) {
                     if (compute_l2) {
                         float disij = fvec_L2sqr (x_, y_, d);
                         if (disij < radius) {
@@ -963,7 +961,7 @@ static void range_search_sse_sq (const float * x,
 #pragma omp for
         for (j = 0; j < ny; j++) {
             const float * y_ = y + j * d;
-            if (bitset.empty() || !bitset.test((faiss::ConcurrentBitset::id_type_t)(j))) {
+            if (bitset.empty() || !bitset.test((int64_t)j)) {
                 if (compute_l2) {
                     float disij = fvec_L2sqr (x_, y_, d);
                     if (disij < radius) {
@@ -1087,8 +1085,6 @@ void elkan_L2_sse (
     float *data = (float *) malloc((bs_y * (bs_y - 1) / 2) * sizeof (float));
 
     for (size_t j0 = 0; j0 < ny; j0 += bs_y) {
-        BuilderSuspend::check_wait();
-
         size_t j1 = j0 + bs_y;
         if (j1 > ny) j1 = ny;
 
