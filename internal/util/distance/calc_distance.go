@@ -159,11 +159,13 @@ func SingleBitLen(dim int64) int64 {
 	return dim + 8 - dim%8
 }
 
+// VectorCount counts bits by @dim & @length
 func VectorCount(dim int64, length int) int64 {
 	singleBitLen := SingleBitLen(dim)
 	return int64(length*8) / singleBitLen
 }
 
+// ValidateBinaryArrayLength validates a binary array of @dim & @length
 func ValidateBinaryArrayLength(dim int64, length int) error {
 	singleBitLen := SingleBitLen(dim)
 	totalBitLen := int64(length * 8)
@@ -213,6 +215,7 @@ func CalcHamming(dim int64, left []byte, lIndex int64, right []byte, rIndex int6
 	return hamming
 }
 
+// CalcHammingBatch calculate HAMMING distance in batch, results are in @result
 func CalcHammingBatch(dim int64, left []byte, lIndex int64, right []byte, result *[]int32) {
 	rightNum := VectorCount(dim, len(right))
 

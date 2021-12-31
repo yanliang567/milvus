@@ -21,11 +21,12 @@ import (
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
+	"stathat.com/c/consistent"
+
 	"github.com/milvus-io/milvus/internal/kv"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
-	"go.uber.org/zap"
-	"stathat.com/c/consistent"
 )
 
 const (
@@ -97,14 +98,14 @@ func (c *ChannelManager) Startup(nodes []int64) error {
 		olds = append(olds, c.NodeID)
 	}
 
-	newOnlines := c.getNewOnlines(nodes, olds)
-	for _, n := range newOnlines {
+	newOnLines := c.getNewOnlines(nodes, olds)
+	for _, n := range newOnLines {
 		if err := c.AddNode(n); err != nil {
 			return err
 		}
 	}
 
-	offlines := c.getOfflines(nodes, olds)
+	offlines := c.getOffLines(nodes, olds)
 	for _, n := range offlines {
 		if err := c.DeleteNode(n); err != nil {
 			return err
@@ -116,8 +117,8 @@ func (c *ChannelManager) Startup(nodes []int64) error {
 	log.Debug("cluster start up",
 		zap.Any("nodes", nodes),
 		zap.Any("olds", olds),
-		zap.Int64s("new onlines", newOnlines),
-		zap.Int64s("offlines", offlines))
+		zap.Int64s("new onlines", newOnLines),
+		zap.Int64s("offLines", offlines))
 	return nil
 }
 
@@ -148,7 +149,7 @@ func (c *ChannelManager) bgCheckChannelsWork(ctx context.Context) {
 			c.mu.Lock()
 
 			channels := c.store.GetNodesChannels()
-			reallocs, err := c.bgChecker(channels, time.Now())
+			reallocates, err := c.bgChecker(channels, time.Now())
 			if err != nil {
 				log.Warn("channel manager bg check failed", zap.Error(err))
 
@@ -156,7 +157,7 @@ func (c *ChannelManager) bgCheckChannelsWork(ctx context.Context) {
 				continue
 			}
 
-			updates := c.reassignPolicy(c.store, reallocs)
+			updates := c.reassignPolicy(c.store, reallocates)
 			log.Debug("channel manager bg check reassign", zap.Array("updates", updates))
 			for _, update := range updates {
 				if update.Type == Add {
@@ -187,7 +188,7 @@ func (c *ChannelManager) getNewOnlines(curr []int64, old []int64) []int64 {
 	return ret
 }
 
-func (c *ChannelManager) getOfflines(curr []int64, old []int64) []int64 {
+func (c *ChannelManager) getOffLines(curr []int64, old []int64) []int64 {
 	mcurr := make(map[int64]struct{})
 	ret := make([]int64, 0, len(old))
 	for _, n := range curr {

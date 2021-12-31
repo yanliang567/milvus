@@ -1,5 +1,5 @@
 # Time Travel Implementation (Segment Level)
-Currently，There are two paths to implement time travel:
+Currently，there are two paths to implement time travel:
 
 1. Restrict with vec_count, used in growing segment
 2. Generate bitmask and combine it with DSL calculation results. It is mainly used in sealed segment
@@ -12,7 +12,7 @@ Currently，There are two paths to implement time travel:
 
 ## SealedSegment Time Travel
 
-1. During load, data is placed in a continuous memory area named chunk, with following properties:
+1. During load, data is placed in a continuous memory area named chunk, with the following properties:
    1. Data is divided into multiple segments
    2. Data in one segment is ordered by primary key
    3. Data between Segments is in timestamp order. That is, the timestamp of every entity in the previous segment must be less than the timestamp of the first entity in the next segment

@@ -42,6 +42,9 @@ const (
 
 	// SuggestPulsarMaxMessageSize defines the maximum size of Pulsar message.
 	SuggestPulsarMaxMessageSize = 5 * 1024 * 1024
+
+	// DefaultRetentionDuration defines the default duration for retention which is 5 days in seconds.
+	DefaultRetentionDuration = 3600 * 24 * 5
 )
 
 // GlobalParamTable is a derived struct of BaseParamTable.
@@ -86,6 +89,11 @@ func (p *GlobalParamTable) Init() {
 	p.DataNodeCfg.init(&p.BaseParams)
 	p.IndexCoordCfg.init(&p.BaseParams)
 	p.IndexNodeCfg.init(&p.BaseParams)
+}
+
+func (p *GlobalParamTable) SetLogConfig(role string) {
+	p.BaseParams.RoleName = role
+	p.BaseParams.SetLogConfig()
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -284,7 +292,6 @@ type rootCoordConfig struct {
 	Port    int
 
 	PulsarAddress string
-	EtcdEndpoints []string
 	MetaRootPath  string
 	KvRootPath    string
 
@@ -301,8 +308,7 @@ type rootCoordConfig struct {
 	DefaultIndexName            string
 	MinSegmentSizeToEnableIndex int64
 
-	Timeout          int
-	TimeTickInterval int
+	Timeout int
 
 	CreatedTime time.Time
 	UpdatedTime time.Time
@@ -312,7 +318,6 @@ func (p *rootCoordConfig) init(bp *BaseParamTable) {
 	p.BaseParams = bp
 
 	p.initPulsarAddress()
-	p.initEtcdEndpoints()
 	p.initMetaRootPath()
 	p.initKvRootPath()
 
@@ -331,9 +336,6 @@ func (p *rootCoordConfig) init(bp *BaseParamTable) {
 	p.initDefaultIndexName()
 
 	p.initTimeout()
-	p.initTimeTickInterval()
-
-	//p.initRoleName()
 }
 
 func (p *rootCoordConfig) initPulsarAddress() {
@@ -342,14 +344,6 @@ func (p *rootCoordConfig) initPulsarAddress() {
 		panic(err)
 	}
 	p.PulsarAddress = addr
-}
-
-func (p *rootCoordConfig) initEtcdEndpoints() {
-	endpoints, err := p.BaseParams.Load("_EtcdEndpoints")
-	if err != nil {
-		panic(err)
-	}
-	p.EtcdEndpoints = strings.Split(endpoints, ",")
 }
 
 func (p *rootCoordConfig) initMetaRootPath() {
@@ -455,14 +449,6 @@ func (p *rootCoordConfig) initTimeout() {
 	p.Timeout = p.BaseParams.ParseIntWithDefault("rootCoord.timeout", 3600)
 }
 
-func (p *rootCoordConfig) initTimeTickInterval() {
-	p.TimeTickInterval = p.BaseParams.ParseIntWithDefault("rootCoord.timeTickInterval", 200)
-}
-
-//func (p *rootCoordConfig) initRoleName() {
-//	p.RoleName = "rootcoord"
-//}
-
 ///////////////////////////////////////////////////////////////////////////////
 // --- proxy ---
 type proxyConfig struct {
@@ -476,7 +462,6 @@ type proxyConfig struct {
 
 	Alias string
 
-	EtcdEndpoints []string
 	MetaRootPath  string
 	PulsarAddress string
 
@@ -507,6 +492,8 @@ type proxyConfig struct {
 
 	PulsarMaxMessageSize int
 
+	RetentionDuration int64
+
 	CreatedTime time.Time
 	UpdatedTime time.Time
 }
@@ -514,7 +501,6 @@ type proxyConfig struct {
 func (p *proxyConfig) init(bp *BaseParamTable) {
 	p.BaseParams = bp
 
-	p.initEtcdEndpoints()
 	p.initMetaRootPath()
 	p.initPulsarAddress()
 	p.initRocksmqPath()
@@ -537,8 +523,7 @@ func (p *proxyConfig) init(bp *BaseParamTable) {
 	p.initMaxTaskNum()
 	p.initBufFlagExpireTime()
 	p.initBufFlagCleanupInterval()
-
-	//p.initRoleName()
+	p.initRetentionDuration()
 }
 
 // Refresh is called after session init
@@ -663,18 +648,6 @@ func (p *proxyConfig) initPulsarMaxMessageSize() {
 	}
 }
 
-//func (p *proxyConfig) initRoleName() {
-//	p.RoleName = "proxy"
-//}
-
-func (p *proxyConfig) initEtcdEndpoints() {
-	endpoints, err := p.BaseParams.Load("_EtcdEndpoints")
-	if err != nil {
-		panic(err)
-	}
-	p.EtcdEndpoints = strings.Split(endpoints, ",")
-}
-
 func (p *proxyConfig) initMetaRootPath() {
 	rootPath, err := p.BaseParams.Load("etcd.rootPath")
 	if err != nil {
@@ -701,6 +674,10 @@ func (p *proxyConfig) initBufFlagCleanupInterval() {
 	p.BufFlagCleanupInterval = time.Duration(interval) * time.Second
 }
 
+func (p *proxyConfig) initRetentionDuration() {
+	p.RetentionDuration = p.BaseParams.ParseInt64WithDefault("common.retentionDuration", DefaultRetentionDuration)
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // --- querycoord ---
 type queryCoordConfig struct {
@@ -724,9 +701,8 @@ type queryCoordConfig struct {
 	SearchResultChannelPrefix string
 
 	// --- etcd ---
-	EtcdEndpoints []string
-	MetaRootPath  string
-	KvRootPath    string
+	MetaRootPath string
+	KvRootPath   string
 
 	//--- Minio ---
 	MinioEndPoint        string
@@ -757,8 +733,6 @@ type queryCoordConfig struct {
 func (p *queryCoordConfig) init(bp *BaseParamTable) {
 	p.BaseParams = bp
 
-	//p.initRoleName()
-
 	// --- Channels ---
 	p.initClusterMsgChannelPrefix()
 	p.initSearchChannelPrefix()
@@ -767,7 +741,6 @@ func (p *queryCoordConfig) init(bp *BaseParamTable) {
 	p.initTimeTickChannelName()
 
 	// --- etcd ---
-	p.initEtcdEndpoints()
 	p.initMetaRootPath()
 	p.initKvRootPath()
 
@@ -839,14 +812,6 @@ func (p *queryCoordConfig) initTimeTickChannelName() {
 	p.TimeTickChannelName = strings.Join(s, "-")
 }
 
-func (p *queryCoordConfig) initEtcdEndpoints() {
-	endpoints, err := p.BaseParams.Load("_EtcdEndpoints")
-	if err != nil {
-		panic(err)
-	}
-	p.EtcdEndpoints = strings.Split(endpoints, ",")
-}
-
 func (p *queryCoordConfig) initMetaRootPath() {
 	rootPath, err := p.BaseParams.Load("etcd.rootPath")
 	if err != nil {
@@ -914,10 +879,6 @@ func (p *queryCoordConfig) initMinioBucketName() {
 	}
 	p.MinioBucketName = bucketName
 }
-
-//func (p *queryCoordConfig) initRoleName() {
-//	p.RoleName = "querycoord"
-//}
 
 func (p *queryCoordConfig) initPulsarAddress() {
 	addr, err := p.BaseParams.Load("_PulsarAddress")
@@ -999,7 +960,6 @@ type queryNodeConfig struct {
 
 	PulsarAddress string
 	RocksmqPath   string
-	EtcdEndpoints []string
 	MetaRootPath  string
 
 	Alias         string
@@ -1072,7 +1032,6 @@ func (p *queryNodeConfig) init(bp *BaseParamTable) {
 
 	p.initPulsarAddress()
 	p.initRocksmqPath()
-	p.initEtcdEndpoints()
 	p.initMetaRootPath()
 
 	p.initGracefulTime()
@@ -1094,8 +1053,6 @@ func (p *queryNodeConfig) init(bp *BaseParamTable) {
 
 	p.initSegcoreChunkRows()
 	p.initKnowhereSimdType()
-
-	//p.initRoleName()
 
 	p.initSkipQueryChannelRecovery()
 	p.initOverloadedMemoryThresholdPercentage()
@@ -1258,15 +1215,6 @@ func (p *queryNodeConfig) initStatsChannelName() {
 	p.StatsChannelName = strings.Join(s, "-")
 }
 
-// ETCD configs
-func (p *queryNodeConfig) initEtcdEndpoints() {
-	endpoints, err := p.BaseParams.Load("_EtcdEndpoints")
-	if err != nil {
-		panic(err)
-	}
-	p.EtcdEndpoints = strings.Split(endpoints, ",")
-}
-
 func (p *queryNodeConfig) initMetaRootPath() {
 	rootPath, err := p.BaseParams.Load("etcd.rootPath")
 	if err != nil {
@@ -1294,10 +1242,6 @@ func (p *queryNodeConfig) initKnowhereSimdType() {
 	log.Debug("initialize the knowhere simd type", zap.String("simd_type", p.SimdType))
 }
 
-//func (p *queryNodeConfig) initRoleName() {
-//	p.RoleName = "querynode"
-//}
-
 func (p *queryNodeConfig) initSkipQueryChannelRecovery() {
 	p.SkipQueryChannelRecovery = p.BaseParams.ParseBool("msgChannel.skipQueryChannelRecovery", false)
 }
@@ -1323,7 +1267,6 @@ type dataCoordConfig struct {
 	Address string
 
 	// --- ETCD ---
-	EtcdEndpoints           []string
 	MetaRootPath            string
 	KvRootPath              string
 	SegmentBinlogSubPath    string
@@ -1365,8 +1308,8 @@ type dataCoordConfig struct {
 	EnableCompaction        bool
 	EnableGarbageCollection bool
 
-	CompactionRetentionDuration int64
-	EnableAutoCompaction        bool
+	RetentionDuration    int64
+	EnableAutoCompaction bool
 
 	// Garbage Collection
 	GCInterval         time.Duration
@@ -1377,7 +1320,6 @@ type dataCoordConfig struct {
 func (p *dataCoordConfig) init(bp *BaseParamTable) {
 	p.BaseParams = bp
 
-	p.initEtcdEndpoints()
 	p.initMetaRootPath()
 	p.initKvRootPath()
 	p.initSegmentBinlogSubPath()
@@ -1397,7 +1339,6 @@ func (p *dataCoordConfig) init(bp *BaseParamTable) {
 	p.initTimeTickChannelName()
 	p.initSegmentInfoChannelName()
 	p.initDataCoordSubscriptionName()
-	//p.initRoleName()
 
 	p.initFlushStreamPosSubPath()
 	p.initStatsStreamPosSubPath()
@@ -1411,21 +1352,13 @@ func (p *dataCoordConfig) init(bp *BaseParamTable) {
 	p.initMinioBucketName()
 	p.initMinioRootPath()
 
-	p.initCompactionRetentionDuration()
+	p.initRetentionDuration()
 	p.initEnableAutoCompaction()
 
 	p.initEnableGarbageCollection()
 	p.initGCInterval()
 	p.initGCMissingTolerance()
 	p.initGCDropTolerance()
-}
-
-func (p *dataCoordConfig) initEtcdEndpoints() {
-	endpoints, err := p.BaseParams.Load("_EtcdEndpoints")
-	if err != nil {
-		panic(err)
-	}
-	p.EtcdEndpoints = strings.Split(endpoints, ",")
 }
 
 func (p *dataCoordConfig) initPulsarAddress() {
@@ -1540,10 +1473,6 @@ func (p *dataCoordConfig) initDataCoordSubscriptionName() {
 	p.DataCoordSubscriptionName = strings.Join(s, "-")
 }
 
-//func (p *dataCoordConfig) initRoleName() {
-//	p.RoleName = "datacoord"
-//}
-
 func (p *dataCoordConfig) initFlushStreamPosSubPath() {
 	subPath, err := p.BaseParams.Load("etcd.flushStreamPosSubPath")
 	if err != nil {
@@ -1637,8 +1566,8 @@ func (p *dataCoordConfig) initMinioRootPath() {
 	p.MinioRootPath = rootPath
 }
 
-func (p *dataCoordConfig) initCompactionRetentionDuration() {
-	p.CompactionRetentionDuration = p.BaseParams.ParseInt64WithDefault("dataCoord.compaction.retentionDuration", 432000)
+func (p *dataCoordConfig) initRetentionDuration() {
+	p.RetentionDuration = p.BaseParams.ParseInt64WithDefault("common.retentionDuration", DefaultRetentionDuration)
 }
 
 func (p *dataCoordConfig) initEnableAutoCompaction() {
@@ -1686,7 +1615,6 @@ type dataNodeConfig struct {
 	MsgChannelSubName string
 
 	// etcd
-	EtcdEndpoints       []string
 	MetaRootPath        string
 	ChannelWatchSubPath string
 
@@ -1719,7 +1647,6 @@ func (p *dataNodeConfig) init(bp *BaseParamTable) {
 	p.initTimeTickChannelName()
 	p.initMsgChannelSubName()
 
-	p.initEtcdEndpoints()
 	p.initMetaRootPath()
 	p.initChannelWatchPath()
 
@@ -1731,8 +1658,6 @@ func (p *dataNodeConfig) init(bp *BaseParamTable) {
 
 	p.initDmlChannelName()
 	p.initDeltaChannelName()
-
-	//p.initRoleName()
 }
 
 // Refresh is called after session init
@@ -1824,14 +1749,6 @@ func (p *dataNodeConfig) initMsgChannelSubName() {
 	p.MsgChannelSubName = strings.Join(s, "-")
 }
 
-func (p *dataNodeConfig) initEtcdEndpoints() {
-	endpoints, err := p.BaseParams.Load("_EtcdEndpoints")
-	if err != nil {
-		panic(err)
-	}
-	p.EtcdEndpoints = strings.Split(endpoints, ",")
-}
-
 func (p *dataNodeConfig) initMetaRootPath() {
 	rootPath, err := p.BaseParams.Load("etcd.rootPath")
 	if err != nil {
@@ -1889,10 +1806,6 @@ func (p *dataNodeConfig) initMinioBucketName() {
 	p.MinioBucketName = bucketName
 }
 
-//func (p *dataNodeConfig) initRoleName() {
-//	p.RoleName = "datanode"
-//}
-
 func (p *dataNodeConfig) initDmlChannelName() {
 	config, err := p.BaseParams.Load("msgChannel.chanNamePrefix.rootCoordDml")
 	if err != nil {
@@ -1919,7 +1832,6 @@ type indexCoordConfig struct {
 	Address string
 	Port    int
 
-	EtcdEndpoints        []string
 	KvRootPath           string
 	MetaRootPath         string
 	IndexStorageRootPath string
@@ -1937,7 +1849,6 @@ type indexCoordConfig struct {
 func (p *indexCoordConfig) init(bp *BaseParamTable) {
 	p.BaseParams = bp
 
-	p.initEtcdEndpoints()
 	p.initMetaRootPath()
 	p.initKvRootPath()
 	p.initMinIOAddress()
@@ -1946,15 +1857,6 @@ func (p *indexCoordConfig) init(bp *BaseParamTable) {
 	p.initMinIOUseSSL()
 	p.initMinioBucketName()
 	p.initIndexStorageRootPath()
-	//p.initRoleName()
-}
-
-func (p *indexCoordConfig) initEtcdEndpoints() {
-	endpoints, err := p.BaseParams.Load("_EtcdEndpoints")
-	if err != nil {
-		panic(err)
-	}
-	p.EtcdEndpoints = strings.Split(endpoints, ",")
 }
 
 func (p *indexCoordConfig) initMetaRootPath() {
@@ -2038,10 +1940,6 @@ func (p *indexCoordConfig) initIndexStorageRootPath() {
 	p.IndexStorageRootPath = path.Join(rootPath, "index_files")
 }
 
-//func (p *indexCoordConfig) initRoleName() {
-//	p.RoleName = "indexcoord"
-//}
-
 ///////////////////////////////////////////////////////////////////////////////
 // --- indexnode ---
 type indexNodeConfig struct {
@@ -2054,7 +1952,6 @@ type indexNodeConfig struct {
 	NodeID int64
 	Alias  string
 
-	EtcdEndpoints        []string
 	MetaRootPath         string
 	IndexStorageRootPath string
 
@@ -2078,10 +1975,8 @@ func (p *indexNodeConfig) init(bp *BaseParamTable) {
 	p.initMinIOSecretAccessKey()
 	p.initMinIOUseSSL()
 	p.initMinioBucketName()
-	p.initEtcdEndpoints()
 	p.initMetaRootPath()
 	p.initIndexStorageRootPath()
-	//p.initRoleName()
 	p.initKnowhereSimdType()
 }
 
@@ -2125,14 +2020,6 @@ func (p *indexNodeConfig) initMinIOUseSSL() {
 	}
 }
 
-func (p *indexNodeConfig) initEtcdEndpoints() {
-	endpoints, err := p.BaseParams.Load("_EtcdEndpoints")
-	if err != nil {
-		panic(err)
-	}
-	p.EtcdEndpoints = strings.Split(endpoints, ",")
-}
-
 func (p *indexNodeConfig) initMetaRootPath() {
 	rootPath, err := p.BaseParams.Load("etcd.rootPath")
 	if err != nil {
@@ -2160,10 +2047,6 @@ func (p *indexNodeConfig) initMinioBucketName() {
 	}
 	p.MinioBucketName = bucketName
 }
-
-//func (p *indexNodeConfig) initRoleName() {
-//	p.RoleName = "indexnode"
-//}
 
 func (p *indexNodeConfig) initKnowhereSimdType() {
 	simdType := p.BaseParams.LoadWithDefault("knowhere.simdType", "auto")

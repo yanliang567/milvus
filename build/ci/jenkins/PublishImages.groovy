@@ -3,9 +3,9 @@
 pipeline {
     agent {
         kubernetes {
-            label "milvus-e2e-test-kind"
+            label "milvus-e2e-test"
             defaultContainer 'main'
-            yamlFile "build/ci/jenkins/pod/krte.yaml"
+            yamlFile "build/ci/jenkins/pod/rte.yaml"
             customWorkspace '/home/jenkins/agent/workspace'
             // We allow this pod to remain active for a while, later jobs can
             // reuse cache in previous created nodes.

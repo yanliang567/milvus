@@ -51,7 +51,7 @@
 
 ### 2.5 Flushed segment from `data node`
 
-1. Each time the `data node` finishes flushing a segment, it sends the segment id to the `RC` via msgstream.
+1. Each time the `DataNode` finishes flushing a segment, it sends the segment id to the `RootCoord` via msgstream.
 2. `RootCoord` needs to fetch binlog from `DataCoord` by id and send a request to `IndexCoord` to create an index on this segment.
 3. When the `IndexCoord` is called successfully, it will return a build id, and then `RootCoord` will update the build id to the `collection meta` and record the position of the msgstream in etcd.
 4. Step 3 is transactional and the operation will be successful only if the `collection meta` in etcd is updated.
@@ -71,26 +71,26 @@
 ### Add processing of time synchronization signals from Proxy node
 
 1. A virtual channel can be inserted by multiple proxies, so the timestamp in the virtual channel does not increase monotonically.
-2. All proxies report the timestamp of all the virtual channels to the `RC` periodically.
-3. The `RC` collects the timestamps from the proxies on each virtual channel and gets the minimum one as the timestamp of that virtual channel, and then inserts the timestamp into the virtual channel.
-4. Proxy reports the timestamp to the `RC` via grpc.
-5. Proxy needs to register itself in etcd when it starts, `RC` will listen to the corresponding key to determine how many active proxies there are, and thus determine if all of them have sent timestamps to `RC`.
-6. If a proxy is not registered in etcd but sends a timestamp or any other grpc request to `RC`, `RC` will ignore the grpc request.
+2. All proxies report the timestamp of all the virtual channels to the `RootCoord` periodically.
+3. The `RootCoord` collects the timestamps from the proxies on each virtual channel and gets the minimum one as the timestamp of that virtual channel, and then inserts the timestamp into the virtual channel.
+4. Proxy reports the timestamp to the `RootCoord` via grpc.
+5. Proxy needs to register itself in etcd when it starts, `RootCoord` will listen to the corresponding key to determine how many active proxies there are, and thus determine if all of them have sent timestamps to `RootCoord`.
+6. If a proxy is not registered in etcd but sends a timestamp or any other grpc request to `RootCoord`, `RootCoord` will ignore the grpc request.
 
 ### 2.9 Register service in etcd
 
-1. `RC` needs to register itself with etcd when it starts.
+1. `RootCoord` needs to register itself with etcd when it starts.
 2. The registration should include IP address, port, its own id, global incremental timestamp.
 
 ### 2.10 Remove the code related to Proxy service
 
 1. `Proxy service` related code will be removed.
-2. The job of time synchronization which is done by `Proxy service` is partially simplified and handed over to the `RC` (subsection 2.8).
+2. The job of time synchronization which is done by `Proxy service` is partially simplified and handed over to the `RootCoord` (subsection 2.8).
 
 ### 2.11 Query collection meta based on timeline
 
 1. Add a new field of `timestamp` to the grpc request of `describe collection`.
-2. `RC` should provide snapshot on the `collection mate`.
+2. `RootCoord` should provide snapshot on the `collection mate`.
 3. Return the `collection meta` at the point of timestamp mentioned in the request.
 
 ### 2.12 Timestamp of `dd operations`
