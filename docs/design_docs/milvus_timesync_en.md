@@ -63,7 +63,7 @@ message AllocTimestampResponse {
 }
 ```
 
-`Timestamp` is of type `uint64`, containing physical and logical parts.
+`Timestamp` is of type `uint64`, and contains physical and logical parts.
 
 This is the format of `Timestamp`
 
@@ -73,7 +73,7 @@ In an `AllocTimestamp` request, if `AllocTimestampRequest.count` is greater than
 
 ## Time Synchronization
 
-To understand the `Time Synchronization` better, let's introduce the data operation of Milvus 2.0 briefly.
+To better understand `Time Synchronization`, let's introduce the data operation of Milvus 2.0 briefly.
 Take `Insert Operation` as an example.
 
 - User can configure lots of `Proxy` to achieve load balancing, in `Milvus 2.0`
@@ -96,7 +96,7 @@ The 3 `InsertMsg` from `Proxy1` are incremented in timestamp, and the 2 `InsertM
 
 ![msgstream](./graphs/timesync_msgstream.png)
 
-So the second problem has turned into this: after reading a message from `MsgStream`, how to make sure that all the messages with smaller timestamp have been consumed?
+So the second problem has turned into this: After reading a message from `MsgStream`, how to make sure that all the messages with smaller timestamp have been consumed?
 
 For example, when reading a message with timestamp `110` produced by `Proxy2`, but the message with timestamp `80` produced by `Proxy1`, is still in the `MsgStream`. How can this situation be handled?
 

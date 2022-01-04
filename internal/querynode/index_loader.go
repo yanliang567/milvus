@@ -53,6 +53,7 @@ type indexLoader struct {
 	kv kv.DataKV // minio kv
 }
 
+// loadIndex would load index to segment
 func (loader *indexLoader) loadIndex(segment *Segment, fieldID FieldID) error {
 	// 1. use msg's index paths to get index bytes
 	var err error
@@ -101,6 +102,7 @@ func (loader *indexLoader) loadIndex(segment *Segment, fieldID FieldID) error {
 	return nil
 }
 
+// printIndexParams prints the index params
 func (loader *indexLoader) printIndexParams(index []*commonpb.KeyValuePair) {
 	log.Debug("=================================================")
 	for i := 0; i < len(index); i++ {
@@ -108,6 +110,7 @@ func (loader *indexLoader) printIndexParams(index []*commonpb.KeyValuePair) {
 	}
 }
 
+// getIndexBinlog would load index and index params from storage
 func (loader *indexLoader) getIndexBinlog(indexPath []string) ([][]byte, indexParam, string, error) {
 	index := make([][]byte, 0)
 
@@ -151,6 +154,7 @@ func (loader *indexLoader) getIndexBinlog(indexPath []string) ([][]byte, indexPa
 	return index, indexParams, indexName, nil
 }
 
+// estimateIndexBinlogSize returns estimated index size
 func (loader *indexLoader) estimateIndexBinlogSize(segment *Segment, fieldID FieldID) (int64, error) {
 	indexSize := int64(0)
 	indexPaths := segment.getIndexPaths(fieldID)
@@ -173,6 +177,7 @@ func (loader *indexLoader) estimateIndexBinlogSize(segment *Segment, fieldID Fie
 	return indexSize, nil
 }
 
+// getIndexInfo gets indexInfo from RootCoord and IndexCoord
 func (loader *indexLoader) getIndexInfo(collectionID UniqueID, segment *Segment) (*indexInfo, error) {
 	if loader.indexCoord == nil || loader.rootCoord == nil {
 		return nil, errors.New("null indexcoord client or rootcoord client, collectionID = " +
