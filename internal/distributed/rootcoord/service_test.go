@@ -80,15 +80,15 @@ func TestGrpcService(t *testing.T) {
 	assert.Nil(t, err)
 
 	rootcoord.Params.Init()
-	rootcoord.Params.RootCoordCfg.MetaRootPath = fmt.Sprintf("/%d/test/meta", randVal)
-	rootcoord.Params.RootCoordCfg.KvRootPath = fmt.Sprintf("/%d/test/kv", randVal)
+	rootcoord.Params.BaseParams.MetaRootPath = fmt.Sprintf("/%d/test/meta", randVal)
+	rootcoord.Params.BaseParams.KvRootPath = fmt.Sprintf("/%d/test/kv", randVal)
 	rootcoord.Params.RootCoordCfg.MsgChannelSubName = fmt.Sprintf("msgChannel%d", randVal)
 	rootcoord.Params.RootCoordCfg.TimeTickChannel = fmt.Sprintf("timeTick%d", randVal)
 	rootcoord.Params.RootCoordCfg.StatisticsChannel = fmt.Sprintf("stateChannel%d", randVal)
 
 	rootcoord.Params.RootCoordCfg.MaxPartitionNum = 64
-	rootcoord.Params.RootCoordCfg.DefaultPartitionName = "_default"
-	rootcoord.Params.RootCoordCfg.DefaultIndexName = "_default"
+	rootcoord.Params.CommonCfg.DefaultPartitionName = "_default"
+	rootcoord.Params.CommonCfg.DefaultIndexName = "_default"
 
 	t.Logf("service port = %d", Params.Port)
 
@@ -101,7 +101,7 @@ func TestGrpcService(t *testing.T) {
 
 	etcdCli, err := etcd.GetEtcdClient(&Params.BaseParamTable)
 	assert.Nil(t, err)
-	sessKey := path.Join(rootcoord.Params.RootCoordCfg.MetaRootPath, sessionutil.DefaultServiceRoot)
+	sessKey := path.Join(rootcoord.Params.BaseParams.MetaRootPath, sessionutil.DefaultServiceRoot)
 	_, err = etcdCli.Delete(ctx, sessKey, clientv3.WithPrefix())
 	assert.Nil(t, err)
 
@@ -216,7 +216,7 @@ func TestGrpcService(t *testing.T) {
 
 	svr.rootCoord.UpdateStateCode(internalpb.StateCode_Healthy)
 
-	cli, err := rcc.NewClient(context.Background(), rootcoord.Params.RootCoordCfg.MetaRootPath, etcdCli)
+	cli, err := rcc.NewClient(context.Background(), rootcoord.Params.BaseParams.MetaRootPath, etcdCli)
 	assert.Nil(t, err)
 
 	err = cli.Init()
@@ -639,7 +639,7 @@ func TestGrpcService(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, rsp.Status.ErrorCode)
 		assert.Equal(t, 1, len(rsp.IndexDescriptions))
-		assert.Equal(t, rootcoord.Params.RootCoordCfg.DefaultIndexName, rsp.IndexDescriptions[0].IndexName)
+		assert.Equal(t, rootcoord.Params.CommonCfg.DefaultIndexName, rsp.IndexDescriptions[0].IndexName)
 	})
 
 	t.Run("flush segment", func(t *testing.T) {
@@ -687,7 +687,7 @@ func TestGrpcService(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, rsp.Status.ErrorCode)
 		assert.Equal(t, 1, len(rsp.IndexDescriptions))
-		assert.Equal(t, rootcoord.Params.RootCoordCfg.DefaultIndexName, rsp.IndexDescriptions[0].IndexName)
+		assert.Equal(t, rootcoord.Params.CommonCfg.DefaultIndexName, rsp.IndexDescriptions[0].IndexName)
 
 	})
 
@@ -702,9 +702,9 @@ func TestGrpcService(t *testing.T) {
 			DbName:         dbName,
 			CollectionName: collName,
 			FieldName:      fieldName,
-			IndexName:      rootcoord.Params.RootCoordCfg.DefaultIndexName,
+			IndexName:      rootcoord.Params.CommonCfg.DefaultIndexName,
 		}
-		_, idx, err := core.MetaTable.GetIndexByName(collName, rootcoord.Params.RootCoordCfg.DefaultIndexName)
+		_, idx, err := core.MetaTable.GetIndexByName(collName, rootcoord.Params.CommonCfg.DefaultIndexName)
 		assert.Nil(t, err)
 		assert.Equal(t, len(idx), 1)
 		rsp, err := cli.DropIndex(ctx, req)
@@ -737,7 +737,7 @@ func TestGrpcService(t *testing.T) {
 		assert.Equal(t, 1, len(collMeta.PartitionIDs))
 		partName, err := core.MetaTable.GetPartitionNameByID(collMeta.ID, collMeta.PartitionIDs[0], 0)
 		assert.Nil(t, err)
-		assert.Equal(t, rootcoord.Params.RootCoordCfg.DefaultPartitionName, partName)
+		assert.Equal(t, rootcoord.Params.CommonCfg.DefaultPartitionName, partName)
 		assert.Equal(t, 2, len(collectionMetaCache))
 	})
 
@@ -915,11 +915,11 @@ func TestRun(t *testing.T) {
 	rand.Seed(time.Now().UnixNano())
 	randVal := rand.Int()
 	rootcoord.Params.Init()
-	rootcoord.Params.RootCoordCfg.MetaRootPath = fmt.Sprintf("/%d/test/meta", randVal)
+	rootcoord.Params.BaseParams.MetaRootPath = fmt.Sprintf("/%d/test/meta", randVal)
 
 	etcdCli, err := etcd.GetEtcdClient(&Params.BaseParamTable)
 	assert.Nil(t, err)
-	sessKey := path.Join(rootcoord.Params.RootCoordCfg.MetaRootPath, sessionutil.DefaultServiceRoot)
+	sessKey := path.Join(rootcoord.Params.BaseParams.MetaRootPath, sessionutil.DefaultServiceRoot)
 	_, err = etcdCli.Delete(ctx, sessKey, clientv3.WithPrefix())
 	assert.Nil(t, err)
 	err = svr.Run()

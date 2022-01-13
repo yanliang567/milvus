@@ -133,7 +133,7 @@ func NewQueryNode(ctx context.Context, factory msgstream.Factory) *QueryNode {
 }
 
 func (node *QueryNode) initSession() error {
-	node.session = sessionutil.NewSession(node.queryNodeLoopCtx, Params.QueryNodeCfg.MetaRootPath, node.etcdCli)
+	node.session = sessionutil.NewSession(node.queryNodeLoopCtx, Params.BaseParams.MetaRootPath, node.etcdCli)
 	if node.session == nil {
 		return fmt.Errorf("session is nil, the etcd client connection may have failed")
 	}
@@ -173,9 +173,9 @@ func (node *QueryNode) InitSegcore() {
 	C.SegcoreSetChunkRows(cChunkRows)
 
 	// override segcore SIMD type
-	cSimdType := C.CString(Params.QueryNodeCfg.SimdType)
+	cSimdType := C.CString(Params.KnowhereCfg.SimdType)
 	cRealSimdType := C.SegcoreSetSimdType(cSimdType)
-	Params.QueryNodeCfg.SimdType = C.GoString(cRealSimdType)
+	Params.KnowhereCfg.SimdType = C.GoString(cRealSimdType)
 	C.free(unsafe.Pointer(cRealSimdType))
 	C.free(unsafe.Pointer(cSimdType))
 }
@@ -185,7 +185,7 @@ func (node *QueryNode) Init() error {
 	var initError error = nil
 	node.initOnce.Do(func() {
 		//ctx := context.Background()
-		log.Debug("QueryNode session info", zap.String("metaPath", Params.QueryNodeCfg.MetaRootPath))
+		log.Debug("QueryNode session info", zap.String("metaPath", Params.BaseParams.MetaRootPath))
 		err := node.initSession()
 		if err != nil {
 			log.Error("QueryNode init session failed", zap.Error(err))
@@ -194,8 +194,8 @@ func (node *QueryNode) Init() error {
 		}
 		Params.QueryNodeCfg.Refresh()
 
-		node.etcdKV = etcdkv.NewEtcdKV(node.etcdCli, Params.QueryNodeCfg.MetaRootPath)
-		log.Debug("queryNode try to connect etcd success", zap.Any("MetaRootPath", Params.QueryNodeCfg.MetaRootPath))
+		node.etcdKV = etcdkv.NewEtcdKV(node.etcdCli, Params.BaseParams.MetaRootPath)
+		log.Debug("queryNode try to connect etcd success", zap.Any("MetaRootPath", Params.BaseParams.MetaRootPath))
 		node.tSafeReplica = newTSafeReplica()
 
 		streamingReplica := newCollectionReplica(node.etcdKV)
@@ -203,7 +203,6 @@ func (node *QueryNode) Init() error {
 
 		node.historical = newHistorical(node.queryNodeLoopCtx,
 			historicalReplica,
-			node.etcdKV,
 			node.tSafeReplica,
 		)
 		node.streaming = newStreaming(node.queryNodeLoopCtx,
@@ -250,7 +249,7 @@ func (node *QueryNode) Init() error {
 func (node *QueryNode) Start() error {
 	var err error
 	m := map[string]interface{}{
-		"PulsarAddress":  Params.QueryNodeCfg.PulsarAddress,
+		"PulsarAddress":  Params.PulsarCfg.Address,
 		"ReceiveBufSize": 1024,
 		"PulsarBufSize":  1024}
 	err = node.msFactory.SetParams(m)
@@ -269,7 +268,6 @@ func (node *QueryNode) Start() error {
 	go node.scheduler.Start()
 
 	// start services
-	go node.historical.start()
 	go node.watchChangeInfo()
 	go node.statsService.start()
 

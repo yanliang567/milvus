@@ -36,6 +36,8 @@ type UniqueID = typeutil.UniqueID
 
 const envPrefix string = "milvus"
 
+// Base abstracts BaseTable
+// TODO: it's never used, consider to substitute BaseTable or to remove it
 type Base interface {
 	Load(key string) (string, error)
 	LoadRange(key, endKey string, limit int) ([]string, []string, error)
@@ -45,6 +47,7 @@ type Base interface {
 	Init()
 }
 
+// BaseTable the basics of paramtable
 type BaseTable struct {
 	params    *memkv.MemoryKV
 	configDir string
@@ -54,6 +57,7 @@ type BaseTable struct {
 	LogCfgFunc func(log.Config)
 }
 
+// Init initializes the paramtable
 func (gp *BaseTable) Init() {
 	gp.params = memkv.NewMemoryKV()
 
@@ -71,10 +75,12 @@ func (gp *BaseTable) Init() {
 	gp.InitLogCfg()
 }
 
+// GetConfigDir returns the config directory
 func (gp *BaseTable) GetConfigDir() string {
 	return gp.configDir
 }
 
+// LoadFromKVPair saves given kv pair to paramtable
 func (gp *BaseTable) LoadFromKVPair(kvPairs []*commonpb.KeyValuePair) error {
 	for _, pair := range kvPairs {
 		err := gp.Save(pair.Key, pair.Value)

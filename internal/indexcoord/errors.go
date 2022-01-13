@@ -21,10 +21,12 @@ import (
 	"fmt"
 )
 
+// errIndexNodeIsNotOnService return an error that the specified IndexNode is not exists.
 func errIndexNodeIsNotOnService(id UniqueID) error {
 	return fmt.Errorf("index node %d is not on service", id)
 }
 
+// msgIndexCoordIsUnhealthy return an error that the IndexCoord is not healthy.
 func msgIndexCoordIsUnhealthy(coordID UniqueID) string {
 	return fmt.Sprintf("IndexCoord %d is not ready", coordID)
 }

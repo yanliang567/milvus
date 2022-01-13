@@ -138,15 +138,15 @@ func (i *IndexNode) initKnowhere() {
 	C.IndexBuilderInit()
 
 	// override index builder SIMD type
-	cSimdType := C.CString(Params.IndexNodeCfg.SimdType)
+	cSimdType := C.CString(Params.KnowhereCfg.SimdType)
 	cRealSimdType := C.IndexBuilderSetSimdType(cSimdType)
-	Params.IndexNodeCfg.SimdType = C.GoString(cRealSimdType)
+	Params.KnowhereCfg.SimdType = C.GoString(cRealSimdType)
 	C.free(unsafe.Pointer(cRealSimdType))
 	C.free(unsafe.Pointer(cSimdType))
 }
 
 func (i *IndexNode) initSession() error {
-	i.session = sessionutil.NewSession(i.loopCtx, Params.IndexNodeCfg.MetaRootPath, i.etcdCli)
+	i.session = sessionutil.NewSession(i.loopCtx, Params.BaseParams.MetaRootPath, i.etcdCli)
 	if i.session == nil {
 		return errors.New("failed to initialize session")
 	}
@@ -172,15 +172,15 @@ func (i *IndexNode) Init() error {
 		}
 		log.Debug("IndexNode init session successful", zap.Int64("serverID", i.session.ServerID))
 
-		etcdKV := etcdkv.NewEtcdKV(i.etcdCli, Params.IndexNodeCfg.MetaRootPath)
+		etcdKV := etcdkv.NewEtcdKV(i.etcdCli, Params.BaseParams.MetaRootPath)
 		i.etcdKV = etcdKV
 
 		option := &miniokv.Option{
-			Address:           Params.IndexNodeCfg.MinIOAddress,
-			AccessKeyID:       Params.IndexNodeCfg.MinIOAccessKeyID,
-			SecretAccessKeyID: Params.IndexNodeCfg.MinIOSecretAccessKey,
-			UseSSL:            Params.IndexNodeCfg.MinIOUseSSL,
-			BucketName:        Params.IndexNodeCfg.MinioBucketName,
+			Address:           Params.MinioCfg.Address,
+			AccessKeyID:       Params.MinioCfg.AccessKeyID,
+			SecretAccessKeyID: Params.MinioCfg.SecretAccessKey,
+			UseSSL:            Params.MinioCfg.UseSSL,
+			BucketName:        Params.MinioCfg.BucketName,
 			CreateBucket:      true,
 		}
 		kv, err := miniokv.NewMinIOKV(i.loopCtx, option)

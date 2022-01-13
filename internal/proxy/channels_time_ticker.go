@@ -31,7 +31,9 @@ type getPChanStatisticsFuncType func() (map[pChan]*pChanStatistics, error)
 
 // channelsTimeTicker manages the timestamp statistics
 type channelsTimeTicker interface {
+	// start starts the channels time ticker.
 	start() error
+	// close closes the channels time ticker.
 	close() error
 	// getLastTick returns the last write timestamp of specific pchan.
 	getLastTick(pchan pChan) (Timestamp, error)
@@ -40,6 +42,9 @@ type channelsTimeTicker interface {
 	// getMinTick returns the minimum last write timestamp between all pchans.
 	getMinTick() Timestamp
 }
+
+// make sure channelsTimeTickerImpl implements channelsTimeTicker.
+var _ channelsTimeTicker = (*channelsTimeTickerImpl)(nil)
 
 // channelsTimeTickerImpl implements channelsTimeTicker.
 type channelsTimeTickerImpl struct {
@@ -200,6 +205,7 @@ func (ticker *channelsTimeTickerImpl) getMinTick() Timestamp {
 	return ticker.minTimestamp
 }
 
+// newChannelsTimeTicker returns a channels time ticker.
 func newChannelsTimeTicker(
 	ctx context.Context,
 	interval time.Duration,

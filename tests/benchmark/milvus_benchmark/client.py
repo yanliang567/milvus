@@ -1,7 +1,7 @@
 import random
 import logging
 import time
-import traceback
+# import traceback
 from multiprocessing import Process
 from pymilvus import Milvus, DataType
 import utils as util
@@ -42,7 +42,6 @@ def time_wrapper(func):
         rps: Specify the rps of the return interface
         """
         start = time.time()
-        # logger.debug("Milvus {} start".format(func.__name__))
         log = kwargs.get("log", True)
         kwargs.pop("log", None)
         rps = kwargs.get("rps", False)
@@ -330,9 +329,9 @@ class MilvusClient(object):
             "params": search_param}
         }}
         must_params = [vector_query]
-        query = {
-            "bool": {"must": must_params}
-        }
+        # query = {
+        #     "bool": {"must": must_params}
+        # }
         logger.debug("Start warm up query")
         for i in range(times):
             params = util.search_param_analysis(vector_query, None)

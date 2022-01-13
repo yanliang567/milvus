@@ -426,7 +426,7 @@ func TestProxy(t *testing.T) {
 	defer etcdcli.Close()
 	assert.NoError(t, err)
 	proxy.SetEtcdClient(etcdcli)
-	rootCoordClient, err := rcc.NewClient(ctx, Params.ProxyCfg.MetaRootPath, etcdcli)
+	rootCoordClient, err := rcc.NewClient(ctx, Params.BaseParams.MetaRootPath, etcdcli)
 	assert.NoError(t, err)
 	err = rootCoordClient.Init()
 	assert.NoError(t, err)
@@ -435,7 +435,7 @@ func TestProxy(t *testing.T) {
 	proxy.SetRootCoordClient(rootCoordClient)
 	log.Info("Proxy set root coordinator client")
 
-	dataCoordClient, err := grpcdatacoordclient2.NewClient(ctx, Params.ProxyCfg.MetaRootPath, etcdcli)
+	dataCoordClient, err := grpcdatacoordclient2.NewClient(ctx, Params.BaseParams.MetaRootPath, etcdcli)
 	assert.NoError(t, err)
 	err = dataCoordClient.Init()
 	assert.NoError(t, err)
@@ -444,7 +444,7 @@ func TestProxy(t *testing.T) {
 	proxy.SetDataCoordClient(dataCoordClient)
 	log.Info("Proxy set data coordinator client")
 
-	queryCoordClient, err := grpcquerycoordclient.NewClient(ctx, Params.ProxyCfg.MetaRootPath, etcdcli)
+	queryCoordClient, err := grpcquerycoordclient.NewClient(ctx, Params.BaseParams.MetaRootPath, etcdcli)
 	assert.NoError(t, err)
 	err = queryCoordClient.Init()
 	assert.NoError(t, err)
@@ -453,7 +453,7 @@ func TestProxy(t *testing.T) {
 	proxy.SetQueryCoordClient(queryCoordClient)
 	log.Info("Proxy set query coordinator client")
 
-	indexCoordClient, err := grpcindexcoordclient.NewClient(ctx, Params.ProxyCfg.MetaRootPath, etcdcli)
+	indexCoordClient, err := grpcindexcoordclient.NewClient(ctx, Params.BaseParams.MetaRootPath, etcdcli)
 	assert.NoError(t, err)
 	err = indexCoordClient.Init()
 	assert.NoError(t, err)
@@ -1260,7 +1260,7 @@ func TestProxy(t *testing.T) {
 		wg.Add(1)
 		t.Run("search_travel", func(t *testing.T) {
 			defer wg.Done()
-			past := time.Now().Add(time.Duration(-1*Params.ProxyCfg.RetentionDuration-100) * time.Second)
+			past := time.Now().Add(time.Duration(-1*Params.CommonCfg.RetentionDuration-100) * time.Second)
 			travelTs := tsoutil.ComposeTSByTime(past, 0)
 			req := constructSearchRequest()
 			req.TravelTimestamp = travelTs
@@ -1273,7 +1273,7 @@ func TestProxy(t *testing.T) {
 		wg.Add(1)
 		t.Run("search_travel_succ", func(t *testing.T) {
 			defer wg.Done()
-			past := time.Now().Add(time.Duration(-1*Params.ProxyCfg.RetentionDuration+100) * time.Second)
+			past := time.Now().Add(time.Duration(-1*Params.CommonCfg.RetentionDuration+100) * time.Second)
 			travelTs := tsoutil.ComposeTSByTime(past, 0)
 			req := constructSearchRequest()
 			req.TravelTimestamp = travelTs
@@ -1306,7 +1306,7 @@ func TestProxy(t *testing.T) {
 		wg.Add(1)
 		t.Run("query_travel", func(t *testing.T) {
 			defer wg.Done()
-			past := time.Now().Add(time.Duration(-1*Params.ProxyCfg.RetentionDuration-100) * time.Second)
+			past := time.Now().Add(time.Duration(-1*Params.CommonCfg.RetentionDuration-100) * time.Second)
 			travelTs := tsoutil.ComposeTSByTime(past, 0)
 			queryReq := &milvuspb.QueryRequest{
 				Base:               nil,
@@ -1326,7 +1326,7 @@ func TestProxy(t *testing.T) {
 		wg.Add(1)
 		t.Run("query_travel_succ", func(t *testing.T) {
 			defer wg.Done()
-			past := time.Now().Add(time.Duration(-1*Params.ProxyCfg.RetentionDuration+100) * time.Second)
+			past := time.Now().Add(time.Duration(-1*Params.CommonCfg.RetentionDuration+100) * time.Second)
 			travelTs := tsoutil.ComposeTSByTime(past, 0)
 			queryReq := &milvuspb.QueryRequest{
 				Base:               nil,

@@ -80,7 +80,7 @@
 ### 2.9 Register service in etcd
 
 1. `RootCoord` needs to register itself with etcd when it starts.
-2. The registration should include IP address, port, its own id, global incremental timestamp.
+2. The registration should include IP address, port, its own id and global incremental timestamp.
 
 ### 2.10 Remove the code related to Proxy service
 
@@ -95,4 +95,4 @@
 
 ### 2.12 Timestamp of `dd operations`
 
-1. `RC` response is to set the timestamp of `dd operations`, create collection, create partition, drop collection, drop partition, and send this timestamp into `dml msgstream`.
+1. `RootCoord` response is to set the timestamp of `dd operations`, create collection, create partition, drop collection, drop partition, and send this timestamp into `dml msgstream`.

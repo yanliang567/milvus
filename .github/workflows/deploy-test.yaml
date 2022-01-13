@@ -39,6 +39,8 @@ jobs:
         working-directory: tests/python_client/deploy
         run: |
           pip install -r requirements.txt
+          # update pymilvus to latest version
+          pip install -i https://test.pypi.org/simple/ pymilvus==2.0.0rc10.dev2
       
       - name: Run deploy test
         timeout-minutes: 60
@@ -67,7 +69,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v2
         with:
-          name: logs-${{ matrix.mode }}-${{ matrix.task }}
+          name: docker-compose-logs-${{ matrix.mode }}-${{ matrix.task }}
           path: tests/python_client/deploy/${{ matrix.mode }}/logs
 
   test-helm-install:
@@ -102,7 +104,9 @@ jobs:
         shell: bash
         working-directory: tests/python_client/deploy
         run: |
-          pip install -r requirements.txt         
+          pip install -r requirements.txt
+          # update pymilvus to latest version
+          pip install -i https://test.pypi.org/simple/ pymilvus==2.0.0rc10.dev2         
       
       - name: First Milvus Deployment
         timeout-minutes: 60
@@ -189,7 +193,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v2
         with:
-          name: helm-deploy-logs-${{ matrix.task }}
+          name: helm-log-${{ matrix.mode }}-${{ matrix.task }}
           path: tests/python_client/deploy/k8s_logs       
           
 

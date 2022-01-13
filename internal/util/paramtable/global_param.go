@@ -53,8 +53,12 @@ type GlobalParamTable struct {
 	once       sync.Once
 	BaseParams BaseParamTable
 
-	//CommonCfg     commonConfig
-	//KnowhereCfg   knowhereConfig
+	PulsarCfg  pulsarConfig
+	RocksmqCfg rocksmqConfig
+	MinioCfg   minioConfig
+
+	CommonCfg   commonConfig
+	KnowhereCfg knowhereConfig
 	//MsgChannelCfg msgChannelConfig
 
 	RootCoordCfg  rootCoordConfig
@@ -74,11 +78,16 @@ func (p *GlobalParamTable) InitOnce() {
 	})
 }
 
+// Init initialize the global param table
 func (p *GlobalParamTable) Init() {
 	p.BaseParams.Init()
 
-	//p.CommonCfg.init(&p.BaseParams)
-	//p.KnowhereCfg.init(&p.BaseParams)
+	p.PulsarCfg.init(&p.BaseParams)
+	p.RocksmqCfg.init(&p.BaseParams)
+	p.MinioCfg.init(&p.BaseParams)
+
+	p.CommonCfg.init(&p.BaseParams)
+	p.KnowhereCfg.init(&p.BaseParams)
 	//p.MsgChannelCfg.init(&p.BaseParams)
 
 	p.RootCoordCfg.init(&p.BaseParams)
@@ -91,45 +100,191 @@ func (p *GlobalParamTable) Init() {
 	p.IndexNodeCfg.init(&p.BaseParams)
 }
 
+// SetLogConfig set log config with given role
 func (p *GlobalParamTable) SetLogConfig(role string) {
 	p.BaseParams.RoleName = role
 	p.BaseParams.SetLogConfig()
 }
 
 ///////////////////////////////////////////////////////////////////////////////
+// --- pulsar ---
+type pulsarConfig struct {
+	BaseParams *BaseParamTable
+
+	Address        string
+	MaxMessageSize int
+}
+
+func (p *pulsarConfig) init(bp *BaseParamTable) {
+	p.BaseParams = bp
+
+	p.initAddress()
+	p.initMaxMessageSize()
+}
+
+func (p *pulsarConfig) initAddress() {
+	addr, err := p.BaseParams.Load("_PulsarAddress")
+	if err != nil {
+		panic(err)
+	}
+	p.Address = addr
+}
+
+func (p *pulsarConfig) initMaxMessageSize() {
+	maxMessageSizeStr, err := p.BaseParams.Load("pulsar.maxMessageSize")
+	if err != nil {
+		p.MaxMessageSize = SuggestPulsarMaxMessageSize
+	} else {
+		maxMessageSize, err := strconv.Atoi(maxMessageSizeStr)
+		if err != nil {
+			p.MaxMessageSize = SuggestPulsarMaxMessageSize
+		} else {
+			p.MaxMessageSize = maxMessageSize
+		}
+	}
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// --- rocksmq ---
+type rocksmqConfig struct {
+	BaseParams *BaseParamTable
+
+	Path string
+}
+
+func (p *rocksmqConfig) init(bp *BaseParamTable) {
+	p.BaseParams = bp
+
+	p.initPath()
+}
+
+func (p *rocksmqConfig) initPath() {
+	path, err := p.BaseParams.Load("_RocksmqPath")
+	if err != nil {
+		panic(err)
+	}
+	p.Path = path
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// --- minio ---
+type minioConfig struct {
+	BaseParams *BaseParamTable
+
+	Address         string
+	AccessKeyID     string
+	SecretAccessKey string
+	UseSSL          bool
+	BucketName      string
+	RootPath        string
+}
+
+func (p *minioConfig) init(bp *BaseParamTable) {
+	p.BaseParams = bp
+
+	p.initAddress()
+	p.initAccessKeyID()
+	p.initSecretAccessKey()
+	p.initUseSSL()
+	p.initBucketName()
+	p.initRootPath()
+}
+
+func (p *minioConfig) initAddress() {
+	endpoint, err := p.BaseParams.Load("_MinioAddress")
+	if err != nil {
+		panic(err)
+	}
+	p.Address = endpoint
+}
+
+func (p *minioConfig) initAccessKeyID() {
+	keyID, err := p.BaseParams.Load("_MinioAccessKeyID")
+	if err != nil {
+		panic(err)
+	}
+	p.AccessKeyID = keyID
+}
+
+func (p *minioConfig) initSecretAccessKey() {
+	key, err := p.BaseParams.Load("_MinioSecretAccessKey")
+	if err != nil {
+		panic(err)
+	}
+	p.SecretAccessKey = key
+}
+
+func (p *minioConfig) initUseSSL() {
+	usessl, err := p.BaseParams.Load("_MinioUseSSL")
+	if err != nil {
+		panic(err)
+	}
+	p.UseSSL, _ = strconv.ParseBool(usessl)
+}
+
+func (p *minioConfig) initBucketName() {
+	bucketName, err := p.BaseParams.Load("_MinioBucketName")
+	if err != nil {
+		panic(err)
+	}
+	p.BucketName = bucketName
+}
+
+func (p *minioConfig) initRootPath() {
+	rootPath, err := p.BaseParams.Load("minio.rootPath")
+	if err != nil {
+		panic(err)
+	}
+	p.RootPath = rootPath
+}
+
+///////////////////////////////////////////////////////////////////////////////
 // --- common ---
-//type commonConfig struct {
-//	BaseParams *BaseParamTable
-//
-//	DefaultPartitionName string
-//	DefaultIndexName     string
-//}
-//
-//func (p *commonConfig) init(bp *BaseParamTable) {
-//	p.BaseParams = bp
-//	p.initDefaultPartitionName()
-//	p.initDefaultIndexName()
-//}
-//
-//func (p *commonConfig) initDefaultPartitionName() {
-//	name := p.BaseParams.LoadWithDefault("common.defaultPartitionName", "_default")
-//	p.DefaultPartitionName = name
-//}
-//
-//func (p *commonConfig) initDefaultIndexName() {
-//	name := p.BaseParams.LoadWithDefault("common.defaultIndexName", "_default_idx")
-//	p.DefaultIndexName = name
-//}
+type commonConfig struct {
+	BaseParams *BaseParamTable
+
+	DefaultPartitionName string
+	DefaultIndexName     string
+	RetentionDuration    int64
+}
+
+func (p *commonConfig) init(bp *BaseParamTable) {
+	p.BaseParams = bp
+
+	p.initDefaultPartitionName()
+	p.initDefaultIndexName()
+	p.initRetentionDuration()
+}
+
+func (p *commonConfig) initDefaultPartitionName() {
+	p.DefaultPartitionName = p.BaseParams.LoadWithDefault("common.defaultPartitionName", "_default")
+}
+
+func (p *commonConfig) initDefaultIndexName() {
+	p.DefaultIndexName = p.BaseParams.LoadWithDefault("common.defaultIndexName", "_default_idx")
+}
+
+func (p *commonConfig) initRetentionDuration() {
+	p.RetentionDuration = p.BaseParams.ParseInt64WithDefault("common.retentionDuration", DefaultRetentionDuration)
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 // --- knowhere ---
-//type knowhereConfig struct {
-//	BaseParams *BaseParamTable
-//}
-//
-//func (p *knowhereConfig) init(bp *BaseParamTable) {
-//	p.BaseParams = bp
-//}
+type knowhereConfig struct {
+	BaseParams *BaseParamTable
+
+	SimdType string
+}
+
+func (p *knowhereConfig) init(bp *BaseParamTable) {
+	p.BaseParams = bp
+
+	p.initSimdType()
+}
+
+func (p *knowhereConfig) initSimdType() {
+	p.SimdType = p.BaseParams.LoadWithDefault("knowhere.simdType", "auto")
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 // --- msgChannel ---
@@ -291,10 +446,6 @@ type rootCoordConfig struct {
 	Address string
 	Port    int
 
-	PulsarAddress string
-	MetaRootPath  string
-	KvRootPath    string
-
 	ClusterChannelPrefix string
 	MsgChannelSubName    string
 	TimeTickChannel      string
@@ -304,11 +455,7 @@ type rootCoordConfig struct {
 
 	DmlChannelNum               int64
 	MaxPartitionNum             int64
-	DefaultPartitionName        string
-	DefaultIndexName            string
 	MinSegmentSizeToEnableIndex int64
-
-	Timeout int
 
 	CreatedTime time.Time
 	UpdatedTime time.Time
@@ -316,10 +463,6 @@ type rootCoordConfig struct {
 
 func (p *rootCoordConfig) init(bp *BaseParamTable) {
 	p.BaseParams = bp
-
-	p.initPulsarAddress()
-	p.initMetaRootPath()
-	p.initKvRootPath()
 
 	// Has to init global msgchannel prefix before other channel names
 	p.initClusterMsgChannelPrefix()
@@ -332,42 +475,6 @@ func (p *rootCoordConfig) init(bp *BaseParamTable) {
 	p.initDmlChannelNum()
 	p.initMaxPartitionNum()
 	p.initMinSegmentSizeToEnableIndex()
-	p.initDefaultPartitionName()
-	p.initDefaultIndexName()
-
-	p.initTimeout()
-}
-
-func (p *rootCoordConfig) initPulsarAddress() {
-	addr, err := p.BaseParams.Load("_PulsarAddress")
-	if err != nil {
-		panic(err)
-	}
-	p.PulsarAddress = addr
-}
-
-func (p *rootCoordConfig) initMetaRootPath() {
-	rootPath, err := p.BaseParams.Load("etcd.rootPath")
-	if err != nil {
-		panic(err)
-	}
-	subPath, err := p.BaseParams.Load("etcd.metaSubPath")
-	if err != nil {
-		panic(err)
-	}
-	p.MetaRootPath = rootPath + "/" + subPath
-}
-
-func (p *rootCoordConfig) initKvRootPath() {
-	rootPath, err := p.BaseParams.Load("etcd.rootPath")
-	if err != nil {
-		panic(err)
-	}
-	subPath, err := p.BaseParams.Load("etcd.kvSubPath")
-	if err != nil {
-		panic(err)
-	}
-	p.KvRootPath = rootPath + "/" + subPath
 }
 
 func (p *rootCoordConfig) initClusterMsgChannelPrefix() {
@@ -435,37 +542,17 @@ func (p *rootCoordConfig) initMinSegmentSizeToEnableIndex() {
 	p.MinSegmentSizeToEnableIndex = p.BaseParams.ParseInt64WithDefault("rootCoord.minSegmentSizeToEnableIndex", 1024)
 }
 
-func (p *rootCoordConfig) initDefaultPartitionName() {
-	name := p.BaseParams.LoadWithDefault("common.defaultPartitionName", "_default")
-	p.DefaultPartitionName = name
-}
-
-func (p *rootCoordConfig) initDefaultIndexName() {
-	name := p.BaseParams.LoadWithDefault("common.defaultIndexName", "_default_idx")
-	p.DefaultIndexName = name
-}
-
-func (p *rootCoordConfig) initTimeout() {
-	p.Timeout = p.BaseParams.ParseIntWithDefault("rootCoord.timeout", 3600)
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 // --- proxy ---
 type proxyConfig struct {
 	BaseParams *BaseParamTable
 
 	// NetworkPort & IP are not used
-	NetworkPort int
-	IP          string
-
+	NetworkPort    int
+	IP             string
 	NetworkAddress string
 
 	Alias string
-
-	MetaRootPath  string
-	PulsarAddress string
-
-	RocksmqPath string // not used in Proxy
 
 	ProxyID                  UniqueID
 	TimeTickInterval         time.Duration
@@ -474,8 +561,6 @@ type proxyConfig struct {
 	MaxFieldNum              int64
 	MaxShardNum              int32
 	MaxDimension             int64
-	DefaultPartitionName     string
-	DefaultIndexName         string
 	BufFlagExpireTime        time.Duration
 	BufFlagCleanupInterval   time.Duration
 
@@ -484,15 +569,11 @@ type proxyConfig struct {
 	ProxyTimeTickChannelNames []string
 	ProxySubName              string
 
-	// required from query coord
+	// required from QueryCoord
 	SearchResultChannelNames   []string
 	RetrieveResultChannelNames []string
 
 	MaxTaskNum int64
-
-	PulsarMaxMessageSize int
-
-	RetentionDuration int64
 
 	CreatedTime time.Time
 	UpdatedTime time.Time
@@ -501,9 +582,6 @@ type proxyConfig struct {
 func (p *proxyConfig) init(bp *BaseParamTable) {
 	p.BaseParams = bp
 
-	p.initMetaRootPath()
-	p.initPulsarAddress()
-	p.initRocksmqPath()
 	p.initTimeTickInterval()
 
 	// Has to init global msgchannel prefix before other channel names
@@ -515,15 +593,10 @@ func (p *proxyConfig) init(bp *BaseParamTable) {
 	p.initMaxFieldNum()
 	p.initMaxShardNum()
 	p.initMaxDimension()
-	p.initDefaultPartitionName()
-	p.initDefaultIndexName()
-
-	p.initPulsarMaxMessageSize()
 
 	p.initMaxTaskNum()
 	p.initBufFlagExpireTime()
 	p.initBufFlagCleanupInterval()
-	p.initRetentionDuration()
 }
 
 // Refresh is called after session init
@@ -534,22 +607,6 @@ func (p *proxyConfig) Refresh() {
 // InitAlias initialize Alias member.
 func (p *proxyConfig) InitAlias(alias string) {
 	p.Alias = alias
-}
-
-func (p *proxyConfig) initPulsarAddress() {
-	ret, err := p.BaseParams.Load("_PulsarAddress")
-	if err != nil {
-		panic(err)
-	}
-	p.PulsarAddress = ret
-}
-
-func (p *proxyConfig) initRocksmqPath() {
-	path, err := p.BaseParams.Load("_RocksmqPath")
-	if err != nil {
-		panic(err)
-	}
-	p.RocksmqPath = path
 }
 
 func (p *proxyConfig) initTimeTickInterval() {
@@ -624,42 +681,6 @@ func (p *proxyConfig) initMaxDimension() {
 	p.MaxDimension = maxDimension
 }
 
-func (p *proxyConfig) initDefaultPartitionName() {
-	name := p.BaseParams.LoadWithDefault("common.defaultPartitionName", "_default")
-	p.DefaultPartitionName = name
-}
-
-func (p *proxyConfig) initDefaultIndexName() {
-	name := p.BaseParams.LoadWithDefault("common.defaultIndexName", "_default_idx")
-	p.DefaultIndexName = name
-}
-
-func (p *proxyConfig) initPulsarMaxMessageSize() {
-	maxMessageSizeStr, err := p.BaseParams.Load("pulsar.maxMessageSize")
-	if err != nil {
-		p.PulsarMaxMessageSize = SuggestPulsarMaxMessageSize
-	} else {
-		maxMessageSize, err := strconv.Atoi(maxMessageSizeStr)
-		if err != nil {
-			p.PulsarMaxMessageSize = SuggestPulsarMaxMessageSize
-		} else {
-			p.PulsarMaxMessageSize = maxMessageSize
-		}
-	}
-}
-
-func (p *proxyConfig) initMetaRootPath() {
-	rootPath, err := p.BaseParams.Load("etcd.rootPath")
-	if err != nil {
-		panic(err)
-	}
-	subPath, err := p.BaseParams.Load("etcd.metaSubPath")
-	if err != nil {
-		panic(err)
-	}
-	p.MetaRootPath = path.Join(rootPath, subPath)
-}
-
 func (p *proxyConfig) initMaxTaskNum() {
 	p.MaxTaskNum = p.BaseParams.ParseInt64WithDefault("proxy.maxTaskNum", 1024)
 }
@@ -672,10 +693,6 @@ func (p *proxyConfig) initBufFlagExpireTime() {
 func (p *proxyConfig) initBufFlagCleanupInterval() {
 	interval := p.BaseParams.ParseInt64WithDefault("proxy.bufFlagCleanupInterval", 600)
 	p.BufFlagCleanupInterval = time.Duration(interval) * time.Second
-}
-
-func (p *proxyConfig) initRetentionDuration() {
-	p.RetentionDuration = p.BaseParams.ParseInt64WithDefault("common.retentionDuration", DefaultRetentionDuration)
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -700,25 +717,11 @@ type queryCoordConfig struct {
 	SearchChannelPrefix       string
 	SearchResultChannelPrefix string
 
-	// --- etcd ---
-	MetaRootPath string
-	KvRootPath   string
-
-	//--- Minio ---
-	MinioEndPoint        string
-	MinioAccessKeyID     string
-	MinioSecretAccessKey string
-	MinioUseSSLStr       bool
-	MinioBucketName      string
-
 	CreatedTime time.Time
 	UpdatedTime time.Time
 
 	DmlChannelPrefix   string
 	DeltaChannelPrefix string
-
-	// --- Pulsar ---
-	PulsarAddress string
 
 	//---- Handoff ---
 	AutoHandoff bool
@@ -739,20 +742,6 @@ func (p *queryCoordConfig) init(bp *BaseParamTable) {
 	p.initSearchResultChannelPrefix()
 	p.initStatsChannelName()
 	p.initTimeTickChannelName()
-
-	// --- etcd ---
-	p.initMetaRootPath()
-	p.initKvRootPath()
-
-	//--- Minio ----
-	p.initMinioEndPoint()
-	p.initMinioAccessKeyID()
-	p.initMinioSecretAccessKey()
-	p.initMinioUseSSLStr()
-	p.initMinioBucketName()
-
-	//--- Pulsar ----
-	p.initPulsarAddress()
 
 	//---- Handoff ---
 	p.initAutoHandoff()
@@ -810,82 +799,6 @@ func (p *queryCoordConfig) initTimeTickChannelName() {
 	}
 	s := []string{p.ClusterChannelPrefix, config}
 	p.TimeTickChannelName = strings.Join(s, "-")
-}
-
-func (p *queryCoordConfig) initMetaRootPath() {
-	rootPath, err := p.BaseParams.Load("etcd.rootPath")
-	if err != nil {
-		panic(err)
-	}
-	subPath, err := p.BaseParams.Load("etcd.metaSubPath")
-	if err != nil {
-		panic(err)
-	}
-	p.MetaRootPath = path.Join(rootPath, subPath)
-}
-
-func (p *queryCoordConfig) initKvRootPath() {
-	rootPath, err := p.BaseParams.Load("etcd.rootPath")
-	if err != nil {
-		panic(err)
-	}
-	subPath, err := p.BaseParams.Load("etcd.kvSubPath")
-	if err != nil {
-		panic(err)
-	}
-	p.KvRootPath = path.Join(rootPath, subPath)
-}
-
-func (p *queryCoordConfig) initMinioEndPoint() {
-	url, err := p.BaseParams.Load("_MinioAddress")
-	if err != nil {
-		panic(err)
-	}
-	p.MinioEndPoint = url
-}
-
-func (p *queryCoordConfig) initMinioAccessKeyID() {
-	id, err := p.BaseParams.Load("minio.accessKeyID")
-	if err != nil {
-		panic(err)
-	}
-	p.MinioAccessKeyID = id
-}
-
-func (p *queryCoordConfig) initMinioSecretAccessKey() {
-	key, err := p.BaseParams.Load("minio.secretAccessKey")
-	if err != nil {
-		panic(err)
-	}
-	p.MinioSecretAccessKey = key
-}
-
-func (p *queryCoordConfig) initMinioUseSSLStr() {
-	ssl, err := p.BaseParams.Load("minio.useSSL")
-	if err != nil {
-		panic(err)
-	}
-	sslBoolean, err := strconv.ParseBool(ssl)
-	if err != nil {
-		panic(err)
-	}
-	p.MinioUseSSLStr = sslBoolean
-}
-
-func (p *queryCoordConfig) initMinioBucketName() {
-	bucketName, err := p.BaseParams.Load("minio.bucketName")
-	if err != nil {
-		panic(err)
-	}
-	p.MinioBucketName = bucketName
-}
-
-func (p *queryCoordConfig) initPulsarAddress() {
-	addr, err := p.BaseParams.Load("_PulsarAddress")
-	if err != nil {
-		panic(err)
-	}
-	p.PulsarAddress = addr
 }
 
 func (p *queryCoordConfig) initAutoHandoff() {
@@ -958,10 +871,6 @@ func (p *queryCoordConfig) initDeltaChannelName() {
 type queryNodeConfig struct {
 	BaseParams *BaseParamTable
 
-	PulsarAddress string
-	RocksmqPath   string
-	MetaRootPath  string
-
 	Alias         string
 	QueryNodeIP   string
 	QueryNodePort int64
@@ -977,13 +886,6 @@ type queryNodeConfig struct {
 
 	FlowGraphMaxQueueLength int32
 	FlowGraphMaxParallelism int32
-
-	// minio
-	MinioEndPoint        string
-	MinioAccessKeyID     string
-	MinioSecretAccessKey string
-	MinioUseSSLStr       bool
-	MinioBucketName      string
 
 	// search
 	SearchChannelNames         []string
@@ -1007,7 +909,6 @@ type queryNodeConfig struct {
 
 	// segcore
 	ChunkRows int64
-	SimdType  string
 
 	CreatedTime time.Time
 	UpdatedTime time.Time
@@ -1023,17 +924,6 @@ func (p *queryNodeConfig) init(bp *BaseParamTable) {
 	p.BaseParams = bp
 
 	p.initCacheSize()
-
-	p.initMinioEndPoint()
-	p.initMinioAccessKeyID()
-	p.initMinioSecretAccessKey()
-	p.initMinioUseSSLStr()
-	p.initMinioBucketName()
-
-	p.initPulsarAddress()
-	p.initRocksmqPath()
-	p.initMetaRootPath()
-
 	p.initGracefulTime()
 
 	p.initFlowGraphMaxQueueLength()
@@ -1052,7 +942,6 @@ func (p *queryNodeConfig) init(bp *BaseParamTable) {
 	p.initStatsPublishInterval()
 
 	p.initSegcoreChunkRows()
-	p.initKnowhereSimdType()
 
 	p.initSkipQueryChannelRecovery()
 	p.initOverloadedMemoryThresholdPercentage()
@@ -1087,67 +976,6 @@ func (p *queryNodeConfig) initCacheSize() {
 		return
 	}
 	p.CacheSize = value
-}
-
-// ---------------------------------------------------------- minio
-func (p *queryNodeConfig) initMinioEndPoint() {
-	url, err := p.BaseParams.Load("_MinioAddress")
-	if err != nil {
-		panic(err)
-	}
-	p.MinioEndPoint = url
-}
-
-func (p *queryNodeConfig) initMinioAccessKeyID() {
-	id, err := p.BaseParams.Load("minio.accessKeyID")
-	if err != nil {
-		panic(err)
-	}
-	p.MinioAccessKeyID = id
-}
-
-func (p *queryNodeConfig) initMinioSecretAccessKey() {
-	key, err := p.BaseParams.Load("minio.secretAccessKey")
-	if err != nil {
-		panic(err)
-	}
-	p.MinioSecretAccessKey = key
-}
-
-func (p *queryNodeConfig) initMinioUseSSLStr() {
-	ssl, err := p.BaseParams.Load("minio.useSSL")
-	if err != nil {
-		panic(err)
-	}
-	sslBoolean, err := strconv.ParseBool(ssl)
-	if err != nil {
-		panic(err)
-	}
-	p.MinioUseSSLStr = sslBoolean
-}
-
-func (p *queryNodeConfig) initMinioBucketName() {
-	bucketName, err := p.BaseParams.Load("minio.bucketName")
-	if err != nil {
-		panic(err)
-	}
-	p.MinioBucketName = bucketName
-}
-
-func (p *queryNodeConfig) initPulsarAddress() {
-	url, err := p.BaseParams.Load("_PulsarAddress")
-	if err != nil {
-		panic(err)
-	}
-	p.PulsarAddress = url
-}
-
-func (p *queryNodeConfig) initRocksmqPath() {
-	path, err := p.BaseParams.Load("_RocksmqPath")
-	if err != nil {
-		panic(err)
-	}
-	p.RocksmqPath = path
 }
 
 // advanced params
@@ -1215,18 +1043,6 @@ func (p *queryNodeConfig) initStatsChannelName() {
 	p.StatsChannelName = strings.Join(s, "-")
 }
 
-func (p *queryNodeConfig) initMetaRootPath() {
-	rootPath, err := p.BaseParams.Load("etcd.rootPath")
-	if err != nil {
-		panic(err)
-	}
-	subPath, err := p.BaseParams.Load("etcd.metaSubPath")
-	if err != nil {
-		panic(err)
-	}
-	p.MetaRootPath = rootPath + "/" + subPath
-}
-
 func (p *queryNodeConfig) initGracefulTime() {
 	p.GracefulTime = p.BaseParams.ParseInt64("queryNode.gracefulTime")
 	log.Debug("query node init gracefulTime", zap.Any("gracefulTime", p.GracefulTime))
@@ -1234,12 +1050,6 @@ func (p *queryNodeConfig) initGracefulTime() {
 
 func (p *queryNodeConfig) initSegcoreChunkRows() {
 	p.ChunkRows = p.BaseParams.ParseInt64WithDefault("queryNode.segcore.chunkRows", 32768)
-}
-
-func (p *queryNodeConfig) initKnowhereSimdType() {
-	simdType := p.BaseParams.LoadWithDefault("knowhere.simdType", "auto")
-	p.SimdType = simdType
-	log.Debug("initialize the knowhere simd type", zap.String("simd_type", p.SimdType))
 }
 
 func (p *queryNodeConfig) initSkipQueryChannelRecovery() {
@@ -1267,28 +1077,7 @@ type dataCoordConfig struct {
 	Address string
 
 	// --- ETCD ---
-	MetaRootPath            string
-	KvRootPath              string
-	SegmentBinlogSubPath    string
-	CollectionBinlogSubPath string
-	ChannelWatchSubPath     string
-
-	// --- MinIO ---
-	MinioAddress         string
-	MinioAccessKeyID     string
-	MinioSecretAccessKey string
-	MinioUseSSL          bool
-	MinioBucketName      string
-	MinioRootPath        string
-
-	// --- Pulsar ---
-	PulsarAddress string
-
-	// --- Rocksmq ---
-	RocksmqPath string
-
-	FlushStreamPosSubPath string
-	StatsStreamPosSubPath string
+	ChannelWatchSubPath string
 
 	// --- SEGMENTS ---
 	SegmentMaxSize          float64
@@ -1306,10 +1095,8 @@ type dataCoordConfig struct {
 	UpdatedTime time.Time
 
 	EnableCompaction        bool
+	EnableAutoCompaction    bool
 	EnableGarbageCollection bool
-
-	RetentionDuration    int64
-	EnableAutoCompaction bool
 
 	// Garbage Collection
 	GCInterval         time.Duration
@@ -1320,14 +1107,7 @@ type dataCoordConfig struct {
 func (p *dataCoordConfig) init(bp *BaseParamTable) {
 	p.BaseParams = bp
 
-	p.initMetaRootPath()
-	p.initKvRootPath()
-	p.initSegmentBinlogSubPath()
-	p.initCollectionBinlogSubPath()
 	p.initChannelWatchPrefix()
-
-	p.initPulsarAddress()
-	p.initRocksmqPath()
 
 	p.initSegmentMaxSize()
 	p.initSegmentSealProportion()
@@ -1340,81 +1120,13 @@ func (p *dataCoordConfig) init(bp *BaseParamTable) {
 	p.initSegmentInfoChannelName()
 	p.initDataCoordSubscriptionName()
 
-	p.initFlushStreamPosSubPath()
-	p.initStatsStreamPosSubPath()
-
 	p.initEnableCompaction()
-
-	p.initMinioAddress()
-	p.initMinioAccessKeyID()
-	p.initMinioSecretAccessKey()
-	p.initMinioUseSSL()
-	p.initMinioBucketName()
-	p.initMinioRootPath()
-
-	p.initRetentionDuration()
 	p.initEnableAutoCompaction()
 
 	p.initEnableGarbageCollection()
 	p.initGCInterval()
 	p.initGCMissingTolerance()
 	p.initGCDropTolerance()
-}
-
-func (p *dataCoordConfig) initPulsarAddress() {
-	addr, err := p.BaseParams.Load("_PulsarAddress")
-	if err != nil {
-		panic(err)
-	}
-	p.PulsarAddress = addr
-}
-
-func (p *dataCoordConfig) initRocksmqPath() {
-	path, err := p.BaseParams.Load("_RocksmqPath")
-	if err != nil {
-		panic(err)
-	}
-	p.RocksmqPath = path
-}
-
-func (p *dataCoordConfig) initMetaRootPath() {
-	rootPath, err := p.BaseParams.Load("etcd.rootPath")
-	if err != nil {
-		panic(err)
-	}
-	subPath, err := p.BaseParams.Load("etcd.metaSubPath")
-	if err != nil {
-		panic(err)
-	}
-	p.MetaRootPath = rootPath + "/" + subPath
-}
-
-func (p *dataCoordConfig) initKvRootPath() {
-	rootPath, err := p.BaseParams.Load("etcd.rootPath")
-	if err != nil {
-		panic(err)
-	}
-	subPath, err := p.BaseParams.Load("etcd.kvSubPath")
-	if err != nil {
-		panic(err)
-	}
-	p.KvRootPath = rootPath + "/" + subPath
-}
-
-func (p *dataCoordConfig) initSegmentBinlogSubPath() {
-	subPath, err := p.BaseParams.Load("etcd.segmentBinlogSubPath")
-	if err != nil {
-		panic(err)
-	}
-	p.SegmentBinlogSubPath = subPath
-}
-
-func (p *dataCoordConfig) initCollectionBinlogSubPath() {
-	subPath, err := p.BaseParams.Load("etcd.collectionBinlogSubPath")
-	if err != nil {
-		panic(err)
-	}
-	p.CollectionBinlogSubPath = subPath
 }
 
 func (p *dataCoordConfig) initSegmentMaxSize() {
@@ -1473,22 +1185,6 @@ func (p *dataCoordConfig) initDataCoordSubscriptionName() {
 	p.DataCoordSubscriptionName = strings.Join(s, "-")
 }
 
-func (p *dataCoordConfig) initFlushStreamPosSubPath() {
-	subPath, err := p.BaseParams.Load("etcd.flushStreamPosSubPath")
-	if err != nil {
-		panic(err)
-	}
-	p.FlushStreamPosSubPath = subPath
-}
-
-func (p *dataCoordConfig) initStatsStreamPosSubPath() {
-	subPath, err := p.BaseParams.Load("etcd.statsStreamPosSubPath")
-	if err != nil {
-		panic(err)
-	}
-	p.StatsStreamPosSubPath = subPath
-}
-
 func (p *dataCoordConfig) initChannelWatchPrefix() {
 	// WARN: this value should not be put to milvus.yaml. It's a default value for channel watch path.
 	// This will be removed after we reconstruct our config module.
@@ -1515,59 +1211,6 @@ func (p *dataCoordConfig) initGCMissingTolerance() {
 
 func (p *dataCoordConfig) initGCDropTolerance() {
 	p.GCDropTolerance = time.Duration(p.BaseParams.ParseInt64WithDefault("dataCoord.gc.dropTolerance", 24*60*60)) * time.Second
-}
-
-// --- MinIO ---
-func (p *dataCoordConfig) initMinioAddress() {
-	endpoint, err := p.BaseParams.Load("_MinioAddress")
-	if err != nil {
-		panic(err)
-	}
-	p.MinioAddress = endpoint
-}
-
-func (p *dataCoordConfig) initMinioAccessKeyID() {
-	keyID, err := p.BaseParams.Load("_MinioAccessKeyID")
-	if err != nil {
-		panic(err)
-	}
-	p.MinioAccessKeyID = keyID
-}
-
-func (p *dataCoordConfig) initMinioSecretAccessKey() {
-	key, err := p.BaseParams.Load("_MinioSecretAccessKey")
-	if err != nil {
-		panic(err)
-	}
-	p.MinioSecretAccessKey = key
-}
-
-func (p *dataCoordConfig) initMinioUseSSL() {
-	usessl, err := p.BaseParams.Load("_MinioUseSSL")
-	if err != nil {
-		panic(err)
-	}
-	p.MinioUseSSL, _ = strconv.ParseBool(usessl)
-}
-
-func (p *dataCoordConfig) initMinioBucketName() {
-	bucketName, err := p.BaseParams.Load("_MinioBucketName")
-	if err != nil {
-		panic(err)
-	}
-	p.MinioBucketName = bucketName
-}
-
-func (p *dataCoordConfig) initMinioRootPath() {
-	rootPath, err := p.BaseParams.Load("minio.rootPath")
-	if err != nil {
-		panic(err)
-	}
-	p.MinioRootPath = rootPath
-}
-
-func (p *dataCoordConfig) initRetentionDuration() {
-	p.RetentionDuration = p.BaseParams.ParseInt64WithDefault("common.retentionDuration", DefaultRetentionDuration)
 }
 
 func (p *dataCoordConfig) initEnableAutoCompaction() {
@@ -1599,12 +1242,6 @@ type dataNodeConfig struct {
 	DmlChannelName   string
 	DeltaChannelName string
 
-	// Pulsar address
-	PulsarAddress string
-
-	// Rocksmq path
-	RocksmqPath string
-
 	// Cluster channels
 	ClusterChannelPrefix string
 
@@ -1615,15 +1252,7 @@ type dataNodeConfig struct {
 	MsgChannelSubName string
 
 	// etcd
-	MetaRootPath        string
 	ChannelWatchSubPath string
-
-	// MinIO
-	MinioAddress         string
-	MinioAccessKeyID     string
-	MinioSecretAccessKey string
-	MinioUseSSL          bool
-	MinioBucketName      string
 
 	CreatedTime time.Time
 	UpdatedTime time.Time
@@ -1639,22 +1268,12 @@ func (p *dataNodeConfig) init(bp *BaseParamTable) {
 	p.initStatsBinlogRootPath()
 	p.initDeleteBinlogRootPath()
 
-	p.initPulsarAddress()
-	p.initRocksmqPath()
-
 	// Must init global msgchannel prefix before other channel names
 	p.initClusterMsgChannelPrefix()
 	p.initTimeTickChannelName()
 	p.initMsgChannelSubName()
 
-	p.initMetaRootPath()
 	p.initChannelWatchPath()
-
-	p.initMinioAddress()
-	p.initMinioAccessKeyID()
-	p.initMinioSecretAccessKey()
-	p.initMinioUseSSL()
-	p.initMinioBucketName()
 
 	p.initDmlChannelName()
 	p.initDeltaChannelName()
@@ -1683,7 +1302,7 @@ func (p *dataNodeConfig) initFlushInsertBufferSize() {
 }
 
 func (p *dataNodeConfig) initInsertBinlogRootPath() {
-	// GOOSE TODO: rootPath change to  TenentID
+	// GOOSE TODO: rootPath change to TenentID
 	rootPath, err := p.BaseParams.Load("minio.rootPath")
 	if err != nil {
 		panic(err)
@@ -1705,22 +1324,6 @@ func (p *dataNodeConfig) initDeleteBinlogRootPath() {
 		panic(err)
 	}
 	p.DeleteBinlogRootPath = path.Join(rootPath, "delta_log")
-}
-
-func (p *dataNodeConfig) initPulsarAddress() {
-	url, err := p.BaseParams.Load("_PulsarAddress")
-	if err != nil {
-		panic(err)
-	}
-	p.PulsarAddress = url
-}
-
-func (p *dataNodeConfig) initRocksmqPath() {
-	path, err := p.BaseParams.Load("_RocksmqPath")
-	if err != nil {
-		panic(err)
-	}
-	p.RocksmqPath = path
 }
 
 func (p *dataNodeConfig) initClusterMsgChannelPrefix() {
@@ -1749,61 +1352,8 @@ func (p *dataNodeConfig) initMsgChannelSubName() {
 	p.MsgChannelSubName = strings.Join(s, "-")
 }
 
-func (p *dataNodeConfig) initMetaRootPath() {
-	rootPath, err := p.BaseParams.Load("etcd.rootPath")
-	if err != nil {
-		panic(err)
-	}
-	subPath, err := p.BaseParams.Load("etcd.metaSubPath")
-	if err != nil {
-		panic(err)
-	}
-	p.MetaRootPath = path.Join(rootPath, subPath)
-}
-
 func (p *dataNodeConfig) initChannelWatchPath() {
 	p.ChannelWatchSubPath = "channelwatch"
-}
-
-// --- MinIO ---
-func (p *dataNodeConfig) initMinioAddress() {
-	endpoint, err := p.BaseParams.Load("_MinioAddress")
-	if err != nil {
-		panic(err)
-	}
-	p.MinioAddress = endpoint
-}
-
-func (p *dataNodeConfig) initMinioAccessKeyID() {
-	keyID, err := p.BaseParams.Load("_MinioAccessKeyID")
-	if err != nil {
-		panic(err)
-	}
-	p.MinioAccessKeyID = keyID
-}
-
-func (p *dataNodeConfig) initMinioSecretAccessKey() {
-	key, err := p.BaseParams.Load("_MinioSecretAccessKey")
-	if err != nil {
-		panic(err)
-	}
-	p.MinioSecretAccessKey = key
-}
-
-func (p *dataNodeConfig) initMinioUseSSL() {
-	usessl, err := p.BaseParams.Load("_MinioUseSSL")
-	if err != nil {
-		panic(err)
-	}
-	p.MinioUseSSL, _ = strconv.ParseBool(usessl)
-}
-
-func (p *dataNodeConfig) initMinioBucketName() {
-	bucketName, err := p.BaseParams.Load("_MinioBucketName")
-	if err != nil {
-		panic(err)
-	}
-	p.MinioBucketName = bucketName
 }
 
 func (p *dataNodeConfig) initDmlChannelName() {
@@ -1832,15 +1382,7 @@ type indexCoordConfig struct {
 	Address string
 	Port    int
 
-	KvRootPath           string
-	MetaRootPath         string
 	IndexStorageRootPath string
-
-	MinIOAddress         string
-	MinIOAccessKeyID     string
-	MinIOSecretAccessKey string
-	MinIOUseSSL          bool
-	MinioBucketName      string
 
 	CreatedTime time.Time
 	UpdatedTime time.Time
@@ -1849,86 +1391,7 @@ type indexCoordConfig struct {
 func (p *indexCoordConfig) init(bp *BaseParamTable) {
 	p.BaseParams = bp
 
-	p.initMetaRootPath()
-	p.initKvRootPath()
-	p.initMinIOAddress()
-	p.initMinIOAccessKeyID()
-	p.initMinIOSecretAccessKey()
-	p.initMinIOUseSSL()
-	p.initMinioBucketName()
 	p.initIndexStorageRootPath()
-}
-
-func (p *indexCoordConfig) initMetaRootPath() {
-	rootPath, err := p.BaseParams.Load("etcd.rootPath")
-	if err != nil {
-		panic(err)
-	}
-	subPath, err := p.BaseParams.Load("etcd.metaSubPath")
-	if err != nil {
-		panic(err)
-	}
-	p.MetaRootPath = rootPath + "/" + subPath
-}
-
-func (p *indexCoordConfig) initKvRootPath() {
-	rootPath, err := p.BaseParams.Load("etcd.rootPath")
-	if err != nil {
-		panic(err)
-	}
-	subPath, err := p.BaseParams.Load("etcd.kvSubPath")
-	if err != nil {
-		panic(err)
-	}
-	p.KvRootPath = rootPath + "/" + subPath
-}
-
-// initMinIOAddress initializes init the minio address of configuration items.
-func (p *indexCoordConfig) initMinIOAddress() {
-	ret, err := p.BaseParams.Load("_MinioAddress")
-	if err != nil {
-		panic(err)
-	}
-	p.MinIOAddress = ret
-}
-
-// initMinIOAccessKeyID initializes the minio access key of configuration items.
-func (p *indexCoordConfig) initMinIOAccessKeyID() {
-	ret, err := p.BaseParams.Load("minio.accessKeyID")
-	if err != nil {
-		panic(err)
-	}
-	p.MinIOAccessKeyID = ret
-}
-
-// initMinIOSecretAccessKey initializes the minio secret access key.
-func (p *indexCoordConfig) initMinIOSecretAccessKey() {
-	ret, err := p.BaseParams.Load("minio.secretAccessKey")
-	if err != nil {
-		panic(err)
-	}
-	p.MinIOSecretAccessKey = ret
-}
-
-// initMinIOUseSSL initializes the minio use SSL of configuration items.
-func (p *indexCoordConfig) initMinIOUseSSL() {
-	ret, err := p.BaseParams.Load("minio.useSSL")
-	if err != nil {
-		panic(err)
-	}
-	p.MinIOUseSSL, err = strconv.ParseBool(ret)
-	if err != nil {
-		panic(err)
-	}
-}
-
-// initMinioBucketName initializes the minio bucket name of configuration items.
-func (p *indexCoordConfig) initMinioBucketName() {
-	bucketName, err := p.BaseParams.Load("minio.bucketName")
-	if err != nil {
-		panic(err)
-	}
-	p.MinioBucketName = bucketName
 }
 
 // initIndexStorageRootPath initializes the root path of index files.
@@ -1952,16 +1415,7 @@ type indexNodeConfig struct {
 	NodeID int64
 	Alias  string
 
-	MetaRootPath         string
 	IndexStorageRootPath string
-
-	MinIOAddress         string
-	MinIOAccessKeyID     string
-	MinIOSecretAccessKey string
-	MinIOUseSSL          bool
-	MinioBucketName      string
-
-	SimdType string
 
 	CreatedTime time.Time
 	UpdatedTime time.Time
@@ -1970,66 +1424,12 @@ type indexNodeConfig struct {
 func (p *indexNodeConfig) init(bp *BaseParamTable) {
 	p.BaseParams = bp
 
-	p.initMinIOAddress()
-	p.initMinIOAccessKeyID()
-	p.initMinIOSecretAccessKey()
-	p.initMinIOUseSSL()
-	p.initMinioBucketName()
-	p.initMetaRootPath()
 	p.initIndexStorageRootPath()
-	p.initKnowhereSimdType()
 }
 
 // InitAlias initializes an alias for the IndexNode role.
 func (p *indexNodeConfig) InitAlias(alias string) {
 	p.Alias = alias
-}
-
-func (p *indexNodeConfig) initMinIOAddress() {
-	ret, err := p.BaseParams.Load("_MinioAddress")
-	if err != nil {
-		panic(err)
-	}
-	p.MinIOAddress = ret
-}
-
-func (p *indexNodeConfig) initMinIOAccessKeyID() {
-	ret, err := p.BaseParams.Load("_MinioAccessKeyID")
-	if err != nil {
-		panic(err)
-	}
-	p.MinIOAccessKeyID = ret
-}
-
-func (p *indexNodeConfig) initMinIOSecretAccessKey() {
-	ret, err := p.BaseParams.Load("_MinioSecretAccessKey")
-	if err != nil {
-		panic(err)
-	}
-	p.MinIOSecretAccessKey = ret
-}
-
-func (p *indexNodeConfig) initMinIOUseSSL() {
-	ret, err := p.BaseParams.Load("_MinioUseSSL")
-	if err != nil {
-		panic(err)
-	}
-	p.MinIOUseSSL, err = strconv.ParseBool(ret)
-	if err != nil {
-		panic(err)
-	}
-}
-
-func (p *indexNodeConfig) initMetaRootPath() {
-	rootPath, err := p.BaseParams.Load("etcd.rootPath")
-	if err != nil {
-		panic(err)
-	}
-	subPath, err := p.BaseParams.Load("etcd.metaSubPath")
-	if err != nil {
-		panic(err)
-	}
-	p.MetaRootPath = path.Join(rootPath, subPath)
 }
 
 func (p *indexNodeConfig) initIndexStorageRootPath() {
@@ -2038,20 +1438,6 @@ func (p *indexNodeConfig) initIndexStorageRootPath() {
 		panic(err)
 	}
 	p.IndexStorageRootPath = path.Join(rootPath, "index_files")
-}
-
-func (p *indexNodeConfig) initMinioBucketName() {
-	bucketName, err := p.BaseParams.Load("_MinioBucketName")
-	if err != nil {
-		panic(err)
-	}
-	p.MinioBucketName = bucketName
-}
-
-func (p *indexNodeConfig) initKnowhereSimdType() {
-	simdType := p.BaseParams.LoadWithDefault("knowhere.simdType", "auto")
-	p.SimdType = simdType
-	log.Debug("initialize the knowhere simd type", zap.String("simd_type", p.SimdType))
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -2112,6 +1498,7 @@ func (p *grpcConfig) initListener() {
 	}
 }
 
+// GrpcServerConfig is configuration for grpc server.
 type GrpcServerConfig struct {
 	grpcConfig
 
@@ -2179,6 +1566,7 @@ func (p *GrpcServerConfig) initServerMaxRecvSize() {
 		zap.String("role", p.Domain), zap.Int("grpc.serverMaxRecvSize", p.ServerMaxRecvSize))
 }
 
+// GrpcClientConfig is configuration for grpc client.
 type GrpcClientConfig struct {
 	grpcConfig
 

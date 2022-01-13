@@ -45,11 +45,13 @@ func (p *Partition) ID() UniqueID {
 	return p.partitionID
 }
 
+// addSegmentID add segmentID to segmentIDs
 func (p *Partition) addSegmentID(segmentID UniqueID) {
 	p.segmentIDs = append(p.segmentIDs, segmentID)
 	log.Debug("add a segment to replica", zap.Int64("collectionID", p.collectionID), zap.Int64("partitionID", p.partitionID), zap.Int64("segmentID", segmentID))
 }
 
+// removeSegmentID removes segmentID from segmentIDs
 func (p *Partition) removeSegmentID(segmentID UniqueID) {
 	tmpIDs := make([]UniqueID, 0)
 	for _, id := range p.segmentIDs {
@@ -61,6 +63,7 @@ func (p *Partition) removeSegmentID(segmentID UniqueID) {
 	log.Debug("remove a segment from replica", zap.Int64("collectionID", p.collectionID), zap.Int64("partitionID", p.partitionID), zap.Int64("segmentID", segmentID))
 }
 
+// newPartition returns a new Partition
 func newPartition(collectionID UniqueID, partitionID UniqueID) *Partition {
 	var newPartition = &Partition{
 		collectionID: collectionID,

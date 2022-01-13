@@ -19,13 +19,12 @@ package datacoord
 import (
 	"context"
 
-	"go.uber.org/zap"
-
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/rootcoord"
+	"go.uber.org/zap"
 )
 
 // Handler handles some channel method for ChannelManager
@@ -36,7 +35,7 @@ type Handler interface {
 	FinishDropChannel(channel string)
 }
 
-// Handler is a helper of Server
+// ServerHandler is a helper of Server
 type ServerHandler struct {
 	s *Server
 }

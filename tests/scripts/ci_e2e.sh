@@ -1,12 +1,14 @@
 #!/bin/bash
 
-# Copyright 2018 Istio Authors
+# Licensed to the LF AI & Data foundation under one
+# or more contributor license agreements. See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership. The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License. You may obtain a copy of the License at
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#    http://www.apache.org/licenses/LICENSE-2.0
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -35,13 +37,10 @@ MILVUS_HELM_RELEASE_NAME="${MILVUS_HELM_RELEASE_NAME:-milvus-testing}"
 MILVUS_CLUSTER_ENABLED="${MILVUS_CLUSTER_ENABLED:-false}"
 MILVUS_HELM_NAMESPACE="${MILVUS_HELM_NAMESPACE:-default}"
 PARALLEL_NUM="${PARALLEL_NUM:-6}"
-MILVUS_CLIENT="${MILVUS_CLIENT:-pymilvus}"
 # Use service name instead of IP to test
 MILVUS_SERVICE_NAME=$(echo "${MILVUS_HELM_RELEASE_NAME}-milvus.${MILVUS_HELM_NAMESPACE}" | tr -d '\n')
 MILVUS_SERVICE_PORT="19530"
 
-# Shellcheck source=build/lib.sh
-source "${ROOT}/build/lib.sh"
 
 
 # Shellcheck source=ci-util.sh
@@ -60,10 +59,12 @@ if [ ! -d "${CI_LOG_PATH}" ]; then
   # Create dir for ci log path when it does not exist
   mkdir -p ${CI_LOG_PATH}
 fi
-trace "prepare e2e test"  install_pytest_requirements  
+
+echo "prepare e2e test"  
+install_pytest_requirements  
 
 
-
+# Pytest is not able to have both --timeout & --workers, so do not add --timeout or --workers in the shell script
 if [[ -n "${TEST_TIMEOUT:-}" ]]; then
   
   timeout  "${TEST_TIMEOUT}" pytest --host ${MILVUS_SERVICE_NAME} --port ${MILVUS_SERVICE_PORT} \

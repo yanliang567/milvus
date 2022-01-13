@@ -55,6 +55,9 @@ type taskQueue interface {
 	getMaxTaskNum() int64
 }
 
+// make sure baseTaskQueue implements taskQueue.
+var _ taskQueue = (*baseTaskQueue)(nil)
+
 // baseTaskQueue implements taskQueue.
 type baseTaskQueue struct {
 	unissuedTasks *list.List

@@ -32,6 +32,7 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"unsafe"
 
 	"go.uber.org/zap"
@@ -58,6 +59,7 @@ type Index interface {
 // CIndex is a pointer used to access 'CGO'.
 type CIndex struct {
 	indexPtr C.CIndex
+	close    bool
 }
 
 // Serialize serializes vector data into bytes data so that it can be accessed in 'C'.
@@ -133,15 +135,17 @@ func (index *CIndex) BuildBinaryVecIndexWithoutIds(vectors []byte) error {
 	return HandleCStatus(&status, "BuildBinaryVecIndexWithoutIds failed")
 }
 
-// Delete removes the pointer to build the index in 'C'.
+// Delete removes the pointer to build the index in 'C'. we can ensure that it is idempotent.
 func (index *CIndex) Delete() error {
 	/*
 		void
 		DeleteIndex(CIndex index);
 	*/
+	if index.close {
+		return nil
+	}
 	C.DeleteIndex(index.indexPtr)
-	// TODO: check if index.indexPtr will be released by golang, though it occupies little memory
-	// C.free(index.indexPtr)
+	index.close = true
 	return nil
 }
 
@@ -182,9 +186,16 @@ func NewCIndex(typeParams, indexParams map[string]string) (Index, error) {
 	}
 	log.Debug("Successfully create index ...")
 
-	return &CIndex{
+	index := &CIndex{
 		indexPtr: indexPtr,
-	}, nil
+		close:    false,
+	}
+	runtime.SetFinalizer(index, func(index *CIndex) {
+		if index != nil && !index.close {
+			log.Error("there is leakage in index object, please check.")
+		}
+	})
+	return index, nil
 }
 
 // HandleCStatus deal with the error returned from CGO

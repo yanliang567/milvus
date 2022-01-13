@@ -1,6 +1,6 @@
 
 String cron_timezone = 'TZ=Asia/Shanghai'
-String cron_string = BRANCH_NAME == "master" ? "30 20 * * * " : ""
+String cron_string = BRANCH_NAME == "master" ? "05 21 * * * " : ""
 
 int total_timeout_minutes = 60
 
@@ -17,7 +17,11 @@ pipeline {
 
     agent {
         kubernetes {
-            inheritFrom 'milvus-test'
+            label 'milvus-scale-test'
+//             inheritFrom 'milvus-test'
+            defaultContainer 'milvus-test'
+            yamlFile "build/ci/jenkins/pod/scale-test.yaml"
+            customWorkspace "/home/jenkins/agent"
             // idle 5 minutes to wait clean up tasks
             idleMinutes 5
         }
@@ -35,7 +39,6 @@ pipeline {
                 container('milvus-test') {
                     dir ('tests/python_client'){
                         sh """
-                        printenv
                         pip install -r requirements.txt
                         pip install --upgrade protobuf
                         """
@@ -48,7 +51,8 @@ pipeline {
                 container('milvus-test') {
                     dir ('tests/python_client/scale') {
                         script {
-                            sh 'pytest test_data_node_scale.py::TestDataNodeScale::test_scale_data_node -v -s'
+                            // pytest run scale case in parallel
+                            sh 'pytest . -n 5 -v -s'
                         }
                     }
                 }
@@ -56,6 +60,17 @@ pipeline {
         }
     }
     post {
+        unsuccessful {
+            container ('jnlp') {
+                script {
+                    emailext subject: '$DEFAULT_SUBJECT',
+                    body: '$DEFAULT_CONTENT',
+//                     recipientProviders: [requestor()],
+//                     replyTo: '$DEFAULT_REPLYTO',
+                    to: 'qa@zilliz.com'
+                }
+            }
+        }
         always {
             container('milvus-test') {
                 dir ('tests/scripts') {

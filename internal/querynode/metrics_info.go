@@ -25,6 +25,7 @@ import (
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
+// getSystemInfoMetrics returns metrics info of QueryNode
 func getSystemInfoMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest, node *QueryNode) (*milvuspb.GetMetricsResponse, error) {
 	usedMem := metricsinfo.GetUsedMemoryCount()
 	totalMem := metricsinfo.GetMemoryCount()
@@ -54,7 +55,7 @@ func getSystemInfoMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest, 
 			RetrievePulsarBufSize:        Params.QueryNodeCfg.RetrievePulsarBufSize,
 			RetrieveResultReceiveBufSize: Params.QueryNodeCfg.RetrieveResultReceiveBufSize,
 
-			SimdType: Params.QueryNodeCfg.SimdType,
+			SimdType: Params.KnowhereCfg.SimdType,
 		},
 	}
 	metricsinfo.FillDeployMetricsWithEnv(&nodeInfos.SystemInfo)

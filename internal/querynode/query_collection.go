@@ -318,16 +318,16 @@ func (q *queryCollection) setServiceableTime(t Timestamp) {
 
 func (q *queryCollection) checkTimeout(msg queryMsg) bool {
 	curTime := tsoutil.GetCurrentTime()
-	//curTimePhysical, _ := tsoutil.ParseTS(curTime)
-	//timeoutTsPhysical, _ := tsoutil.ParseTS(msg.TimeoutTs())
-	//log.Debug("check if query timeout",
-	//	zap.Any("collectionID", q.collectionID),
-	//	zap.Any("msgID", msg.ID()),
-	//	zap.Any("TimeoutTs", msg.TimeoutTs()),
-	//	zap.Any("curTime", curTime),
-	//	zap.Any("timeoutTsPhysical", timeoutTsPhysical),
-	//	zap.Any("curTimePhysical", curTimePhysical),
-	//)
+	curTimePhysical, _ := tsoutil.ParseTS(curTime)
+	timeoutTsPhysical, _ := tsoutil.ParseTS(msg.TimeoutTs())
+	log.Debug("check if query timeout",
+		zap.Int64("collectionID", q.collectionID),
+		zap.Int64("msgID", msg.ID()),
+		zap.Uint64("TimeoutTs", msg.TimeoutTs()),
+		zap.Uint64("curTime", curTime),
+		zap.Time("timeoutTsPhysical", timeoutTsPhysical),
+		zap.Time("curTimePhysical", curTimePhysical),
+	)
 	return msg.TimeoutTs() > typeutil.ZeroTimestamp && curTime >= msg.TimeoutTs()
 }
 
@@ -460,9 +460,8 @@ func (q *queryCollection) receiveQueryMsg(msg queryMsg) error {
 	tr := timerecord.NewTimeRecorder(fmt.Sprintf("receiveQueryMsg %d", msg.ID()))
 
 	if q.checkTimeout(msg) {
-		err := errors.New(fmt.Sprintln("do query failed in receiveQueryMsg because timeout"+
-			", collectionID = ", collectionID,
-			", msgID = ", msg.ID()))
+		err := fmt.Errorf("do query failed in receiveQueryMsg because timeout, "+
+			"collectionID = %d, msgID = %d, timeoutTS = %d", collectionID, msg.ID(), msg.TimeoutTs())
 		publishErr := q.publishFailedQueryResult(msg, err.Error())
 		if publishErr != nil {
 			return fmt.Errorf("first err = %s, second err = %s", err, publishErr)
@@ -1029,9 +1028,9 @@ func (q *queryCollection) search(msg queryMsg) error {
 	// get global sealed segments
 	var globalSealedSegments []UniqueID
 	if len(searchMsg.PartitionIDs) > 0 {
-		globalSealedSegments = q.historical.getGlobalSegmentIDsByPartitionIds(searchMsg.PartitionIDs)
+		globalSealedSegments = q.globalSegmentManager.getGlobalSegmentIDsByPartitionIds(searchMsg.PartitionIDs)
 	} else {
-		globalSealedSegments = q.historical.getGlobalSegmentIDsByCollectionID(collection.id)
+		globalSealedSegments = q.globalSegmentManager.getGlobalSegmentIDs()
 	}
 
 	searchResults := make([]*SearchResult, 0)
@@ -1244,9 +1243,9 @@ func (q *queryCollection) retrieve(msg queryMsg) error {
 
 	var globalSealedSegments []UniqueID
 	if len(retrieveMsg.PartitionIDs) > 0 {
-		globalSealedSegments = q.historical.getGlobalSegmentIDsByPartitionIds(retrieveMsg.PartitionIDs)
+		globalSealedSegments = q.globalSegmentManager.getGlobalSegmentIDsByPartitionIds(retrieveMsg.PartitionIDs)
 	} else {
-		globalSealedSegments = q.historical.getGlobalSegmentIDsByCollectionID(collectionID)
+		globalSealedSegments = q.globalSegmentManager.getGlobalSegmentIDs()
 	}
 
 	var mergeList []*segcorepb.RetrieveResults

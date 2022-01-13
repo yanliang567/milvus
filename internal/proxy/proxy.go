@@ -129,7 +129,7 @@ func (node *Proxy) Register() error {
 
 // initSession initialize the session of Proxy.
 func (node *Proxy) initSession() error {
-	node.session = sessionutil.NewSession(node.ctx, Params.ProxyCfg.MetaRootPath, node.etcdCli)
+	node.session = sessionutil.NewSession(node.ctx, Params.BaseParams.MetaRootPath, node.etcdCli)
 	if node.session == nil {
 		return errors.New("new session failed, maybe etcd cannot be connected")
 	}
@@ -177,7 +177,7 @@ func (node *Proxy) Init() error {
 	}
 
 	m := map[string]interface{}{
-		"PulsarAddress": Params.ProxyCfg.PulsarAddress,
+		"PulsarAddress": Params.PulsarCfg.Address,
 		"PulsarBufSize": 1024}
 	log.Debug("set parameters for ms factory", zap.String("role", typeutil.ProxyRole), zap.Any("parameters", m))
 	if err := node.msFactory.SetParams(m); err != nil {
@@ -422,6 +422,7 @@ func (node *Proxy) AddStartCallback(callbacks ...func()) {
 	node.startCallbacks = append(node.startCallbacks, callbacks...)
 }
 
+// lastTick returns the last write timestamp of all pchans in this Proxy.
 func (node *Proxy) lastTick() Timestamp {
 	return node.chTicker.getMinTick()
 }

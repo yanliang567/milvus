@@ -254,11 +254,11 @@ func generateIndex(segmentID UniqueID) ([]string, error) {
 	}
 
 	option := &minioKV.Option{
-		Address:           Params.QueryNodeCfg.MinioEndPoint,
-		AccessKeyID:       Params.QueryNodeCfg.MinioAccessKeyID,
-		SecretAccessKeyID: Params.QueryNodeCfg.MinioSecretAccessKey,
-		UseSSL:            Params.QueryNodeCfg.MinioUseSSLStr,
-		BucketName:        Params.QueryNodeCfg.MinioBucketName,
+		Address:           Params.MinioCfg.Address,
+		AccessKeyID:       Params.MinioCfg.AccessKeyID,
+		SecretAccessKeyID: Params.MinioCfg.SecretAccessKey,
+		UseSSL:            Params.MinioCfg.UseSSL,
+		BucketName:        Params.MinioCfg.BucketName,
 		CreateBucket:      true,
 	}
 
@@ -357,13 +357,12 @@ func genSimpleCollectionMeta() *etcdpb.CollectionMeta {
 // ---------- unittest util functions ----------
 // functions of third-party
 func genMinioKV(ctx context.Context) (*minioKV.MinIOKV, error) {
-	bucketName := Params.QueryNodeCfg.MinioBucketName
 	option := &minioKV.Option{
-		Address:           Params.QueryNodeCfg.MinioEndPoint,
-		AccessKeyID:       Params.QueryNodeCfg.MinioAccessKeyID,
-		SecretAccessKeyID: Params.QueryNodeCfg.MinioSecretAccessKey,
-		UseSSL:            Params.QueryNodeCfg.MinioUseSSLStr,
-		BucketName:        bucketName,
+		Address:           Params.MinioCfg.Address,
+		AccessKeyID:       Params.MinioCfg.AccessKeyID,
+		SecretAccessKeyID: Params.MinioCfg.SecretAccessKey,
+		UseSSL:            Params.MinioCfg.UseSSL,
+		BucketName:        Params.MinioCfg.BucketName,
 		CreateBucket:      true,
 	}
 	kv, err := minioKV.NewMinIOKV(ctx, option)
@@ -375,14 +374,14 @@ func genEtcdKV() (*etcdkv.EtcdKV, error) {
 	if err != nil {
 		return nil, err
 	}
-	etcdKV := etcdkv.NewEtcdKV(etcdCli, Params.QueryNodeCfg.MetaRootPath)
+	etcdKV := etcdkv.NewEtcdKV(etcdCli, Params.BaseParams.MetaRootPath)
 	return etcdKV, nil
 }
 
 func genFactory() (msgstream.Factory, error) {
 	const receiveBufSize = 1024
 
-	pulsarURL := Params.QueryNodeCfg.PulsarAddress
+	pulsarURL := Params.PulsarCfg.Address
 	msFactory := msgstream.NewPmsFactory()
 	m := map[string]interface{}{
 		"receiveBufSize": receiveBufSize,
@@ -888,15 +887,11 @@ func genSimpleSegmentLoader(ctx context.Context, historicalReplica ReplicaInterf
 }
 
 func genSimpleHistorical(ctx context.Context, tSafeReplica TSafeReplicaInterface) (*historical, error) {
-	kv, err := genEtcdKV()
-	if err != nil {
-		return nil, err
-	}
 	replica, err := genSimpleReplica()
 	if err != nil {
 		return nil, err
 	}
-	h := newHistorical(ctx, replica, kv, tSafeReplica)
+	h := newHistorical(ctx, replica, tSafeReplica)
 	r, err := genSimpleReplica()
 	if err != nil {
 		return nil, err
@@ -1306,7 +1301,7 @@ func genSimpleQueryNode(ctx context.Context) (*QueryNode, error) {
 	}
 	node.session = session
 
-	etcdKV := etcdkv.NewEtcdKV(etcdCli, Params.QueryNodeCfg.MetaRootPath)
+	etcdKV := etcdkv.NewEtcdKV(etcdCli, Params.BaseParams.MetaRootPath)
 	node.etcdKV = etcdKV
 
 	node.tSafeReplica = newTSafeReplica()

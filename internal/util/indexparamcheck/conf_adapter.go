@@ -1,13 +1,18 @@
-// Copyright (C) 2019-2020 Zilliz. All rights reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
 // with the License. You may obtain a copy of the License at
 //
-// http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// Unless required by applicable law or agreed to in writing, software distributed under the License
-// is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
-// or implied. See the License for the specific language governing permissions and limitations under the License.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package indexparamcheck
 
@@ -334,6 +339,7 @@ type HNSWConfAdapter struct {
 	BaseConfAdapter
 }
 
+// CheckTrain checks if a hnsw index can be built with specific parameters.
 func (adapter *HNSWConfAdapter) CheckTrain(params map[string]string) bool {
 	if !CheckIntByRange(params, EFConstruction, HNSWMinEfConstruction, HNSWMaxEfConstruction) {
 		return false
@@ -350,10 +356,12 @@ func newHNSWConfAdapter() *HNSWConfAdapter {
 	return &HNSWConfAdapter{}
 }
 
+// ANNOYConfAdapter checks if an ANNOY index can be built.
 type ANNOYConfAdapter struct {
 	BaseConfAdapter
 }
 
+// CheckTrain checks if an annoy index can be built with specific parameters.
 func (adapter *ANNOYConfAdapter) CheckTrain(params map[string]string) bool {
 	if !CheckIntByRange(params, NTREES, MinNTrees, MaxNTrees) {
 		return false
@@ -366,10 +374,12 @@ func newANNOYConfAdapter() *ANNOYConfAdapter {
 	return &ANNOYConfAdapter{}
 }
 
+// RHNSWFlatConfAdapter checks if a rhnsw flat index can be built.
 type RHNSWFlatConfAdapter struct {
 	BaseConfAdapter
 }
 
+// CheckTrain checks if a rhnsw flat index can be built with specific parameters.
 func (adapter *RHNSWFlatConfAdapter) CheckTrain(params map[string]string) bool {
 	if !CheckIntByRange(params, EFConstruction, HNSWMinEfConstruction, HNSWMaxEfConstruction) {
 		return false
@@ -386,11 +396,13 @@ func newRHNSWFlatConfAdapter() *RHNSWFlatConfAdapter {
 	return &RHNSWFlatConfAdapter{}
 }
 
+// RHNSWPQConfAdapter checks if a rhnsw pq index can be built.
 type RHNSWPQConfAdapter struct {
 	BaseConfAdapter
 	IVFPQConfAdapter
 }
 
+// CheckTrain checks if a rhnsw pq index can be built with specific parameters.
 func (adapter *RHNSWPQConfAdapter) CheckTrain(params map[string]string) bool {
 	if !adapter.BaseConfAdapter.CheckTrain(params) {
 		return false
@@ -421,10 +433,12 @@ func newRHNSWPQConfAdapter() *RHNSWPQConfAdapter {
 	return &RHNSWPQConfAdapter{}
 }
 
+// RHNSWSQConfAdapter checks if a rhnsw sq index can be built.
 type RHNSWSQConfAdapter struct {
 	BaseConfAdapter
 }
 
+// CheckTrain checks if a rhnsw sq index can be built with specific parameters.
 func (adapter *RHNSWSQConfAdapter) CheckTrain(params map[string]string) bool {
 	if !CheckIntByRange(params, EFConstruction, HNSWMinEfConstruction, HNSWMaxEfConstruction) {
 		return false
@@ -441,6 +455,7 @@ func newRHNSWSQConfAdapter() *RHNSWSQConfAdapter {
 	return &RHNSWSQConfAdapter{}
 }
 
+// NGTPANNGConfAdapter checks if a NGT_PANNG index can be built.
 type NGTPANNGConfAdapter struct {
 	BaseConfAdapter
 }
@@ -471,6 +486,7 @@ func newNGTPANNGConfAdapter() *NGTPANNGConfAdapter {
 	return &NGTPANNGConfAdapter{}
 }
 
+// NGTONNGConfAdapter checks if a NGT_ONNG index can be built.
 type NGTONNGConfAdapter struct {
 	BaseConfAdapter
 }
