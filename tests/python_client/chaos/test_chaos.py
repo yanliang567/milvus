@@ -40,7 +40,7 @@ def record_results(checkers):
         # expect succ if no expectations
         succ_rate = checkers[k].succ_rate()
         total = checkers[k].total()
-        res += f"{str(k)} succ rate {succ_rate}, total: {total}\n"
+        res += f"{str(k):10} succ rate: {succ_rate:.2f}  total: {total:02d}\n"
     return res
 
 
@@ -106,12 +106,12 @@ class TestChaos(TestChaosBase):
     @pytest.fixture(scope="function", autouse=True)
     def connection(self, host, port):
         connections.add_connection(default={"host": host, "port": port})
-        conn = connections.connect(alias='default')
-        if conn is None:
+        connections.connect(alias='default')
+        
+        if connections.has_connection("default") is False:
             raise Exception("no connections")
         self.host = host
         self.port = port
-        return conn
 
     @pytest.fixture(scope="function", autouse=True)
     def init_health_checkers(self):

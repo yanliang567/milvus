@@ -937,6 +937,9 @@ func (c *Core) Register() error {
 			syscall.Kill(syscall.Getpid(), syscall.SIGINT)
 		}
 	})
+
+	c.UpdateStateCode(internalpb.StateCode_Healthy)
+	log.Debug("RootCoord start successfully ", zap.String("State Code", internalpb.StateCode_Healthy.String()))
 	return nil
 }
 
@@ -1032,19 +1035,19 @@ func (c *Core) Init() error {
 		}
 
 		chanMap := c.MetaTable.ListCollectionPhysicalChannels()
-		c.chanTimeTick = newTimeTickSync(c.ctx, c.session, c.msFactory, chanMap)
-		c.chanTimeTick.addProxy(c.session)
+		c.chanTimeTick = newTimeTickSync(c.ctx, c.session.ServerID, c.msFactory, chanMap)
+		c.chanTimeTick.addSession(c.session)
 		c.proxyClientManager = newProxyClientManager(c)
 
 		log.Debug("RootCoord, set proxy manager")
 		c.proxyManager = newProxyManager(
 			c.ctx,
 			c.etcdCli,
-			c.chanTimeTick.getProxy,
+			c.chanTimeTick.clearSessions,
 			c.proxyClientManager.GetProxyClients,
 		)
-		c.proxyManager.AddSession(c.chanTimeTick.addProxy, c.proxyClientManager.AddProxyClient)
-		c.proxyManager.DelSession(c.chanTimeTick.delProxy, c.proxyClientManager.DelProxyClient)
+		c.proxyManager.AddSession(c.chanTimeTick.addSession, c.proxyClientManager.AddProxyClient)
+		c.proxyManager.DelSession(c.chanTimeTick.delSession, c.proxyClientManager.DelProxyClient)
 
 		c.metricsCacheManager = metricsinfo.NewMetricsCacheManager()
 
@@ -1194,9 +1197,6 @@ func (c *Core) Start() error {
 		go c.checkFlushedSegmentsLoop()
 		Params.RootCoordCfg.CreatedTime = time.Now()
 		Params.RootCoordCfg.UpdatedTime = time.Now()
-
-		c.UpdateStateCode(internalpb.StateCode_Healthy)
-		log.Debug("RootCoord start successfully ", zap.String("State Code", internalpb.StateCode_Healthy.String()))
 	})
 
 	return nil
