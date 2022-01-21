@@ -32,16 +32,17 @@ def do_insert(data, threads_num, ins_times_per_thread, collection):
             t2 = round(time.time() - t1, 3)
             logging.info(f"assert insert thread{thread_no} round{r}: {t2}")
 
-    def insert_pro(coll_name, data, rounds, thread_no):
-        port = 19530
-        alias = 'default' + str(thread_no)
-        conn1 = connections.connect(alias, host=host, port=port)
-        coll = Collection(name=coll_name, using=alias)
+    def insert_pro(coll_name, data, rounds, process_no):
+        # port = 19530
+        # alias = 'default' + str(thread_no)
+        connections.add_connection(default={"host": host, "port": 19530})
+        connections.connect(alias='default')
+        coll = Collection(name=coll_name, using='default')
         for r in range(rounds):
             t1 = time.time()
             res = coll.insert(data)
             t2 = round(time.time() - t1, 3)
-            logging.info(f"assert insert process{thread_no} round{r}: {t2}")
+            logging.info(f"assert insert process{process_no} round{r}: {t2}")
 
     # insert
     sub_tasks = []
@@ -77,7 +78,8 @@ if __name__ == '__main__':
     per_thread = int(sys.argv[4])  # insert times per thread
 
     port = 19530
-    conn = connections.connect('default', host=host, port=port)
+    connections.add_connection(default={"host": host, "port": 19530})
+    connections.connect('default')
     log_name = f"insert_shards{shards}_threads{th}_per{per_thread}"
 
     logging.basicConfig(filename=f"/tmp/{log_name}.log",
