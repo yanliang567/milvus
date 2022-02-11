@@ -157,7 +157,7 @@ func (r *addQueryChannelTask) Execute(ctx context.Context) error {
 		return err
 	}
 	consumeChannels := []string{r.req.QueryChannel}
-	consumeSubName := funcutil.GenChannelSubName(Params.QueryNodeCfg.MsgChannelSubName, collectionID, Params.QueryNodeCfg.QueryNodeID)
+	consumeSubName := funcutil.GenChannelSubName(Params.MsgChannelCfg.QueryNodeSubName, collectionID, Params.QueryNodeCfg.QueryNodeID)
 
 	sc.queryMsgStream.AsConsumer(consumeChannels, consumeSubName)
 	if r.req.SeekPosition == nil || len(r.req.SeekPosition.MsgID) == 0 {
@@ -254,6 +254,10 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) error {
 		zap.Strings("pChannels", pChannels),
 	)
 
+	// init collection meta
+	sCol := w.node.streaming.replica.addCollection(collectionID, w.req.Schema)
+	hCol := w.node.historical.replica.addCollection(collectionID, w.req.Schema)
+
 	// load growing segments
 	unFlushedSegments := make([]*queryPb.SegmentLoadInfo, 0)
 	unFlushedSegmentIDs := make([]UniqueID, 0)
@@ -287,7 +291,7 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	log.Debug("load growing segments done in WatchDmChannels",
+	log.Debug("successfully load growing segments done in WatchDmChannels",
 		zap.Int64("collectionID", collectionID),
 		zap.Int64s("unFlushedSegmentIDs", unFlushedSegmentIDs),
 	)
@@ -301,7 +305,7 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) error {
 		}
 	}()
 
-	consumeSubName := funcutil.GenChannelSubName(Params.QueryNodeCfg.MsgChannelSubName, collectionID, Params.QueryNodeCfg.QueryNodeID)
+	consumeSubName := funcutil.GenChannelSubName(Params.MsgChannelCfg.QueryNodeSubName, collectionID, Params.QueryNodeCfg.QueryNodeID)
 
 	// group channels by to seeking or consuming
 	channel2SeekPosition := make(map[string]*internalpb.MsgPosition)
@@ -406,10 +410,6 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) error {
 	}
 
 	log.Debug("watchDMChannel, add flowGraph for dmChannels success", zap.Int64("collectionID", collectionID), zap.Strings("vChannels", vChannels))
-
-	// init collection
-	sCol := w.node.streaming.replica.addCollection(collectionID, w.req.Schema)
-	hCol := w.node.historical.replica.addCollection(collectionID, w.req.Schema)
 
 	sCol.addVChannels(vChannels)
 	sCol.addPChannels(pChannels)
@@ -525,7 +525,7 @@ func (w *watchDeltaChannelsTask) Execute(ctx context.Context) error {
 	}
 
 	channel2FlowGraph := w.node.dataSyncService.addFlowGraphsForDeltaChannels(collectionID, vDeltaChannels)
-	consumeSubName := funcutil.GenChannelSubName(Params.QueryNodeCfg.MsgChannelSubName, collectionID, Params.QueryNodeCfg.QueryNodeID)
+	consumeSubName := funcutil.GenChannelSubName(Params.MsgChannelCfg.QueryNodeSubName, collectionID, Params.QueryNodeCfg.QueryNodeID)
 	// channels as consumer
 	for _, channel := range vDeltaChannels {
 		fg := channel2FlowGraph[channel]
@@ -620,27 +620,15 @@ func (l *loadSegmentsTask) Execute(ctx context.Context) error {
 	for _, info := range l.req.Infos {
 		collectionID := info.CollectionID
 		partitionID := info.PartitionID
-		hasCollectionInHistorical := l.node.historical.replica.hasCollection(collectionID)
-		hasPartitionInHistorical := l.node.historical.replica.hasPartition(partitionID)
-		if !hasCollectionInHistorical {
-			l.node.historical.replica.addCollection(collectionID, l.req.Schema)
+		l.node.historical.replica.addCollection(collectionID, l.req.Schema)
+		err = l.node.historical.replica.addPartition(collectionID, partitionID)
+		if err != nil {
+			return err
 		}
-		if !hasPartitionInHistorical {
-			err = l.node.historical.replica.addPartition(collectionID, partitionID)
-			if err != nil {
-				return err
-			}
-		}
-		hasCollectionInStreaming := l.node.streaming.replica.hasCollection(collectionID)
-		hasPartitionInStreaming := l.node.streaming.replica.hasPartition(partitionID)
-		if !hasCollectionInStreaming {
-			l.node.streaming.replica.addCollection(collectionID, l.req.Schema)
-		}
-		if !hasPartitionInStreaming {
-			err = l.node.streaming.replica.addPartition(collectionID, partitionID)
-			if err != nil {
-				return err
-			}
+		l.node.streaming.replica.addCollection(collectionID, l.req.Schema)
+		err = l.node.streaming.replica.addPartition(collectionID, partitionID)
+		if err != nil {
+			return err
 		}
 	}
 

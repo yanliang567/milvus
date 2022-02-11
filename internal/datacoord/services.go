@@ -25,11 +25,11 @@ import (
 
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/logutil"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
+	"github.com/milvus-io/milvus/internal/util/logutil"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/trace"
 	"go.uber.org/zap"
@@ -48,7 +48,7 @@ func (s *Server) GetTimeTickChannel(ctx context.Context) (*milvuspb.StringRespon
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_Success,
 		},
-		Value: Params.DataCoordCfg.TimeTickChannelName,
+		Value: Params.MsgChannelCfg.DataCoordTimeTick,
 	}, nil
 }
 
@@ -269,7 +269,7 @@ func (s *Server) GetSegmentInfoChannel(ctx context.Context) (*milvuspb.StringRes
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_Success,
 		},
-		Value: Params.DataCoordCfg.SegmentInfoChannelName,
+		Value: Params.MsgChannelCfg.DataCoordSegmentInfo,
 	}, nil
 }
 
@@ -940,7 +940,7 @@ func (s *Server) GetFlushState(ctx context.Context, req *milvuspb.GetFlushStateR
 	for _, sid := range req.GetSegmentIDs() {
 		segment := s.meta.GetSegment(sid)
 		// segment is nil if it was compacted
-		if segment == nil || segment.GetState() == commonpb.SegmentState_Flushed ||
+		if segment == nil || segment.GetState() == commonpb.SegmentState_Flushing ||
 			segment.GetState() == commonpb.SegmentState_Flushed {
 			continue
 		}

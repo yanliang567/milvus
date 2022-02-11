@@ -29,7 +29,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-var Params paramtable.GlobalParamTable
+var Params paramtable.ComponentParam
 
 func TestMain(m *testing.M) {
 	Params.Init()
@@ -38,7 +38,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestEtcdKV_Load(te *testing.T) {
-	etcdCli, err := etcd.GetEtcdClient(&Params.BaseParams)
+	etcdCli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
 	defer etcdCli.Close()
 	assert.NoError(te, err)
 	te.Run("EtcdKV SaveAndLoad", func(t *testing.T) {

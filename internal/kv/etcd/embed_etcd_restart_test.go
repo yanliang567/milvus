@@ -29,21 +29,23 @@ import (
 )
 
 func TestEtcdRestartLoad(te *testing.T) {
+	etcdDataDir := "/tmp/_etcd_data"
 	os.Setenv(metricsinfo.DeployModeEnvKey, metricsinfo.StandaloneDeployMode)
-	param := new(paramtable.BaseParamTable)
+	param := new(paramtable.ServiceParam)
 	param.Init()
 	param.BaseTable.Save("etcd.use.embed", "true")
 	// TODO, not sure if the relative path works for ci environment
 	param.BaseTable.Save("etcd.config.path", "../../../configs/advanced/etcd.yaml")
-	param.BaseTable.Save("etcd.data.dir", "etcd.test.data.dir")
+	param.BaseTable.Save("etcd.data.dir", etcdDataDir)
 	//clean up data
 	defer func() {
-		os.RemoveAll("etcd.test.data.dir")
+		err := os.RemoveAll(etcdDataDir)
+		assert.NoError(te, err)
 	}()
-	param.LoadCfgToMemory()
+	param.EtcdCfg.LoadCfgToMemory()
 	te.Run("EtcdKV SaveRestartAndLoad", func(t *testing.T) {
 		rootPath := "/etcd/test/root/saveRestartAndLoad"
-		metaKv, err := embed_etcd_kv.NewMetaKvFactory(rootPath, param)
+		metaKv, err := embed_etcd_kv.NewMetaKvFactory(rootPath, &param.EtcdCfg)
 		require.NoError(te, err)
 		assert.NotNil(te, metaKv)
 		require.NoError(t, err)
@@ -80,12 +82,14 @@ func TestEtcdRestartLoad(te *testing.T) {
 		embed.Close()
 
 		//restart and check test result
-		metaKv, _ = embed_etcd_kv.NewMetaKvFactory(rootPath, param)
+		metaKv, _ = embed_etcd_kv.NewMetaKvFactory(rootPath, &param.EtcdCfg)
 
 		for _, test := range saveAndLoadTests {
 			val, err := metaKv.Load(test.key)
 			assert.NoError(t, err)
 			assert.Equal(t, test.value, val)
 		}
+
+		metaKv.Close()
 	})
 }

@@ -230,10 +230,7 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var wg sync.WaitGroup
-	wg.Add(1)
 	t.Run("test GetSegmentInfo", func(t *testing.T) {
-		defer wg.Done()
 		node, err := genSimpleQueryNode(ctx)
 		assert.NoError(t, err)
 
@@ -242,7 +239,7 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 				MsgType: commonpb.MsgType_WatchQueryChannels,
 				MsgID:   rand.Int63(),
 			},
-			SegmentIDs:   []UniqueID{defaultSegmentID},
+			SegmentIDs:   []UniqueID{},
 			CollectionID: defaultCollectionID,
 		}
 
@@ -250,15 +247,19 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, rsp.Status.ErrorCode)
 
+		req.SegmentIDs = []UniqueID{-1}
+		rsp, err = node.GetSegmentInfo(ctx, req)
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, rsp.Status.ErrorCode)
+		assert.Equal(t, 0, len(rsp.GetInfos()))
+
 		node.UpdateStateCode(internalpb.StateCode_Abnormal)
 		rsp, err = node.GetSegmentInfo(ctx, req)
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, rsp.Status.ErrorCode)
 	})
 
-	wg.Add(1)
 	t.Run("test no collection in historical", func(t *testing.T) {
-		defer wg.Done()
 		node, err := genSimpleQueryNode(ctx)
 		assert.NoError(t, err)
 
@@ -279,9 +280,7 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 		assert.Equal(t, commonpb.ErrorCode_Success, rsp.Status.ErrorCode)
 	})
 
-	wg.Add(1)
 	t.Run("test no collection in streaming", func(t *testing.T) {
-		defer wg.Done()
 		node, err := genSimpleQueryNode(ctx)
 		assert.NoError(t, err)
 
@@ -302,9 +301,7 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 		assert.Equal(t, commonpb.ErrorCode_Success, rsp.Status.ErrorCode)
 	})
 
-	wg.Add(1)
 	t.Run("test different segment type", func(t *testing.T) {
-		defer wg.Done()
 		node, err := genSimpleQueryNode(ctx)
 		assert.NoError(t, err)
 
@@ -320,22 +317,12 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 		seg, err := node.streaming.replica.getSegmentByID(defaultSegmentID)
 		assert.NoError(t, err)
 
-		seg.setType(segmentTypeInvalid)
+		seg.setType(segmentTypeSealed)
 		rsp, err := node.GetSegmentInfo(ctx, req)
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, rsp.Status.ErrorCode)
 
-		seg.setType(segmentTypeSealed)
-		rsp, err = node.GetSegmentInfo(ctx, req)
-		assert.NoError(t, err)
-		assert.Equal(t, commonpb.ErrorCode_Success, rsp.Status.ErrorCode)
-
 		seg.setType(segmentTypeGrowing)
-		rsp, err = node.GetSegmentInfo(ctx, req)
-		assert.NoError(t, err)
-		assert.Equal(t, commonpb.ErrorCode_Success, rsp.Status.ErrorCode)
-
-		seg.setType(segmentTypeIndexing)
 		rsp, err = node.GetSegmentInfo(ctx, req)
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, rsp.Status.ErrorCode)
@@ -346,19 +333,19 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 		assert.Equal(t, commonpb.ErrorCode_Success, rsp.Status.ErrorCode)
 	})
 
-	wg.Add(1)
 	t.Run("test GetSegmentInfo with indexed segment", func(t *testing.T) {
-		defer wg.Done()
 		node, err := genSimpleQueryNode(ctx)
 		assert.NoError(t, err)
 
 		seg, err := node.historical.replica.getSegmentByID(defaultSegmentID)
 		assert.NoError(t, err)
 
-		seg.setIndexInfo(simpleVecField.id, &indexInfo{
-			indexName: "query-node-test",
-			indexID:   UniqueID(0),
-			buildID:   UniqueID(0),
+		seg.setVectorFieldInfo(simpleVecField.id, &VectorFieldInfo{
+			indexInfo: &queryPb.VecFieldIndexInfo{
+				IndexName: "query-node-test",
+				IndexID:   UniqueID(0),
+				BuildID:   UniqueID(0),
+			},
 		})
 
 		req := &queryPb.GetSegmentInfoRequest{
@@ -380,9 +367,7 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, rsp.Status.ErrorCode)
 	})
 
-	wg.Add(1)
 	t.Run("test GetSegmentInfo without streaming partition", func(t *testing.T) {
-		defer wg.Done()
 		node, err := genSimpleQueryNode(ctx)
 		assert.NoError(t, err)
 
@@ -391,7 +376,7 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 				MsgType: commonpb.MsgType_WatchQueryChannels,
 				MsgID:   rand.Int63(),
 			},
-			SegmentIDs:   []UniqueID{defaultSegmentID},
+			SegmentIDs:   []UniqueID{},
 			CollectionID: defaultCollectionID,
 		}
 
@@ -401,9 +386,7 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, rsp.Status.ErrorCode)
 	})
 
-	wg.Add(1)
 	t.Run("test GetSegmentInfo without streaming segment", func(t *testing.T) {
-		defer wg.Done()
 		node, err := genSimpleQueryNode(ctx)
 		assert.NoError(t, err)
 
@@ -412,7 +395,7 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 				MsgType: commonpb.MsgType_WatchQueryChannels,
 				MsgID:   rand.Int63(),
 			},
-			SegmentIDs:   []UniqueID{defaultSegmentID},
+			SegmentIDs:   []UniqueID{},
 			CollectionID: defaultCollectionID,
 		}
 
@@ -422,9 +405,7 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, rsp.Status.ErrorCode)
 	})
 
-	wg.Add(1)
 	t.Run("test GetSegmentInfo without historical partition", func(t *testing.T) {
-		defer wg.Done()
 		node, err := genSimpleQueryNode(ctx)
 		assert.NoError(t, err)
 
@@ -433,7 +414,7 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 				MsgType: commonpb.MsgType_WatchQueryChannels,
 				MsgID:   rand.Int63(),
 			},
-			SegmentIDs:   []UniqueID{defaultSegmentID},
+			SegmentIDs:   []UniqueID{},
 			CollectionID: defaultCollectionID,
 		}
 
@@ -443,9 +424,7 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, rsp.Status.ErrorCode)
 	})
 
-	wg.Add(1)
 	t.Run("test GetSegmentInfo without historical segment", func(t *testing.T) {
-		defer wg.Done()
 		node, err := genSimpleQueryNode(ctx)
 		assert.NoError(t, err)
 
@@ -454,7 +433,7 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 				MsgType: commonpb.MsgType_WatchQueryChannels,
 				MsgID:   rand.Int63(),
 			},
-			SegmentIDs:   []UniqueID{defaultSegmentID},
+			SegmentIDs:   []UniqueID{},
 			CollectionID: defaultCollectionID,
 		}
 
@@ -463,7 +442,6 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, rsp.Status.ErrorCode)
 	})
-	wg.Wait()
 }
 
 func TestImpl_isHealthy(t *testing.T) {
@@ -480,7 +458,7 @@ func TestImpl_GetMetrics(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	etcdCli, err := etcd.GetEtcdClient(&Params.BaseParams)
+	etcdCli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
 	assert.NoError(t, err)
 	defer etcdCli.Close()
 
@@ -490,7 +468,7 @@ func TestImpl_GetMetrics(t *testing.T) {
 		defer wg.Done()
 		node, err := genSimpleQueryNode(ctx)
 		assert.NoError(t, err)
-		node.session = sessionutil.NewSession(node.queryNodeLoopCtx, Params.BaseParams.MetaRootPath, etcdCli)
+		node.session = sessionutil.NewSession(node.queryNodeLoopCtx, Params.EtcdCfg.MetaRootPath, etcdCli)
 
 		metricReq := make(map[string]string)
 		metricReq[metricsinfo.MetricTypeKey] = "system_info"

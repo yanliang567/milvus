@@ -46,7 +46,7 @@ type queryCoordMock struct {
 func setup() {
 	os.Setenv("QUERY_NODE_ID", "1")
 	Params.Init()
-	Params.BaseParams.MetaRootPath = "/etcd/test/root/querynode"
+	Params.EtcdCfg.MetaRootPath = "/etcd/test/root/querynode"
 }
 
 func genTestCollectionSchema(collectionID UniqueID, isBinary bool, dim int) *schemapb.CollectionSchema {
@@ -187,11 +187,11 @@ func newQueryNodeMock() *QueryNode {
 			cancel()
 		}()
 	}
-	etcdCli, err := etcd.GetEtcdClient(&Params.BaseParams)
+	etcdCli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
 	if err != nil {
 		panic(err)
 	}
-	etcdKV := etcdkv.NewEtcdKV(etcdCli, Params.BaseParams.MetaRootPath)
+	etcdKV := etcdkv.NewEtcdKV(etcdCli, Params.EtcdCfg.MetaRootPath)
 
 	msFactory, err := newMessageStreamFactory()
 	if err != nil {
@@ -204,8 +204,8 @@ func newQueryNodeMock() *QueryNode {
 	svr.historical = newHistorical(svr.queryNodeLoopCtx, historicalReplica, tsReplica)
 	svr.streaming = newStreaming(ctx, streamingReplica, msFactory, etcdKV, tsReplica)
 	svr.dataSyncService = newDataSyncService(ctx, svr.streaming.replica, svr.historical.replica, tsReplica, msFactory)
-	svr.statsService = newStatsService(ctx, svr.historical.replica, nil, msFactory)
-	svr.loader = newSegmentLoader(ctx, nil, nil, svr.historical.replica, svr.streaming.replica, etcdKV, msgstream.NewPmsFactory())
+	svr.statsService = newStatsService(ctx, svr.historical.replica, msFactory)
+	svr.loader = newSegmentLoader(ctx, svr.historical.replica, svr.streaming.replica, etcdKV, msgstream.NewPmsFactory())
 	svr.etcdKV = etcdKV
 
 	return svr
@@ -234,7 +234,7 @@ func newMessageStreamFactory() (msgstream.Factory, error) {
 
 func TestMain(m *testing.M) {
 	setup()
-	Params.QueryNodeCfg.StatsChannelName = Params.QueryNodeCfg.StatsChannelName + strconv.Itoa(rand.Int())
+	Params.MsgChannelCfg.QueryNodeStats = Params.MsgChannelCfg.QueryNodeStats + strconv.Itoa(rand.Int())
 	exitCode := m.Run()
 	os.Exit(exitCode)
 }
@@ -247,23 +247,6 @@ func TestQueryNode_Start(t *testing.T) {
 	localNode.Stop()
 }
 
-func TestQueryNode_SetCoord(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	node, err := genSimpleQueryNode(ctx)
-	assert.NoError(t, err)
-
-	err = node.SetIndexCoord(nil)
-	assert.Error(t, err)
-
-	err = node.SetRootCoord(nil)
-	assert.Error(t, err)
-
-	// TODO: add mock coords
-	//err = node.SetIndexCoord(newIndexCorrd)
-}
-
 func TestQueryNode_register(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -271,7 +254,7 @@ func TestQueryNode_register(t *testing.T) {
 	node, err := genSimpleQueryNode(ctx)
 	assert.NoError(t, err)
 
-	etcdcli, err := etcd.GetEtcdClient(&Params.BaseParams)
+	etcdcli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
 	assert.NoError(t, err)
 	defer etcdcli.Close()
 	node.SetEtcdClient(etcdcli)
@@ -289,12 +272,12 @@ func TestQueryNode_init(t *testing.T) {
 
 	node, err := genSimpleQueryNode(ctx)
 	assert.NoError(t, err)
-	etcdcli, err := etcd.GetEtcdClient(&Params.BaseParams)
+	etcdcli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
 	assert.NoError(t, err)
 	defer etcdcli.Close()
 	node.SetEtcdClient(etcdcli)
 	err = node.Init()
-	assert.Error(t, err)
+	assert.Nil(t, err)
 }
 
 func genSimpleQueryNodeToTestWatchChangeInfo(ctx context.Context) (*QueryNode, error) {

@@ -87,9 +87,9 @@ func (c *chanTsMsg) getTimetick(channelName string) typeutil.Timestamp {
 
 func newTimeTickSync(ctx context.Context, sourceID int64, factory msgstream.Factory, chanMap map[typeutil.UniqueID][]string) *timetickSync {
 	// initialize dml channels used for insert
-	dmlChannels := newDmlChannels(ctx, factory, Params.RootCoordCfg.DmlChannelName, Params.RootCoordCfg.DmlChannelNum)
+	dmlChannels := newDmlChannels(ctx, factory, Params.MsgChannelCfg.RootCoordDml, Params.RootCoordCfg.DmlChannelNum)
 	// initialize delta channels used for delete, share Params.DmlChannelNum with dmlChannels
-	deltaChannels := newDmlChannels(ctx, factory, Params.RootCoordCfg.DeltaChannelName, Params.RootCoordCfg.DmlChannelNum)
+	deltaChannels := newDmlChannels(ctx, factory, Params.MsgChannelCfg.RootCoordDelta, Params.RootCoordCfg.DmlChannelNum)
 
 	// recover physical channels for all collections
 	for collID, chanNames := range chanMap {
@@ -99,7 +99,7 @@ func newTimeTickSync(ctx context.Context, sourceID int64, factory msgstream.Fact
 		var err error
 		deltaChanNames := make([]string, len(chanNames))
 		for i, chanName := range chanNames {
-			deltaChanNames[i], err = ConvertChannelName(chanName, Params.RootCoordCfg.DmlChannelName, Params.RootCoordCfg.DeltaChannelName)
+			deltaChanNames[i], err = ConvertChannelName(chanName, Params.MsgChannelCfg.RootCoordDml, Params.MsgChannelCfg.RootCoordDelta)
 			if err != nil {
 				log.Error("failed to convert dml channel name to delta channel name", zap.String("chanName", chanName))
 				panic("invalid dml channel name " + chanName)
@@ -149,7 +149,7 @@ func (t *timetickSync) sendToChannel() {
 	if len(idleSessionList) > 0 {
 		// give warning every 2 second if not get ttMsg from source sessions
 		if maxCnt%10 == 0 {
-			log.Warn("session idle for long time", zap.Any("idle session list", idleSessionList),
+			log.Warn("session idle for long time", zap.Any("idle list", idleSessionList),
 				zap.Any("idle time", Params.ProxyCfg.TimeTickInterval.Milliseconds()*maxCnt))
 		}
 		return
@@ -273,11 +273,12 @@ func (t *timetickSync) delSession(sess *sessionutil.Session) {
 	}
 }
 
-func (t *timetickSync) clearSessions(sess []*sessionutil.Session) {
+func (t *timetickSync) initSessions(sess []*sessionutil.Session) {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 	for _, s := range sess {
 		t.sess2ChanTsMap[s.ServerID] = nil
+		log.Debug("Init proxy sessions for timeticksync", zap.Int64("serverID", s.ServerID))
 	}
 }
 
@@ -302,17 +303,14 @@ func (t *timetickSync) startWatch(wg *sync.WaitGroup) {
 				log.Debug("timetickSync sendChan closed")
 				return
 			}
-
+			if enableTtChecker {
+				checker.Check()
+			}
 			// reduce each channel to get min timestamp
 			local := sessTimetick[t.sourceID]
 			if len(local.chanTsMap) == 0 {
 				continue
 			}
-
-			if enableTtChecker {
-				checker.Check()
-			}
-
 			hdr := fmt.Sprintf("send ts to %d channels", len(local.chanTsMap))
 			tr := timerecord.NewTimeRecorder(hdr)
 			wg := sync.WaitGroup{}

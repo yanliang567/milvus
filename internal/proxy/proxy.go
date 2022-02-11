@@ -27,13 +27,13 @@ import (
 
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/logutil"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/logutil"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
@@ -54,7 +54,7 @@ type Timestamp = typeutil.Timestamp
 // make sure Proxy implements types.Proxy
 var _ types.Proxy = (*Proxy)(nil)
 
-var Params paramtable.GlobalParamTable
+var Params paramtable.ComponentParam
 
 // Proxy of milvus
 type Proxy struct {
@@ -135,13 +135,13 @@ func (node *Proxy) Register() error {
 
 // initSession initialize the session of Proxy.
 func (node *Proxy) initSession() error {
-	node.session = sessionutil.NewSession(node.ctx, Params.BaseParams.MetaRootPath, node.etcdCli)
+	node.session = sessionutil.NewSession(node.ctx, Params.EtcdCfg.MetaRootPath, node.etcdCli)
 	if node.session == nil {
 		return errors.New("new session failed, maybe etcd cannot be connected")
 	}
 	node.session.Init(typeutil.ProxyRole, Params.ProxyCfg.NetworkAddress, false, true)
 	Params.ProxyCfg.ProxyID = node.session.ServerID
-	Params.BaseParams.SetLogger(Params.ProxyCfg.ProxyID)
+	Params.SetLogger(Params.ProxyCfg.ProxyID)
 	return nil
 }
 
@@ -153,10 +153,6 @@ func (node *Proxy) Init() error {
 		return err
 	}
 	log.Debug("init session for Proxy done")
-
-	log.Debug("refresh configuration of Proxy")
-	Params.ProxyCfg.Refresh()
-	log.Debug("refresh configuration of Proxy done")
 
 	if node.queryCoord != nil {
 		log.Debug("create query channel for Proxy")

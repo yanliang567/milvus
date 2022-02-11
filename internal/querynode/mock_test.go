@@ -172,7 +172,7 @@ func genFloatVectorField(param vecFieldParam) *schemapb.FieldSchema {
 	return fieldVec
 }
 
-func genSimpleIndexParams() indexParam {
+func genSimpleIndexParams() map[string]string {
 	indexParams := make(map[string]string)
 	indexParams["index_type"] = "IVF_PQ"
 	indexParams["index_mode"] = "cpu"
@@ -369,11 +369,11 @@ func genMinioKV(ctx context.Context) (*minioKV.MinIOKV, error) {
 }
 
 func genEtcdKV() (*etcdkv.EtcdKV, error) {
-	etcdCli, err := etcd.GetEtcdClient(&Params.BaseParams)
+	etcdCli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
 	if err != nil {
 		return nil, err
 	}
-	etcdKV := etcdkv.NewEtcdKV(etcdCli, Params.BaseParams.MetaRootPath)
+	etcdKV := etcdkv.NewEtcdKV(etcdCli, Params.EtcdCfg.MetaRootPath)
 	return etcdKV, nil
 }
 
@@ -406,7 +406,7 @@ func genQueryMsgStream(ctx context.Context) (msgstream.MsgStream, error) {
 }
 
 func genLocalChunkManager() (storage.ChunkManager, error) {
-	p, err := Params.BaseParams.Load("storage.path")
+	p, err := Params.Load("storage.path")
 	if err != nil {
 		return nil, err
 	}
@@ -426,7 +426,7 @@ func genRemoteChunkManager(ctx context.Context) (storage.ChunkManager, error) {
 }
 
 func genVectorChunkManager(ctx context.Context) (storage.ChunkManager, error) {
-	p, err := Params.BaseParams.Load("storage.path")
+	p, err := Params.Load("storage.path")
 	if err != nil {
 		return nil, err
 	}
@@ -790,13 +790,16 @@ func genSealedSegment(schemaForCreate *schemapb.CollectionSchema,
 	vChannel Channel,
 	msgLength int) (*Segment, error) {
 	col := newCollection(collectionID, schemaForCreate)
-	seg := newSegment(col,
+	seg, err := newSegment(col,
 		segmentID,
 		partitionID,
 		collectionID,
 		vChannel,
 		segmentTypeSealed,
 		true)
+	if err != nil {
+		return nil, err
+	}
 	insertData, err := genInsertData(msgLength, schemaForLoad)
 	if err != nil {
 		return nil, err
@@ -879,7 +882,7 @@ func genSimpleSegmentLoader(ctx context.Context, historicalReplica ReplicaInterf
 	if err != nil {
 		return nil, err
 	}
-	return newSegmentLoader(ctx, newMockRootCoord(), newMockIndexCoord(), historicalReplica, streamingReplica, kv, msgstream.NewPmsFactory()), nil
+	return newSegmentLoader(ctx, historicalReplica, streamingReplica, kv, msgstream.NewPmsFactory()), nil
 }
 
 func genSimpleHistorical(ctx context.Context, tSafeReplica TSafeReplicaInterface) (*historical, error) {
@@ -1287,14 +1290,14 @@ func genSimpleQueryNode(ctx context.Context) (*QueryNode, error) {
 		return nil, err
 	}
 	node := NewQueryNode(ctx, fac)
-	etcdCli, err := etcd.GetEtcdClient(&Params.BaseParams)
+	etcdCli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
 	if err != nil {
 		return nil, err
 	}
 	node.etcdCli = etcdCli
 	node.initSession()
 
-	etcdKV := etcdkv.NewEtcdKV(etcdCli, Params.BaseParams.MetaRootPath)
+	etcdKV := etcdkv.NewEtcdKV(etcdCli, Params.EtcdCfg.MetaRootPath)
 	node.etcdKV = etcdKV
 
 	node.tSafeReplica = newTSafeReplica()

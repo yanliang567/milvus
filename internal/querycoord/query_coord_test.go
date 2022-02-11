@@ -46,11 +46,11 @@ func setup() {
 func refreshParams() {
 	rand.Seed(time.Now().UnixNano())
 	suffix := "-test-query-Coord" + strconv.FormatInt(rand.Int63(), 10)
-	Params.QueryCoordCfg.StatsChannelName = Params.QueryCoordCfg.StatsChannelName + suffix
-	Params.QueryCoordCfg.TimeTickChannelName = Params.QueryCoordCfg.TimeTickChannelName + suffix
-	Params.BaseParams.MetaRootPath = Params.BaseParams.MetaRootPath + suffix
-	Params.QueryCoordCfg.DmlChannelPrefix = "Dml"
-	Params.QueryCoordCfg.DeltaChannelPrefix = "delta"
+	Params.MsgChannelCfg.QueryNodeStats = Params.MsgChannelCfg.QueryNodeStats + suffix
+	Params.MsgChannelCfg.QueryCoordTimeTick = Params.MsgChannelCfg.QueryCoordTimeTick + suffix
+	Params.EtcdCfg.MetaRootPath = Params.EtcdCfg.MetaRootPath + suffix
+	Params.MsgChannelCfg.RootCoordDml = "Dml"
+	Params.MsgChannelCfg.RootCoordDelta = "delta"
 	GlobalSegmentInfos = make(map[UniqueID]*querypb.SegmentInfo)
 }
 
@@ -78,21 +78,20 @@ func startQueryCoord(ctx context.Context) (*QueryCoord, error) {
 		return nil, err
 	}
 
-	rootCoord := newRootCoordMock()
+	rootCoord := newRootCoordMock(ctx)
 	rootCoord.createCollection(defaultCollectionID)
 	rootCoord.createPartition(defaultCollectionID, defaultPartitionID)
 
-	dataCoord, err := newDataCoordMock(ctx)
+	dataCoord := newDataCoordMock(ctx)
+	indexCoord, err := newIndexCoordMock(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	indexCoord := newIndexCoordMock()
-
 	coord.SetRootCoord(rootCoord)
 	coord.SetDataCoord(dataCoord)
 	coord.SetIndexCoord(indexCoord)
-	etcd, err := etcd.GetEtcdClient(&Params.BaseParams)
+	etcd, err := etcd.GetEtcdClient(&Params.EtcdCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +100,6 @@ func startQueryCoord(ctx context.Context) (*QueryCoord, error) {
 	if err != nil {
 		return nil, err
 	}
-	coord.cluster.(*queryNodeCluster).segSizeEstimator = segSizeEstimateForTest
 	err = coord.Start()
 	if err != nil {
 		return nil, err
@@ -126,18 +124,14 @@ func startUnHealthyQueryCoord(ctx context.Context) (*QueryCoord, error) {
 		return nil, err
 	}
 
-	rootCoord := newRootCoordMock()
+	rootCoord := newRootCoordMock(ctx)
 	rootCoord.createCollection(defaultCollectionID)
 	rootCoord.createPartition(defaultCollectionID, defaultPartitionID)
-
-	dataCoord, err := newDataCoordMock(ctx)
-	if err != nil {
-		return nil, err
-	}
+	dataCoord := newDataCoordMock(ctx)
 
 	coord.SetRootCoord(rootCoord)
 	coord.SetDataCoord(dataCoord)
-	etcd, err := etcd.GetEtcdClient(&Params.BaseParams)
+	etcd, err := etcd.GetEtcdClient(&Params.EtcdCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -156,12 +150,12 @@ func startUnHealthyQueryCoord(ctx context.Context) (*QueryCoord, error) {
 
 func TestWatchNodeLoop(t *testing.T) {
 	baseCtx := context.Background()
-	etcdCli, err := etcd.GetEtcdClient(&Params.BaseParams)
+	etcdCli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
 	assert.Nil(t, err)
 	t.Run("Test OfflineNodes", func(t *testing.T) {
 		refreshParams()
 
-		kv := etcdkv.NewEtcdKV(etcdCli, Params.BaseParams.MetaRootPath)
+		kv := etcdkv.NewEtcdKV(etcdCli, Params.EtcdCfg.MetaRootPath)
 
 		kvs := make(map[string]string)
 		session := &sessionutil.Session{
@@ -255,9 +249,8 @@ func TestHandoffSegmentLoop(t *testing.T) {
 
 	queryCoord, err := startQueryCoord(baseCtx)
 	assert.Nil(t, err)
-	indexCoord := newIndexCoordMock()
-	indexCoord.returnIndexFile = true
-	queryCoord.indexCoordClient = indexCoord
+	rootCoord := queryCoord.rootCoordClient.(*rootCoordMock)
+	rootCoord.enableIndex = true
 
 	queryNode1, err := startQueryNodeServer(baseCtx)
 	assert.Nil(t, err)
@@ -306,7 +299,7 @@ func TestHandoffSegmentLoop(t *testing.T) {
 		handoffTask := &handoffTask{
 			baseTask:               baseTask,
 			HandoffSegmentsRequest: handoffReq,
-			dataCoord:              queryCoord.dataCoordClient,
+			broker:                 queryCoord.broker,
 			cluster:                queryCoord.cluster,
 			meta:                   queryCoord.meta,
 		}
@@ -343,7 +336,7 @@ func TestHandoffSegmentLoop(t *testing.T) {
 		handoffTask := &handoffTask{
 			baseTask:               baseTask,
 			HandoffSegmentsRequest: handoffReq,
-			dataCoord:              queryCoord.dataCoordClient,
+			broker:                 queryCoord.broker,
 			cluster:                queryCoord.cluster,
 			meta:                   queryCoord.meta,
 		}
@@ -370,7 +363,7 @@ func TestHandoffSegmentLoop(t *testing.T) {
 		handoffTask := &handoffTask{
 			baseTask:               baseTask,
 			HandoffSegmentsRequest: handoffReq,
-			dataCoord:              queryCoord.dataCoordClient,
+			broker:                 queryCoord.broker,
 			cluster:                queryCoord.cluster,
 			meta:                   queryCoord.meta,
 		}
@@ -397,7 +390,7 @@ func TestHandoffSegmentLoop(t *testing.T) {
 		handoffTask := &handoffTask{
 			baseTask:               baseTask,
 			HandoffSegmentsRequest: handoffReq,
-			dataCoord:              queryCoord.dataCoordClient,
+			broker:                 queryCoord.broker,
 			cluster:                queryCoord.cluster,
 			meta:                   queryCoord.meta,
 		}
@@ -429,7 +422,7 @@ func TestHandoffSegmentLoop(t *testing.T) {
 		handoffTask := &handoffTask{
 			baseTask:               baseTask,
 			HandoffSegmentsRequest: handoffReq,
-			dataCoord:              queryCoord.dataCoordClient,
+			broker:                 queryCoord.broker,
 			cluster:                queryCoord.cluster,
 			meta:                   queryCoord.meta,
 		}
@@ -468,7 +461,7 @@ func TestHandoffSegmentLoop(t *testing.T) {
 		handoffTask := &handoffTask{
 			baseTask:               baseTask,
 			HandoffSegmentsRequest: handoffReq,
-			dataCoord:              queryCoord.dataCoordClient,
+			broker:                 queryCoord.broker,
 			cluster:                queryCoord.cluster,
 			meta:                   queryCoord.meta,
 		}
@@ -507,7 +500,7 @@ func TestHandoffSegmentLoop(t *testing.T) {
 		handoffTask := &handoffTask{
 			baseTask:               baseTask,
 			HandoffSegmentsRequest: handoffReq,
-			dataCoord:              queryCoord.dataCoordClient,
+			broker:                 queryCoord.broker,
 			cluster:                queryCoord.cluster,
 			meta:                   queryCoord.meta,
 		}
@@ -548,15 +541,13 @@ func TestLoadBalanceSegmentLoop(t *testing.T) {
 			},
 			CollectionID: defaultCollectionID,
 			PartitionIDs: []UniqueID{partitionID},
-			Schema:       genCollectionSchema(defaultCollectionID, false),
+			Schema:       genDefaultCollectionSchema(false),
 		}
 		baseTask := newBaseTask(baseCtx, querypb.TriggerCondition_GrpcRequest)
 		loadPartitionTask := &loadPartitionTask{
 			baseTask:              baseTask,
 			LoadPartitionsRequest: req,
-			rootCoord:             queryCoord.rootCoordClient,
-			dataCoord:             queryCoord.dataCoordClient,
-			indexCoord:            queryCoord.indexCoordClient,
+			broker:                queryCoord.broker,
 			cluster:               queryCoord.cluster,
 			meta:                  queryCoord.meta,
 		}

@@ -30,7 +30,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-var ParamsGlobal paramtable.GlobalParamTable
+var ParamsGlobal paramtable.ComponentParam
 
 func TestIndexNodeServer(t *testing.T) {
 	ctx := context.Background()
@@ -40,7 +40,7 @@ func TestIndexNodeServer(t *testing.T) {
 
 	inm := &indexnode.Mock{}
 	ParamsGlobal.InitOnce()
-	etcdCli, err := etcd.GetEtcdClient(&ParamsGlobal.BaseParams)
+	etcdCli, err := etcd.GetEtcdClient(&ParamsGlobal.EtcdCfg)
 	assert.NoError(t, err)
 	inm.SetEtcdClient(etcdCli)
 	err = server.SetClient(inm)

@@ -24,8 +24,8 @@ import (
 
 	memkv "github.com/milvus-io/milvus/internal/kv/mem"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/logutil"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
+	"github.com/milvus-io/milvus/internal/util/logutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 	"github.com/spf13/cast"
 	"github.com/spf13/viper"
@@ -63,10 +63,6 @@ func (gp *BaseTable) Init() {
 
 	gp.configDir = gp.initConfPath()
 	log.Debug("config directory", zap.String("configDir", gp.configDir))
-
-	gp.loadFromCommonYaml()
-
-	gp.loadFromComponentYaml()
 
 	gp.loadFromMilvusYaml()
 
@@ -113,28 +109,6 @@ func (gp *BaseTable) loadFromMilvusYaml() {
 	if err := gp.LoadYaml("milvus.yaml"); err != nil {
 		panic(err)
 	}
-}
-
-func (gp *BaseTable) loadFromComponentYaml() bool {
-	configFile := gp.configDir + "advanced/component.yaml"
-	if _, err := os.Stat(configFile); err == nil {
-		if err := gp.LoadYaml("advanced/component.yaml"); err != nil {
-			panic(err)
-		}
-		return true
-	}
-	return false
-}
-
-func (gp *BaseTable) loadFromCommonYaml() bool {
-	configFile := gp.configDir + "advanced/common.yaml"
-	if _, err := os.Stat(configFile); err == nil {
-		if err := gp.LoadYaml("advanced/common.yaml"); err != nil {
-			panic(err)
-		}
-		return true
-	}
-	return false
 }
 
 func (gp *BaseTable) tryloadFromEnv() {

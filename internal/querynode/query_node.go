@@ -20,7 +20,8 @@ package querynode
 
 #cgo CFLAGS: -I${SRCDIR}/../core/output/include
 
-#cgo LDFLAGS: -L${SRCDIR}/../core/output/lib -lmilvus_segcore -Wl,-rpath=${SRCDIR}/../core/output/lib
+#cgo darwin LDFLAGS: -L${SRCDIR}/../core/output/lib -lmilvus_segcore -Wl,-rpath,"${SRCDIR}/../core/output/lib"
+#cgo linux LDFLAGS: -L${SRCDIR}/../core/output/lib -lmilvus_segcore -Wl,-rpath=${SRCDIR}/../core/output/lib
 
 #include "segcore/collection_c.h"
 #include "segcore/segment_c.h"
@@ -65,7 +66,7 @@ var _ types.QueryNode = (*QueryNode)(nil)
 // make sure QueryNode implements types.QueryNodeComponent
 var _ types.QueryNodeComponent = (*QueryNode)(nil)
 
-var Params paramtable.GlobalParamTable
+var Params paramtable.ComponentParam
 
 // QueryNode communicates with outside services and union all
 // services in querynode package.
@@ -105,10 +106,6 @@ type QueryNode struct {
 	// etcd client
 	etcdCli *clientv3.Client
 
-	// clients
-	rootCoord  types.RootCoord
-	indexCoord types.IndexCoord
-
 	msFactory msgstream.Factory
 	scheduler *taskScheduler
 
@@ -137,13 +134,13 @@ func NewQueryNode(ctx context.Context, factory msgstream.Factory) *QueryNode {
 }
 
 func (node *QueryNode) initSession() error {
-	node.session = sessionutil.NewSession(node.queryNodeLoopCtx, Params.BaseParams.MetaRootPath, node.etcdCli)
+	node.session = sessionutil.NewSession(node.queryNodeLoopCtx, Params.EtcdCfg.MetaRootPath, node.etcdCli)
 	if node.session == nil {
 		return fmt.Errorf("session is nil, the etcd client connection may have failed")
 	}
 	node.session.Init(typeutil.QueryNodeRole, Params.QueryNodeCfg.QueryNodeIP+":"+strconv.FormatInt(Params.QueryNodeCfg.QueryNodePort, 10), false, true)
 	Params.QueryNodeCfg.QueryNodeID = node.session.ServerID
-	Params.BaseParams.SetLogger(Params.QueryNodeCfg.QueryNodeID)
+	Params.SetLogger(Params.QueryNodeCfg.QueryNodeID)
 	log.Debug("QueryNode", zap.Int64("nodeID", Params.QueryNodeCfg.QueryNodeID), zap.String("node address", node.session.Address))
 	return nil
 }
@@ -255,17 +252,16 @@ func (node *QueryNode) Init() error {
 	var initError error = nil
 	node.initOnce.Do(func() {
 		//ctx := context.Background()
-		log.Debug("QueryNode session info", zap.String("metaPath", Params.BaseParams.MetaRootPath))
+		log.Debug("QueryNode session info", zap.String("metaPath", Params.EtcdCfg.MetaRootPath))
 		err := node.initSession()
 		if err != nil {
 			log.Error("QueryNode init session failed", zap.Error(err))
 			initError = err
 			return
 		}
-		Params.QueryNodeCfg.Refresh()
 
-		node.etcdKV = etcdkv.NewEtcdKV(node.etcdCli, Params.BaseParams.MetaRootPath)
-		log.Debug("queryNode try to connect etcd success", zap.Any("MetaRootPath", Params.BaseParams.MetaRootPath))
+		node.etcdKV = etcdkv.NewEtcdKV(node.etcdCli, Params.EtcdCfg.MetaRootPath)
+		log.Debug("queryNode try to connect etcd success", zap.Any("MetaRootPath", Params.EtcdCfg.MetaRootPath))
 		node.tSafeReplica = newTSafeReplica()
 
 		streamingReplica := newCollectionReplica(node.etcdKV)
@@ -283,27 +279,15 @@ func (node *QueryNode) Init() error {
 		)
 
 		node.loader = newSegmentLoader(node.queryNodeLoopCtx,
-			node.rootCoord,
-			node.indexCoord,
 			node.historical.replica,
 			node.streaming.replica,
 			node.etcdKV,
 			node.msFactory)
 
-		//node.statsService = newStatsService(node.queryNodeLoopCtx, node.historical.replica, node.loader.indexLoader.fieldStatsChan, node.msFactory)
+		//node.statsService = newStatsService(node.queryNodeLoopCtx, node.historical.replica, node.msFactory)
 		node.dataSyncService = newDataSyncService(node.queryNodeLoopCtx, streamingReplica, historicalReplica, node.tSafeReplica, node.msFactory)
 
 		node.InitSegcore()
-
-		if node.rootCoord == nil {
-			initError = errors.New("null root coordinator detected when queryNode init")
-			return
-		}
-
-		if node.indexCoord == nil {
-			initError = errors.New("null index coordinator detected when queryNode init")
-			return
-		}
 
 		// TODO: add session creator to node
 		node.sessionManager = NewSessionManager(withSessionCreator(defaultSessionCreator()))
@@ -399,24 +383,6 @@ func (node *QueryNode) UpdateStateCode(code internalpb.StateCode) {
 // SetEtcdClient assigns parameter client to its member etcdCli
 func (node *QueryNode) SetEtcdClient(client *clientv3.Client) {
 	node.etcdCli = client
-}
-
-// SetRootCoord assigns parameter rc to its member rootCoord.
-func (node *QueryNode) SetRootCoord(rc types.RootCoord) error {
-	if rc == nil {
-		return errors.New("null root coordinator interface")
-	}
-	node.rootCoord = rc
-	return nil
-}
-
-// SetIndexCoord assigns parameter index to its member indexCoord.
-func (node *QueryNode) SetIndexCoord(index types.IndexCoord) error {
-	if index == nil {
-		return errors.New("null index coordinator interface")
-	}
-	node.indexCoord = index
-	return nil
 }
 
 func (node *QueryNode) watchChangeInfo() {

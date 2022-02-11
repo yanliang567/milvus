@@ -35,7 +35,7 @@ import (
 	"google.golang.org/grpc"
 )
 
-var ParamsGlobal paramtable.GlobalParamTable
+var ParamsGlobal paramtable.ComponentParam
 
 func Test_NewClient(t *testing.T) {
 	ClientParams.InitOnce(typeutil.IndexNodeRole)
@@ -128,7 +128,7 @@ func TestIndexNodeClient(t *testing.T) {
 
 	inm := &indexnode.Mock{}
 	ParamsGlobal.InitOnce()
-	etcdCli, err := etcd.GetEtcdClient(&ParamsGlobal.BaseParams)
+	etcdCli, err := etcd.GetEtcdClient(&ParamsGlobal.EtcdCfg)
 	assert.NoError(t, err)
 	inm.SetEtcdClient(etcdCli)
 	err = ins.SetClient(inm)

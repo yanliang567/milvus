@@ -35,7 +35,7 @@ func TestStatsService_start(t *testing.T) {
 		"ReceiveBufSize": 1024,
 		"PulsarBufSize":  1024}
 	msFactory.SetParams(m)
-	node.statsService = newStatsService(node.queryNodeLoopCtx, node.historical.replica, node.loader.indexLoader.fieldStatsChan, msFactory)
+	node.statsService = newStatsService(node.queryNodeLoopCtx, node.historical.replica, msFactory)
 	node.statsService.start()
 	node.Stop()
 }
@@ -50,7 +50,7 @@ func TestSegmentManagement_sendSegmentStatistic(t *testing.T) {
 
 	const receiveBufSize = 1024
 	// start pulsar
-	producerChannels := []string{Params.QueryNodeCfg.StatsChannelName}
+	producerChannels := []string{Params.MsgChannelCfg.QueryNodeStats}
 
 	msFactory := msgstream.NewPmsFactory()
 	m := map[string]interface{}{
@@ -66,7 +66,7 @@ func TestSegmentManagement_sendSegmentStatistic(t *testing.T) {
 
 	var statsMsgStream msgstream.MsgStream = statsStream
 
-	node.statsService = newStatsService(node.queryNodeLoopCtx, node.historical.replica, node.loader.indexLoader.fieldStatsChan, msFactory)
+	node.statsService = newStatsService(node.queryNodeLoopCtx, node.historical.replica, msFactory)
 	node.statsService.statsStream = statsMsgStream
 	node.statsService.statsStream.Start()
 

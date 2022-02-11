@@ -64,7 +64,7 @@ type queryChannelInfo struct {
 }
 
 // Params is param table of query coordinator
-var Params paramtable.GlobalParamTable
+var Params paramtable.ComponentParam
 
 // QueryCoord is the coordinator of queryNodes
 type QueryCoord struct {
@@ -90,12 +90,12 @@ type QueryCoord struct {
 	dataCoordClient  types.DataCoord
 	rootCoordClient  types.RootCoord
 	indexCoordClient types.IndexCoord
+	broker           *globalMetaBroker
 
 	session   *sessionutil.Session
 	eventChan <-chan *sessionutil.SessionEvent
 
-	stateCode  atomic.Value
-	enableGrpc bool
+	stateCode atomic.Value
 
 	msFactory msgstream.Factory
 }
@@ -117,19 +117,19 @@ func (qc *QueryCoord) Register() error {
 }
 
 func (qc *QueryCoord) initSession() error {
-	qc.session = sessionutil.NewSession(qc.loopCtx, Params.BaseParams.MetaRootPath, qc.etcdCli)
+	qc.session = sessionutil.NewSession(qc.loopCtx, Params.EtcdCfg.MetaRootPath, qc.etcdCli)
 	if qc.session == nil {
 		return fmt.Errorf("session is nil, the etcd client connection may have failed")
 	}
 	qc.session.Init(typeutil.QueryCoordRole, Params.QueryCoordCfg.Address, true, true)
 	Params.QueryCoordCfg.NodeID = uint64(qc.session.ServerID)
-	Params.BaseParams.SetLogger(qc.session.ServerID)
+	Params.SetLogger(qc.session.ServerID)
 	return nil
 }
 
 // Init function initializes the queryCoord's meta, cluster, etcdKV and task scheduler
 func (qc *QueryCoord) Init() error {
-	log.Debug("query coordinator start init, session info", zap.String("metaPath", Params.BaseParams.MetaRootPath), zap.String("address", Params.QueryCoordCfg.Address))
+	log.Debug("query coordinator start init, session info", zap.String("metaPath", Params.EtcdCfg.MetaRootPath), zap.String("address", Params.QueryCoordCfg.Address))
 	var initError error
 	qc.initOnce.Do(func() {
 		err := qc.initSession()
@@ -139,12 +139,12 @@ func (qc *QueryCoord) Init() error {
 			return
 		}
 		log.Debug("queryCoord try to connect etcd")
-		etcdKV := etcdkv.NewEtcdKV(qc.etcdCli, Params.BaseParams.MetaRootPath)
+		etcdKV := etcdkv.NewEtcdKV(qc.etcdCli, Params.EtcdCfg.MetaRootPath)
 		qc.kvClient = etcdKV
 		log.Debug("query coordinator try to connect etcd success")
 
 		// init id allocator
-		idAllocatorKV := tsoutil.NewTSOKVBase(qc.etcdCli, Params.BaseParams.KvRootPath, "queryCoordTaskID")
+		idAllocatorKV := tsoutil.NewTSOKVBase(qc.etcdCli, Params.EtcdCfg.KvRootPath, "queryCoordTaskID")
 		idAllocator := allocator.NewGlobalIDAllocator("idTimestamp", idAllocatorKV)
 		initError = idAllocator.Initialize()
 		if initError != nil {
@@ -176,15 +176,22 @@ func (qc *QueryCoord) Init() error {
 			return
 		}
 
+		//init globalMetaBroker
+		qc.broker, initError = newGlobalMetaBroker(qc.loopCtx, qc.rootCoordClient, qc.dataCoordClient, qc.indexCoordClient)
+		if initError != nil {
+			log.Error("query coordinator init globalMetaBroker failed", zap.Error(initError))
+			return
+		}
+
 		// init task scheduler
-		qc.scheduler, initError = NewTaskScheduler(qc.loopCtx, qc.meta, qc.cluster, qc.kvClient, qc.rootCoordClient, qc.dataCoordClient, qc.indexCoordClient, qc.idAllocator)
+		qc.scheduler, initError = newTaskScheduler(qc.loopCtx, qc.meta, qc.cluster, qc.kvClient, qc.broker, qc.idAllocator)
 		if initError != nil {
 			log.Error("query coordinator init task scheduler failed", zap.Error(initError))
 			return
 		}
 
 		// init index checker
-		qc.indexChecker, initError = newIndexChecker(qc.loopCtx, qc.kvClient, qc.meta, qc.cluster, qc.scheduler, qc.rootCoordClient, qc.indexCoordClient, qc.dataCoordClient)
+		qc.indexChecker, initError = newIndexChecker(qc.loopCtx, qc.kvClient, qc.meta, qc.cluster, qc.scheduler, qc.broker)
 		if initError != nil {
 			log.Error("query coordinator init index checker failed", zap.Error(initError))
 			return
@@ -273,8 +280,8 @@ func NewQueryCoord(ctx context.Context, factory msgstream.Factory) (*QueryCoord,
 	rand.Seed(time.Now().UnixNano())
 	queryChannels := make([]*queryChannelInfo, 0)
 	channelID := len(queryChannels)
-	searchPrefix := Params.QueryCoordCfg.SearchChannelPrefix
-	searchResultPrefix := Params.QueryCoordCfg.SearchResultChannelPrefix
+	searchPrefix := Params.MsgChannelCfg.QueryCoordSearch
+	searchResultPrefix := Params.MsgChannelCfg.QueryCoordSearchResult
 	allocatedQueryChannel := searchPrefix + "-" + strconv.FormatInt(int64(channelID), 10)
 	allocatedQueryResultChannel := searchResultPrefix + "-" + strconv.FormatInt(int64(channelID), 10)
 
@@ -343,6 +350,7 @@ func (qc *QueryCoord) watchNodeLoop() {
 				MsgType:  commonpb.MsgType_LoadBalanceSegments,
 				SourceID: qc.session.ServerID,
 			},
+			BalanceReason: querypb.TriggerCondition_NodeDown,
 			SourceNodeIDs: offlineNodeIDs,
 		}
 
@@ -350,9 +358,7 @@ func (qc *QueryCoord) watchNodeLoop() {
 		loadBalanceTask := &loadBalanceTask{
 			baseTask:           baseTask,
 			LoadBalanceRequest: loadBalanceSegment,
-			rootCoord:          qc.rootCoordClient,
-			dataCoord:          qc.dataCoordClient,
-			indexCoord:         qc.indexCoordClient,
+			broker:             qc.broker,
 			cluster:            qc.cluster,
 			meta:               qc.meta,
 		}
@@ -402,9 +408,7 @@ func (qc *QueryCoord) watchNodeLoop() {
 				loadBalanceTask := &loadBalanceTask{
 					baseTask:           baseTask,
 					LoadBalanceRequest: loadBalanceSegment,
-					rootCoord:          qc.rootCoordClient,
-					dataCoord:          qc.dataCoordClient,
-					indexCoord:         qc.indexCoordClient,
+					broker:             qc.broker,
 					cluster:            qc.cluster,
 					meta:               qc.meta,
 				}
@@ -557,9 +561,7 @@ func (qc *QueryCoord) loadBalanceSegmentLoop() {
 						balanceTask := &loadBalanceTask{
 							baseTask:           baseTask,
 							LoadBalanceRequest: req,
-							rootCoord:          qc.rootCoordClient,
-							dataCoord:          qc.dataCoordClient,
-							indexCoord:         qc.indexCoordClient,
+							broker:             qc.broker,
 							cluster:            qc.cluster,
 							meta:               qc.meta,
 						}

@@ -71,7 +71,7 @@ func (qc *QueryCoord) GetTimeTickChannel(ctx context.Context) (*milvuspb.StringR
 			ErrorCode: commonpb.ErrorCode_Success,
 			Reason:    "",
 		},
-		Value: Params.QueryCoordCfg.TimeTickChannelName,
+		Value: Params.MsgChannelCfg.QueryCoordTimeTick,
 	}, nil
 }
 
@@ -83,7 +83,7 @@ func (qc *QueryCoord) GetStatisticsChannel(ctx context.Context) (*milvuspb.Strin
 			ErrorCode: commonpb.ErrorCode_Success,
 			Reason:    "",
 		},
-		Value: Params.QueryCoordCfg.StatsChannelName,
+		Value: Params.MsgChannelCfg.QueryNodeStats,
 	}, nil
 }
 
@@ -206,9 +206,7 @@ func (qc *QueryCoord) LoadCollection(ctx context.Context, req *querypb.LoadColle
 	loadCollectionTask := &loadCollectionTask{
 		baseTask:              baseTask,
 		LoadCollectionRequest: req,
-		rootCoord:             qc.rootCoordClient,
-		dataCoord:             qc.dataCoordClient,
-		indexCoord:            qc.indexCoordClient,
+		broker:                qc.broker,
 		cluster:               qc.cluster,
 		meta:                  qc.meta,
 	}
@@ -280,7 +278,7 @@ func (qc *QueryCoord) ReleaseCollection(ctx context.Context, req *querypb.Releas
 		ReleaseCollectionRequest: req,
 		cluster:                  qc.cluster,
 		meta:                     qc.meta,
-		rootCoord:                qc.rootCoordClient,
+		broker:                   qc.broker,
 	}
 	err := qc.scheduler.Enqueue(releaseCollectionTask)
 	if err != nil {
@@ -492,9 +490,7 @@ func (qc *QueryCoord) LoadPartitions(ctx context.Context, req *querypb.LoadParti
 	loadPartitionTask := &loadPartitionTask{
 		baseTask:              baseTask,
 		LoadPartitionsRequest: req,
-		rootCoord:             qc.rootCoordClient,
-		dataCoord:             qc.dataCoordClient,
-		indexCoord:            qc.indexCoordClient,
+		broker:                qc.broker,
 		cluster:               qc.cluster,
 		meta:                  qc.meta,
 	}
@@ -633,7 +629,7 @@ func (qc *QueryCoord) ReleasePartitions(ctx context.Context, req *querypb.Releas
 			ReleaseCollectionRequest: releaseCollectionRequest,
 			cluster:                  qc.cluster,
 			meta:                     qc.meta,
-			rootCoord:                qc.rootCoordClient,
+			broker:                   qc.broker,
 		}
 	} else {
 		req.PartitionIDs = toReleasedPartitions
@@ -847,12 +843,11 @@ func (qc *QueryCoord) LoadBalance(ctx context.Context, req *querypb.LoadBalanceR
 	}
 
 	baseTask := newBaseTask(qc.loopCtx, querypb.TriggerCondition_LoadBalance)
+	req.BalanceReason = querypb.TriggerCondition_LoadBalance
 	loadBalanceTask := &loadBalanceTask{
 		baseTask:           baseTask,
 		LoadBalanceRequest: req,
-		rootCoord:          qc.rootCoordClient,
-		dataCoord:          qc.dataCoordClient,
-		indexCoord:         qc.indexCoordClient,
+		broker:             qc.broker,
 		cluster:            qc.cluster,
 		meta:               qc.meta,
 	}

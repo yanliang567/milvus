@@ -4,7 +4,7 @@ int total_timeout_minutes = 120
 int e2e_timeout_seconds = 70 * 60
 def imageTag=''
 int case_timeout_seconds = 10 * 60
-def chart_version='2.4.25'
+def chart_version='3.0.1'
 pipeline {
     options {
         timestamps()
@@ -175,17 +175,20 @@ pipeline {
                                 }
                             }
                         }
-
+                        post{
+                            always {
+                                container('pytest'){
+                                    dir("${env.ARTIFACTS}") {
+                                            sh "tar -zcvf ${PROJECT_NAME}-${MILVUS_SERVER_TYPE}-${MILVUS_CLIENT}-pytest-logs.tar.gz /tmp/ci_logs/test --remove-files || true"
+                                            archiveArtifacts artifacts: "${PROJECT_NAME}-${MILVUS_SERVER_TYPE}-${MILVUS_CLIENT}-pytest-logs.tar.gz ", allowEmptyArchive: true
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 post{
                     always {
-                        container('pytest'){
-                            dir("${env.ARTIFACTS}") {
-                                    sh "tar -zcvf artifacts-${PROJECT_NAME}-${MILVUS_SERVER_TYPE}-${MILVUS_CLIENT}-pytest-logs.tar.gz /tmp/ci_logs/test --remove-files || true"
-                                    archiveArtifacts artifacts: "artifacts-${PROJECT_NAME}-${MILVUS_SERVER_TYPE}-${MILVUS_CLIENT}-pytest-logs.tar.gz ", allowEmptyArchive: true
-                            }
-                        }
                         container('main') {
                             dir ('tests/scripts') {  
                                 script {

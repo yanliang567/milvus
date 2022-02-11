@@ -39,7 +39,6 @@ import (
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	miniokv "github.com/milvus-io/milvus/internal/kv/minio"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/logutil"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
@@ -48,6 +47,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/logutil"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/retry"
@@ -78,7 +78,7 @@ const illegalRequestErrStr = "Illegal request"
 var _ types.DataNode = (*DataNode)(nil)
 
 // Params from config.yaml
-var Params paramtable.GlobalParamTable
+var Params paramtable.ComponentParam
 
 // DataNode communicates with outside services and unioun all
 // services in datanode package.
@@ -193,27 +193,26 @@ func (node *DataNode) Register() error {
 }
 
 func (node *DataNode) initSession() error {
-	node.session = sessionutil.NewSession(node.ctx, Params.BaseParams.MetaRootPath, node.etcdCli)
+	node.session = sessionutil.NewSession(node.ctx, Params.EtcdCfg.MetaRootPath, node.etcdCli)
 	if node.session == nil {
 		return errors.New("failed to initialize session")
 	}
 	node.session.Init(typeutil.DataNodeRole, Params.DataNodeCfg.IP+":"+strconv.Itoa(Params.DataNodeCfg.Port), false, true)
 	Params.DataNodeCfg.NodeID = node.session.ServerID
 	node.NodeID = node.session.ServerID
-	Params.BaseParams.SetLogger(Params.DataNodeCfg.NodeID)
+	Params.SetLogger(Params.DataNodeCfg.NodeID)
 	return nil
 }
 
 // Init function does nothing now.
 func (node *DataNode) Init() error {
 	log.Debug("DataNode Init",
-		zap.String("TimeTickChannelName", Params.DataNodeCfg.TimeTickChannelName),
+		zap.String("TimeTickChannelName", Params.MsgChannelCfg.DataCoordTimeTick),
 	)
 	if err := node.initSession(); err != nil {
 		log.Error("DataNode init session failed", zap.Error(err))
 		return err
 	}
-	Params.DataNodeCfg.Refresh()
 
 	m := map[string]interface{}{
 		"PulsarAddress":  Params.PulsarCfg.Address,
@@ -227,7 +226,7 @@ func (node *DataNode) Init() error {
 		return err
 	}
 	log.Debug("DataNode Init",
-		zap.String("MsgChannelSubName", Params.DataNodeCfg.MsgChannelSubName))
+		zap.String("MsgChannelSubName", Params.MsgChannelCfg.DataNodeSubName))
 
 	return nil
 }
@@ -411,7 +410,7 @@ func (node *DataNode) BackGroundGC(vChannelCh <-chan string) {
 			log.Info("GC flowgraph", zap.String("vChanName", vchanName))
 			node.releaseFlowgraph(vchanName)
 		case <-node.ctx.Done():
-			log.Info("DataNode ctx done")
+			log.Warn("DataNode context done, exiting background GC")
 			return
 		}
 	}
@@ -438,7 +437,7 @@ func (node *DataNode) Start() error {
 	}
 
 	connectEtcdFn := func() error {
-		etcdKV := etcdkv.NewEtcdKV(node.etcdCli, Params.BaseParams.MetaRootPath)
+		etcdKV := etcdkv.NewEtcdKV(node.etcdCli, Params.EtcdCfg.MetaRootPath)
 		node.watchKv = etcdKV
 		return nil
 	}
