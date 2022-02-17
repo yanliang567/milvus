@@ -1,100 +1,114 @@
-# import datetime
-# import pytest
-# from time import sleep
-#
-# from base.client_base import TestcaseBase
-# from common import common_func as cf
-# from common import common_type as ct
-# from common.common_type import CaseLabel
-# from pymilvus import utility
-#
-# prefix = "e2e_"
+import sys
+import time
+import random
+import logging
+from pymilvus import utility, connections, DataType, \
+    Collection, FieldSchema, CollectionSchema
+
+LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
+DATE_FORMAT = "%m/%d/%Y %H:%M:%S %p"
+
+prefix = "e2e_"
 # cus_index = {"index_type": "HNSW", "params": {"M": 16, "efConstruction": 200}, "metric_type": "IP"}
-# topK = 5
-# cus_search_params = {"params": {"ef": 20}, "metric_type": "IP"}
-#
-#
-# class TestE2e(TestcaseBase):
-#     """ Test case of end to end"""
-#     @pytest.mark.tags(CaseLabel.L2)
-#     # @pytest.mark.parametrize("name", [(cf.gen_unique_str(prefix))])
-#     def test_milvus_default(self):
-#         from utils.util_log import test_log as log
-#         # create
-#         name = cf.gen_unique_str(prefix)   # 'load_collection_50m'
-#         t0 = datetime.datetime.now()
-#         schema = cf.gen_default_collection_schema(auto_id=True)
-#         collection_w = self.init_collection_wrap(name=name, schema=schema)
-#         tt = datetime.datetime.now() - t0
-#         log.debug(f"assert create: {tt}")
-#         assert collection_w.name == name
-#
-#         # insert
-#         data = cf.gen_default_list_data()[1:3]
-#         t0 = datetime.datetime.now()
-#         _, res = collection_w.insert(data)
-#         tt = datetime.datetime.now() - t0
-#         log.debug(f"assert insert: {tt}")
-#         assert res
-#
-#         # flush
-#         t0 = datetime.datetime.now()
-#         n = collection_w.num_entities
-#         tt = datetime.datetime.now() - t0
-#         log.debug(f"assert flush {n}: {tt}")
-#
-#         # search
-#         collection_w.load()
-#         search_vectors = cf.gen_vectors(1, ct.default_dim)
-#         # search_params = {"metric_type": "L2", "params": {"nprobe": 16}}
-#         t0 = datetime.datetime.now()
-#         res_1, _ = collection_w.search(data=search_vectors,
-#                                        anns_field=ct.default_float_vec_field_name,
-#                                        param=cus_search_params,
-#                                        limit=1)
-#         tt = datetime.datetime.now() - t0
-#         log.debug(f"assert search: {tt}")
-#         assert len(res_1) == 1
-#         collection_w.release()
-#
-#         # index
-#         d = cf.gen_default_list_data(nb=5000)[1:3]
-#         t0 = datetime.datetime.now()
-#         _, res = collection_w.insert(d)
-#         tt = datetime.datetime.now() - t0
-#         log.debug(f"assert insert: {tt}")
-#         # assert collection_w.num_entities == len(data[0]) + 5000
-#         _index_params = {"index_type": "IVF_SQ8", "metric_type": "L2", "params": {"nlist": 64}}
-#         t0 = datetime.datetime.now()
-#         index, _ = collection_w.create_index(field_name=ct.default_float_vec_field_name,
-#                                              index_params=cus_index,
-#                                              name=cf.gen_unique_str())
-#         tt = datetime.datetime.now() - t0
-#         log.debug(f"assert index: {tt}")
-#         assert len(collection_w.indexes) == 1
-#         log.debug(f"{utility.index_building_progress(collection_name=collection_w.name)}")
-#
-#         # search
-#         t0 = datetime.datetime.now()
-#         collection_w.load()
-#         tt = datetime.datetime.now() - t0
-#         log.debug(f"assert load: {tt}")
-#         search_vectors = cf.gen_vectors(10, ct.default_dim)
-#         t0 = datetime.datetime.now()
-#         res_1, _ = collection_w.search(data=search_vectors,
-#                                        anns_field=ct.default_float_vec_field_name,
-#                                        param=cus_search_params, limit=topK)
-#         tt = datetime.datetime.now() - t0
-#         log.debug(f"assert search {len(res_1)}: {tt}")
-#         # assert len(res_1) == 1
-#         collection_w.release()
-#         # collection_w.index()[0].drop()
-#
-#         # # query
-#         # term_expr = f'{ct.default_int64_field_name} in [3001,4001,4999,2999]'
-#         # t0 = datetime.datetime.now()
-#         # res, _ = collection_w.query(term_expr)
-#         # tt = datetime.datetime.now() - t0
-#         # log.debug(f"assert query {len(res)}: {tt}")
-#         # assert len(res) == 4
-#
+# search_params = {"params": {"ef": 20}, "metric_type": "IP"}
+cus_index = {"index_type": "IVF_SQ8", "params": {"nlist": 1024}, "metric_type": "L2"}
+search_params = {"metric_type": "L2", "params": {"nprobe": 8}}
+dim = 128
+nb = 5000
+insert_rounds = 10
+nq = 1
+topK = 5
+auto_id = False
+build = True
+
+
+def create_collection(name):
+    t0 = time.time()
+    collection_name = name
+    if auto_id is True:
+        id = FieldSchema(name="id", dtype=DataType.INT64, description="auto primary id")
+        age_field = FieldSchema(name="age", dtype=DataType.INT64, description="age")
+        embedding_field = FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim)
+        schema = CollectionSchema(fields=[id, age_field, embedding_field],
+                                  auto_id=True, primary_field=id.name,
+                                  description="collection of xxx")
+        collection = Collection(name=collection_name, schema=schema)
+        tt = time.time() - t0
+        logging.info(f"assert create {collection_name}: {tt}")
+    else:
+        id = FieldSchema(name="id", dtype=DataType.INT64, description="custom primary id")
+        age_field = FieldSchema(name="age", dtype=DataType.INT64, description="age")
+        embedding_field = FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim)
+        schema = CollectionSchema(fields=[id, age_field, embedding_field],
+                                  auto_id=False, primary_field=id.name,
+                                  description="collection of custom id")
+        collection = Collection(name=collection_name, schema=schema)
+        tt = time.time() - t0
+        logging.info(f"assert create {collection_name}: {tt}")
+
+    if build is True:
+        collection.create_index(field_name=embedding_field.name, index_params=cus_index)
+
+    # insert
+    if auto_id is True:
+        pass
+    else:
+        pks = []
+        for r in range(insert_rounds):
+            ids = [i for i in range(r*nb, (r+1)*nb)]
+            ages = [random.randint(1, 100) for i in range(nb)]
+            embeddings = [[random.random() for _ in range(dim)] for _ in range(nb)]
+            data = [ids, ages, embeddings]
+            t1 = time.time()
+            res = collection.insert(data)
+            t2 = round(time.time() - t1, 3)
+            logging.info(f"assert insert round{r}: {t2}")
+            pks.extend(res.primary_keys)
+        logging.info(f"total pks: {len(pks)}")
+
+    return collection
+
+
+def do_search(collection):
+    # flush
+    t1 = time.time()
+    num = collection.num_entities
+    t2 = round(time.time() - t1, 3)
+    logging.info(f"assert flush {num} entities in {t2} seconds ")
+
+    # build index again
+    collection.create_index(field_name="embedding", index_params=cus_index)
+
+    # load
+    t1 = time.time()
+    collection.load()
+    t2 = round(time.time() - t1, 3)
+    logging.info(f"assert load time: {t2}")
+
+    # search
+    search_vectors = [[random.random() for _ in range(dim)] for _ in range(nq)]
+    ids = [i for i in range(0, nb)]
+    t1 = time.time()
+    collection.search(data=search_vectors, anns_field="embedding",
+                      param=search_params, limit=topK,
+                      expr=f'id in {ids}')
+    t2 = round(time.time() - t1, 3)
+    logging.info(f"assert search with expr time: {t2}")
+
+
+if __name__ == '__main__':
+    host = sys.argv[1]  # host address
+    collection_name = sys.argv[2]  # collection_name
+
+    port = 19530
+    connections.add_connection(default={"host": host, "port": 19530})
+    connections.connect('default')
+    log_name = f"{collection_name}_e2e"
+    logging.basicConfig(filename=f"/tmp/{log_name}.log",
+                        level=logging.INFO, format=LOG_FORMAT, datefmt=DATE_FORMAT)
+
+    if utility.has_collection(collection_name=collection_name):
+        collection = Collection(collection_name)
+    else:
+        collection = create_collection(collection_name)
+    do_search(collection=collection)
