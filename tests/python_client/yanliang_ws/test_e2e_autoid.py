@@ -87,11 +87,11 @@ def do_search(collection):
 
     # search
     search_vectors = [[random.random() for _ in range(dim)] for _ in range(nq)]
-    ids = [i for i in range(0, nb)]
+    pk_ids = [i for i in range(0, 5000)]
     t1 = time.time()
     collection.search(data=search_vectors, anns_field="embedding",
                       param=search_params, limit=topK,
-                      expr=f'id in {ids}')
+                      expr=f'id in {pk_ids}')
     t2 = round(time.time() - t1, 3)
     logging.info(f"assert search with expr time: {t2}")
 
