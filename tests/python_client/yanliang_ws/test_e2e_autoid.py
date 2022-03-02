@@ -9,8 +9,8 @@ LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 DATE_FORMAT = "%m/%d/%Y %H:%M:%S %p"
 
 prefix = "e2e_"
-cus_index = {"index_type": "HNSW", "params": {"M": 16, "efConstruction": 200}, "metric_type": "IP"}
-search_params = {"params": {"ef": 20}, "metric_type": "IP"}
+cus_index = {"index_type": "HNSW", "params": {"M": 16, "efConstruction": 500}, "metric_type": "IP"}
+search_params = {"params": {"ef": 64}, "metric_type": "IP"}
 # cus_index = {"index_type": "IVF_SQ8", "params": {"nlist": 1024}, "metric_type": "L2"}
 # search_params = {"metric_type": "L2", "params": {"nprobe": 8}}
 dim = 128
