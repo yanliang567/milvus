@@ -413,7 +413,7 @@ func TestGrpcTaskEnqueueFail(t *testing.T) {
 	queryCoord, err := startQueryCoord(ctx)
 	assert.Nil(t, err)
 
-	_, err = startQueryNodeServer(ctx)
+	queryNode, err := startQueryNodeServer(ctx)
 	assert.Nil(t, err)
 
 	taskIDAllocator := queryCoord.scheduler.taskIDAllocator
@@ -422,6 +422,9 @@ func TestGrpcTaskEnqueueFail(t *testing.T) {
 	}
 
 	queryCoord.scheduler.taskIDAllocator = failedAllocator
+
+	waitQueryNodeOnline(queryCoord.cluster, queryNode.queryNodeID)
+	assert.NotEmpty(t, queryCoord.cluster.onlineNodeIDs())
 
 	t.Run("Test LoadPartition", func(t *testing.T) {
 		status, err := queryCoord.LoadPartitions(ctx, &querypb.LoadPartitionsRequest{
@@ -910,11 +913,18 @@ func Test_RepeatedLoadDifferentPartitions(t *testing.T) {
 	status, err := queryCoord.LoadPartitions(ctx, loadPartitionReq)
 	assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
 	assert.Nil(t, err)
-	waitLoadPartitionDone(ctx, queryCoord, defaultCollectionID, []UniqueID{defaultPartitionID})
+	assert.Nil(t, waitLoadPartitionDone(ctx, queryCoord, defaultCollectionID, []UniqueID{defaultPartitionID}))
 
 	// second load defaultPartitionID+1
-	loadPartitionReq.PartitionIDs = []UniqueID{defaultPartitionID + 1}
-	status, err = queryCoord.LoadPartitions(ctx, loadPartitionReq)
+	failLoadRequest := &querypb.LoadPartitionsRequest{
+		Base: &commonpb.MsgBase{
+			MsgType: commonpb.MsgType_LoadPartitions,
+		},
+		CollectionID: defaultCollectionID,
+		PartitionIDs: []UniqueID{defaultPartitionID + 1},
+		Schema:       genDefaultCollectionSchema(false),
+	}
+	status, err = queryCoord.LoadPartitions(ctx, failLoadRequest)
 	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
 	assert.Nil(t, err)
 

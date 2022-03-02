@@ -19,9 +19,11 @@ package datanode
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/milvus-io/milvus/internal/kv"
 	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/types"
@@ -114,7 +116,7 @@ func newParallelConfig() parallelConfig {
 // start starts the flowgraph in datasyncservice
 func (dsService *dataSyncService) start() {
 	if dsService.fg != nil {
-		log.Debug("dataSyncService starting flowgraph", zap.Int64("collectionID", dsService.collectionID),
+		log.Info("dataSyncService starting flowgraph", zap.Int64("collectionID", dsService.collectionID),
 			zap.String("vChanName", dsService.vchannelName))
 		dsService.fg.Start()
 	} else {
@@ -125,9 +127,11 @@ func (dsService *dataSyncService) start() {
 
 func (dsService *dataSyncService) close() {
 	if dsService.fg != nil {
-		log.Debug("dataSyncService closing flowgraph", zap.Int64("collectionID", dsService.collectionID),
+		log.Info("dataSyncService closing flowgraph", zap.Int64("collectionID", dsService.collectionID),
 			zap.String("vChanName", dsService.vchannelName))
 		dsService.fg.Close()
+		metrics.DataNodeNumConsumers.WithLabelValues(fmt.Sprint(dsService.collectionID), fmt.Sprint(Params.DataNodeCfg.NodeID)).Dec()
+		metrics.DataNodeNumProducers.WithLabelValues(fmt.Sprint(dsService.collectionID), fmt.Sprint(Params.DataNodeCfg.NodeID)).Sub(2) // timeTickChannel + deltaChannel
 	}
 
 	dsService.cancelFn()
@@ -215,6 +219,7 @@ func (dsService *dataSyncService) initNodes(vchanInfo *datapb.VchannelInfo) erro
 	var insertBufferNode Node
 	insertBufferNode, err = newInsertBufferNode(
 		dsService.ctx,
+		dsService.collectionID,
 		dsService.flushCh,
 		dsService.flushManager,
 		dsService.flushingSegCache,

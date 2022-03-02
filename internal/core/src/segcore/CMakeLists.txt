@@ -9,6 +9,11 @@
 # is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 # or implied. See the License for the specific language governing permissions and limitations under the License
 
+option( EMBEDDED_MILVUS "Enable embedded Milvus" OFF )
+
+if ( EMBEDDED_MILVUS )
+    add_compile_definitions( "-DEMBEDDED_MILVUS" )
+endif()
 
 set(SEGCORE_FILES
         Collection.cpp
@@ -49,3 +54,4 @@ target_link_libraries(milvus_segcore
 #        gperftools
         )
 
+install(TARGETS milvus_segcore DESTINATION lib)

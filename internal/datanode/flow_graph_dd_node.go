@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 
 	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
@@ -73,8 +74,6 @@ func (ddn *ddNode) Name() string {
 
 // Operate handles input messages, implementing flowgrpah.Node
 func (ddn *ddNode) Operate(in []Msg) []Msg {
-	// log.Debug("DDNode Operating")
-
 	if len(in) != 1 {
 		log.Warn("Invalid operate message input in ddNode", zap.Int("input length", len(in)))
 		return []Msg{}
@@ -121,7 +120,7 @@ func (ddn *ddNode) Operate(in []Msg) []Msg {
 					zap.String("vChannelName", ddn.vchannelName))
 				ddn.dropMode.Store(true)
 
-				log.Debug("Stop compaction of vChannel", zap.String("vChannelName", ddn.vchannelName))
+				log.Info("Stop compaction of vChannel", zap.String("vChannelName", ddn.vchannelName))
 				ddn.compactionExecutor.stopExecutingtaskByVChannelName(ddn.vchannelName)
 				fgMsg.dropCollection = true
 			}
@@ -273,7 +272,7 @@ func newDDNode(ctx context.Context, collID UniqueID, vchanInfo *datapb.VchannelI
 
 	fs := make([]*datapb.SegmentInfo, 0, len(vchanInfo.GetFlushedSegments()))
 	fs = append(fs, vchanInfo.GetFlushedSegments()...)
-	log.Debug("ddNode add flushed segment",
+	log.Info("ddNode add flushed segment",
 		zap.Int64("collectionID", vchanInfo.GetCollectionID()),
 		zap.Int("No. Segment", len(vchanInfo.GetFlushedSegments())),
 	)
@@ -292,6 +291,7 @@ func newDDNode(ctx context.Context, collID UniqueID, vchanInfo *datapb.VchannelI
 
 	deltaStream.SetRepackFunc(msgstream.DefaultRepackFunc)
 	deltaStream.AsProducer([]string{deltaChannelName})
+	metrics.DataNodeNumProducers.WithLabelValues(fmt.Sprint(collID), fmt.Sprint(Params.DataNodeCfg.NodeID)).Inc()
 	log.Debug("datanode AsProducer", zap.String("DeltaChannelName", deltaChannelName))
 	var deltaMsgStream msgstream.MsgStream = deltaStream
 	deltaMsgStream.Start()
@@ -312,7 +312,7 @@ func newDDNode(ctx context.Context, collID UniqueID, vchanInfo *datapb.VchannelI
 		dd.segID2SegInfo.Store(us.GetID(), us)
 	}
 
-	log.Debug("ddNode add unflushed segment",
+	log.Info("ddNode add unflushed segment",
 		zap.Int64("collectionID", collID),
 		zap.Int("No. Segment", len(vchanInfo.GetUnflushedSegments())),
 	)

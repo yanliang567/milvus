@@ -21,31 +21,6 @@ else ()
         "https://github.com/milvus-io/knowhere/archive/refs/tags/${KNOWHERE_VERSION}.tar.gz" )
 endif ()
 
-#message( STATUS "Building knowhere-${KNOWHERE_VERSION} from source" )
-#FetchContent_Declare(
-#    knowhere
-#    URL             ${KNOWHERE_SOURCE_URL}
-#    URL_MD5         ${KNOWHERE_SOURCE_MD5}
-#    DOWNLOAD_DIR    ${THIRDPARTY_DOWNLOAD_PATH}
-#    SOURCE_DIR      ${CMAKE_CURRENT_BINARY_DIR}/knowhere-src
-#    BINARY_DIR      ${CMAKE_CURRENT_BINARY_DIR}/knowhere-build
-#    )
-#
-#FetchContent_GetProperties(knowhere)
-#if ( NOT knowhere_POPULATED )
-#    FetchContent_Populate( knowhere )
-#    add_subdirectory( ${knowhere_SOURCE_DIR}
-#                      ${knowhere_BINARY_DIR}
-#                      EXCLUDE_FROM_ALL )
-#endif()
-#
-#get_target_property( KNOWHERE_INCLUDE_DIR knowhere INTERFACE_INCLUDE_DIRECTORIES )
-#message( STATUS ${KNOWHERE_INCLUDE_DIR} )
-#
-#get_property( var DIRECTORY "${knowhere_SOURCE_DIR}" PROPERTY COMPILE_OPTIONS )
-#message( STATUS "knowhere compile options: ${var}" )
-#
-
 macro(build_knowhere)
     message(STATUS "Building knowhere-${KNOWHERE_VERSION} from source")
     set (KNOWHERE_INSTALL_PREFIX ${CMAKE_INSTALL_PREFIX})
@@ -57,6 +32,8 @@ macro(build_knowhere)
             )
 
     externalproject_add(knowhere_ep
+            #GIT_REPOSITORY  "https://github.com/milvus-io/knowhere.git"
+            #GIT_TAG         v1.0.1
             URL             ${KNOWHERE_SOURCE_URL}
             URL_MD5         ${KNOWHERE_SOURCE_MD5}
             CMAKE_ARGS      ${KNOWHERE_CMAKE_ARGS}
@@ -77,7 +54,7 @@ macro(build_knowhere)
     set_target_properties( knowhere
             PROPERTIES
                 IMPORTED_GLOBAL     TRUE
-                IMPORTED_LOCATION   ${INSTALL_DIR}/${CMAKE_INSTALL_LIBDIR}/${CMAKE_SHARED_LIBRARY_PREFIX}knowhere${CMAKE_SHARED_LIBRARY_SUFFIX}
+                IMPORTED_LOCATION   ${INSTALL_DIR}/lib/${CMAKE_SHARED_LIBRARY_PREFIX}knowhere${CMAKE_SHARED_LIBRARY_SUFFIX}
                 INTERFACE_INCLUDE_DIRECTORIES ${INSTALL_DIR}/${CMAKE_INSTALL_INCLUDEDIR})
 
     add_dependencies(knowhere knowhere_ep)

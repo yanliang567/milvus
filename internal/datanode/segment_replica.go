@@ -30,12 +30,12 @@ import (
 	"github.com/milvus-io/milvus/internal/kv"
 	miniokv "github.com/milvus-io/milvus/internal/kv/minio"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/storage"
-	"github.com/milvus-io/milvus/internal/types"
-
+	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
+	"github.com/milvus-io/milvus/internal/storage"
+	"github.com/milvus-io/milvus/internal/types"
 )
 
 const (
@@ -194,6 +194,7 @@ func (replica *SegmentReplica) new2FlushedSegment(segID UniqueID) {
 	replica.flushedSegments[segID] = &seg
 
 	delete(replica.newSegments, segID)
+	metrics.DataNodeNumUnflushedSegments.WithLabelValues(fmt.Sprint(seg.collectionID), fmt.Sprint(Params.DataNodeCfg.NodeID)).Dec()
 }
 
 // normal2FlushedSegment transfers a segment from *normal* to *flushed* by changing *isFlushed*
@@ -205,6 +206,7 @@ func (replica *SegmentReplica) normal2FlushedSegment(segID UniqueID) {
 	replica.flushedSegments[segID] = &seg
 
 	delete(replica.normalSegments, segID)
+	metrics.DataNodeNumUnflushedSegments.WithLabelValues(fmt.Sprint(seg.collectionID), fmt.Sprint(Params.DataNodeCfg.NodeID)).Dec()
 }
 
 func (replica *SegmentReplica) getCollectionAndPartitionID(segID UniqueID) (collID, partitionID UniqueID, err error) {
@@ -238,7 +240,7 @@ func (replica *SegmentReplica) addNewSegment(segID, collID, partitionID UniqueID
 		return fmt.Errorf("mismatch collection, ID=%d", collID)
 	}
 
-	log.Debug("Add new segment",
+	log.Info("Add new segment",
 		zap.Int64("segment ID", segID),
 		zap.Int64("collection ID", collID),
 		zap.Int64("partition ID", partitionID),
@@ -266,6 +268,7 @@ func (replica *SegmentReplica) addNewSegment(segID, collID, partitionID UniqueID
 	replica.segMu.Lock()
 	defer replica.segMu.Unlock()
 	replica.newSegments[segID] = seg
+	metrics.DataNodeNumUnflushedSegments.WithLabelValues(fmt.Sprint(collID), fmt.Sprint(Params.DataNodeCfg.NodeID)).Inc()
 	return nil
 }
 
@@ -327,7 +330,7 @@ func (replica *SegmentReplica) addNormalSegment(segID, collID, partitionID Uniqu
 		return fmt.Errorf("mismatch collection, ID=%d", collID)
 	}
 
-	log.Debug("Add Normal segment",
+	log.Info("Add Normal segment",
 		zap.Int64("segment ID", segID),
 		zap.Int64("collection ID", collID),
 		zap.Int64("partition ID", partitionID),
@@ -360,6 +363,7 @@ func (replica *SegmentReplica) addNormalSegment(segID, collID, partitionID Uniqu
 	replica.segMu.Lock()
 	replica.normalSegments[segID] = seg
 	replica.segMu.Unlock()
+	metrics.DataNodeNumUnflushedSegments.WithLabelValues(fmt.Sprint(collID), fmt.Sprint(Params.DataNodeCfg.NodeID)).Inc()
 
 	return nil
 }
@@ -375,7 +379,7 @@ func (replica *SegmentReplica) addFlushedSegment(segID, collID, partitionID Uniq
 		return fmt.Errorf("mismatch collection, ID=%d", collID)
 	}
 
-	log.Debug("Add Flushed segment",
+	log.Info("Add Flushed segment",
 		zap.Int64("segment ID", segID),
 		zap.Int64("collection ID", collID),
 		zap.Int64("partition ID", partitionID),
@@ -411,9 +415,7 @@ func (replica *SegmentReplica) addFlushedSegment(segID, collID, partitionID Uniq
 }
 
 func (replica *SegmentReplica) initPKBloomFilter(s *Segment, statsBinlogs []*datapb.FieldBinlog) error {
-	if len(statsBinlogs) == 0 {
-		log.Info("statsBinlogs is empty")
-	}
+	log.Info("begin to init pk bloom filter", zap.Int("stats bin logs", len(statsBinlogs)))
 	schema, err := replica.getCollectionSchema(s.collectionID, 0)
 	if err != nil {
 		return err
@@ -441,6 +443,7 @@ func (replica *SegmentReplica) initPKBloomFilter(s *Segment, statsBinlogs []*dat
 
 	values, err := replica.minIOKV.MultiLoad(bloomFilterFiles)
 	if err != nil {
+		log.Warn("failed to load bloom filter files", zap.Error(err))
 		return err
 	}
 	blobs := make([]*Blob, 0)
@@ -450,6 +453,7 @@ func (replica *SegmentReplica) initPKBloomFilter(s *Segment, statsBinlogs []*dat
 
 	stats, err := storage.DeserializeStats(blobs)
 	if err != nil {
+		log.Warn("failed to deserialize bloom filter files", zap.Error(err))
 		return err
 	}
 	for _, stat := range stats {
@@ -555,7 +559,16 @@ func (replica *SegmentReplica) removeSegments(segIDs ...UniqueID) {
 	replica.segMu.Lock()
 	defer replica.segMu.Unlock()
 
-	log.Debug("remove segments if exist", zap.Int64s("segmentIDs", segIDs))
+	log.Info("remove segments if exist", zap.Int64s("segmentIDs", segIDs))
+
+	for _, segID := range segIDs {
+		if seg, ok := replica.newSegments[segID]; ok {
+			metrics.DataNodeNumUnflushedSegments.WithLabelValues(fmt.Sprint(seg.collectionID), fmt.Sprint(Params.DataNodeCfg.NodeID)).Dec()
+		}
+		if seg, ok := replica.normalSegments[segID]; ok {
+			metrics.DataNodeNumUnflushedSegments.WithLabelValues(fmt.Sprint(seg.collectionID), fmt.Sprint(Params.DataNodeCfg.NodeID)).Dec()
+		}
+	}
 
 	for _, segID := range segIDs {
 		delete(replica.newSegments, segID)
@@ -598,7 +611,7 @@ func (replica *SegmentReplica) updateStatistics(segID UniqueID, numRows int64) {
 	replica.segMu.Lock()
 	defer replica.segMu.Unlock()
 
-	log.Debug("updating segment", zap.Int64("Segment ID", segID), zap.Int64("numRows", numRows))
+	log.Info("updating segment", zap.Int64("Segment ID", segID), zap.Int64("numRows", numRows))
 	if seg, ok := replica.newSegments[segID]; ok {
 		seg.memorySize = 0
 		seg.numRows += numRows
@@ -696,7 +709,7 @@ func (replica *SegmentReplica) mergeFlushedSegments(segID, collID, partID, planI
 		return
 	}
 
-	log.Debug("merge flushed segments",
+	log.Info("merge flushed segments",
 		zap.Int64("planID", planID),
 		zap.Int64("compacted To segmentID", segID),
 		zap.Int64s("compacted From segmentIDs", compactedFrom),
@@ -750,7 +763,7 @@ func (replica *SegmentReplica) addFlushedSegmentWithPKs(segID, collID, partID Un
 		return
 	}
 
-	log.Debug("Add Flushed segment",
+	log.Info("Add Flushed segment",
 		zap.Int64("segment ID", segID),
 		zap.Int64("collection ID", collID),
 		zap.Int64("partition ID", partID),

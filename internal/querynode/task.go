@@ -27,6 +27,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/metrics"
+	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	queryPb "github.com/milvus-io/milvus/internal/proto/querypb"
@@ -160,6 +162,7 @@ func (r *addQueryChannelTask) Execute(ctx context.Context) error {
 	consumeSubName := funcutil.GenChannelSubName(Params.MsgChannelCfg.QueryNodeSubName, collectionID, Params.QueryNodeCfg.QueryNodeID)
 
 	sc.queryMsgStream.AsConsumer(consumeChannels, consumeSubName)
+	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(collectionID), fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Inc()
 	if r.req.SeekPosition == nil || len(r.req.SeekPosition.MsgID) == 0 {
 		// as consumer
 		log.Debug("QueryNode AsConsumer", zap.Strings("channels", consumeChannels), zap.String("sub name", consumeSubName))
@@ -279,6 +282,10 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) error {
 		}
 	}
 	req := &queryPb.LoadSegmentsRequest{
+		Base: &commonpb.MsgBase{
+			MsgType: commonpb.MsgType_LoadSegments,
+			MsgID:   w.req.Base.MsgID, // use parent task's msgID
+		},
 		Infos:        unFlushedSegments,
 		CollectionID: collectionID,
 		Schema:       w.req.Schema,
