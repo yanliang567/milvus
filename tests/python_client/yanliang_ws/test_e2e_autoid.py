@@ -9,17 +9,19 @@ LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 DATE_FORMAT = "%m/%d/%Y %H:%M:%S %p"
 
 prefix = "e2e_"
-# cus_index = {"index_type": "HNSW", "params": {"M": 16, "efConstruction": 200}, "metric_type": "IP"}
-# search_params = {"params": {"ef": 20}, "metric_type": "IP"}
-cus_index = {"index_type": "IVF_SQ8", "params": {"nlist": 1024}, "metric_type": "L2"}
-search_params = {"metric_type": "L2", "params": {"nprobe": 8}}
+cus_index = {"index_type": "HNSW", "params": {"M": 16, "efConstruction": 200}, "metric_type": "IP"}
+search_params = {"params": {"ef": 20}, "metric_type": "IP"}
+# cus_index = {"index_type": "IVF_SQ8", "params": {"nlist": 1024}, "metric_type": "L2"}
+# search_params = {"metric_type": "L2", "params": {"nprobe": 8}}
 dim = 128
-nb = 5000
-insert_rounds = 10
+nb = 50000
+insert_rounds = 200
 nq = 1
-topK = 5
+topK = 1
 auto_id = False
 build = True
+expr = False
+search_rounds = 100
 
 
 def create_collection(name):
@@ -77,7 +79,10 @@ def do_search(collection):
     logging.info(f"assert flush {num} entities in {t2} seconds ")
 
     # build index again
+    t1 = time.time()
     collection.create_index(field_name="embedding", index_params=cus_index)
+    t2 = round(time.time() - t1, 3)
+    logging.info(f"assert build index in {t2} seconds ")
 
     # load
     t1 = time.time()
@@ -88,12 +93,17 @@ def do_search(collection):
     # search
     search_vectors = [[random.random() for _ in range(dim)] for _ in range(nq)]
     pk_ids = [i for i in range(0, 5000)]
-    t1 = time.time()
-    collection.search(data=search_vectors, anns_field="embedding",
-                      param=search_params, limit=topK,
-                      expr=f'id in {pk_ids}')
-    t2 = round(time.time() - t1, 3)
-    logging.info(f"assert search with expr time: {t2}")
+    for i in range(search_rounds):
+        t1 = time.time()
+        if expr is True:
+            collection.search(data=search_vectors, anns_field="embedding",
+                              param=search_params, limit=topK,
+                              expr=f'id in {pk_ids}')
+        else:
+            collection.search(data=search_vectors, anns_field="embedding",
+                              param=search_params, limit=topK)
+        t2 = round(time.time() - t1, 3)
+        logging.info(f"assert search round{i} in time: {t2}")
 
 
 if __name__ == '__main__':
