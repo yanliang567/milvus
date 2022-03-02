@@ -91,19 +91,22 @@ def do_search(collection):
     logging.info(f"assert load time: {t2}")
 
     # search
-    search_vectors = [[random.random() for _ in range(dim)] for _ in range(nq)]
     pk_ids = [i for i in range(0, 5000)]
     for i in range(search_rounds):
-        t1 = time.time()
+        search_vectors = [[random.random() for _ in range(dim)] for _ in range(nq)]
         if expr is True:
+            t1 = time.time()
             collection.search(data=search_vectors, anns_field="embedding",
                               param=search_params, limit=topK,
                               expr=f'id in {pk_ids}')
+            t2 = round(time.time() - t1, 3)
+            logging.info(f"assert search with expr round{i} in time: {t2}")
         else:
+            t1 = time.time()
             collection.search(data=search_vectors, anns_field="embedding",
                               param=search_params, limit=topK)
-        t2 = round(time.time() - t1, 3)
-        logging.info(f"assert search round{i} in time: {t2}")
+            t2 = round(time.time() - t1, 3)
+            logging.info(f"assert search round{i} in time: {t2}")
 
 
 if __name__ == '__main__':
