@@ -79,6 +79,7 @@ def do_search(collection):
     logging.info(f"assert flush {num} entities in {t2} seconds ")
 
     # build index again
+    logging.info(f"index params: {cus_index}")
     t1 = time.time()
     collection.create_index(field_name="embedding", index_params=cus_index)
     t2 = round(time.time() - t1, 3)
@@ -91,6 +92,7 @@ def do_search(collection):
     logging.info(f"assert load time: {t2}")
 
     # search
+    logging.info(f"search params: {search_params}, nq={nq}, topk={topK}")
     pk_ids = [i for i in range(0, 5000)]
     for i in range(search_rounds):
         search_vectors = [[random.random() for _ in range(dim)] for _ in range(nq)]
