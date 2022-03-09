@@ -73,6 +73,23 @@ func TestBaseTable_LoadFromKVPair(t *testing.T) {
 	v, err = baseParams.Load("k2")
 	assert.Nil(t, err)
 	assert.Equal(t, "v2", v)
+
+	v, err = baseParams.Load2([]string{"k2_new"})
+	assert.NotNil(t, err)
+	assert.Equal(t, "", v)
+
+	v, err = baseParams.Load2([]string{"k2_new", "k2"})
+	assert.Nil(t, err)
+	assert.Equal(t, "v2", v)
+
+	v = baseParams.LoadWithDefault("k2_new", "v2_new")
+	assert.Equal(t, "v2_new", v)
+
+	v = baseParams.LoadWithDefault2([]string{"k2_new"}, "v2_new")
+	assert.Equal(t, "v2_new", v)
+
+	v = baseParams.LoadWithDefault2([]string{"k2_new", "k2"}, "v2_new")
+	assert.Equal(t, "v2", v)
 }
 
 func TestBaseTable_LoadRange(t *testing.T) {
@@ -122,7 +139,7 @@ func TestBaseTable_LoadYaml(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Panics(t, func() { baseParams.LoadYaml("advanced/not_exist.yaml") })
 
-	_, err = baseParams.Load("etcd.address")
+	_, err = baseParams.Load("etcd.endpoints")
 	assert.Nil(t, err)
 	_, err = baseParams.Load("pulsar.port")
 	assert.Nil(t, err)

@@ -34,7 +34,20 @@ import (
 // UniqueID is type alias of typeutil.UniqueID
 type UniqueID = typeutil.UniqueID
 
-const envPrefix string = "milvus"
+const (
+	DefaultMinioHost            = "localhost"
+	DefaultMinioPort            = "9000"
+	DefaultMinioAccessKey       = "minioadmin"
+	DefaultMinioSecretAccessKey = "minioadmin"
+	DefaultMinioUseSSL          = "false"
+	DefaultMinioBucketName      = "a-bucket"
+	DefaultPulsarHost           = "localhost"
+	DefaultPulsarPort           = "6650"
+	DefaultEtcdEndpoints        = "localhost:2379"
+	DefaultRocksmqPath          = "/var/lib/milvus/rdb_data"
+	DefaultInsertBufferSize     = "16777216"
+	DefaultEnvPrefix            = "milvus"
+)
 
 // Base abstracts BaseTable
 // TODO: it's never used, consider to substitute BaseTable or to remove it
@@ -66,7 +79,7 @@ func (gp *BaseTable) Init() {
 
 	gp.loadFromMilvusYaml()
 
-	gp.tryloadFromEnv()
+	gp.tryLoadFromEnv()
 
 	gp.InitLogCfg()
 }
@@ -111,108 +124,12 @@ func (gp *BaseTable) loadFromMilvusYaml() {
 	}
 }
 
-func (gp *BaseTable) tryloadFromEnv() {
-	var err error
-	minioAddress := os.Getenv("MINIO_ADDRESS")
-	if minioAddress == "" {
-		minioHost, err := gp.Load("minio.address")
-		if err != nil {
-			panic(err)
-		}
-		port, err := gp.Load("minio.port")
-		if err != nil {
-			panic(err)
-		}
-		minioAddress = minioHost + ":" + port
-	}
-	gp.Save("_MinioAddress", minioAddress)
-
-	etcdEndpoints := os.Getenv("ETCD_ENDPOINTS")
-	if etcdEndpoints == "" {
-		etcdEndpoints, err = gp.Load("etcd.endpoints")
-		if err != nil {
-			panic(err)
-		}
-	}
-	gp.Save("_EtcdEndpoints", etcdEndpoints)
-
-	pulsarAddress := os.Getenv("PULSAR_ADDRESS")
-	if pulsarAddress == "" {
-		pulsarHost, err := gp.Load("pulsar.address")
-		if err != nil {
-			panic(err)
-		}
-		port, err := gp.Load("pulsar.port")
-		if err != nil {
-			panic(err)
-		}
-		pulsarAddress = "pulsar://" + pulsarHost + ":" + port
-	}
-	gp.Save("_PulsarAddress", pulsarAddress)
-
-	rocksmqPath := os.Getenv("ROCKSMQ_PATH")
-	if rocksmqPath == "" {
-		path, err := gp.Load("rocksmq.path")
-		if err != nil {
-			panic(err)
-		}
-		rocksmqPath = path
-	}
-	gp.Save("_RocksmqPath", rocksmqPath)
-
-	insertBufferFlushSize := os.Getenv("DATA_NODE_IBUFSIZE")
-	if insertBufferFlushSize == "" {
-		insertBufferFlushSize = gp.LoadWithDefault("datanode.flush.insertBufSize", "16777216")
-	}
-	gp.Save("_DATANODE_INSERTBUFSIZE", insertBufferFlushSize)
-
-	minioAccessKey := os.Getenv("MINIO_ACCESS_KEY")
-	if minioAccessKey == "" {
-		minioAccessKey, err = gp.Load("minio.accessKeyID")
-		if err != nil {
-			panic(err)
-		}
-	}
-	gp.Save("_MinioAccessKeyID", minioAccessKey)
-
-	minioSecretKey := os.Getenv("MINIO_SECRET_KEY")
-	if minioSecretKey == "" {
-		minioSecretKey, err = gp.Load("minio.secretAccessKey")
-		if err != nil {
-			panic(err)
-		}
-	}
-	gp.Save("_MinioSecretAccessKey", minioSecretKey)
-
-	minioUseSSL := os.Getenv("MINIO_USE_SSL")
-	if minioUseSSL == "" {
-		minioUseSSL, err = gp.Load("minio.useSSL")
-		if err != nil {
-			panic(err)
-		}
-	}
-	gp.Save("_MinioUseSSL", minioUseSSL)
-
-	minioBucketName := os.Getenv("MINIO_BUCKET_NAME")
-	if minioBucketName == "" {
-		minioBucketName, err = gp.Load("minio.bucketName")
-		if err != nil {
-			panic(err)
-		}
-	}
-	gp.Save("_MinioBucketName", minioBucketName)
-
-	// try to load environment start with ENV_PREFIX
-	for _, e := range os.Environ() {
-		parts := strings.SplitN(e, "=", 2)
-		if strings.Contains(parts[0], envPrefix) {
-			parts := strings.SplitN(e, "=", 2)
-			// remove the ENV PREFIX and use the rest as key
-			keyParts := strings.SplitAfterN(parts[0], ".", 2)
-			// mem kv throw no errors
-			gp.Save(keyParts[1], parts[1])
-		}
-	}
+func (gp *BaseTable) tryLoadFromEnv() {
+	gp.loadEtcdConfig()
+	gp.loadMinioConfig()
+	gp.loadMQConfig()
+	gp.loadDataNodeConfig()
+	gp.loadOtherEnvs()
 }
 
 // Load loads an object with @key.
@@ -220,9 +137,33 @@ func (gp *BaseTable) Load(key string) (string, error) {
 	return gp.params.Load(strings.ToLower(key))
 }
 
+// Load2 loads an object with multiple @keys, return the first successful value.
+// If all keys not exist, return error.
+// This is to be compatible with old configuration file.
+func (gp *BaseTable) Load2(keys []string) (string, error) {
+	for _, key := range keys {
+		if str, err := gp.params.Load(strings.ToLower(key)); err == nil {
+			return str, nil
+		}
+	}
+	return "", fmt.Errorf("invalid keys: %v", keys)
+}
+
 // LoadWithDefault loads an object with @key. If the object does not exist, @defaultValue will be returned.
 func (gp *BaseTable) LoadWithDefault(key, defaultValue string) string {
 	return gp.params.LoadWithDefault(strings.ToLower(key), defaultValue)
+}
+
+// LoadWithDefault2 loads an object with multiple @keys, return the first successful value.
+// If all keys not exist, return @defaultValue.
+// This is to be compatible with old configuration file.
+func (gp *BaseTable) LoadWithDefault2(keys []string, defaultValue string) string {
+	for _, key := range keys {
+		if str, err := gp.params.Load(strings.ToLower(key)); err == nil {
+			return str
+		}
+	}
+	return defaultValue
 }
 
 // LoadRange loads objects with range @startKey to @endKey with @limit number of objects.
@@ -462,5 +403,93 @@ func (gp *BaseTable) SetLogger(id UniqueID) {
 
 	if gp.LogCfgFunc != nil {
 		gp.LogCfgFunc(gp.Log)
+	}
+}
+
+func (gp *BaseTable) loadPulsarConfig() {
+	pulsarAddress := os.Getenv("PULSAR_ADDRESS")
+	if pulsarAddress == "" {
+		pulsarHost := gp.LoadWithDefault("pulsar.address", DefaultPulsarHost)
+		port := gp.LoadWithDefault("pulsar.port", DefaultPulsarPort)
+		pulsarAddress = "pulsar://" + pulsarHost + ":" + port
+	}
+
+	gp.Save("_PulsarAddress", pulsarAddress)
+}
+
+func (gp *BaseTable) loadRocksMQConfig() {
+	rocksmqPath := os.Getenv("ROCKSMQ_PATH")
+	if rocksmqPath == "" {
+		rocksmqPath = gp.LoadWithDefault("rocksmq.path", DefaultRocksmqPath)
+	}
+	gp.Save("_RocksmqPath", rocksmqPath)
+}
+
+func (gp *BaseTable) loadMQConfig() {
+	gp.loadPulsarConfig()
+	gp.loadRocksMQConfig()
+}
+
+func (gp *BaseTable) loadEtcdConfig() {
+	etcdEndpoints := os.Getenv("ETCD_ENDPOINTS")
+	if etcdEndpoints == "" {
+		etcdEndpoints = gp.LoadWithDefault("etcd.endpoints", DefaultEtcdEndpoints)
+	}
+	gp.Save("_EtcdEndpoints", etcdEndpoints)
+}
+
+func (gp *BaseTable) loadMinioConfig() {
+	minioAddress := os.Getenv("MINIO_ADDRESS")
+	if minioAddress == "" {
+		minioHost := gp.LoadWithDefault("minio.address", DefaultMinioHost)
+		port := gp.LoadWithDefault("minio.port", DefaultMinioPort)
+		minioAddress = minioHost + ":" + port
+	}
+	gp.Save("_MinioAddress", minioAddress)
+
+	minioAccessKey := os.Getenv("MINIO_ACCESS_KEY")
+	if minioAccessKey == "" {
+		minioAccessKey = gp.LoadWithDefault("minio.accessKeyID", DefaultMinioAccessKey)
+	}
+	gp.Save("_MinioAccessKeyID", minioAccessKey)
+
+	minioSecretKey := os.Getenv("MINIO_SECRET_KEY")
+	if minioSecretKey == "" {
+		minioSecretKey = gp.LoadWithDefault("minio.secretAccessKey", DefaultMinioSecretAccessKey)
+	}
+	gp.Save("_MinioSecretAccessKey", minioSecretKey)
+
+	minioUseSSL := os.Getenv("MINIO_USE_SSL")
+	if minioUseSSL == "" {
+		minioUseSSL = gp.LoadWithDefault("minio.useSSL", DefaultMinioUseSSL)
+	}
+	gp.Save("_MinioUseSSL", minioUseSSL)
+
+	minioBucketName := os.Getenv("MINIO_BUCKET_NAME")
+	if minioBucketName == "" {
+		minioBucketName = gp.LoadWithDefault("minio.bucketName", DefaultMinioBucketName)
+	}
+	gp.Save("_MinioBucketName", minioBucketName)
+}
+
+func (gp *BaseTable) loadDataNodeConfig() {
+	insertBufferFlushSize := os.Getenv("DATA_NODE_IBUFSIZE")
+	if insertBufferFlushSize == "" {
+		insertBufferFlushSize = gp.LoadWithDefault("datanode.flush.insertBufSize", DefaultInsertBufferSize)
+	}
+	gp.Save("_DATANODE_INSERTBUFSIZE", insertBufferFlushSize)
+}
+
+func (gp *BaseTable) loadOtherEnvs() {
+	// try to load environment start with ENV_PREFIX
+	for _, e := range os.Environ() {
+		parts := strings.SplitN(e, "=", 2)
+		if strings.Contains(parts[0], DefaultEnvPrefix) {
+			parts := strings.SplitN(e, "=", 2)
+			// remove the ENV PREFIX and use the rest as key
+			keyParts := strings.SplitAfterN(parts[0], ".", 2)
+			// mem kv throw no errors
+			gp.Save(keyParts[1], parts[1])
+		}
 	}
 }

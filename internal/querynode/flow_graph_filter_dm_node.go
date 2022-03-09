@@ -23,7 +23,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/msgstream"
+	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
 	"github.com/milvus-io/milvus/internal/util/trace"
@@ -158,6 +158,12 @@ func (fdmNode *filterDmNode) filterInvalidDeleteMessage(msg *msgstream.DeleteMsg
 
 // filterInvalidInsertMessage would filter out invalid insert messages
 func (fdmNode *filterDmNode) filterInvalidInsertMessage(msg *msgstream.InsertMsg) *msgstream.InsertMsg {
+	if !msg.CheckAligned() {
+		// TODO: what if the messages are misaligned? Here, we ignore those messages and print error
+		log.Warn("Error, misaligned messages detected")
+		return nil
+	}
+
 	sp, ctx := trace.StartSpanFromContext(msg.TraceCtx())
 	msg.SetTraceCtx(ctx)
 	defer sp.Finish()
@@ -217,12 +223,6 @@ func (fdmNode *filterDmNode) filterInvalidInsertMessage(msg *msgstream.InsertMsg
 				zap.Any("partitionID", msg.PartitionID))
 			return nil
 		}
-	}
-
-	if len(msg.RowIDs) != len(msg.Timestamps) || len(msg.RowIDs) != len(msg.RowData) {
-		// TODO: what if the messages are misaligned? Here, we ignore those messages and print error
-		log.Warn("Error, misaligned messages detected")
-		return nil
 	}
 
 	if len(msg.Timestamps) <= 0 {

@@ -40,7 +40,7 @@ import (
 	miniokv "github.com/milvus-io/milvus/internal/kv/minio"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
-	"github.com/milvus-io/milvus/internal/msgstream"
+	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
@@ -207,7 +207,7 @@ func (node *DataNode) initSession() error {
 // Init function does nothing now.
 func (node *DataNode) Init() error {
 	log.Info("DataNode Init",
-		zap.String("TimeTickChannelName", Params.MsgChannelCfg.DataCoordTimeTick),
+		zap.String("TimeTickChannelName", Params.CommonCfg.DataCoordTimeTick),
 	)
 	if err := node.initSession(); err != nil {
 		log.Error("DataNode init session failed", zap.Error(err))
@@ -226,7 +226,7 @@ func (node *DataNode) Init() error {
 		return err
 	}
 	log.Info("DataNode Init successfully",
-		zap.String("MsgChannelSubName", Params.MsgChannelCfg.DataNodeSubName))
+		zap.String("MsgChannelSubName", Params.CommonCfg.DataNodeSubName))
 
 	return nil
 }

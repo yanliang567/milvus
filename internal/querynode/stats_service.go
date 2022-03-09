@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/msgstream"
+	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"go.uber.org/zap"
@@ -50,7 +50,7 @@ func (sService *statsService) start() {
 	sleepTimeInterval := Params.QueryNodeCfg.StatsPublishInterval
 
 	// start pulsar
-	producerChannels := []string{Params.MsgChannelCfg.QueryNodeStats}
+	producerChannels := []string{Params.CommonCfg.QueryNodeStats}
 
 	statsStream, _ := sService.msFactory.NewMsgStream(sService.ctx)
 	statsStream.AsProducer(producerChannels)

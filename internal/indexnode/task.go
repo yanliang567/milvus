@@ -25,6 +25,8 @@ import (
 	"runtime/debug"
 	"strconv"
 
+	"github.com/milvus-io/milvus/internal/metrics"
+
 	"go.uber.org/zap"
 
 	"github.com/golang/protobuf/proto"
@@ -367,7 +369,7 @@ func (it *IndexBuildTask) loadVector(ctx context.Context) (storage.FieldID, stor
 		// In this case, it.internalErr is no longer nil and err does not need to be returned, otherwise it.err will also be assigned.
 		return storage.InvalidUniqueID, nil, err
 	}
-
+	loadVectorDuration := it.tr.RecordSpan()
 	log.Debug("IndexNode load data success", zap.Int64("buildId", it.req.IndexBuildID))
 	it.tr.Record("load vector data done")
 
@@ -376,6 +378,11 @@ func (it *IndexBuildTask) loadVector(ctx context.Context) (storage.FieldID, stor
 	if err2 != nil {
 		return storage.InvalidUniqueID, nil, err2
 	}
+
+	// TODO: @xiaocai2333 metrics.IndexNodeLoadBinlogLatency should be added above, put here to get segmentID.
+	metrics.IndexNodeLoadBinlogLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10), strconv.FormatInt(it.segmentID, 10)).Observe(float64(loadVectorDuration))
+	metrics.IndexNodeDecodeBinlogLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10), strconv.FormatInt(it.segmentID, 10)).Observe(float64(it.tr.RecordSpan()))
+
 	if len(insertData.Data) != 1 {
 		return storage.InvalidUniqueID, nil, errors.New("we expect only one field in deserialized insert data")
 	}
@@ -431,6 +438,8 @@ func (it *IndexBuildTask) buildIndex(ctx context.Context) ([]*storage.Blob, erro
 			}
 		}
 
+		metrics.IndexNodeKnowhereBuildIndexLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10), strconv.FormatInt(it.segmentID, 10)).Observe(float64(it.tr.RecordSpan()))
+
 		if !fOk && !bOk {
 			return nil, errors.New("we expect FloatVectorFieldData or BinaryVectorFieldData")
 		}
@@ -468,7 +477,9 @@ func (it *IndexBuildTask) buildIndex(ctx context.Context) ([]*storage.Blob, erro
 	if err != nil {
 		return nil, err
 	}
-	it.tr.Record("index codec serialize done")
+	encodeIndexFileDur := it.tr.Record("index codec serialize done")
+	metrics.IndexNodeEncodeIndexFileLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10),
+		strconv.FormatInt(it.segmentID, 10)).Observe(float64(encodeIndexFileDur.Milliseconds()))
 	return serializedIndexBlobs, nil
 }
 
@@ -565,6 +576,7 @@ func (it *IndexBuildTask) Execute(ctx context.Context) error {
 		}
 	}()
 
+	it.tr.Record("new CIndex")
 	var blobs []*storage.Blob
 	blobs, err = it.buildIndex(ctx)
 	if err != nil {
@@ -580,7 +592,9 @@ func (it *IndexBuildTask) Execute(ctx context.Context) error {
 		it.SetState(TaskStateRetry)
 		return err
 	}
-	it.tr.Record("index file save done")
+	saveIndexFileDur := it.tr.Record("index file save done")
+	metrics.IndexNodeSaveIndexFileLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10),
+		strconv.FormatInt(it.segmentID, 10)).Observe(float64(saveIndexFileDur.Milliseconds()))
 	it.tr.Elapse("index building all done")
 	log.Info("IndexNode CreateIndex successfully ", zap.Int64("collect", it.collectionID),
 		zap.Int64("partition", it.partitionID), zap.Int64("segment", it.segmentID))

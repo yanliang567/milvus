@@ -40,6 +40,8 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/milvus-io/milvus/internal/metrics"
+
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/kv"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
@@ -139,9 +141,9 @@ func (i *IndexNode) initKnowhere() {
 	C.IndexBuilderInit()
 
 	// override index builder SIMD type
-	cSimdType := C.CString(Params.KnowhereCfg.SimdType)
+	cSimdType := C.CString(Params.CommonCfg.SimdType)
 	cRealSimdType := C.IndexBuilderSetSimdType(cSimdType)
-	Params.KnowhereCfg.SimdType = C.GoString(cRealSimdType)
+	Params.CommonCfg.SimdType = C.GoString(cRealSimdType)
 	C.free(unsafe.Pointer(cRealSimdType))
 	C.free(unsafe.Pointer(cSimdType))
 }
@@ -280,6 +282,7 @@ func (i *IndexNode) CreateIndex(ctx context.Context, request *indexpb.CreateInde
 	sp, ctx2 := trace.StartSpanFromContextWithOperationName(i.loopCtx, "IndexNode-CreateIndex")
 	defer sp.Finish()
 	sp.SetTag("IndexBuildID", strconv.FormatInt(request.IndexBuildID, 10))
+	metrics.IndexNodeBuildIndexTaskCounter.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10), metrics.TotalLabel).Inc()
 
 	t := &IndexBuildTask{
 		BaseTask: BaseTask{
@@ -302,10 +305,12 @@ func (i *IndexNode) CreateIndex(ctx context.Context, request *indexpb.CreateInde
 		log.Warn("IndexNode failed to schedule", zap.Int64("indexBuildID", request.IndexBuildID), zap.Error(err))
 		ret.ErrorCode = commonpb.ErrorCode_UnexpectedError
 		ret.Reason = err.Error()
+		metrics.IndexNodeBuildIndexTaskCounter.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10), metrics.FailLabel).Inc()
 		return ret, nil
 	}
 	log.Info("IndexNode successfully scheduled", zap.Int64("indexBuildID", request.IndexBuildID))
 
+	metrics.IndexNodeBuildIndexTaskCounter.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10), metrics.SuccessLabel).Inc()
 	return ret, nil
 }
 

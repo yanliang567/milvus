@@ -23,7 +23,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/milvus-io/milvus/internal/msgstream"
+	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
@@ -88,11 +88,11 @@ func BenchmarkAllocTimestamp(b *testing.B) {
 
 	randVal := rand.Int()
 
-	Params.MsgChannelCfg.RootCoordTimeTick = fmt.Sprintf("master-time-tick-%d", randVal)
-	Params.MsgChannelCfg.RootCoordStatistics = fmt.Sprintf("master-statistics-%d", randVal)
+	Params.CommonCfg.RootCoordTimeTick = fmt.Sprintf("master-time-tick-%d", randVal)
+	Params.CommonCfg.RootCoordStatistics = fmt.Sprintf("master-statistics-%d", randVal)
 	Params.EtcdCfg.MetaRootPath = fmt.Sprintf("/%d/%s", randVal, Params.EtcdCfg.MetaRootPath)
 	Params.EtcdCfg.KvRootPath = fmt.Sprintf("/%d/%s", randVal, Params.EtcdCfg.KvRootPath)
-	Params.MsgChannelCfg.RootCoordSubName = fmt.Sprintf("subname-%d", randVal)
+	Params.CommonCfg.RootCoordSubName = fmt.Sprintf("subname-%d", randVal)
 
 	err = core.SetDataCoord(ctx, &tbd{})
 	assert.Nil(b, err)

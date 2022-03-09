@@ -23,7 +23,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/internal/msgstream"
+	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 )
@@ -45,8 +45,8 @@ func TestTimetickSync(t *testing.T) {
 	//}
 
 	Params.RootCoordCfg.DmlChannelNum = 2
-	Params.MsgChannelCfg.RootCoordDml = "rootcoord-dml"
-	Params.MsgChannelCfg.RootCoordDelta = "rootcoord-delta"
+	Params.CommonCfg.RootCoordDml = "rootcoord-dml"
+	Params.CommonCfg.RootCoordDelta = "rootcoord-delta"
 	ttSync := newTimeTickSync(ctx, sourceID, factory, nil)
 
 	var wg sync.WaitGroup
