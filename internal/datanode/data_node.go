@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -37,7 +38,6 @@ import (
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/kv"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
-	miniokv "github.com/milvus-io/milvus/internal/kv/minio"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
@@ -46,6 +46,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
+	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/logutil"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
@@ -110,9 +111,9 @@ type DataNode struct {
 	rootCoord types.RootCoord
 	dataCoord types.DataCoord
 
-	session *sessionutil.Session
-	watchKv kv.MetaKv
-	blobKv  kv.BaseKV
+	session      *sessionutil.Session
+	watchKv      kv.MetaKv
+	chunkManager storage.ChunkManager
 
 	closer io.Closer
 
@@ -185,7 +186,9 @@ func (node *DataNode) Register() error {
 		}
 		// manually send signal to starter goroutine
 		if node.session.TriggerKill {
-			syscall.Kill(syscall.Getpid(), syscall.SIGINT)
+			if p, err := os.FindProcess(os.Getpid()); err == nil {
+				p.Signal(syscall.SIGINT)
+			}
 		}
 	})
 
@@ -293,11 +296,13 @@ func (node *DataNode) handleChannelEvt(evt *clientv3.Event) {
 	case clientv3.EventTypePut: // datacoord shall put channels needs to be watched here
 		e = &event{
 			eventType: putEventType,
+			version:   evt.Kv.Version,
 		}
 
 	case clientv3.EventTypeDelete:
 		e = &event{
 			eventType: deleteEventType,
+			version:   evt.Kv.Version,
 		}
 	}
 	node.handleWatchInfo(e, string(evt.Kv.Key), evt.Kv.Value)
@@ -314,6 +319,11 @@ func (node *DataNode) handleWatchInfo(e *event, key string, data []byte) {
 			return
 		}
 
+		if isEndWatchState(watchInfo.State) {
+			log.Warn("DataNode received a PUT event with a end State", zap.String("state", watchInfo.State.String()))
+			return
+		}
+
 		e.info = watchInfo
 		e.vChanName = watchInfo.GetVchan().GetChannelName()
 
@@ -322,12 +332,9 @@ func (node *DataNode) handleWatchInfo(e *event, key string, data []byte) {
 		e.vChanName = parseDeleteEventKey(key)
 	}
 
-	actualManager, loaded := node.eventManagerMap.LoadOrStore(e.vChanName, &channelEventManager{
-		eventChan:         make(chan event, 10),
-		closeChan:         make(chan struct{}),
-		handlePutEvent:    node.handlePutEvent,
-		handleDeleteEvent: node.handleDeleteEvent,
-	})
+	actualManager, loaded := node.eventManagerMap.LoadOrStore(e.vChanName, newChannelEventManager(
+		node.handlePutEvent, node.handleDeleteEvent, retryWatchInterval,
+	))
 
 	if !loaded {
 		actualManager.(*channelEventManager).Run()
@@ -350,10 +357,6 @@ func parsePutEventData(data []byte) (*datapb.ChannelWatchInfo, error) {
 		return nil, fmt.Errorf("invalid event data: fail to parse ChannelWatchInfo, err: %v", err)
 	}
 
-	if watchInfo.State == datapb.ChannelWatchState_Complete {
-		return nil, fmt.Errorf("invalid event: event state is already ChannelWatchState_Compele")
-	}
-
 	if watchInfo.Vchan == nil {
 		return nil, fmt.Errorf("invalid event: ChannelWatchInfo with nil VChannelInfo")
 	}
@@ -367,28 +370,51 @@ func parseDeleteEventKey(key string) string {
 	return vChanName
 }
 
-func (node *DataNode) handlePutEvent(watchInfo *datapb.ChannelWatchInfo) error {
+func (node *DataNode) handlePutEvent(watchInfo *datapb.ChannelWatchInfo, version int64) (err error) {
 	vChanName := watchInfo.GetVchan().GetChannelName()
 
-	if err := node.flowgraphManager.addAndStart(node, watchInfo.GetVchan()); err != nil {
-		return fmt.Errorf("fail to add and start flowgraph for vChanName: %s, err: %v", vChanName, err)
-	}
-	log.Info("handle put event: new data sync service success", zap.String("vChanName", vChanName))
+	switch watchInfo.State {
+	case datapb.ChannelWatchState_Uncomplete, datapb.ChannelWatchState_ToWatch:
+		if err := node.flowgraphManager.addAndStart(node, watchInfo.GetVchan()); err != nil {
+			return fmt.Errorf("fail to add and start flowgraph for vChanName: %s, err: %v", vChanName, err)
+		}
+		log.Info("handle put event: new data sync service success", zap.String("vChanName", vChanName))
+		defer func() {
+			if err != nil {
+				node.releaseFlowgraph(vChanName)
+			}
+		}()
+		watchInfo.State = datapb.ChannelWatchState_WatchSuccess
 
-	watchInfo.State = datapb.ChannelWatchState_Complete
+	case datapb.ChannelWatchState_ToRelease:
+		success := true
+		func() {
+			defer func() {
+				if x := recover(); x != nil {
+					log.Error("release flowgraph panic", zap.Any("recovered", x))
+					success = false
+				}
+			}()
+			node.releaseFlowgraph(vChanName)
+		}()
+		if !success {
+			watchInfo.State = datapb.ChannelWatchState_ReleaseFailure
+		} else {
+			watchInfo.State = datapb.ChannelWatchState_ReleaseSuccess
+		}
+	}
+
 	v, err := proto.Marshal(watchInfo)
 	if err != nil {
-		return fmt.Errorf("fail to marshal watchInfo with complete state, vChanName: %s, err: %v", vChanName, err)
+		return fmt.Errorf("fail to marshal watchInfo with state, vChanName: %s, state: %s ,err: %w", vChanName, watchInfo.State.String(), err)
 	}
 
 	k := path.Join(Params.DataNodeCfg.ChannelWatchSubPath, fmt.Sprintf("%d", node.NodeID), vChanName)
-	log.Info("handle put event: try to save completed state", zap.String("key", k))
+	log.Info("handle put event: try to save result state", zap.String("key", k), zap.String("state", watchInfo.State.String()))
 
-	err = node.watchKv.Save(k, string(v))
-	// TODO DataNode unable to save into etcd, may need to panic
+	err = node.watchKv.CompareVersionAndSwap(k, version, string(v))
 	if err != nil {
-		node.releaseFlowgraph(vChanName)
-		return fmt.Errorf("fail to update completed state to etcd, vChanName: %s, err: %v", vChanName, err)
+		return fmt.Errorf("fail to update watch state to etcd, vChanName: %s, state: %s, err: %w", vChanName, watchInfo.State.String(), err)
 	}
 	return nil
 }
@@ -446,21 +472,19 @@ func (node *DataNode) Start() error {
 		return errors.New("DataNode fail to connect etcd")
 	}
 
-	option := &miniokv.Option{
-		Address:           Params.MinioCfg.Address,
-		AccessKeyID:       Params.MinioCfg.AccessKeyID,
-		SecretAccessKeyID: Params.MinioCfg.SecretAccessKey,
-		UseSSL:            Params.MinioCfg.UseSSL,
-		BucketName:        Params.MinioCfg.BucketName,
-		CreateBucket:      true,
-	}
+	chunkManager, err := storage.NewMinioChunkManager(node.ctx,
+		storage.Address(Params.MinioCfg.Address),
+		storage.AccessKeyID(Params.MinioCfg.AccessKeyID),
+		storage.SecretAccessKeyID(Params.MinioCfg.SecretAccessKey),
+		storage.UseSSL(Params.MinioCfg.UseSSL),
+		storage.BucketName(Params.MinioCfg.BucketName),
+		storage.CreateBucket(true))
 
-	kv, err := miniokv.NewMinIOKV(node.ctx, option)
 	if err != nil {
 		return err
 	}
 
-	node.blobKv = kv
+	node.chunkManager = chunkManager
 
 	if rep.Status.ErrorCode != commonpb.ErrorCode_Success || err != nil {
 		return errors.New("DataNode fail to start")
@@ -541,7 +565,9 @@ func (node *DataNode) ReadyToFlush() error {
 //
 //   One precondition: The segmentID in req is in ascending order.
 func (node *DataNode) FlushSegments(ctx context.Context, req *datapb.FlushSegmentsRequest) (*commonpb.Status, error) {
-	metrics.DataNodeFlushSegmentsCounter.WithLabelValues(MetricRequestsTotal).Inc()
+	metrics.DataNodeFlushSegmentsReqCounter.WithLabelValues(
+		fmt.Sprint(Params.DataNodeCfg.NodeID),
+		MetricRequestsTotal).Inc()
 
 	status := &commonpb.Status{
 		ErrorCode: commonpb.ErrorCode_UnexpectedError,
@@ -602,7 +628,9 @@ func (node *DataNode) FlushSegments(ctx context.Context, req *datapb.FlushSegmen
 	}
 
 	status.ErrorCode = commonpb.ErrorCode_Success
-	metrics.DataNodeFlushSegmentsCounter.WithLabelValues(MetricRequestsSuccess).Inc()
+	metrics.DataNodeFlushSegmentsReqCounter.WithLabelValues(
+		fmt.Sprint(Params.DataNodeCfg.NodeID),
+		MetricRequestsSuccess).Inc()
 
 	return status, nil
 }
@@ -737,7 +765,7 @@ func (node *DataNode) Compaction(ctx context.Context, req *datapb.CompactionPlan
 		return status, nil
 	}
 
-	binlogIO := &binlogIO{node.blobKv, ds.idAllocator}
+	binlogIO := &binlogIO{node.chunkManager, ds.idAllocator}
 	task := newCompactionTask(
 		node.ctx,
 		binlogIO, binlogIO,
@@ -753,4 +781,14 @@ func (node *DataNode) Compaction(ctx context.Context, req *datapb.CompactionPlan
 	return &commonpb.Status{
 		ErrorCode: commonpb.ErrorCode_Success,
 	}, nil
+}
+
+// Import data files(json, numpy, etc.) on MinIO/S3 storage, read and parse them into sealed segments
+func (node *DataNode) Import(ctx context.Context, req *datapb.ImportTask) (*commonpb.Status, error) {
+	log.Info("receive import request")
+	resp := &commonpb.Status{
+		ErrorCode: commonpb.ErrorCode_UnexpectedError,
+	}
+
+	return resp, nil
 }

@@ -42,7 +42,8 @@ macro( build_arrow )
 
     set( ARROW_CMAKE_ARGS
         "-DARROW_WITH_LZ4=OFF"
-        "-DARROW_WITH_ZSTD=OFF"
+        "-DARROW_WITH_ZSTD=ON"
+        "-Dzstd_SOURCE=BUNDLED"
         "-DARROW_WITH_BROTLI=OFF"
         "-DARROW_WITH_SNAPPY=OFF"
         "-DARROW_WITH_ZLIB=OFF"
@@ -53,7 +54,6 @@ macro( build_arrow )
         "-DARROW_TEST_MEMCHECK=OFF"
         "-DARROW_BUILD_BENCHMARKS=OFF"
         "-DARROW_CUDA=OFF"
-        "-DARROW_JEMALLOC=ON"
         "-DARROW_PYTHON=OFF"
         "-DARROW_WITH_RE2=OFF"
         "-DARROW_BUILD_UTILITIES=OFF"
@@ -66,6 +66,11 @@ macro( build_arrow )
         "-DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}"
         "-DCMAKE_INCLUDE_PATH=${Boost_INCLUDE_DIRS}"
         )
+    if (WIN32)
+        set( ARROW_CMAKE_ARGS ${ARROW_CMAKE_ARGS} "-DARROW_JEMALLOC=OFF" )
+    else ()
+        set( ARROW_CMAKE_ARGS ${ARROW_CMAKE_ARGS} "-DARROW_JEMALLOC=ON" )
+    endif ()
 
     ExternalProject_Add(
             arrow-ep
@@ -114,10 +119,10 @@ macro( build_arrow )
 endmacro()
 
 if (MSYS)
-    message("Using system arrow in msys")
-else ()
+    message(STATUS "Using arrow form system")
+else (MSYS)
     build_arrow()
-endif ()
+endif (MSYS)
 
 add_library(wrapper STATIC)
 target_sources(wrapper PUBLIC ParquetWrapper.cpp PayloadStream.cpp)

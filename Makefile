@@ -9,9 +9,10 @@
 # is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 # or implied. See the License for the specific language governing permissions and limitations under the License.
 
-GO		?= go
-PWD 	:= $(shell pwd)
-GOPATH 	:= $(shell $(GO) env GOPATH)
+GO		  ?= go
+PWD 	  := $(shell pwd)
+GOPATH 	  := $(shell $(GO) env GOPATH)
+OBJPREFIX := "github.com/milvus-io/milvus/cmd/milvus"
 
 INSTALL_PATH := $(PWD)/bin
 LIBRARY_PATH := $(PWD)/lib
@@ -25,6 +26,10 @@ pre-proc:
 	@echo "Running pre-processing"
 ifeq ($(OS),Darwin) # MacOS X
 	@echo "MacOS system identified. Switching to customized gorocksdb fork..."
+	@go mod edit -replace=github.com/tecbot/gorocksdb=github.com/soothing-rain/gorocksdb@v0.0.1
+endif
+ifeq ($(MSYSTEM), MINGW64) # MSYS
+	@echo "MSYS. Switching to customized gorocksdb fork..."
 	@go mod edit -replace=github.com/tecbot/gorocksdb=github.com/soothing-rain/gorocksdb@v0.0.1
 endif
 
@@ -118,14 +123,26 @@ print-build-info:
 milvus: build-cpp print-build-info
 	@echo "Building Milvus ..."
 	@mkdir -p $(INSTALL_PATH) && go env -w CGO_ENABLED="1" && GO111MODULE=on $(GO) build \
-		-ldflags="-X 'main.BuildTags=$(BUILD_TAGS)' -X 'main.BuildTime=$(BUILD_TIME)' -X 'main.GitCommit=$(GIT_COMMIT)' -X 'main.GoVersion=$(GO_VERSION)'" \
+		-ldflags="-X '$(OBJPREFIX).BuildTags=$(BUILD_TAGS)' -X '$(OBJPREFIX).BuildTime=$(BUILD_TIME)' -X '$(OBJPREFIX).GitCommit=$(GIT_COMMIT)' -X '$(OBJPREFIX).GoVersion=$(GO_VERSION)'" \
 		-o $(INSTALL_PATH)/milvus $(PWD)/cmd/main.go 1>/dev/null
+
+embd-milvus: build-cpp-embd print-build-info
+	@echo "Building **Embedded** Milvus ..."
+	@mkdir -p $(INSTALL_PATH) && go env -w CGO_ENABLED="1" && GO111MODULE=on $(GO) build \
+		-ldflags="-X '$(OBJPREFIX).BuildTags=$(BUILD_TAGS)' -X '$(OBJPREFIX).BuildTime=$(BUILD_TIME)' -X '$(OBJPREFIX).GitCommit=$(GIT_COMMIT)' -X '$(OBJPREFIX).GoVersion=$(GO_VERSION)'" \
+		-buildmode=c-shared -o $(INSTALL_PATH)/embd-milvus.so $(PWD)/pkg/embedded/embedded.go 1>/dev/null
 
 build-go: milvus
 
 build-cpp: pre-proc
 	@echo "Building Milvus cpp library ..."
-	@(env bash $(PWD)/scripts/core_build.sh -t ${mode} -f "$(CUSTOM_THIRDPARTY_PATH)")
+	@(env bash $(PWD)/scripts/core_build.sh -b -t ${mode} -f "$(CUSTOM_THIRDPARTY_PATH)")
+	@(env bash $(PWD)/scripts/cwrapper_build.sh -t ${mode} -f "$(CUSTOM_THIRDPARTY_PATH)")
+	@(env bash $(PWD)/scripts/cwrapper_rocksdb_build.sh -t ${mode} -f "$(CUSTOM_THIRDPARTY_PATH)")
+
+build-cpp-embd: pre-proc
+	@echo "Building **Embedded** Milvus cpp library ..."
+	@(env bash $(PWD)/scripts/core_build.sh -b -t ${mode} -f "$(CUSTOM_THIRDPARTY_PATH)")
 	@(env bash $(PWD)/scripts/cwrapper_build.sh -t ${mode} -f "$(CUSTOM_THIRDPARTY_PATH)")
 	@(env bash $(PWD)/scripts/cwrapper_rocksdb_build.sh -t ${mode} -f "$(CUSTOM_THIRDPARTY_PATH)")
 
@@ -145,6 +162,10 @@ test-indexnode:
 test-proxy:
 	@echo "Running go unittests..."
 	go test -race -coverpkg=./... -coverprofile=profile.out -covermode=atomic -timeout 5m github.com/milvus-io/milvus/internal/proxy -v
+
+test-datacoord:
+	@echo "Running go unittests..."
+	go test -race -coverpkg=./... -coverprofile=profile.out -covermode=atomic -timeout 5m github.com/milvus-io/milvus/internal/datacoord -v
 
 test-datanode:
 	@echo "Running go unittests..."

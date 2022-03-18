@@ -1,8 +1,9 @@
 module github.com/milvus-io/milvus
 
-go 1.15
+go 1.16
 
 require (
+	github.com/BurntSushi/toml v1.0.0 // indirect
 	github.com/HdrHistogram/hdrhistogram-go v1.0.1 // indirect
 	github.com/StackExchange/wmi v1.2.1 // indirect
 	github.com/antonmedv/expr v1.8.9
@@ -15,6 +16,7 @@ require (
 	github.com/facebookgo/subset v0.0.0-20200203212716-c811ad88dec4 // indirect
 	github.com/gin-gonic/gin v1.7.7
 	github.com/go-basic/ipv4 v1.0.0
+	github.com/gofrs/flock v0.8.1 // indirect
 	github.com/golang/mock v1.5.0
 	github.com/golang/protobuf v1.5.2
 	github.com/google/btree v1.0.1
@@ -54,7 +56,7 @@ require (
 )
 
 replace (
-	github.com/apache/pulsar-client-go => github.com/milvus-io/pulsar-client-go v0.6.5
+	github.com/apache/pulsar-client-go => github.com/milvus-io/pulsar-client-go v0.6.1-0.20220310065106-1ef6d309ead7
 	github.com/dgrijalva/jwt-go => github.com/golang-jwt/jwt v3.2.2+incompatible // Fix security alert for jwt-go 3.2.0
 	github.com/keybase/go-keychain => github.com/99designs/go-keychain v0.0.0-20191008050251-8e49817e8af4
 	google.golang.org/grpc => google.golang.org/grpc v1.38.0

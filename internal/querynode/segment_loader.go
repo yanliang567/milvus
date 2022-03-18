@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"runtime"
 	"strconv"
 	"sync"
 	"time"
@@ -28,9 +29,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/common"
-	"github.com/milvus-io/milvus/internal/kv"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
-	minioKV "github.com/milvus-io/milvus/internal/kv/minio"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
@@ -38,7 +37,6 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
-	"github.com/milvus-io/milvus/internal/rootcoord"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
@@ -55,8 +53,8 @@ type segmentLoader struct {
 
 	dataCoord types.DataCoord
 
-	minioKV kv.DataKV // minio minioKV
-	etcdKV  *etcdkv.EtcdKV
+	cm     storage.ChunkManager // minio cm
+	etcdKV *etcdkv.EtcdKV
 
 	factory msgstream.Factory
 }
@@ -89,7 +87,7 @@ func (loader *segmentLoader) loadSegment(req *querypb.LoadSegmentsRequest, segme
 		zap.Any("loadType", segmentType),
 	)
 	// check memory limit
-	err := loader.checkSegmentSize(req.CollectionID, req.Infos)
+	err := loader.checkSegmentSize(req.CollectionID, req.Infos, runtime.GOMAXPROCS(0))
 	if err != nil {
 		log.Error("load failed, OOM if loaded", zap.Int64("loadSegmentRequest msgID", req.Base.MsgID), zap.Error(err))
 		return err
@@ -127,8 +125,8 @@ func (loader *segmentLoader) loadSegment(req *querypb.LoadSegmentsRequest, segme
 		newSegments[segmentID] = segment
 	}
 
-	// start to load
-	for _, loadInfo := range req.Infos {
+	loadSegmentFunc := func(idx int) error {
+		loadInfo := req.Infos[idx]
 		collectionID := loadInfo.CollectionID
 		partitionID := loadInfo.PartitionID
 		segmentID := loadInfo.SegmentID
@@ -142,10 +140,18 @@ func (loader *segmentLoader) loadSegment(req *querypb.LoadSegmentsRequest, segme
 				zap.Int64("segmentID", segmentID),
 				zap.Int32("segment type", int32(segmentType)),
 				zap.Error(err))
-			segmentGC()
 			return err
 		}
+
 		metrics.QueryNodeLoadSegmentLatency.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Observe(float64(tr.ElapseSpan().Milliseconds()))
+
+		return nil
+	}
+	// start to load
+	err = funcutil.ProcessFuncParallel(len(req.Infos), runtime.GOMAXPROCS(0), loadSegmentFunc, "loadSegmentFunc")
+	if err != nil {
+		segmentGC()
+		return err
 	}
 
 	// set segment to meta replica
@@ -255,13 +261,13 @@ func (loader *segmentLoader) loadFiledBinlogData(segment *Segment, fieldBinlogs 
 	blobs := make([]*storage.Blob, 0)
 	for _, fieldBinlog := range fieldBinlogs {
 		for _, path := range fieldBinlog.Binlogs {
-			binLog, err := loader.minioKV.Load(path.GetLogPath())
+			binLog, err := loader.cm.Read(path.GetLogPath())
 			if err != nil {
 				return err
 			}
 			blob := &storage.Blob{
 				Key:   path.GetLogPath(),
-				Value: []byte(binLog),
+				Value: binLog,
 			}
 			blobs = append(blobs, blob)
 		}
@@ -316,13 +322,13 @@ func (loader *segmentLoader) loadVecFieldIndexData(segment *Segment, indexInfo *
 	indexCodec := storage.NewIndexFileBinlogCodec()
 	for _, p := range indexInfo.IndexFilePaths {
 		log.Debug("load index file", zap.String("path", p))
-		indexPiece, err := loader.minioKV.Load(p)
+		indexPiece, err := loader.cm.Read(p)
 		if err != nil {
 			return err
 		}
 
 		if path.Base(p) != storage.IndexParamsKey {
-			data, _, _, _, err := indexCodec.Deserialize([]*storage.Blob{{Key: path.Base(p), Value: []byte(indexPiece)}})
+			data, _, _, _, err := indexCodec.Deserialize([]*storage.Blob{{Key: path.Base(p), Value: indexPiece}})
 			if err != nil {
 				return err
 			}
@@ -441,13 +447,13 @@ func (loader *segmentLoader) loadSegmentBloomFilter(segment *Segment, binlogPath
 		return nil
 	}
 
-	values, err := loader.minioKV.MultiLoad(binlogPaths)
+	values, err := loader.cm.MultiRead(binlogPaths)
 	if err != nil {
 		return err
 	}
 	blobs := make([]*storage.Blob, 0)
 	for i := 0; i < len(values); i++ {
-		blobs = append(blobs, &storage.Blob{Value: []byte(values[i])})
+		blobs = append(blobs, &storage.Blob{Value: values[i]})
 	}
 
 	stats, err := storage.DeserializeStats(blobs)
@@ -472,13 +478,13 @@ func (loader *segmentLoader) loadDeltaLogs(segment *Segment, deltaLogs []*datapb
 	var blobs []*storage.Blob
 	for _, deltaLog := range deltaLogs {
 		for _, log := range deltaLog.GetBinlogs() {
-			value, err := loader.minioKV.Load(log.GetLogPath())
+			value, err := loader.cm.Read(log.GetLogPath())
 			if err != nil {
 				return err
 			}
 			blob := &storage.Blob{
 				Key:   log.GetLogPath(),
-				Value: []byte(value),
+				Value: value,
 			}
 			blobs = append(blobs, blob)
 		}
@@ -505,51 +511,87 @@ func (loader *segmentLoader) FromDmlCPLoadDelete(ctx context.Context, collection
 	if err != nil {
 		return err
 	}
-	defer stream.Close()
-	pChannelName := rootcoord.ToPhysicalChannel(position.ChannelName)
+
+	defer func() {
+		metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Dec()
+		stream.Close()
+	}()
+
+	pChannelName := funcutil.ToPhysicalChannel(position.ChannelName)
 	position.ChannelName = pChannelName
-	stream.AsReader([]string{pChannelName}, fmt.Sprintf("querynode-%d-%d", Params.QueryNodeCfg.QueryNodeID, collectionID))
-	metrics.QueryNodeNumReaders.WithLabelValues(fmt.Sprint(collectionID), fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Inc()
-	err = stream.SeekReaders([]*internalpb.MsgPosition{position})
+
+	stream.AsConsumer([]string{pChannelName}, fmt.Sprintf("querynode-%d-%d", Params.QueryNodeCfg.QueryNodeID, collectionID))
+	lastMsgID, err := stream.GetLatestMsgID(pChannelName)
 	if err != nil {
 		return err
 	}
+
+	if lastMsgID.AtEarliestPosition() {
+		log.Debug("there is no more delta msg", zap.Int64("Collection ID", collectionID), zap.String("channel", pChannelName))
+		return nil
+	}
+
+	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Inc()
+	err = stream.Seek([]*internalpb.MsgPosition{position})
+	if err != nil {
+		return err
+	}
+	stream.Start()
 
 	delData := &deleteData{
 		deleteIDs:        make(map[UniqueID][]int64),
 		deleteTimestamps: make(map[UniqueID][]Timestamp),
 		deleteOffset:     make(map[UniqueID]int64),
 	}
-	log.Debug("start read msg from stream reader", zap.Any("msg id", position.GetMsgID()))
-	for stream.HasNext(pChannelName) {
-		ctx, cancel := context.WithTimeout(ctx, timeoutForEachRead)
-		tsMsg, err := stream.Next(ctx, pChannelName)
-		if err != nil {
-			log.Warn("fail to load delete", zap.String("pChannelName", pChannelName), zap.Any("msg id", position.GetMsgID()), zap.Error(err))
-			cancel()
-			return err
-		}
-		if tsMsg == nil {
-			cancel()
-			continue
-		}
 
-		if tsMsg.Type() == commonpb.MsgType_Delete {
-			dmsg := tsMsg.(*msgstream.DeleteMsg)
-			if dmsg.CollectionID != collectionID {
-				cancel()
+	log.Debug("start read delta msg from seek position to last position",
+		zap.Int64("Collection ID", collectionID), zap.String("channel", pChannelName))
+	hasMore := true
+	for hasMore {
+		select {
+		case <-ctx.Done():
+			break
+		case msgPack, ok := <-stream.Chan():
+			if !ok {
+				log.Warn("fail to read delta msg", zap.String("pChannelName", pChannelName), zap.Any("msg id", position.GetMsgID()), zap.Error(err))
+				return err
+			}
+
+			if msgPack == nil {
 				continue
 			}
-			log.Debug("delete pk",
-				zap.Any("pk", dmsg.PrimaryKeys),
-				zap.String("vChannelName", position.GetChannelName()),
-				zap.Any("msg id", position.GetMsgID()),
-			)
-			processDeleteMessages(loader.historicalReplica, dmsg, delData)
+
+			for _, tsMsg := range msgPack.Msgs {
+				if tsMsg.Type() == commonpb.MsgType_Delete {
+					dmsg := tsMsg.(*msgstream.DeleteMsg)
+					if dmsg.CollectionID != collectionID {
+						continue
+					}
+					log.Debug("delete pk",
+						zap.Any("pk", dmsg.PrimaryKeys),
+						zap.String("vChannelName", position.GetChannelName()),
+						zap.Any("msg id", position.GetMsgID()),
+					)
+					processDeleteMessages(loader.historicalReplica, dmsg, delData)
+				}
+
+				ret, err := lastMsgID.LessOrEqualThan(tsMsg.Position().MsgID)
+				if err != nil {
+					log.Warn("check whether current MsgID less than last MsgID failed",
+						zap.Int64("Collection ID", collectionID), zap.String("channel", pChannelName), zap.Error(err))
+					return err
+				}
+
+				if ret {
+					hasMore = false
+					break
+				}
+			}
 		}
-		cancel()
 	}
-	log.Debug("All data has been read, there is no more data", zap.String("channel", pChannelName), zap.Any("msg id", position.GetMsgID()))
+
+	log.Debug("All data has been read, there is no more data", zap.Int64("Collection ID", collectionID),
+		zap.String("channel", pChannelName), zap.Any("msg id", position.GetMsgID()))
 	for segmentID, pks := range delData.deleteIDs {
 		segment, err := loader.historicalReplica.getSegmentByID(segmentID)
 		if err != nil {
@@ -604,9 +646,12 @@ func JoinIDPath(ids ...UniqueID) string {
 	return path.Join(idStr...)
 }
 
-func (loader *segmentLoader) checkSegmentSize(collectionID UniqueID, segmentLoadInfos []*querypb.SegmentLoadInfo) error {
+func (loader *segmentLoader) checkSegmentSize(collectionID UniqueID, segmentLoadInfos []*querypb.SegmentLoadInfo, concurrency int) error {
 	usedMem := metricsinfo.GetUsedMemoryCount()
 	totalMem := metricsinfo.GetMemoryCount()
+	if len(segmentLoadInfos) < concurrency {
+		concurrency = len(segmentLoadInfos)
+	}
 
 	if usedMem == 0 || totalMem == 0 {
 		return fmt.Errorf("get memory failed when checkSegmentSize, collectionID = %d", collectionID)
@@ -623,7 +668,7 @@ func (loader *segmentLoader) checkSegmentSize(collectionID UniqueID, segmentLoad
 	}
 
 	// when load segment, data will be copied from go memory to c++ memory
-	if uint64(usedMemAfterLoad+maxSegmentSize) > uint64(float64(totalMem)*Params.QueryNodeCfg.OverloadedMemoryThresholdPercentage) {
+	if uint64(usedMemAfterLoad+maxSegmentSize*int64(concurrency)) > uint64(float64(totalMem)*Params.QueryNodeCfg.OverloadedMemoryThresholdPercentage) {
 		return fmt.Errorf("load segment failed, OOM if load, collectionID = %d, maxSegmentSize = %d, usedMemAfterLoad = %d, totalMem = %d, thresholdFactor = %f",
 			collectionID, maxSegmentSize, usedMemAfterLoad, totalMem, Params.QueryNodeCfg.OverloadedMemoryThresholdPercentage)
 	}
@@ -631,31 +676,19 @@ func (loader *segmentLoader) checkSegmentSize(collectionID UniqueID, segmentLoad
 	return nil
 }
 
-func newSegmentLoader(ctx context.Context,
+func newSegmentLoader(
 	historicalReplica ReplicaInterface,
 	streamingReplica ReplicaInterface,
 	etcdKV *etcdkv.EtcdKV,
+	cm storage.ChunkManager,
 	factory msgstream.Factory) *segmentLoader {
-	option := &minioKV.Option{
-		Address:           Params.MinioCfg.Address,
-		AccessKeyID:       Params.MinioCfg.AccessKeyID,
-		SecretAccessKeyID: Params.MinioCfg.SecretAccessKey,
-		UseSSL:            Params.MinioCfg.UseSSL,
-		BucketName:        Params.MinioCfg.BucketName,
-		CreateBucket:      true,
-	}
-
-	client, err := minioKV.NewMinIOKV(ctx, option)
-	if err != nil {
-		panic(err)
-	}
 
 	return &segmentLoader{
 		historicalReplica: historicalReplica,
 		streamingReplica:  streamingReplica,
 
-		minioKV: client,
-		etcdKV:  etcdKV,
+		cm:     cm,
+		etcdKV: etcdKV,
 
 		factory: factory,
 	}

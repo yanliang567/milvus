@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/milvus-io/milvus/internal/allocator"
@@ -31,6 +32,8 @@ import (
 	"github.com/milvus-io/milvus/internal/util/etcd"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
 )
+
+var indexCheckerTestDir = "/tmp/milvus_test/index_checker"
 
 func TestReloadFromKV(t *testing.T) {
 	refreshParams()
@@ -73,7 +76,7 @@ func TestReloadFromKV(t *testing.T) {
 
 	err = kv.Save(key, string(value))
 	assert.Nil(t, err)
-	meta.setLoadType(defaultCollectionID, querypb.LoadType_loadCollection)
+	meta.setLoadType(defaultCollectionID, querypb.LoadType_LoadCollection)
 
 	t.Run("Test_CollectionExist", func(t *testing.T) {
 		indexChecker, err := newIndexChecker(baseCtx, kv, meta, nil, nil, nil)
@@ -99,10 +102,12 @@ func TestCheckIndexLoop(t *testing.T) {
 	assert.Nil(t, err)
 
 	rootCoord := newRootCoordMock(ctx)
-	indexCoord, err := newIndexCoordMock(ctx)
+	indexCoord, err := newIndexCoordMock(indexCheckerTestDir)
 	assert.Nil(t, err)
 	rootCoord.enableIndex = true
-	broker, err := newGlobalMetaBroker(ctx, rootCoord, nil, indexCoord)
+	cm := storage.NewLocalChunkManager(storage.RootPath(indexCheckerTestDir))
+	defer cm.RemoveWithPrefix("")
+	broker, err := newGlobalMetaBroker(ctx, rootCoord, nil, indexCoord, cm)
 	assert.Nil(t, err)
 
 	segmentInfo := &querypb.SegmentInfo{
@@ -135,7 +140,7 @@ func TestCheckIndexLoop(t *testing.T) {
 		childCancel()
 		indexChecker.wg.Wait()
 	})
-	meta.addCollection(defaultCollectionID, querypb.LoadType_loadCollection, genDefaultCollectionSchema(false))
+	meta.addCollection(defaultCollectionID, querypb.LoadType_LoadCollection, genDefaultCollectionSchema(false))
 	t.Run("Test_GetIndexInfo", func(t *testing.T) {
 		childCtx, childCancel := context.WithCancel(context.Background())
 		indexChecker, err := newIndexChecker(childCtx, kv, meta, nil, nil, broker)
@@ -168,15 +173,17 @@ func TestHandoffNotExistSegment(t *testing.T) {
 
 	rootCoord := newRootCoordMock(ctx)
 	rootCoord.enableIndex = true
-	indexCoord, err := newIndexCoordMock(ctx)
+	indexCoord, err := newIndexCoordMock(indexCheckerTestDir)
 	assert.Nil(t, err)
 	indexCoord.returnError = true
 	dataCoord := newDataCoordMock(ctx)
 	dataCoord.segmentState = commonpb.SegmentState_NotExist
-	broker, err := newGlobalMetaBroker(ctx, rootCoord, dataCoord, indexCoord)
+	cm := storage.NewLocalChunkManager(storage.RootPath(indexCheckerTestDir))
+	defer cm.RemoveWithPrefix("")
+	broker, err := newGlobalMetaBroker(ctx, rootCoord, dataCoord, indexCoord, cm)
 	assert.Nil(t, err)
 
-	meta.addCollection(defaultCollectionID, querypb.LoadType_loadCollection, genDefaultCollectionSchema(false))
+	meta.addCollection(defaultCollectionID, querypb.LoadType_LoadCollection, genDefaultCollectionSchema(false))
 
 	segmentInfo := &querypb.SegmentInfo{
 		SegmentID:    defaultSegmentID,

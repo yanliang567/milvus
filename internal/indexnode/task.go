@@ -30,7 +30,6 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/milvus-io/milvus/internal/kv"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
@@ -120,7 +119,7 @@ func (bt *BaseTask) Notify(err error) {
 type IndexBuildTask struct {
 	BaseTask
 	index          Index
-	kv             kv.BaseKV
+	cm             storage.ChunkManager
 	etcdKV         *etcdkv.EtcdKV
 	savePaths      []string
 	req            *indexpb.CreateIndexRequest
@@ -329,11 +328,11 @@ func (it *IndexBuildTask) prepareParams(ctx context.Context) error {
 
 func (it *IndexBuildTask) loadVector(ctx context.Context) (storage.FieldID, storage.FieldData, error) {
 	getValueByPath := func(path string) ([]byte, error) {
-		data, err := it.kv.Load(path)
+		data, err := it.cm.Read(path)
 		if err != nil {
 			return nil, err
 		}
-		return []byte(data), nil
+		return data, nil
 	}
 	getBlobByPath := func(path string) (*Blob, error) {
 		value, err := getValueByPath(path)
@@ -380,8 +379,8 @@ func (it *IndexBuildTask) loadVector(ctx context.Context) (storage.FieldID, stor
 	}
 
 	// TODO: @xiaocai2333 metrics.IndexNodeLoadBinlogLatency should be added above, put here to get segmentID.
-	metrics.IndexNodeLoadBinlogLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10), strconv.FormatInt(it.segmentID, 10)).Observe(float64(loadVectorDuration))
-	metrics.IndexNodeDecodeBinlogLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10), strconv.FormatInt(it.segmentID, 10)).Observe(float64(it.tr.RecordSpan()))
+	metrics.IndexNodeLoadBinlogLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10)).Observe(float64(loadVectorDuration))
+	metrics.IndexNodeDecodeBinlogLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10)).Observe(float64(it.tr.RecordSpan()))
 
 	if len(insertData.Data) != 1 {
 		return storage.InvalidUniqueID, nil, errors.New("we expect only one field in deserialized insert data")
@@ -438,7 +437,7 @@ func (it *IndexBuildTask) buildIndex(ctx context.Context) ([]*storage.Blob, erro
 			}
 		}
 
-		metrics.IndexNodeKnowhereBuildIndexLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10), strconv.FormatInt(it.segmentID, 10)).Observe(float64(it.tr.RecordSpan()))
+		metrics.IndexNodeKnowhereBuildIndexLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10)).Observe(float64(it.tr.RecordSpan()))
 
 		if !fOk && !bOk {
 			return nil, errors.New("we expect FloatVectorFieldData or BinaryVectorFieldData")
@@ -478,8 +477,7 @@ func (it *IndexBuildTask) buildIndex(ctx context.Context) ([]*storage.Blob, erro
 		return nil, err
 	}
 	encodeIndexFileDur := it.tr.Record("index codec serialize done")
-	metrics.IndexNodeEncodeIndexFileLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10),
-		strconv.FormatInt(it.segmentID, 10)).Observe(float64(encodeIndexFileDur.Milliseconds()))
+	metrics.IndexNodeEncodeIndexFileLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10)).Observe(float64(encodeIndexFileDur.Milliseconds()))
 	return serializedIndexBlobs, nil
 }
 
@@ -517,7 +515,7 @@ func (it *IndexBuildTask) saveIndex(ctx context.Context, blobs []*storage.Blob) 
 					zap.Any("indexMeta.Version", indexMeta.Version))
 				return errors.New("This task has been reassigned, check indexMeta.version and request ")
 			}
-			return it.kv.Save(savePath, string(blob.Value))
+			return it.cm.Write(savePath, blob.Value)
 		}
 		err := retry.Do(ctx, saveIndexFileFn, retry.Attempts(5))
 		if err != nil {
@@ -593,8 +591,7 @@ func (it *IndexBuildTask) Execute(ctx context.Context) error {
 		return err
 	}
 	saveIndexFileDur := it.tr.Record("index file save done")
-	metrics.IndexNodeSaveIndexFileLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10),
-		strconv.FormatInt(it.segmentID, 10)).Observe(float64(saveIndexFileDur.Milliseconds()))
+	metrics.IndexNodeSaveIndexFileLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10)).Observe(float64(saveIndexFileDur.Milliseconds()))
 	it.tr.Elapse("index building all done")
 	log.Info("IndexNode CreateIndex successfully ", zap.Int64("collect", it.collectionID),
 		zap.Int64("partition", it.partitionID), zap.Int64("segment", it.segmentID))

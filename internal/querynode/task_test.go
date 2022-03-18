@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/apache/pulsar-client-go/pulsar"
+
 	"github.com/stretchr/testify/assert"
 
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
@@ -258,6 +259,11 @@ func TestTask_watchDmChannelsTask(t *testing.T) {
 			req:  genWatchDMChannelsRequest(),
 			node: node,
 		}
+		task.req.LoadMeta = &querypb.LoadMetaInfo{
+			LoadType:     querypb.LoadType_LoadPartition,
+			CollectionID: defaultCollectionID,
+			PartitionIDs: []UniqueID{defaultPartitionID},
+		}
 		task.req.Infos = []*datapb.VchannelInfo{
 			{
 				CollectionID: defaultCollectionID,
@@ -376,6 +382,39 @@ func TestTask_watchDmChannelsTask(t *testing.T) {
 		}
 		err = task.Execute(ctx)
 		assert.Error(t, err)
+	})
+
+	t.Run("test load growing segment", func(t *testing.T) {
+		node, err := genSimpleQueryNode(ctx)
+		assert.NoError(t, err)
+
+		task := watchDmChannelsTask{
+			req:  genWatchDMChannelsRequest(),
+			node: node,
+		}
+
+		fieldBinlog, err := saveSimpleBinLog(ctx)
+		assert.NoError(t, err)
+
+		task.req.Infos = []*datapb.VchannelInfo{
+			{
+				CollectionID: defaultCollectionID,
+				ChannelName:  defaultDMLChannel,
+				UnflushedSegments: []*datapb.SegmentInfo{
+					{
+						CollectionID: defaultCollectionID,
+						PartitionID:  defaultPartitionID + 1, // load a new partition
+						DmlPosition: &internalpb.MsgPosition{
+							ChannelName: defaultDMLChannel,
+							Timestamp:   typeutil.MaxTimestamp,
+						},
+						Binlogs: fieldBinlog,
+					},
+				},
+			},
+		}
+		err = task.Execute(ctx)
+		assert.NoError(t, err)
 	})
 }
 
@@ -595,10 +634,16 @@ func TestTask_loadSegmentsTask(t *testing.T) {
 				PartitionID:  defaultPartitionID,
 				CollectionID: defaultCollectionID,
 				NumOfRows:    totalRAM / int64(sizePerRecord),
+				SegmentSize:  totalRAM,
 			},
+		}
+		// Reach the segment size that would cause OOM
+		for node.loader.checkSegmentSize(defaultCollectionID, task.req.Infos, 1) == nil {
+			task.req.Infos[0].SegmentSize *= 2
 		}
 		err = task.Execute(ctx)
 		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "OOM")
 	})
 }
 
@@ -738,7 +783,8 @@ func TestTask_releasePartitionTask(t *testing.T) {
 			req:  genReleasePartitionsRequest(),
 			node: node,
 		}
-		task.node.dataSyncService.addFlowGraphsForDMLChannels(defaultCollectionID, []Channel{defaultDMLChannel})
+		_, err = task.node.dataSyncService.addFlowGraphsForDMLChannels(defaultCollectionID, []Channel{defaultDMLChannel})
+		assert.NoError(t, err)
 		err = task.Execute(ctx)
 		assert.NoError(t, err)
 	})
@@ -761,7 +807,7 @@ func TestTask_releasePartitionTask(t *testing.T) {
 		assert.Error(t, err)
 	})
 
-	t.Run("test execute, remove deltaVChannel", func(t *testing.T) {
+	t.Run("test execute remove deltaVChannel", func(t *testing.T) {
 		node, err := genSimpleQueryNode(ctx)
 		assert.NoError(t, err)
 
@@ -781,7 +827,8 @@ func TestTask_releasePartitionTask(t *testing.T) {
 			req:  genReleasePartitionsRequest(),
 			node: node,
 		}
-		task.node.dataSyncService.addFlowGraphsForDMLChannels(defaultCollectionID, []Channel{defaultDMLChannel})
+		_, err = task.node.dataSyncService.addFlowGraphsForDMLChannels(defaultCollectionID, []Channel{defaultDMLChannel})
+		assert.NoError(t, err)
 		err = task.Execute(ctx)
 		assert.NoError(t, err)
 	})

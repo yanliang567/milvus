@@ -206,6 +206,10 @@ func (coord *DataCoordMock) DropVirtualChannel(ctx context.Context, req *datapb.
 	return &datapb.DropVirtualChannelResponse{}, nil
 }
 
+func (coord *DataCoordMock) Import(ctx context.Context, req *datapb.ImportTask) (*commonpb.Status, error) {
+	return &commonpb.Status{}, nil
+}
+
 func NewDataCoordMock() *DataCoordMock {
 	return &DataCoordMock{
 		nodeID:            typeutil.UniqueID(uniquegenerator.GetUniqueIntGeneratorIns().GetInt()),

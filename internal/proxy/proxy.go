@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"math/rand"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -126,7 +127,9 @@ func (node *Proxy) Register() error {
 			log.Fatal("failed to stop server", zap.Error(err))
 		}
 		if node.session.TriggerKill {
-			syscall.Kill(syscall.Getpid(), syscall.SIGINT)
+			if p, err := os.FindProcess(os.Getpid()); err == nil {
+				p.Signal(syscall.SIGINT)
+			}
 		}
 	})
 	// TODO Reset the logger
@@ -313,11 +316,7 @@ func (node *Proxy) sendChannelsTimeTickLoop() {
 					DefaultTimestamp: maxTs,
 				}
 
-				for idx, channel := range channels {
-					ts := tss[idx]
-					metrics.ProxyDmlChannelTimeTick.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.ProxyID, 10), channel).Set(float64(ts))
-				}
-				metrics.ProxyDmlChannelTimeTick.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.ProxyID, 10), "DefaultTimestamp").Set(float64(maxTs))
+				metrics.ProxySyncTimeTick.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.ProxyID, 10), "DefaultTimestamp").Set(float64(maxTs))
 
 				status, err := node.rootCoord.UpdateChannelTimeTick(node.ctx, req)
 				if err != nil {

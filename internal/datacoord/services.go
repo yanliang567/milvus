@@ -961,3 +961,13 @@ func (s *Server) GetFlushState(ctx context.Context, req *milvuspb.GetFlushStateR
 	resp.Status.ErrorCode = commonpb.ErrorCode_Success
 	return resp, nil
 }
+
+// Import data files(json, numpy, etc.) on MinIO/S3 storage, read and parse them into sealed segments
+func (s *Server) Import(ctx context.Context, req *datapb.ImportTask) (*commonpb.Status, error) {
+	log.Info("receive import request")
+	resp := &commonpb.Status{
+		ErrorCode: commonpb.ErrorCode_UnexpectedError,
+	}
+
+	return resp, nil
+}

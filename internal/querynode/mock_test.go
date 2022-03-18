@@ -30,7 +30,6 @@ import (
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/indexnode"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
-	minioKV "github.com/milvus-io/milvus/internal/kv/minio"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
@@ -70,6 +69,8 @@ const (
 	defaultDMLChannel   = "query-node-unittest-DML-0"
 	defaultDeltaChannel = "query-node-unittest-delta-channel-0"
 	defaultSubName      = "query-node-unittest-sub-name-0"
+
+	defaultLocalStorage = "/tmp/milvus_test/querynode"
 )
 
 const (
@@ -357,19 +358,7 @@ func generateIndex(segmentID UniqueID) ([]string, error) {
 		return nil, err
 	}
 
-	option := &minioKV.Option{
-		Address:           Params.MinioCfg.Address,
-		AccessKeyID:       Params.MinioCfg.AccessKeyID,
-		SecretAccessKeyID: Params.MinioCfg.SecretAccessKey,
-		UseSSL:            Params.MinioCfg.UseSSL,
-		BucketName:        Params.MinioCfg.BucketName,
-		CreateBucket:      true,
-	}
-
-	kv, err := minioKV.NewMinIOKV(context.Background(), option)
-	if err != nil {
-		return nil, err
-	}
+	cm := storage.NewLocalChunkManager(storage.RootPath(defaultLocalStorage))
 
 	// save index to minio
 	binarySet, err := index.Serialize()
@@ -399,7 +388,7 @@ func generateIndex(segmentID UniqueID) ([]string, error) {
 	for _, index := range serializedIndexBlobs {
 		p := strconv.Itoa(int(segmentID)) + "/" + index.Key
 		indexPaths = append(indexPaths, p)
-		err := kv.Save(p, string(index.Value))
+		err := cm.Write(p, index.Value)
 		if err != nil {
 			return nil, err
 		}
@@ -436,19 +425,7 @@ func generateAndSaveIndex(segmentID UniqueID, msgLength int, indexType, metricTy
 		return nil, err
 	}
 
-	option := &minioKV.Option{
-		Address:           Params.MinioCfg.Address,
-		AccessKeyID:       Params.MinioCfg.AccessKeyID,
-		SecretAccessKeyID: Params.MinioCfg.SecretAccessKey,
-		UseSSL:            Params.MinioCfg.UseSSL,
-		BucketName:        Params.MinioCfg.BucketName,
-		CreateBucket:      true,
-	}
-
-	kv, err := minioKV.NewMinIOKV(context.Background(), option)
-	if err != nil {
-		return nil, err
-	}
+	cm := storage.NewLocalChunkManager(storage.RootPath(defaultLocalStorage))
 
 	// save index to minio
 	binarySet, err := index.Serialize()
@@ -478,7 +455,7 @@ func generateAndSaveIndex(segmentID UniqueID, msgLength int, indexType, metricTy
 	for _, index := range serializedIndexBlobs {
 		p := strconv.Itoa(int(segmentID)) + "/" + index.Key
 		indexPaths = append(indexPaths, p)
-		err := kv.Save(p, string(index.Value))
+		err := cm.Write(p, index.Value)
 		if err != nil {
 			return nil, err
 		}
@@ -633,19 +610,6 @@ func genSimpleCollectionMeta() *etcdpb.CollectionMeta {
 
 // ---------- unittest util functions ----------
 // functions of third-party
-func genMinioKV(ctx context.Context) (*minioKV.MinIOKV, error) {
-	option := &minioKV.Option{
-		Address:           Params.MinioCfg.Address,
-		AccessKeyID:       Params.MinioCfg.AccessKeyID,
-		SecretAccessKeyID: Params.MinioCfg.SecretAccessKey,
-		UseSSL:            Params.MinioCfg.UseSSL,
-		BucketName:        Params.MinioCfg.BucketName,
-		CreateBucket:      true,
-	}
-	kv, err := minioKV.NewMinIOKV(ctx, option)
-	return kv, err
-}
-
 func genEtcdKV() (*etcdkv.EtcdKV, error) {
 	etcdCli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
 	if err != nil {
@@ -663,6 +627,21 @@ func genFactory() (msgstream.Factory, error) {
 	m := map[string]interface{}{
 		"receiveBufSize": receiveBufSize,
 		"pulsarAddress":  pulsarURL,
+		"pulsarBufSize":  1024}
+	err := msFactory.SetParams(m)
+	if err != nil {
+		return nil, err
+	}
+	return msFactory, nil
+}
+
+func genInvalidFactory() (msgstream.Factory, error) {
+	const receiveBufSize = 1024
+
+	msFactory := msgstream.NewPmsFactory()
+	m := map[string]interface{}{
+		"receiveBufSize": receiveBufSize,
+		"pulsarAddress":  "",
 		"pulsarBufSize":  1024}
 	err := msFactory.SetParams(m)
 	if err != nil {
@@ -940,7 +919,7 @@ func saveBinLog(ctx context.Context,
 	}
 
 	log.Debug(".. [query node unittest] Saving bin logs to MinIO ..", zap.Int("number", len(binLogs)))
-	kvs := make(map[string]string, len(binLogs))
+	kvs := make(map[string][]byte, len(binLogs))
 
 	// write insert binlog
 	fieldBinlog := make([]*datapb.FieldBinlog, 0)
@@ -952,7 +931,7 @@ func saveBinLog(ctx context.Context,
 		}
 
 		key := JoinIDPath(collectionID, partitionID, segmentID, fieldID)
-		kvs[key] = string(blob.Value[:])
+		kvs[key] = blob.Value[:]
 		fieldBinlog = append(fieldBinlog, &datapb.FieldBinlog{
 			FieldID: fieldID,
 			Binlogs: []*datapb.Binlog{{LogPath: key}},
@@ -960,11 +939,8 @@ func saveBinLog(ctx context.Context,
 	}
 	log.Debug("[query node unittest] save binlog file to MinIO/S3")
 
-	kv, err := genMinioKV(ctx)
-	if err != nil {
-		return nil, err
-	}
-	err = kv.MultiSave(kvs)
+	cm := storage.NewLocalChunkManager(storage.RootPath(defaultLocalStorage))
+	err = cm.MultiWrite(kvs)
 	return fieldBinlog, err
 }
 
@@ -1042,6 +1018,37 @@ func genSimpleInsertMsg() (*msgstream.InsertMsg, error) {
 			RowData:        rowData,
 		},
 	}, nil
+}
+
+func genDeleteMsg(reqID UniqueID, collectionID int64) msgstream.TsMsg {
+	hashValue := uint32(reqID)
+	baseMsg := msgstream.BaseMsg{
+		BeginTimestamp: 0,
+		EndTimestamp:   0,
+		HashValues:     []uint32{hashValue},
+		MsgPosition: &internalpb.MsgPosition{
+			ChannelName: "",
+			MsgID:       []byte{},
+			MsgGroup:    "",
+			Timestamp:   10,
+		},
+	}
+
+	return &msgstream.DeleteMsg{
+		BaseMsg: baseMsg,
+		DeleteRequest: internalpb.DeleteRequest{
+			Base: &commonpb.MsgBase{
+				MsgType: commonpb.MsgType_Delete,
+				MsgID:   reqID,
+			},
+			CollectionName: defaultCollectionName,
+			PartitionName:  defaultPartitionName,
+			CollectionID:   collectionID,
+			PartitionID:    defaultPartitionID,
+			PrimaryKeys:    genSimpleDeleteID(),
+			Timestamps:     genSimpleTimestampDeletedPK(),
+		},
+	}
 }
 
 func genSimpleDeleteMsg() (*msgstream.DeleteMsg, error) {
@@ -1168,12 +1175,17 @@ func genSimpleReplica() (ReplicaInterface, error) {
 	return r, err
 }
 
-func genSimpleSegmentLoader(ctx context.Context, historicalReplica ReplicaInterface, streamingReplica ReplicaInterface) (*segmentLoader, error) {
+func genSimpleSegmentLoaderWithMqFactory(ctx context.Context, historicalReplica ReplicaInterface, streamingReplica ReplicaInterface, factory msgstream.Factory) (*segmentLoader, error) {
 	kv, err := genEtcdKV()
 	if err != nil {
 		return nil, err
 	}
-	return newSegmentLoader(ctx, historicalReplica, streamingReplica, kv, msgstream.NewPmsFactory()), nil
+	cm := storage.NewLocalChunkManager(storage.RootPath(defaultLocalStorage))
+	return newSegmentLoader(historicalReplica, streamingReplica, kv, cm, factory), nil
+}
+
+func genSimpleSegmentLoader(ctx context.Context, historicalReplica ReplicaInterface, streamingReplica ReplicaInterface) (*segmentLoader, error) {
+	return genSimpleSegmentLoaderWithMqFactory(ctx, historicalReplica, streamingReplica, msgstream.NewPmsFactory())
 }
 
 func genSimpleHistorical(ctx context.Context, tSafeReplica TSafeReplicaInterface) (*historical, error) {
@@ -1617,24 +1629,6 @@ func initConsumer(ctx context.Context, queryResultChannel Channel) (msgstream.Ms
 	return stream, nil
 }
 
-func consumeSimpleSearchResult(stream msgstream.MsgStream) (*msgstream.SearchResultMsg, error) {
-	res := stream.Consume()
-	if len(res.Msgs) != 1 {
-		err := errors.New("unexpected message length")
-		return nil, err
-	}
-	return res.Msgs[0].(*msgstream.SearchResultMsg), nil
-}
-
-func consumeSimpleRetrieveResult(stream msgstream.MsgStream) (*msgstream.RetrieveResultMsg, error) {
-	res := stream.Consume()
-	if len(res.Msgs) != 1 {
-		err := errors.New("unexpected message length")
-		return nil, err
-	}
-	return res.Msgs[0].(*msgstream.RetrieveResultMsg), nil
-}
-
 func genSimpleChangeInfo() *querypb.SealedSegmentsChangeInfo {
 	changeInfo := &querypb.SegmentChangeInfo{
 		OnlineNodeID: Params.QueryNodeCfg.QueryNodeID,
@@ -1664,12 +1658,7 @@ func saveChangeInfo(key string, value string) error {
 	return kv.Save(key, value)
 }
 
-// node
-func genSimpleQueryNode(ctx context.Context) (*QueryNode, error) {
-	fac, err := genFactory()
-	if err != nil {
-		return nil, err
-	}
+func genSimpleQueryNodeWithMQFactory(ctx context.Context, fac msgstream.Factory) (*QueryNode, error) {
 	node := NewQueryNode(ctx, fac)
 	etcdCli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
 	if err != nil {
@@ -1697,7 +1686,7 @@ func genSimpleQueryNode(ctx context.Context) (*QueryNode, error) {
 	node.streaming = streaming
 	node.historical = historical
 
-	loader, err := genSimpleSegmentLoader(node.queryNodeLoopCtx, historical.replica, streaming.replica)
+	loader, err := genSimpleSegmentLoaderWithMqFactory(node.queryNodeLoopCtx, historical.replica, streaming.replica, fac)
 	if err != nil {
 		return nil, err
 	}
@@ -1713,6 +1702,15 @@ func genSimpleQueryNode(ctx context.Context) (*QueryNode, error) {
 	node.UpdateStateCode(internalpb.StateCode_Healthy)
 
 	return node, nil
+}
+
+// node
+func genSimpleQueryNode(ctx context.Context) (*QueryNode, error) {
+	fac, err := genFactory()
+	if err != nil {
+		return nil, err
+	}
+	return genSimpleQueryNodeWithMQFactory(ctx, fac)
 }
 
 func genFieldData(fieldName string, fieldID int64, fieldType schemapb.DataType, fieldValue interface{}, dim int64) *schemapb.FieldData {
@@ -1828,4 +1826,26 @@ func genFieldData(fieldName string, fieldID int64, fieldType schemapb.DataType, 
 	}
 
 	return fieldData
+}
+
+type mockMsgStreamFactory struct {
+	mockMqStream msgstream.MsgStream
+}
+
+var _ msgstream.Factory = &mockMsgStreamFactory{}
+
+func (mm *mockMsgStreamFactory) SetParams(params map[string]interface{}) error {
+	return nil
+}
+
+func (mm *mockMsgStreamFactory) NewMsgStream(ctx context.Context) (msgstream.MsgStream, error) {
+	return mm.mockMqStream, nil
+}
+
+func (mm *mockMsgStreamFactory) NewTtMsgStream(ctx context.Context) (msgstream.MsgStream, error) {
+	return nil, nil
+}
+
+func (mm *mockMsgStreamFactory) NewQueryMsgStream(ctx context.Context) (msgstream.MsgStream, error) {
+	return nil, nil
 }

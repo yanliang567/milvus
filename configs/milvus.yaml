@@ -22,6 +22,12 @@ etcd:
   metaSubPath: meta # metaRootPath = rootPath + '/' + metaSubPath
   kvSubPath: kv # kvRootPath = rootPath + '/' + kvSubPath
   log:
+    # path is one of:
+    #  - "default" as os.Stderr,
+    #  - "stderr" as os.Stderr,
+    #  - "stdout" as os.Stdout,
+    #  - file path to append server logs to.
+    path: stdout
     level: info # Only supports debug, info, warn, error, panic, or fatal. Default 'info'.
   use:
     embed: false # Whether to enable embedded Etcd (an in-process EtcdServer).
@@ -90,6 +96,7 @@ proxy:
   maxTaskNum: 1024 # max task number of proxy task queue
   bufFlagExpireTime: 3600 # second, the time to expire bufFlag from cache in collectResultLoop
   bufFlagCleanupInterval: 600 # second, the interval to clean bufFlag cache in collectResultLoop
+  ginLogging: true # Whether to produce gin logs.
 
 
 # Related configuration of queryCoord, used to manage topology and load balancing for the query nodes, and handoff from growing segments to sealed segments.

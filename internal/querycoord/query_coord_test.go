@@ -41,6 +41,8 @@ import (
 	"go.uber.org/zap"
 )
 
+var queryCoordTestDir = "/tmp/milvus_test/query_coord"
+
 func setup() {
 	Params.Init()
 }
@@ -85,7 +87,7 @@ func startQueryCoord(ctx context.Context) (*QueryCoord, error) {
 	rootCoord.createPartition(defaultCollectionID, defaultPartitionID)
 
 	dataCoord := newDataCoordMock(ctx)
-	indexCoord, err := newIndexCoordMock(ctx)
+	indexCoord, err := newIndexCoordMock(queryCoordTestDir)
 	if err != nil {
 		return nil, err
 	}
@@ -353,7 +355,7 @@ func TestHandoffSegmentLoop(t *testing.T) {
 	err = queryCoord.scheduler.Enqueue(loadCollectionTask)
 	assert.Nil(t, err)
 	waitTaskFinalState(loadCollectionTask, taskExpired)
-	queryCoord.meta.setLoadType(defaultCollectionID, querypb.LoadType_loadCollection)
+	queryCoord.meta.setLoadType(defaultCollectionID, querypb.LoadType_LoadCollection)
 
 	t.Run("Test handoffGrowingSegment", func(t *testing.T) {
 		infos := queryCoord.meta.showSegmentInfos(defaultCollectionID, nil)

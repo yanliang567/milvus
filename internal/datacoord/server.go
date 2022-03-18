@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"os"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -30,6 +31,7 @@ import (
 	rootcoordclient "github.com/milvus-io/milvus/internal/distributed/rootcoord/client"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/mq/msgstream/mqwrapper"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
@@ -223,7 +225,9 @@ func (s *Server) Register() error {
 		}
 		// manually send signal to starter goroutine
 		if s.session.TriggerKill {
-			syscall.Kill(syscall.Getpid(), syscall.SIGINT)
+			if p, err := os.FindProcess(os.Getpid()); err == nil {
+				p.Signal(syscall.SIGINT)
+			}
 		}
 	})
 	return nil
@@ -483,29 +487,29 @@ func (s *Server) handleDataNodeTimetickMsgstream(ctx context.Context, ttMsgStrea
 		case <-ctx.Done():
 			log.Info("DataNode timetick loop shutdown")
 			return
-		default:
-		}
-		msgPack := ttMsgStream.Consume()
-		if msgPack == nil {
-			log.Info("receive nil timetick msg and shutdown timetick channel")
-			return
-		}
-		for _, msg := range msgPack.Msgs {
-			ttMsg, ok := msg.(*msgstream.DataNodeTtMsg)
-			if !ok {
-				log.Warn("receive unexpected msg type from tt channel")
-				continue
-			}
-			if enableTtChecker {
-				checker.Check()
+		case msgPack, ok := <-ttMsgStream.Chan():
+			if !ok || msgPack == nil || len(msgPack.Msgs) == 0 {
+				log.Info("receive nil timetick msg and shutdown timetick channel")
+				return
 			}
 
-			if err := s.handleTimetickMessage(ctx, ttMsg); err != nil {
-				log.Error("failed to handle timetick message", zap.Error(err))
-				continue
+			for _, msg := range msgPack.Msgs {
+				ttMsg, ok := msg.(*msgstream.DataNodeTtMsg)
+				if !ok {
+					log.Warn("receive unexpected msg type from tt channel")
+					continue
+				}
+				if enableTtChecker {
+					checker.Check()
+				}
+
+				if err := s.handleTimetickMessage(ctx, ttMsg); err != nil {
+					log.Error("failed to handle timetick message", zap.Error(err))
+					continue
+				}
 			}
+			s.helper.eventAfterHandleDataNodeTt()
 		}
-		s.helper.eventAfterHandleDataNodeTt()
 	}
 }
 
@@ -517,6 +521,9 @@ func (s *Server) handleTimetickMessage(ctx context.Context, ttMsg *msgstream.Dat
 		// if lag behind, log every 1 mins about
 		log.RatedWarn(60.0, "time tick lag behind for more than 1 minutes", zap.String("channel", ch), zap.Time("timetick", physical))
 	}
+
+	utcT, _ := tsoutil.ParseHybridTs(ts)
+	metrics.DataCoordSyncUTC.WithLabelValues().Set(float64(utcT))
 
 	s.updateSegmentStatistics(ttMsg.GetSegmentsStats())
 
@@ -624,7 +631,9 @@ func (s *Server) watchService(ctx context.Context) {
 				logutil.Logger(s.ctx).Error("watch service channel closed", zap.Int64("serverID", s.session.ServerID))
 				go s.Stop()
 				if s.session.TriggerKill {
-					syscall.Kill(syscall.Getpid(), syscall.SIGINT)
+					if p, err := os.FindProcess(os.Getpid()); err == nil {
+						p.Signal(syscall.SIGINT)
+					}
 				}
 				return
 			}

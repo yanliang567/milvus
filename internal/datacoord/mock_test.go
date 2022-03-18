@@ -100,7 +100,7 @@ func newTestSchema() *schemapb.CollectionSchema {
 		Description: "schema for test used",
 		AutoID:      false,
 		Fields: []*schemapb.FieldSchema{
-			{FieldID: 1, Name: "field1", IsPrimaryKey: false, Description: "field no.1", DataType: schemapb.DataType_String},
+			{FieldID: 1, Name: "field1", IsPrimaryKey: false, Description: "field no.1", DataType: schemapb.DataType_VarChar, TypeParams: []*commonpb.KeyValuePair{{Key: "max_length_per_row", Value: "100"}}},
 			{FieldID: 2, Name: "field2", IsPrimaryKey: false, Description: "field no.2", DataType: schemapb.DataType_FloatVector},
 		},
 	}
@@ -194,6 +194,10 @@ func (c *mockDataNodeClient) Compaction(ctx context.Context, req *datapb.Compact
 		c.ch <- struct{}{}
 	}
 	return &commonpb.Status{ErrorCode: commonpb.ErrorCode_UnexpectedError, Reason: "not implemented"}, nil
+}
+
+func (c *mockDataNodeClient) Import(ctx context.Context, in *datapb.ImportTask) (*commonpb.Status, error) {
+	return &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success}, nil
 }
 
 func (c *mockDataNodeClient) Stop() error {

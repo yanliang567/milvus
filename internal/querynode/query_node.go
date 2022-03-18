@@ -22,6 +22,7 @@ package querynode
 
 #cgo darwin LDFLAGS: -L${SRCDIR}/../core/output/lib -lmilvus_segcore -Wl,-rpath,"${SRCDIR}/../core/output/lib"
 #cgo linux LDFLAGS: -L${SRCDIR}/../core/output/lib -lmilvus_segcore -Wl,-rpath=${SRCDIR}/../core/output/lib
+#cgo windows LDFLAGS: -L${SRCDIR}/../core/output/lib -lmilvus_segcore -Wl,-rpath=${SRCDIR}/../core/output/lib
 
 #include "segcore/collection_c.h"
 #include "segcore/segment_c.h"
@@ -34,6 +35,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -43,12 +45,12 @@ import (
 	"unsafe"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/milvus-io/milvus/internal/kv"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
+	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
@@ -113,8 +115,8 @@ type QueryNode struct {
 	eventCh        <-chan *sessionutil.SessionEvent
 	sessionManager *SessionManager
 
-	minioKV kv.BaseKV // minio minioKV
-	etcdKV  *etcdkv.EtcdKV
+	chunkManager storage.ChunkManager
+	etcdKV       *etcdkv.EtcdKV
 }
 
 // NewQueryNode will return a QueryNode with abnormal state.
@@ -156,7 +158,9 @@ func (node *QueryNode) Register() error {
 		}
 		// manually send signal to starter goroutine
 		if node.session.TriggerKill {
-			syscall.Kill(syscall.Getpid(), syscall.SIGINT)
+			if p, err := os.FindProcess(os.Getpid()); err == nil {
+				p.Signal(syscall.SIGINT)
+			}
 		}
 	})
 
@@ -222,7 +226,9 @@ func (node *QueryNode) watchService(ctx context.Context) {
 				// need to call stop in separate goroutine
 				go node.Stop()
 				if node.session.TriggerKill {
-					syscall.Kill(syscall.Getpid(), syscall.SIGINT)
+					if p, err := os.FindProcess(os.Getpid()); err == nil {
+						p.Signal(syscall.SIGINT)
+					}
 				}
 				return
 			}
@@ -266,6 +272,20 @@ func (node *QueryNode) Init() error {
 			return
 		}
 
+		node.chunkManager, err = storage.NewMinioChunkManager(node.queryNodeLoopCtx,
+			storage.Address(Params.MinioCfg.Address),
+			storage.AccessKeyID(Params.MinioCfg.AccessKeyID),
+			storage.SecretAccessKeyID(Params.MinioCfg.SecretAccessKey),
+			storage.UseSSL(Params.MinioCfg.UseSSL),
+			storage.BucketName(Params.MinioCfg.BucketName),
+			storage.CreateBucket(true))
+
+		if err != nil {
+			log.Error("QueryNode init session failed", zap.Error(err))
+			initError = err
+			return
+		}
+
 		node.etcdKV = etcdkv.NewEtcdKV(node.etcdCli, Params.EtcdCfg.MetaRootPath)
 		log.Debug("queryNode try to connect etcd success", zap.Any("MetaRootPath", Params.EtcdCfg.MetaRootPath))
 		node.tSafeReplica = newTSafeReplica()
@@ -284,10 +304,11 @@ func (node *QueryNode) Init() error {
 			node.tSafeReplica,
 		)
 
-		node.loader = newSegmentLoader(node.queryNodeLoopCtx,
+		node.loader = newSegmentLoader(
 			node.historical.replica,
 			node.streaming.replica,
 			node.etcdKV,
+			node.chunkManager,
 			node.msFactory)
 
 		//node.statsService = newStatsService(node.queryNodeLoopCtx, node.historical.replica, node.msFactory)

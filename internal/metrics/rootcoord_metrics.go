@@ -163,7 +163,7 @@ var (
 			Subsystem: typeutil.RootCoordRole,
 			Name:      "ddl_read_type_latency",
 			Help:      "The latency for read type of DDL operations",
-		}, []string{functionLabelName, collectionIDLabelName})
+		}, []string{functionLabelName})
 
 	// RootCoordDDLWriteTypeLatency records the latency for write type of DDL operations.
 	RootCoordDDLWriteTypeLatency = prometheus.NewHistogramVec(
@@ -172,7 +172,7 @@ var (
 			Subsystem: typeutil.RootCoordRole,
 			Name:      "ddl_write_type_latency",
 			Help:      "The latency for write type of DDL operations",
-		}, []string{functionLabelName, collectionIDLabelName})
+		}, []string{functionLabelName})
 
 	// RootCoordSyncTimeTickLatency records the latency of sync time tick.
 	RootCoordSyncTimeTickLatency = prometheus.NewHistogram(
@@ -266,45 +266,45 @@ var (
 )
 
 //RegisterRootCoord registers RootCoord metrics
-func RegisterRootCoord() {
-	prometheus.MustRegister(RootCoordProxyLister)
+func RegisterRootCoord(registry *prometheus.Registry) {
+	registry.Register(RootCoordProxyLister)
 
 	// for grpc
-	prometheus.MustRegister(RootCoordCreateCollectionCounter)
-	prometheus.MustRegister(RootCoordDropCollectionCounter)
-	prometheus.MustRegister(RootCoordHasCollectionCounter)
-	prometheus.MustRegister(RootCoordDescribeCollectionCounter)
-	prometheus.MustRegister(RootCoordShowCollectionsCounter)
-	prometheus.MustRegister(RootCoordCreatePartitionCounter)
-	prometheus.MustRegister(RootCoordDropPartitionCounter)
-	prometheus.MustRegister(RootCoordHasPartitionCounter)
-	prometheus.MustRegister(RootCoordShowPartitionsCounter)
-	prometheus.MustRegister(RootCoordCreateIndexCounter)
-	prometheus.MustRegister(RootCoordDropIndexCounter)
-	prometheus.MustRegister(RootCoordDescribeIndexCounter)
-	prometheus.MustRegister(RootCoordDescribeSegmentCounter)
-	prometheus.MustRegister(RootCoordShowSegmentsCounter)
+	registry.MustRegister(RootCoordCreateCollectionCounter)
+	registry.MustRegister(RootCoordDropCollectionCounter)
+	registry.MustRegister(RootCoordHasCollectionCounter)
+	registry.MustRegister(RootCoordDescribeCollectionCounter)
+	registry.MustRegister(RootCoordShowCollectionsCounter)
+	registry.MustRegister(RootCoordCreatePartitionCounter)
+	registry.MustRegister(RootCoordDropPartitionCounter)
+	registry.MustRegister(RootCoordHasPartitionCounter)
+	registry.MustRegister(RootCoordShowPartitionsCounter)
+	registry.MustRegister(RootCoordCreateIndexCounter)
+	registry.MustRegister(RootCoordDropIndexCounter)
+	registry.MustRegister(RootCoordDescribeIndexCounter)
+	registry.MustRegister(RootCoordDescribeSegmentCounter)
+	registry.MustRegister(RootCoordShowSegmentsCounter)
 
 	// for time tick
-	prometheus.MustRegister(RootCoordInsertChannelTimeTick)
+	registry.MustRegister(RootCoordInsertChannelTimeTick)
 	//prometheus.MustRegister(PanicCounter)
-	prometheus.MustRegister(RootCoordSyncTimeTickLatency)
+	registry.MustRegister(RootCoordSyncTimeTickLatency)
 
 	// for DDL latency
-	prometheus.MustRegister(RootCoordDDLReadTypeLatency)
-	prometheus.MustRegister(RootCoordDDLWriteTypeLatency)
+	registry.MustRegister(RootCoordDDLReadTypeLatency)
+	registry.MustRegister(RootCoordDDLWriteTypeLatency)
 
 	// for allocator
-	prometheus.MustRegister(RootCoordIDAllocCounter)
-	prometheus.MustRegister(RootCoordTimestampAllocCounter)
-	prometheus.MustRegister(RootCoordETCDTimestampAllocCounter)
+	registry.MustRegister(RootCoordIDAllocCounter)
+	registry.MustRegister(RootCoordTimestampAllocCounter)
+	registry.MustRegister(RootCoordETCDTimestampAllocCounter)
 
 	// for collection
-	prometheus.MustRegister(RootCoordNumOfCollections)
-	prometheus.MustRegister(RootCoordNumOfPartitions)
-	prometheus.MustRegister(RootCoordNumOfSegments)
-	prometheus.MustRegister(RootCoordNumOfIndexedSegments)
+	registry.MustRegister(RootCoordNumOfCollections)
+	registry.MustRegister(RootCoordNumOfPartitions)
+	registry.MustRegister(RootCoordNumOfSegments)
+	registry.MustRegister(RootCoordNumOfIndexedSegments)
 
-	prometheus.MustRegister(RootCoordNumOfDMLChannel)
-	prometheus.MustRegister(RootCoordNumOfMsgStream)
+	registry.MustRegister(RootCoordNumOfDMLChannel)
+	registry.MustRegister(RootCoordNumOfMsgStream)
 }

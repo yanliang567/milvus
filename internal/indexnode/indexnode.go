@@ -22,6 +22,7 @@ package indexnode
 
 #cgo darwin LDFLAGS: -L${SRCDIR}/../core/output/lib -lmilvus_indexbuilder -Wl,-rpath,"${SRCDIR}/../core/output/lib"
 #cgo linux LDFLAGS: -L${SRCDIR}/../core/output/lib -lmilvus_indexbuilder -Wl,-rpath=${SRCDIR}/../core/output/lib
+#cgo windows LDFLAGS: -L${SRCDIR}/../core/output/lib -lmilvus_indexbuilder -Wl,-rpath=${SRCDIR}/../core/output/lib
 
 #include <stdlib.h>
 #include "indexbuilder/init_c.h"
@@ -33,6 +34,7 @@ import (
 	"errors"
 	"io"
 	"math/rand"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -41,11 +43,10 @@ import (
 	"unsafe"
 
 	"github.com/milvus-io/milvus/internal/metrics"
+	"github.com/milvus-io/milvus/internal/storage"
 
 	"github.com/milvus-io/milvus/internal/common"
-	"github.com/milvus-io/milvus/internal/kv"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
-	miniokv "github.com/milvus-io/milvus/internal/kv/minio"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
@@ -84,8 +85,8 @@ type IndexNode struct {
 
 	once sync.Once
 
-	kv      kv.BaseKV
-	session *sessionutil.Session
+	chunkManager storage.ChunkManager
+	session      *sessionutil.Session
 
 	// Add callback functions at different stages
 	startCallbacks []func()
@@ -110,7 +111,7 @@ func NewIndexNode(ctx context.Context) (*IndexNode, error) {
 		loopCancel: cancel,
 	}
 	b.UpdateStateCode(internalpb.StateCode_Abnormal)
-	sc, err := NewTaskScheduler(b.loopCtx, b.kv)
+	sc, err := NewTaskScheduler(b.loopCtx, b.chunkManager)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +132,9 @@ func (i *IndexNode) Register() error {
 		}
 		// manually send signal to starter goroutine
 		if i.session.TriggerKill {
-			syscall.Kill(syscall.Getpid(), syscall.SIGINT)
+			if p, err := os.FindProcess(os.Getpid()); err == nil {
+				p.Signal(syscall.SIGINT)
+			}
 		}
 	})
 	return nil
@@ -178,22 +181,21 @@ func (i *IndexNode) Init() error {
 		etcdKV := etcdkv.NewEtcdKV(i.etcdCli, Params.EtcdCfg.MetaRootPath)
 		i.etcdKV = etcdKV
 
-		option := &miniokv.Option{
-			Address:           Params.MinioCfg.Address,
-			AccessKeyID:       Params.MinioCfg.AccessKeyID,
-			SecretAccessKeyID: Params.MinioCfg.SecretAccessKey,
-			UseSSL:            Params.MinioCfg.UseSSL,
-			BucketName:        Params.MinioCfg.BucketName,
-			CreateBucket:      true,
-		}
-		kv, err := miniokv.NewMinIOKV(i.loopCtx, option)
+		chunkManager, err := storage.NewMinioChunkManager(i.loopCtx,
+			storage.Address(Params.MinioCfg.Address),
+			storage.AccessKeyID(Params.MinioCfg.AccessKeyID),
+			storage.SecretAccessKeyID(Params.MinioCfg.SecretAccessKey),
+			storage.UseSSL(Params.MinioCfg.UseSSL),
+			storage.BucketName(Params.MinioCfg.BucketName),
+			storage.CreateBucket(true))
+
 		if err != nil {
 			log.Error("IndexNode NewMinIOKV failed", zap.Error(err))
 			initErr = err
 			return
 		}
 
-		i.kv = kv
+		i.chunkManager = chunkManager
 
 		log.Debug("IndexNode NewMinIOKV succeeded")
 		i.closer = trace.InitTracing("index_node")
@@ -290,7 +292,7 @@ func (i *IndexNode) CreateIndex(ctx context.Context, request *indexpb.CreateInde
 			done: make(chan error),
 		},
 		req:            request,
-		kv:             i.kv,
+		cm:             i.chunkManager,
 		etcdKV:         i.etcdKV,
 		nodeID:         Params.IndexNodeCfg.NodeID,
 		serializedSize: 0,

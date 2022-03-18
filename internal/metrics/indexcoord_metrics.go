@@ -38,7 +38,7 @@ var (
 			Subsystem: typeutil.IndexCoordRole,
 			Name:      "index_task_counter",
 			Help:      "The number of index tasks of each type",
-		}, []string{"index_task_status"})
+		}, []string{indexTaskStatusLabelName})
 
 	// IndexCoordIndexNodeNum records the number of IndexNodes managed by IndexCoord.
 	IndexCoordIndexNodeNum = prometheus.NewGaugeVec(
@@ -47,12 +47,12 @@ var (
 			Subsystem: typeutil.IndexCoordRole,
 			Name:      "index_node_num",
 			Help:      "The number of IndexNodes managed by IndexCoord",
-		}, []string{"type"})
+		}, []string{})
 )
 
 //RegisterIndexCoord registers IndexCoord metrics
-func RegisterIndexCoord() {
-	prometheus.MustRegister(IndexCoordIndexRequestCounter)
-	prometheus.MustRegister(IndexCoordIndexTaskCounter)
-	prometheus.MustRegister(IndexCoordIndexNodeNum)
+func RegisterIndexCoord(registry *prometheus.Registry) {
+	registry.MustRegister(IndexCoordIndexRequestCounter)
+	registry.MustRegister(IndexCoordIndexTaskCounter)
+	registry.MustRegister(IndexCoordIndexNodeNum)
 }

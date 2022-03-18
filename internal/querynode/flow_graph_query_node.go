@@ -39,6 +39,7 @@ type queryNodeFlowGraph struct {
 	channel      Channel
 	flowGraph    *flowgraph.TimeTickedFlowGraph
 	dmlStream    msgstream.MsgStream
+	consumerCnt  int
 }
 
 // newQueryNodeFlowGraph returns a new queryNodeFlowGraph
@@ -47,7 +48,7 @@ func newQueryNodeFlowGraph(ctx context.Context,
 	streamingReplica ReplicaInterface,
 	tSafeReplica TSafeReplicaInterface,
 	channel Channel,
-	factory msgstream.Factory) *queryNodeFlowGraph {
+	factory msgstream.Factory) (*queryNodeFlowGraph, error) {
 
 	ctx1, cancel := context.WithCancel(ctx)
 
@@ -59,10 +60,13 @@ func newQueryNodeFlowGraph(ctx context.Context,
 		flowGraph:    flowgraph.NewTimeTickedFlowGraph(ctx1),
 	}
 
-	var dmStreamNode node = q.newDmInputNode(ctx1, factory)
+	dmStreamNode, err := q.newDmInputNode(ctx1, factory)
+	if err != nil {
+		return nil, err
+	}
 	var filterDmNode node = newFilteredDmNode(streamingReplica, collectionID)
 	var insertNode node = newInsertNode(streamingReplica)
-	var serviceTimeNode node = newServiceTimeNode(ctx1, tSafeReplica, collectionID, channel)
+	var serviceTimeNode node = newServiceTimeNode(tSafeReplica, collectionID, channel)
 
 	q.flowGraph.AddNode(dmStreamNode)
 	q.flowGraph.AddNode(filterDmNode)
@@ -70,12 +74,12 @@ func newQueryNodeFlowGraph(ctx context.Context,
 	q.flowGraph.AddNode(serviceTimeNode)
 
 	// dmStreamNode
-	var err = q.flowGraph.SetEdges(dmStreamNode.Name(),
+	err = q.flowGraph.SetEdges(dmStreamNode.Name(),
 		[]string{},
 		[]string{filterDmNode.Name()},
 	)
 	if err != nil {
-		log.Error("set edges failed in node:", zap.String("node name", dmStreamNode.Name()))
+		return nil, fmt.Errorf("set edges failed in node: %s, err = %s", dmStreamNode.Name(), err.Error())
 	}
 
 	// filterDmNode
@@ -84,7 +88,7 @@ func newQueryNodeFlowGraph(ctx context.Context,
 		[]string{insertNode.Name()},
 	)
 	if err != nil {
-		log.Error("set edges failed in node:", zap.String("node name", filterDmNode.Name()))
+		return nil, fmt.Errorf("set edges failed in node: %s, err = %s", filterDmNode.Name(), err.Error())
 	}
 
 	// insertNode
@@ -93,7 +97,7 @@ func newQueryNodeFlowGraph(ctx context.Context,
 		[]string{serviceTimeNode.Name()},
 	)
 	if err != nil {
-		log.Error("set edges failed in node:", zap.String("node name", insertNode.Name()))
+		return nil, fmt.Errorf("set edges failed in node: %s, err = %s", insertNode.Name(), err.Error())
 	}
 
 	// serviceTimeNode
@@ -102,10 +106,10 @@ func newQueryNodeFlowGraph(ctx context.Context,
 		[]string{},
 	)
 	if err != nil {
-		log.Error("set edges failed in node:", zap.String("node name", serviceTimeNode.Name()))
+		return nil, fmt.Errorf("set edges failed in node: %s, err = %s", serviceTimeNode.Name(), err.Error())
 	}
 
-	return q
+	return q, nil
 }
 
 // newQueryNodeDeltaFlowGraph returns a new queryNodeFlowGraph
@@ -114,7 +118,7 @@ func newQueryNodeDeltaFlowGraph(ctx context.Context,
 	historicalReplica ReplicaInterface,
 	tSafeReplica TSafeReplicaInterface,
 	channel Channel,
-	factory msgstream.Factory) *queryNodeFlowGraph {
+	factory msgstream.Factory) (*queryNodeFlowGraph, error) {
 
 	ctx1, cancel := context.WithCancel(ctx)
 
@@ -126,10 +130,13 @@ func newQueryNodeDeltaFlowGraph(ctx context.Context,
 		flowGraph:    flowgraph.NewTimeTickedFlowGraph(ctx1),
 	}
 
-	var dmStreamNode node = q.newDmInputNode(ctx1, factory)
+	dmStreamNode, err := q.newDmInputNode(ctx1, factory)
+	if err != nil {
+		return nil, err
+	}
 	var filterDeleteNode node = newFilteredDeleteNode(historicalReplica, collectionID)
 	var deleteNode node = newDeleteNode(historicalReplica)
-	var serviceTimeNode node = newServiceTimeNode(ctx1, tSafeReplica, collectionID, channel)
+	var serviceTimeNode node = newServiceTimeNode(tSafeReplica, collectionID, channel)
 
 	q.flowGraph.AddNode(dmStreamNode)
 	q.flowGraph.AddNode(filterDeleteNode)
@@ -137,12 +144,12 @@ func newQueryNodeDeltaFlowGraph(ctx context.Context,
 	q.flowGraph.AddNode(serviceTimeNode)
 
 	// dmStreamNode
-	var err = q.flowGraph.SetEdges(dmStreamNode.Name(),
+	err = q.flowGraph.SetEdges(dmStreamNode.Name(),
 		[]string{},
 		[]string{filterDeleteNode.Name()},
 	)
 	if err != nil {
-		log.Error("set edges failed in node:", zap.String("node name", dmStreamNode.Name()))
+		return nil, fmt.Errorf("set edges failed in node: %s, err = %s", dmStreamNode.Name(), err.Error())
 	}
 
 	// filterDmNode
@@ -151,7 +158,7 @@ func newQueryNodeDeltaFlowGraph(ctx context.Context,
 		[]string{deleteNode.Name()},
 	)
 	if err != nil {
-		log.Error("set edges failed in node:", zap.String("node name", filterDeleteNode.Name()))
+		return nil, fmt.Errorf("set edges failed in node: %s, err = %s", filterDeleteNode.Name(), err.Error())
 	}
 
 	// insertNode
@@ -160,7 +167,7 @@ func newQueryNodeDeltaFlowGraph(ctx context.Context,
 		[]string{serviceTimeNode.Name()},
 	)
 	if err != nil {
-		log.Error("set edges failed in node:", zap.String("node name", deleteNode.Name()))
+		return nil, fmt.Errorf("set edges failed in node: %s, err = %s", deleteNode.Name(), err.Error())
 	}
 
 	// serviceTimeNode
@@ -169,30 +176,30 @@ func newQueryNodeDeltaFlowGraph(ctx context.Context,
 		[]string{},
 	)
 	if err != nil {
-		log.Error("set edges failed in node:", zap.String("node name", serviceTimeNode.Name()))
+		return nil, fmt.Errorf("set edges failed in node: %s, err = %s", serviceTimeNode.Name(), err.Error())
 	}
 
-	return q
+	return q, nil
 }
 
 // newDmInputNode returns a new inputNode
-func (q *queryNodeFlowGraph) newDmInputNode(ctx context.Context, factory msgstream.Factory) *flowgraph.InputNode {
+func (q *queryNodeFlowGraph) newDmInputNode(ctx context.Context, factory msgstream.Factory) (*flowgraph.InputNode, error) {
 	insertStream, err := factory.NewTtMsgStream(ctx)
 	if err != nil {
-		log.Warn(err.Error())
-	} else {
-		q.dmlStream = insertStream
+		return nil, err
 	}
+
+	q.dmlStream = insertStream
 
 	maxQueueLength := Params.QueryNodeCfg.FlowGraphMaxQueueLength
 	maxParallelism := Params.QueryNodeCfg.FlowGraphMaxParallelism
 
 	node := flowgraph.NewInputNode(insertStream, "dmlInputNode", maxQueueLength, maxParallelism)
-	return node
+	return node, nil
 }
 
-// consumerFlowGraph would consume by channel and subName
-func (q *queryNodeFlowGraph) consumerFlowGraph(channel Channel, subName ConsumeSubName) error {
+// consumeFlowGraph would consume by channel and subName
+func (q *queryNodeFlowGraph) consumeFlowGraph(channel Channel, subName ConsumeSubName) error {
 	if q.dmlStream == nil {
 		return errors.New("null dml message stream in flow graph")
 	}
@@ -202,13 +209,13 @@ func (q *queryNodeFlowGraph) consumerFlowGraph(channel Channel, subName ConsumeS
 		zap.Any("channel", channel),
 		zap.Any("subName", subName),
 	)
-
-	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(q.collectionID), fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Inc()
+	q.consumerCnt++
+	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Inc()
 	return nil
 }
 
-// consumerFlowGraphLatest would consume from latest by channel and subName
-func (q *queryNodeFlowGraph) consumerFlowGraphLatest(channel Channel, subName ConsumeSubName) error {
+// consumeFlowGraphFromLatest would consume from latest by channel and subName
+func (q *queryNodeFlowGraph) consumeFlowGraphFromLatest(channel Channel, subName ConsumeSubName) error {
 	if q.dmlStream == nil {
 		return errors.New("null dml message stream in flow graph")
 	}
@@ -218,8 +225,8 @@ func (q *queryNodeFlowGraph) consumerFlowGraphLatest(channel Channel, subName Co
 		zap.Any("channel", channel),
 		zap.Any("subName", subName),
 	)
-
-	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(q.collectionID), fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Inc()
+	q.consumerCnt++
+	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Inc()
 	return nil
 }
 
@@ -231,8 +238,8 @@ func (q *queryNodeFlowGraph) seekQueryNodeFlowGraph(position *internalpb.MsgPosi
 		zap.Any("collectionID", q.collectionID),
 		zap.Any("channel", position.ChannelName),
 	)
-
-	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(q.collectionID), fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Inc()
+	q.consumerCnt++
+	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Inc()
 	return err
 }
 
@@ -240,6 +247,9 @@ func (q *queryNodeFlowGraph) seekQueryNodeFlowGraph(position *internalpb.MsgPosi
 func (q *queryNodeFlowGraph) close() {
 	q.cancel()
 	q.flowGraph.Close()
+	if q.dmlStream != nil && q.consumerCnt > 0 {
+		metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Sub(float64(q.consumerCnt))
+	}
 	log.Debug("stop query node flow graph",
 		zap.Any("collectionID", q.collectionID),
 		zap.Any("channel", q.channel),
