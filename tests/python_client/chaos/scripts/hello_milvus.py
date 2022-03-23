@@ -11,6 +11,7 @@
 
 
 import random
+import numpy as np
 import time
 import argparse
 from pymilvus import (
@@ -32,8 +33,8 @@ def hello_milvus(host="127.0.0.1"):
     # create collection
     dim = 128
     default_fields = [
-        FieldSchema(name="count", dtype=DataType.INT64, is_primary=True),
-        FieldSchema(name="random_value", dtype=DataType.DOUBLE),
+        FieldSchema(name="int64", dtype=DataType.INT64, is_primary=True),
+        FieldSchema(name="float", dtype=DataType.FLOAT),
         FieldSchema(name="float_vector", dtype=DataType.FLOAT_VECTOR, dim=dim)
     ]
     default_schema = CollectionSchema(fields=default_fields, description="test collection")
@@ -51,7 +52,7 @@ def hello_milvus(host="127.0.0.1"):
     collection.insert(
         [
             [i for i in range(nb)],
-            [float(random.randrange(-20, -10)) for _ in range(nb)],
+            [np.float32(i) for i in range(nb)],
             vectors
         ]
     )
@@ -85,7 +86,7 @@ def hello_milvus(host="127.0.0.1"):
     # define output_fields of search result
     res = collection.search(
         vectors[-2:], "float_vector", search_params, topK,
-        "count > 100", output_fields=["count", "random_value"], timeout=TIMEOUT
+        "int64 > 100", output_fields=["int64", "float"], timeout=TIMEOUT
     )
     t1 = time.time()
     print(f"search cost  {t1 - t0:.4f} seconds")
@@ -93,13 +94,13 @@ def hello_milvus(host="127.0.0.1"):
     for hits in res:
         for hit in hits:
             # Get value of the random value field for search result
-            print(hit, hit.entity.get("random_value"))
+            print(hit, hit.entity.get("float"))
 
     # query
-    expr = "count in [2,4,6,8]"
-    output_fields = ["count", "random_value"]
+    expr = "int64 in [2,4,6,8]"
+    output_fields = ["int64", "float"]
     res = collection.query(expr, output_fields, timeout=TIMEOUT)
-    sorted_res = sorted(res, key=lambda k: k['count'])
+    sorted_res = sorted(res, key=lambda k: k['int64'])
     for r in sorted_res:
         print(r)
     # collection.release()

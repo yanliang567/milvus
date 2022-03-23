@@ -370,9 +370,9 @@ inline bool ConsistencyLevel_Parse(
 enum ImportState : int {
   ImportPending = 0,
   ImportFailed = 1,
-  ImportParsing = 2,
-  ImportPersisted = 3,
-  ImportIndexing = 4,
+  ImportDownloaded = 2,
+  ImportParsed = 3,
+  ImportPersisted = 4,
   ImportCompleted = 5,
   ImportState_INT_MIN_SENTINEL_DO_NOT_USE_ = std::numeric_limits<::PROTOBUF_NAMESPACE_ID::int32>::min(),
   ImportState_INT_MAX_SENTINEL_DO_NOT_USE_ = std::numeric_limits<::PROTOBUF_NAMESPACE_ID::int32>::max()

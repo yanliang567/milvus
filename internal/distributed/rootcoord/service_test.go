@@ -210,6 +210,9 @@ func TestGrpcService(t *testing.T) {
 	core.CallReleasePartitionService = func(ctx context.Context, ts typeutil.Timestamp, dbID, collectionID typeutil.UniqueID, partitionIDs []typeutil.UniqueID) error {
 		return nil
 	}
+	core.CallImportService = func(ctx context.Context, req *datapb.ImportTask) *datapb.ImportTaskResponse {
+		return nil
+	}
 
 	err = svr.start()
 	assert.Nil(t, err)
