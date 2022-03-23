@@ -1,51 +1,118 @@
-# import datetime
-# from pymilvus import connections, utility
-# from pymilvus import Collection, DataType, FieldSchema, CollectionSchema
-#
-# # connect to milvus
-# host = '10.98.0.7'
-# port = 19530
-# connections.add_connection(default={"host": host, "port": port})
-# t0 = datetime.datetime.now()
-# print(f"start connect: {t0}")
-# conn = connections.connect(alias='default')
-# t1 = datetime.datetime.now()
-# print(f"end connect: {t1}, duration: {t1 - t0}")
-# conn.list_collections()
-#
-# # create a collection with auto_id as primary field
-# dim = 128
-# auto_id = FieldSchema(name="auto_id", dtype=DataType.INT64,  description="auto primary id")
-# age_field = FieldSchema(name="age", dtype=DataType.INT64, description="age")
-# embedding_field = FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim)
-# schema = CollectionSchema(fields=[auto_id, age_field, embedding_field],
-#                           auto_id=True, primary_field=auto_id.name,
-#                           description="desc of collection")
-# collection_name2 = "tutorial_2"
-# collection2 = Collection(name=collection_name2, schema=schema)
-#
-# import random
-# # insert data with auto primary id
-# nb = 300
-# ages = [random.randint(20, 40) for i in range(nb)]
-# embeddings = [[random.random() for _ in range(dim)] for _ in range(nb)]
-# entities2 = [ages, embeddings]
-# ins_res2 = collection2.insert(entities2)
-#
-# import pandas as pd
-# df = pd.DataFrame({
-#         "cus_id": [i for i in range(nb)],
-#         "age": [random.randint(20, 40) for i in range(nb)],
-#         "embedding": [[random.random() for _ in range(dim)] for _ in range(nb)]
-#     })
-# collection3, ins_res3 = Collection.construct_from_dataframe(
-#                                 'tutorial3',
-#                                 df,
-#                                 primary_field='cus_id',
-#                                 auto_id=False
-#                                 )
-#
-# # query on auto primary field
-# collection2.load()
-# expr = f"auto_id in {ins_res2.primary_keys[0:5]}"       # only suport query on primary field by 'in'
-# query_res2 = collection2.query(expr)
+import sys
+import time
+import random
+import logging
+from pymilvus import utility, connections, DataType, \
+    Collection, FieldSchema, CollectionSchema
+
+LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
+DATE_FORMAT = "%m/%d/%Y %H:%M:%S %p"
+
+prefix = "e2e_"
+cus_index = {"index_type": "HNSW", "params": {"M": 16, "efConstruction": 500}, "metric_type": "IP"}
+search_params = {"params": {"ef": 64}, "metric_type": "IP"}
+# cus_index = {"index_type": "IVF_SQ8", "params": {"nlist": 1024}, "metric_type": "L2"}
+# search_params = {"metric_type": "L2", "params": {"nprobe": 8}}
+dim = 1024
+nb = 50000
+insert_rounds = 20
+nq = 1
+topK = 1
+auto_id = False
+build = True
+query_rounds = 100
+
+
+def create_collection(name):
+    t0 = time.time()
+    collection_name = name
+    if auto_id is True:
+        id = FieldSchema(name="id", dtype=DataType.INT64, description="auto primary id")
+        age_field = FieldSchema(name="age", dtype=DataType.INT64, description="age")
+        embedding_field = FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim)
+        schema = CollectionSchema(fields=[id, age_field, embedding_field],
+                                  auto_id=True, primary_field=id.name,
+                                  description="collection of xxx")
+        collection = Collection(name=collection_name, schema=schema)
+        tt = time.time() - t0
+        logging.info(f"assert create {collection_name}: {tt}")
+    else:
+        id = FieldSchema(name="id", dtype=DataType.INT64, description="custom primary id")
+        age_field = FieldSchema(name="age", dtype=DataType.INT64, description="age")
+        embedding_field = FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim)
+        schema = CollectionSchema(fields=[id, age_field, embedding_field],
+                                  auto_id=False, primary_field=id.name,
+                                  description="collection of custom id")
+        collection = Collection(name=collection_name, schema=schema)
+        tt = time.time() - t0
+        logging.info(f"assert create {collection_name}: {tt}")
+
+    if build is True:
+        collection.create_index(field_name=embedding_field.name, index_params=cus_index)
+
+    # insert
+    if auto_id is True:
+        pass
+    else:
+        pks = []
+        for r in range(insert_rounds):
+            ids = [i for i in range(r*nb, (r+1)*nb)]
+            ages = [random.randint(1, 100) for i in range(nb)]
+            embeddings = [[random.random() for _ in range(dim)] for _ in range(nb)]
+            data = [ids, ages, embeddings]
+            t1 = time.time()
+            res = collection.insert(data)
+            t2 = round(time.time() - t1, 3)
+            logging.info(f"assert insert round{r}: {t2}")
+            pks.extend(res.primary_keys)
+        logging.info(f"total pks: {len(pks)}")
+
+    return collection
+
+
+def do_query(collection):
+    # flush
+    t1 = time.time()
+    num = collection.num_entities
+    t2 = round(time.time() - t1, 3)
+    logging.info(f"assert flush {num} entities in {t2} seconds ")
+
+    # build index again
+    logging.info(f"index params: {cus_index}")
+    t1 = time.time()
+    collection.create_index(field_name="embedding", index_params=cus_index)
+    t2 = round(time.time() - t1, 3)
+    logging.info(f"assert build index in {t2} seconds ")
+
+    # load
+    t1 = time.time()
+    collection.load()
+    t2 = round(time.time() - t1, 3)
+    logging.info(f"assert load time: {t2}")
+
+    # query
+    for i in range(query_rounds):
+        pk_id = random.randint(1, 10000)
+        t1 = time.time()
+        collection.query(expr=f"id == {pk_id}",
+                         output_fields=["id", "embedding"])
+        t2 = round(time.time() - t1, 3)
+        logging.info(f"assert query with expr id=={pk_id} round{i} in time: {t2}")
+
+
+if __name__ == '__main__':
+    host = sys.argv[1]  # host address
+    collection_name = sys.argv[2]  # collection_name
+
+    port = 19530
+    connections.add_connection(default={"host": host, "port": 19530})
+    connections.connect('default')
+    log_name = f"{collection_name}_query"
+    logging.basicConfig(filename=f"/tmp/{log_name}.log",
+                        level=logging.INFO, format=LOG_FORMAT, datefmt=DATE_FORMAT)
+
+    if utility.has_collection(collection_name=collection_name):
+        collection = Collection(collection_name)
+    else:
+        collection = create_collection(collection_name)
+    do_query(collection=collection)

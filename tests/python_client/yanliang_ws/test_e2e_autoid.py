@@ -13,9 +13,9 @@ cus_index = {"index_type": "HNSW", "params": {"M": 16, "efConstruction": 500}, "
 search_params = {"params": {"ef": 64}, "metric_type": "IP"}
 # cus_index = {"index_type": "IVF_SQ8", "params": {"nlist": 1024}, "metric_type": "L2"}
 # search_params = {"metric_type": "L2", "params": {"nprobe": 8}}
-dim = 128
+dim = 1024
 nb = 50000
-insert_rounds = 200
+insert_rounds = 20
 nq = 1
 topK = 1
 auto_id = False
@@ -118,7 +118,7 @@ if __name__ == '__main__':
     port = 19530
     connections.add_connection(default={"host": host, "port": 19530})
     connections.connect('default')
-    log_name = f"{collection_name}_e2e"
+    log_name = f"{collection_name}_search"
     logging.basicConfig(filename=f"/tmp/{log_name}.log",
                         level=logging.INFO, format=LOG_FORMAT, datefmt=DATE_FORMAT)
 
