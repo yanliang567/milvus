@@ -26,12 +26,13 @@
 #include "test_utils/indexbuilder_test_utils.h"
 #include "indexbuilder/ScalarIndexCreator.h"
 #include "indexbuilder/IndexFactory.h"
+#include "common/type_c.h"
 
 constexpr int NB = 10;
 
 TEST(FloatVecIndex, All) {
-    auto index_type = milvus::knowhere::IndexEnum::INDEX_FAISS_IVFPQ;
-    auto metric_type = milvus::knowhere::Metric::L2;
+    auto index_type = knowhere::IndexEnum::INDEX_FAISS_IVFPQ;
+    auto metric_type = knowhere::Metric::L2;
     indexcgo::TypeParams type_params;
     indexcgo::IndexParams index_params;
     std::tie(type_params, index_params) = generate_params(index_type, metric_type);
@@ -44,7 +45,7 @@ TEST(FloatVecIndex, All) {
     auto dataset = GenDataset(NB, metric_type, false);
     auto xb_data = dataset.get_col<float>(0);
 
-    DataType dtype = FloatVector;
+    CDataType dtype = FloatVector;
     CIndex index;
     CStatus status;
     CBinarySet binary_set;
@@ -81,8 +82,8 @@ TEST(FloatVecIndex, All) {
 }
 
 TEST(BinaryVecIndex, All) {
-    auto index_type = milvus::knowhere::IndexEnum::INDEX_FAISS_BIN_IVFFLAT;
-    auto metric_type = milvus::knowhere::Metric::JACCARD;
+    auto index_type = knowhere::IndexEnum::INDEX_FAISS_BIN_IVFFLAT;
+    auto metric_type = knowhere::Metric::JACCARD;
     indexcgo::TypeParams type_params;
     indexcgo::IndexParams index_params;
     std::tie(type_params, index_params) = generate_params(index_type, metric_type);
@@ -95,7 +96,7 @@ TEST(BinaryVecIndex, All) {
     auto dataset = GenDataset(NB, metric_type, true);
     auto xb_data = dataset.get_col<uint8_t>(0);
 
-    DataType dtype = BinaryVector;
+    CDataType dtype = BinaryVector;
     CIndex index;
     CStatus status;
     CBinarySet binary_set;
@@ -133,7 +134,7 @@ TEST(BinaryVecIndex, All) {
 
 TEST(CBoolIndexTest, All) {
     schemapb::BoolArray half;
-    milvus::knowhere::DatasetPtr half_ds;
+    knowhere::DatasetPtr half_ds;
 
     for (size_t i = 0; i < NB; i++) {
         *(half.mutable_data()->Add()) = (i % 2) == 0;
@@ -147,7 +148,7 @@ TEST(CBoolIndexTest, All) {
         auto type_params_str = generate_type_params(type_params);
         auto index_params_str = generate_index_params(index_params);
 
-        DataType dtype = Bool;
+        CDataType dtype = Bool;
         CIndex index;
         CStatus status;
         CBinarySet binary_set;
@@ -158,8 +159,8 @@ TEST(CBoolIndexTest, All) {
             ASSERT_EQ(Success, status.error_code);
         }
         {
-            status = BuildScalarIndex(index, half_ds->Get<int64_t>(milvus::knowhere::meta::ROWS),
-                                      half_ds->Get<const void*>(milvus::knowhere::meta::TENSOR));
+            status = BuildScalarIndex(index, half_ds->Get<int64_t>(knowhere::meta::ROWS),
+                                      half_ds->Get<const void*>(knowhere::meta::TENSOR));
             ASSERT_EQ(Success, status.error_code);
         }
         {
@@ -184,7 +185,7 @@ TEST(CBoolIndexTest, All) {
         }
     }
 
-    delete[](char*) half_ds->Get<const void*>(milvus::knowhere::meta::TENSOR);
+    delete[](char*) half_ds->Get<const void*>(knowhere::meta::TENSOR);
 }
 
 // TODO: more scalar type.
@@ -198,7 +199,7 @@ TEST(CInt64IndexTest, All) {
         auto type_params_str = generate_type_params(type_params);
         auto index_params_str = generate_index_params(index_params);
 
-        DataType dtype = Int64;
+        CDataType dtype = Int64;
         CIndex index;
         CStatus status;
         CBinarySet binary_set;
@@ -248,7 +249,7 @@ TEST(CStringIndexTest, All) {
         auto type_params_str = generate_type_params(type_params);
         auto index_params_str = generate_index_params(index_params);
 
-        DataType dtype = String;
+        CDataType dtype = String;
         CIndex index;
         CStatus status;
         CBinarySet binary_set;
@@ -259,8 +260,8 @@ TEST(CStringIndexTest, All) {
             ASSERT_EQ(Success, status.error_code);
         }
         {
-            status = BuildScalarIndex(index, str_ds->Get<int64_t>(milvus::knowhere::meta::ROWS),
-                                      str_ds->Get<const void*>(milvus::knowhere::meta::TENSOR));
+            status = BuildScalarIndex(index, str_ds->Get<int64_t>(knowhere::meta::ROWS),
+                                      str_ds->Get<const void*>(knowhere::meta::TENSOR));
             ASSERT_EQ(Success, status.error_code);
         }
         {
@@ -285,5 +286,5 @@ TEST(CStringIndexTest, All) {
         }
     }
 
-    delete[](char*) str_ds->Get<const void*>(milvus::knowhere::meta::TENSOR);
+    delete[](char*) str_ds->Get<const void*>(knowhere::meta::TENSOR);
 }

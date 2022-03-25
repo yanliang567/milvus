@@ -11,25 +11,7 @@
 
 #pragma once
 
-// pure C don't support that we use schemapb.DataType directly.
-// Note: the value of all enumerations must match the corresponding schemapb.DataType.
-// TODO: what if there are increments in schemapb.DataType.
-enum DataType {
-    None = 0,
-    Bool = 1,
-    Int8 = 2,
-    Int16 = 3,
-    Int32 = 4,
-    Int64 = 5,
-
-    Float = 10,
-    Double = 11,
-
-    String = 20,
-
-    BinaryVector = 100,
-    FloatVector = 101,
-};
+#include "common/type_c.h"
 
 typedef void* CIndex;
 typedef void* CIndexQueryResult;
