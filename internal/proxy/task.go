@@ -21,10 +21,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/golang/protobuf/proto"
 	"go.uber.org/zap"
@@ -34,6 +32,8 @@ import (
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
+	"github.com/milvus-io/milvus/internal/types"
+
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
@@ -42,13 +42,11 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/planpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
-	"github.com/milvus-io/milvus/internal/types"
-	"github.com/milvus-io/milvus/internal/util/distance"
+
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/indexparamcheck"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
 	"github.com/milvus-io/milvus/internal/util/trace"
-	"github.com/milvus-io/milvus/internal/util/tsoutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
@@ -243,7 +241,7 @@ func (it *insertTask) checkPrimaryFieldData() error {
 	// get primaryFieldData whether autoID is true or not
 	var primaryFieldData *schemapb.FieldData
 	if !primaryFieldSchema.AutoID {
-		primaryFieldData, err = getPrimaryFieldData(it.GetFieldsData(), primaryFieldSchema)
+		primaryFieldData, err = typeutil.GetPrimaryFieldData(it.GetFieldsData(), primaryFieldSchema)
 		if err != nil {
 			log.Error("get primary field data failed", zap.String("collection name", it.CollectionName), zap.Error(err))
 			return err
@@ -838,1122 +836,6 @@ func translateOutputFields(outputFields []string, schema *schemapb.CollectionSch
 		resultFieldNames = append(resultFieldNames, fieldName)
 	}
 	return resultFieldNames, nil
-}
-
-type searchTask struct {
-	Condition
-	*internalpb.SearchRequest
-	ctx            context.Context
-	resultBuf      chan []*internalpb.SearchResults
-	result         *milvuspb.SearchResults
-	query          *milvuspb.SearchRequest
-	chMgr          channelsMgr
-	qc             types.QueryCoord
-	collectionName string
-
-	tr           *timerecord.TimeRecorder
-	collectionID UniqueID
-}
-
-func (st *searchTask) TraceCtx() context.Context {
-	return st.ctx
-}
-
-func (st *searchTask) ID() UniqueID {
-	return st.Base.MsgID
-}
-
-func (st *searchTask) SetID(uid UniqueID) {
-	st.Base.MsgID = uid
-}
-
-func (st *searchTask) Name() string {
-	return SearchTaskName
-}
-
-func (st *searchTask) Type() commonpb.MsgType {
-	return st.Base.MsgType
-}
-
-func (st *searchTask) BeginTs() Timestamp {
-	return st.Base.Timestamp
-}
-
-func (st *searchTask) EndTs() Timestamp {
-	return st.Base.Timestamp
-}
-
-func (st *searchTask) SetTs(ts Timestamp) {
-	st.Base.Timestamp = ts
-}
-
-func (st *searchTask) OnEnqueue() error {
-	st.Base = &commonpb.MsgBase{}
-	st.Base.MsgType = commonpb.MsgType_Search
-	st.Base.SourceID = Params.ProxyCfg.ProxyID
-	return nil
-}
-
-func (st *searchTask) getChannels() ([]pChan, error) {
-	collID, err := globalMetaCache.GetCollectionID(st.ctx, st.query.CollectionName)
-	if err != nil {
-		return nil, err
-	}
-
-	var channels []pChan
-	channels, err = st.chMgr.getChannels(collID)
-	if err != nil {
-		err := st.chMgr.createDMLMsgStream(collID)
-		if err != nil {
-			return nil, err
-		}
-		return st.chMgr.getChannels(collID)
-	}
-
-	return channels, nil
-}
-
-func (st *searchTask) getVChannels() ([]vChan, error) {
-	collID, err := globalMetaCache.GetCollectionID(st.ctx, st.query.CollectionName)
-	if err != nil {
-		return nil, err
-	}
-
-	var channels []vChan
-	channels, err = st.chMgr.getVChannels(collID)
-	if err != nil {
-		err := st.chMgr.createDMLMsgStream(collID)
-		if err != nil {
-			return nil, err
-		}
-		return st.chMgr.getVChannels(collID)
-	}
-
-	return channels, nil
-}
-
-func (st *searchTask) PreExecute(ctx context.Context) error {
-	sp, ctx := trace.StartSpanFromContextWithOperationName(st.TraceCtx(), "Proxy-Search-PreExecute")
-	defer sp.Finish()
-	st.Base.MsgType = commonpb.MsgType_Search
-	st.Base.SourceID = Params.ProxyCfg.ProxyID
-
-	collectionName := st.query.CollectionName
-	collID, err := globalMetaCache.GetCollectionID(ctx, collectionName)
-	if err != nil { // err is not nil if collection not exists
-		return err
-	}
-	st.collectionID = collID
-
-	if err := validateCollectionName(st.query.CollectionName); err != nil {
-		return err
-	}
-
-	for _, tag := range st.query.PartitionNames {
-		if err := validatePartitionTag(tag, false); err != nil {
-			return err
-		}
-	}
-
-	// check if collection was already loaded into query node
-	showResp, err := st.qc.ShowCollections(st.ctx, &querypb.ShowCollectionsRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:   commonpb.MsgType_ShowCollections,
-			MsgID:     st.Base.MsgID,
-			Timestamp: st.Base.Timestamp,
-			SourceID:  Params.ProxyCfg.ProxyID,
-		},
-		DbID: 0, // TODO(dragondriver)
-	})
-	if err != nil {
-		return err
-	}
-	if showResp.Status.ErrorCode != commonpb.ErrorCode_Success {
-		return errors.New(showResp.Status.Reason)
-	}
-	log.Debug("QueryCoord show collections",
-		zap.Any("collID", collID),
-		zap.Any("collections", showResp.CollectionIDs),
-	)
-	collectionLoaded := false
-
-	for _, collectionID := range showResp.CollectionIDs {
-		if collectionID == collID {
-			collectionLoaded = true
-			break
-		}
-	}
-	if !collectionLoaded {
-		return fmt.Errorf("collection %v was not loaded into memory", collectionName)
-	}
-
-	// TODO(dragondriver): necessary to check if partition was loaded into query node?
-
-	st.Base.MsgType = commonpb.MsgType_Search
-
-	schema, _ := globalMetaCache.GetCollectionSchema(ctx, collectionName)
-
-	outputFields, err := translateOutputFields(st.query.OutputFields, schema, false)
-	if err != nil {
-		return err
-	}
-	log.Debug("translate output fields", zap.Any("OutputFields", outputFields))
-	st.query.OutputFields = outputFields
-
-	if st.query.GetDslType() == commonpb.DslType_BoolExprV1 {
-		annsField, err := funcutil.GetAttrByKeyFromRepeatedKV(AnnsFieldKey, st.query.SearchParams)
-		if err != nil {
-			return errors.New(AnnsFieldKey + " not found in search_params")
-		}
-
-		topKStr, err := funcutil.GetAttrByKeyFromRepeatedKV(TopKKey, st.query.SearchParams)
-		if err != nil {
-			return errors.New(TopKKey + " not found in search_params")
-		}
-		topK, err := strconv.Atoi(topKStr)
-		if err != nil {
-			return errors.New(TopKKey + " " + topKStr + " is not invalid")
-		}
-
-		metricType, err := funcutil.GetAttrByKeyFromRepeatedKV(MetricTypeKey, st.query.SearchParams)
-		if err != nil {
-			return errors.New(MetricTypeKey + " not found in search_params")
-		}
-
-		searchParams, err := funcutil.GetAttrByKeyFromRepeatedKV(SearchParamsKey, st.query.SearchParams)
-		if err != nil {
-			return errors.New(SearchParamsKey + " not found in search_params")
-		}
-		roundDecimalStr, err := funcutil.GetAttrByKeyFromRepeatedKV(RoundDecimalKey, st.query.SearchParams)
-		if err != nil {
-			roundDecimalStr = "-1"
-		}
-		roundDecimal, err := strconv.Atoi(roundDecimalStr)
-		if err != nil {
-			return errors.New(RoundDecimalKey + " " + roundDecimalStr + " is not invalid")
-		}
-
-		if roundDecimal != -1 && (roundDecimal > 6 || roundDecimal < 0) {
-			return errors.New(RoundDecimalKey + " " + roundDecimalStr + " is not invalid")
-		}
-
-		queryInfo := &planpb.QueryInfo{
-			Topk:         int64(topK),
-			MetricType:   metricType,
-			SearchParams: searchParams,
-			RoundDecimal: int64(roundDecimal),
-		}
-
-		log.Debug("create query plan",
-			//zap.Any("schema", schema),
-			zap.String("dsl", st.query.Dsl),
-			zap.String("anns field", annsField),
-			zap.Any("query info", queryInfo))
-
-		plan, err := createQueryPlan(schema, st.query.Dsl, annsField, queryInfo)
-		if err != nil {
-			log.Debug("failed to create query plan",
-				zap.Error(err),
-				//zap.Any("schema", schema),
-				zap.String("dsl", st.query.Dsl),
-				zap.String("anns field", annsField),
-				zap.Any("query info", queryInfo))
-
-			return fmt.Errorf("failed to create query plan: %v", err)
-		}
-		for _, name := range st.query.OutputFields {
-			hitField := false
-			for _, field := range schema.Fields {
-				if field.Name == name {
-					if field.DataType == schemapb.DataType_BinaryVector || field.DataType == schemapb.DataType_FloatVector {
-						return errors.New("search doesn't support vector field as output_fields")
-					}
-
-					st.SearchRequest.OutputFieldsId = append(st.SearchRequest.OutputFieldsId, field.FieldID)
-					plan.OutputFieldIds = append(plan.OutputFieldIds, field.FieldID)
-					hitField = true
-					break
-				}
-			}
-			if !hitField {
-				errMsg := "Field " + name + " not exist"
-				return errors.New(errMsg)
-			}
-		}
-
-		st.SearchRequest.DslType = commonpb.DslType_BoolExprV1
-		st.SearchRequest.SerializedExprPlan, err = proto.Marshal(plan)
-		if err != nil {
-			return err
-		}
-		log.Debug("Proxy::searchTask::PreExecute", zap.Any("plan.OutputFieldIds", plan.OutputFieldIds),
-			zap.Any("plan", plan.String()))
-	}
-	travelTimestamp := st.query.TravelTimestamp
-	if travelTimestamp == 0 {
-		travelTimestamp = st.BeginTs()
-	} else {
-		durationSeconds := tsoutil.CalculateDuration(st.BeginTs(), travelTimestamp) / 1000
-		if durationSeconds > Params.CommonCfg.RetentionDuration {
-			duration := time.Second * time.Duration(durationSeconds)
-			return fmt.Errorf("only support to travel back to %s so far", duration.String())
-		}
-	}
-	guaranteeTimestamp := st.query.GuaranteeTimestamp
-	if guaranteeTimestamp == 0 {
-		guaranteeTimestamp = st.BeginTs()
-	}
-	st.SearchRequest.TravelTimestamp = travelTimestamp
-	st.SearchRequest.GuaranteeTimestamp = guaranteeTimestamp
-	deadline, ok := st.TraceCtx().Deadline()
-	if ok {
-		st.SearchRequest.TimeoutTimestamp = tsoutil.ComposeTSByTime(deadline, 0)
-	}
-
-	st.SearchRequest.ResultChannelID = Params.ProxyCfg.SearchResultChannelNames[0]
-	st.SearchRequest.DbID = 0 // todo
-	st.SearchRequest.CollectionID = collID
-	st.SearchRequest.PartitionIDs = make([]UniqueID, 0)
-
-	partitionsMap, err := globalMetaCache.GetPartitions(ctx, collectionName)
-	if err != nil {
-		return err
-	}
-
-	partitionsRecord := make(map[UniqueID]bool)
-	for _, partitionName := range st.query.PartitionNames {
-		pattern := fmt.Sprintf("^%s$", partitionName)
-		re, err := regexp.Compile(pattern)
-		if err != nil {
-			return errors.New("invalid partition names")
-		}
-		found := false
-		for name, pID := range partitionsMap {
-			if re.MatchString(name) {
-				if _, exist := partitionsRecord[pID]; !exist {
-					st.PartitionIDs = append(st.PartitionIDs, pID)
-					partitionsRecord[pID] = true
-				}
-				found = true
-			}
-		}
-		if !found {
-			errMsg := fmt.Sprintf("PartitonName: %s not found", partitionName)
-			return errors.New(errMsg)
-		}
-	}
-
-	st.SearchRequest.Dsl = st.query.Dsl
-	st.SearchRequest.PlaceholderGroup = st.query.PlaceholderGroup
-
-	return nil
-}
-
-func (st *searchTask) Execute(ctx context.Context) error {
-	sp, ctx := trace.StartSpanFromContextWithOperationName(st.TraceCtx(), "Proxy-Search-Execute")
-	defer sp.Finish()
-
-	tr := timerecord.NewTimeRecorder(fmt.Sprintf("proxy execute search %d", st.ID()))
-	defer tr.Elapse("done")
-
-	var tsMsg msgstream.TsMsg = &msgstream.SearchMsg{
-		SearchRequest: *st.SearchRequest,
-		BaseMsg: msgstream.BaseMsg{
-			Ctx:            ctx,
-			HashValues:     []uint32{uint32(Params.ProxyCfg.ProxyID)},
-			BeginTimestamp: st.Base.Timestamp,
-			EndTimestamp:   st.Base.Timestamp,
-		},
-	}
-	msgPack := msgstream.MsgPack{
-		BeginTs: st.Base.Timestamp,
-		EndTs:   st.Base.Timestamp,
-		Msgs:    make([]msgstream.TsMsg, 1),
-	}
-	msgPack.Msgs[0] = tsMsg
-
-	collectionName := st.query.CollectionName
-	info, err := globalMetaCache.GetCollectionInfo(ctx, collectionName)
-	if err != nil { // err is not nil if collection not exists
-		return err
-	}
-	st.collectionName = info.schema.Name
-
-	stream, err := st.chMgr.getDQLStream(info.collID)
-	if err != nil {
-		err = st.chMgr.createDQLStream(info.collID)
-		if err != nil {
-			st.result = &milvuspb.SearchResults{
-				Status: &commonpb.Status{
-					ErrorCode: commonpb.ErrorCode_UnexpectedError,
-					Reason:    err.Error(),
-				},
-			}
-			return err
-		}
-		stream, err = st.chMgr.getDQLStream(info.collID)
-		if err != nil {
-			st.result = &milvuspb.SearchResults{
-				Status: &commonpb.Status{
-					ErrorCode: commonpb.ErrorCode_UnexpectedError,
-					Reason:    err.Error(),
-				},
-			}
-			return err
-		}
-	}
-	tr.Record("get used message stream")
-	err = stream.Produce(&msgPack)
-	if err != nil {
-		log.Debug("proxy", zap.String("send search request failed", err.Error()))
-	}
-	st.tr.Record("send message done")
-	log.Debug("proxy sent one searchMsg",
-		zap.Int64("collectionID", st.CollectionID),
-		zap.Int64("msgID", tsMsg.ID()),
-		zap.Int("length of search msg", len(msgPack.Msgs)),
-		zap.Uint64("timeoutTs", st.SearchRequest.TimeoutTimestamp))
-	sendMsgDur := tr.Record("send search msg to message stream")
-	metrics.ProxySendMessageLatency.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.ProxyID, 10),
-		metrics.SearchLabel).Observe(float64(sendMsgDur.Milliseconds()))
-
-	return err
-}
-
-func decodeSearchResults(searchResults []*internalpb.SearchResults) ([]*schemapb.SearchResultData, error) {
-	tr := timerecord.NewTimeRecorder("decodeSearchResults")
-	log.Debug("decodeSearchResults", zap.Any("lenOfSearchResults", len(searchResults)))
-
-	results := make([]*schemapb.SearchResultData, 0)
-	// necessary to parallel this?
-	for i, partialSearchResult := range searchResults {
-		log.Debug("decodeSearchResults", zap.Any("i", i), zap.Any("len(SlicedBob)", len(partialSearchResult.SlicedBlob)))
-		if partialSearchResult.SlicedBlob == nil {
-			continue
-		}
-
-		var partialResultData schemapb.SearchResultData
-		err := proto.Unmarshal(partialSearchResult.SlicedBlob, &partialResultData)
-		log.Debug("decodeSearchResults, Unmarshal partitalSearchResult.SliceBlob", zap.Error(err))
-		if err != nil {
-			return nil, err
-		}
-
-		results = append(results, &partialResultData)
-	}
-	log.Debug("decodeSearchResults", zap.Any("lenOfResults", len(results)))
-	tr.Elapse("done")
-
-	return results, nil
-}
-
-func checkSearchResultData(data *schemapb.SearchResultData, nq int64, topk int64) error {
-	if data.NumQueries != nq {
-		return fmt.Errorf("search result's nq(%d) mis-match with %d", data.NumQueries, nq)
-	}
-	if data.TopK != topk {
-		return fmt.Errorf("search result's topk(%d) mis-match with %d", data.TopK, topk)
-	}
-	if len(data.Ids.GetIntId().Data) != (int)(nq*topk) {
-		return fmt.Errorf("search result's id length %d invalid", len(data.Ids.GetIntId().Data))
-	}
-	if len(data.Scores) != (int)(nq*topk) {
-		return fmt.Errorf("search result's score length %d invalid", len(data.Scores))
-	}
-	return nil
-}
-
-func selectSearchResultData(dataArray []*schemapb.SearchResultData, offsets []int64, topk int64, qi int64) int {
-	sel := -1
-	maxDistance := minFloat32
-	for i, offset := range offsets { // query num, the number of ways to merge
-		if offset >= topk {
-			continue
-		}
-		idx := qi*topk + offset
-		id := dataArray[i].Ids.GetIntId().Data[idx]
-		if id != -1 {
-			distance := dataArray[i].Scores[idx]
-			if distance > maxDistance {
-				sel = i
-				maxDistance = distance
-			}
-		}
-	}
-	return sel
-}
-
-//func printSearchResultData(data *schemapb.SearchResultData, header string) {
-//	size := len(data.Ids.GetIntId().Data)
-//	if size != len(data.Scores) {
-//		log.Error("SearchResultData length mis-match")
-//	}
-//	log.Debug("==== SearchResultData ====",
-//		zap.String("header", header), zap.Int64("nq", data.NumQueries), zap.Int64("topk", data.TopK))
-//	for i := 0; i < size; i++ {
-//		log.Debug("", zap.Int("i", i), zap.Int64("id", data.Ids.GetIntId().Data[i]), zap.Float32("score", data.Scores[i]))
-//	}
-//}
-
-func reduceSearchResultData(searchResultData []*schemapb.SearchResultData, nq int64, topk int64, metricType string) (*milvuspb.SearchResults, error) {
-
-	tr := timerecord.NewTimeRecorder("reduceSearchResultData")
-	defer func() {
-		tr.Elapse("done")
-	}()
-
-	log.Debug("reduceSearchResultData", zap.Int("len(searchResultData)", len(searchResultData)),
-		zap.Int64("nq", nq), zap.Int64("topk", topk), zap.String("metricType", metricType))
-
-	ret := &milvuspb.SearchResults{
-		Status: &commonpb.Status{
-			ErrorCode: 0,
-		},
-		Results: &schemapb.SearchResultData{
-			NumQueries: nq,
-			TopK:       topk,
-			FieldsData: make([]*schemapb.FieldData, len(searchResultData[0].FieldsData)),
-			Scores:     make([]float32, 0),
-			Ids: &schemapb.IDs{
-				IdField: &schemapb.IDs_IntId{
-					IntId: &schemapb.LongArray{
-						Data: make([]int64, 0),
-					},
-				},
-			},
-			Topks: make([]int64, 0),
-		},
-	}
-
-	for i, sData := range searchResultData {
-		log.Debug("reduceSearchResultData",
-			zap.Int("i", i),
-			zap.Int64("nq", sData.NumQueries),
-			zap.Int64("topk", sData.TopK),
-			zap.Any("len(FieldsData)", len(sData.FieldsData)))
-		if err := checkSearchResultData(sData, nq, topk); err != nil {
-			return ret, err
-		}
-		//printSearchResultData(sData, strconv.FormatInt(int64(i), 10))
-	}
-
-	var skipDupCnt int64
-	var realTopK int64 = -1
-	for i := int64(0); i < nq; i++ {
-		offsets := make([]int64, len(searchResultData))
-
-		var idSet = make(map[int64]struct{})
-		var j int64
-		for j = 0; j < topk; {
-			sel := selectSearchResultData(searchResultData, offsets, topk, i)
-			if sel == -1 {
-				break
-			}
-			idx := i*topk + offsets[sel]
-
-			id := searchResultData[sel].Ids.GetIntId().Data[idx]
-			score := searchResultData[sel].Scores[idx]
-			// ignore invalid search result
-			if id == -1 {
-				continue
-			}
-
-			// remove duplicates
-			if _, ok := idSet[id]; !ok {
-				typeutil.AppendFieldData(ret.Results.FieldsData, searchResultData[sel].FieldsData, idx)
-				ret.Results.Ids.GetIntId().Data = append(ret.Results.Ids.GetIntId().Data, id)
-				ret.Results.Scores = append(ret.Results.Scores, score)
-				idSet[id] = struct{}{}
-				j++
-			} else {
-				// skip entity with same id
-				skipDupCnt++
-			}
-			offsets[sel]++
-		}
-		if realTopK != -1 && realTopK != j {
-			log.Warn("Proxy Reduce Search Result", zap.Error(errors.New("the length (topk) between all result of query is different")))
-			// return nil, errors.New("the length (topk) between all result of query is different")
-		}
-		realTopK = j
-		ret.Results.Topks = append(ret.Results.Topks, realTopK)
-	}
-	log.Debug("skip duplicated search result", zap.Int64("count", skipDupCnt))
-	ret.Results.TopK = realTopK
-
-	if !distance.PositivelyRelated(metricType) {
-		for k := range ret.Results.Scores {
-			ret.Results.Scores[k] *= -1
-		}
-	}
-
-	return ret, nil
-}
-
-//func printSearchResult(partialSearchResult *internalpb.SearchResults) {
-//	for i := 0; i < len(partialSearchResult.Hits); i++ {
-//		testHits := milvuspb.Hits{}
-//		err := proto.Unmarshal(partialSearchResult.Hits[i], &testHits)
-//		if err != nil {
-//			panic(err)
-//		}
-//		fmt.Println(testHits.IDs)
-//		fmt.Println(testHits.Scores)
-//	}
-//}
-
-func (st *searchTask) PostExecute(ctx context.Context) error {
-	sp, ctx := trace.StartSpanFromContextWithOperationName(st.TraceCtx(), "Proxy-Search-PostExecute")
-	defer sp.Finish()
-	tr := timerecord.NewTimeRecorder("searchTask PostExecute")
-	defer func() {
-		tr.Elapse("done")
-	}()
-	for {
-		select {
-		case <-st.TraceCtx().Done():
-			log.Debug("Proxy searchTask PostExecute Loop exit caused by ctx.Done", zap.Int64("taskID", st.ID()))
-			return fmt.Errorf("searchTask:wait to finish failed, timeout: %d", st.ID())
-		case searchResults := <-st.resultBuf:
-			// fmt.Println("searchResults: ", searchResults)
-			filterSearchResults := make([]*internalpb.SearchResults, 0)
-			var filterReason string
-			errNum := 0
-			for _, partialSearchResult := range searchResults {
-				if partialSearchResult.Status.ErrorCode == commonpb.ErrorCode_Success {
-					filterSearchResults = append(filterSearchResults, partialSearchResult)
-					// For debugging, please don't delete.
-					// printSearchResult(partialSearchResult)
-				} else {
-					errNum++
-					filterReason += partialSearchResult.Status.Reason + "\n"
-				}
-			}
-
-			log.Debug("Proxy Search PostExecute stage1",
-				zap.Any("len(filterSearchResults)", len(filterSearchResults)))
-			metrics.ProxyWaitForSearchResultLatency.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.ProxyID, 10), metrics.SearchLabel).Observe(float64(st.tr.RecordSpan().Milliseconds()))
-			tr.Record("Proxy Search PostExecute stage1 done")
-			if len(filterSearchResults) <= 0 || errNum > 0 {
-				st.result = &milvuspb.SearchResults{
-					Status: &commonpb.Status{
-						ErrorCode: commonpb.ErrorCode_UnexpectedError,
-						Reason:    filterReason,
-					},
-					CollectionName: st.collectionName,
-				}
-				return fmt.Errorf("QueryNode search fail, reason %s: id %d", filterReason, st.ID())
-			}
-			tr.Record("decodeResultStart")
-			validSearchResults, err := decodeSearchResults(filterSearchResults)
-			if err != nil {
-				return err
-			}
-			metrics.ProxyDecodeSearchResultLatency.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.ProxyID, 10), metrics.SearchLabel).Observe(float64(tr.RecordSpan().Milliseconds()))
-			log.Debug("Proxy Search PostExecute stage2", zap.Any("len(validSearchResults)", len(validSearchResults)))
-			if len(validSearchResults) <= 0 {
-				filterReason += "empty search result\n"
-				log.Debug("Proxy Search PostExecute stage2 failed", zap.Any("filterReason", filterReason))
-
-				st.result = &milvuspb.SearchResults{
-					Status: &commonpb.Status{
-						ErrorCode: commonpb.ErrorCode_Success,
-						Reason:    filterReason,
-					},
-					Results: &schemapb.SearchResultData{
-						NumQueries: searchResults[0].NumQueries,
-						Topks:      make([]int64, searchResults[0].NumQueries),
-					},
-					CollectionName: st.collectionName,
-				}
-				return nil
-			}
-
-			tr.Record("reduceResultStart")
-			st.result, err = reduceSearchResultData(validSearchResults, searchResults[0].NumQueries, searchResults[0].TopK, searchResults[0].MetricType)
-			if err != nil {
-				return err
-			}
-			metrics.ProxyReduceSearchResultLatency.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.ProxyID, 10), metrics.SuccessLabel).Observe(float64(tr.RecordSpan().Milliseconds()))
-			st.result.CollectionName = st.collectionName
-
-			schema, err := globalMetaCache.GetCollectionSchema(ctx, st.query.CollectionName)
-			if err != nil {
-				return err
-			}
-			if len(st.query.OutputFields) != 0 && len(st.result.Results.FieldsData) != 0 {
-				for k, fieldName := range st.query.OutputFields {
-					for _, field := range schema.Fields {
-						if st.result.Results.FieldsData[k] != nil && field.Name == fieldName {
-							st.result.Results.FieldsData[k].FieldName = field.Name
-							st.result.Results.FieldsData[k].FieldId = field.FieldID
-							st.result.Results.FieldsData[k].Type = field.DataType
-						}
-					}
-				}
-			}
-			return nil
-		}
-	}
-}
-
-type queryTask struct {
-	Condition
-	*internalpb.RetrieveRequest
-	ctx            context.Context
-	resultBuf      chan []*internalpb.RetrieveResults
-	result         *milvuspb.QueryResults
-	query          *milvuspb.QueryRequest
-	chMgr          channelsMgr
-	qc             types.QueryCoord
-	ids            *schemapb.IDs
-	collectionName string
-	collectionID   UniqueID
-}
-
-func (qt *queryTask) TraceCtx() context.Context {
-	return qt.ctx
-}
-
-func (qt *queryTask) ID() UniqueID {
-	return qt.Base.MsgID
-}
-
-func (qt *queryTask) SetID(uid UniqueID) {
-	qt.Base.MsgID = uid
-}
-
-func (qt *queryTask) Name() string {
-	return RetrieveTaskName
-}
-
-func (qt *queryTask) Type() commonpb.MsgType {
-	return qt.Base.MsgType
-}
-
-func (qt *queryTask) BeginTs() Timestamp {
-	return qt.Base.Timestamp
-}
-
-func (qt *queryTask) EndTs() Timestamp {
-	return qt.Base.Timestamp
-}
-
-func (qt *queryTask) SetTs(ts Timestamp) {
-	qt.Base.Timestamp = ts
-}
-
-func (qt *queryTask) OnEnqueue() error {
-	qt.Base.MsgType = commonpb.MsgType_Retrieve
-	return nil
-}
-
-func (qt *queryTask) getChannels() ([]pChan, error) {
-	collID, err := globalMetaCache.GetCollectionID(qt.ctx, qt.query.CollectionName)
-	if err != nil {
-		return nil, err
-	}
-	var channels []pChan
-	channels, err = qt.chMgr.getChannels(collID)
-	if err != nil {
-		err := qt.chMgr.createDMLMsgStream(collID)
-		if err != nil {
-			return nil, err
-		}
-		return qt.chMgr.getChannels(collID)
-	}
-
-	return channels, nil
-}
-
-func (qt *queryTask) getVChannels() ([]vChan, error) {
-	collID, err := globalMetaCache.GetCollectionID(qt.ctx, qt.query.CollectionName)
-	if err != nil {
-		return nil, err
-	}
-
-	var channels []vChan
-	channels, err = qt.chMgr.getVChannels(collID)
-	if err != nil {
-		err := qt.chMgr.createDMLMsgStream(collID)
-		if err != nil {
-			return nil, err
-		}
-		return qt.chMgr.getVChannels(collID)
-	}
-
-	return channels, nil
-}
-
-// IDs2Expr converts ids slices to bool expresion with specified field name
-func IDs2Expr(fieldName string, ids []int64) string {
-	idsStr := strings.Trim(strings.Join(strings.Fields(fmt.Sprint(ids)), ", "), "[]")
-	return fieldName + " in [ " + idsStr + " ]"
-}
-
-func (qt *queryTask) PreExecute(ctx context.Context) error {
-	qt.Base.MsgType = commonpb.MsgType_Retrieve
-	qt.Base.SourceID = Params.ProxyCfg.ProxyID
-
-	collectionName := qt.query.CollectionName
-
-	if err := validateCollectionName(qt.query.CollectionName); err != nil {
-		log.Debug("Invalid collection name.", zap.Any("collectionName", collectionName),
-			zap.Any("requestID", qt.Base.MsgID), zap.Any("requestType", "query"))
-		return err
-	}
-	log.Info("Validate collection name.", zap.Any("collectionName", collectionName),
-		zap.Any("requestID", qt.Base.MsgID), zap.Any("requestType", "query"))
-
-	info, err := globalMetaCache.GetCollectionInfo(ctx, collectionName)
-	if err != nil {
-		log.Debug("Failed to get collection id.", zap.Any("collectionName", collectionName),
-			zap.Any("requestID", qt.Base.MsgID), zap.Any("requestType", "query"))
-		return err
-	}
-	qt.collectionName = info.schema.Name
-	log.Info("Get collection id by name.", zap.Any("collectionName", collectionName),
-		zap.Any("requestID", qt.Base.MsgID), zap.Any("requestType", "query"))
-
-	for _, tag := range qt.query.PartitionNames {
-		if err := validatePartitionTag(tag, false); err != nil {
-			log.Debug("Invalid partition name.", zap.Any("partitionName", tag),
-				zap.Any("requestID", qt.Base.MsgID), zap.Any("requestType", "query"))
-			return err
-		}
-	}
-	log.Info("Validate partition names.",
-		zap.Any("requestID", qt.Base.MsgID), zap.Any("requestType", "query"))
-
-	// check if collection was already loaded into query node
-	showResp, err := qt.qc.ShowCollections(qt.ctx, &querypb.ShowCollectionsRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:   commonpb.MsgType_ShowCollections,
-			MsgID:     qt.Base.MsgID,
-			Timestamp: qt.Base.Timestamp,
-			SourceID:  Params.ProxyCfg.ProxyID,
-		},
-		DbID: 0, // TODO(dragondriver)
-	})
-	if err != nil {
-		return err
-	}
-	if showResp.Status.ErrorCode != commonpb.ErrorCode_Success {
-		return errors.New(showResp.Status.Reason)
-	}
-	log.Debug("QueryCoord show collections",
-		zap.Any("collections", showResp.CollectionIDs),
-		zap.Any("collID", info.collID))
-
-	collectionLoaded := false
-	for _, collID := range showResp.CollectionIDs {
-		if info.collID == collID {
-			collectionLoaded = true
-			break
-		}
-	}
-	if !collectionLoaded {
-		return fmt.Errorf("collection %v was not loaded into memory", collectionName)
-	}
-
-	schema, _ := globalMetaCache.GetCollectionSchema(ctx, qt.query.CollectionName)
-
-	if qt.ids != nil {
-		pkField := ""
-		for _, field := range schema.Fields {
-			if field.IsPrimaryKey {
-				pkField = field.Name
-			}
-		}
-		qt.query.Expr = IDs2Expr(pkField, qt.ids.GetIntId().Data)
-	}
-
-	if qt.query.Expr == "" {
-		errMsg := "Query expression is empty"
-		return fmt.Errorf(errMsg)
-	}
-
-	plan, err := createExprPlan(schema, qt.query.Expr)
-	if err != nil {
-		return err
-	}
-	qt.query.OutputFields, err = translateOutputFields(qt.query.OutputFields, schema, true)
-	if err != nil {
-		return err
-	}
-	log.Debug("translate output fields", zap.Any("OutputFields", qt.query.OutputFields))
-	if len(qt.query.OutputFields) == 0 {
-		for _, field := range schema.Fields {
-			if field.FieldID >= 100 && field.DataType != schemapb.DataType_FloatVector && field.DataType != schemapb.DataType_BinaryVector {
-				qt.OutputFieldsId = append(qt.OutputFieldsId, field.FieldID)
-			}
-		}
-	} else {
-		addPrimaryKey := false
-		for _, reqField := range qt.query.OutputFields {
-			findField := false
-			for _, field := range schema.Fields {
-				if reqField == field.Name {
-					if field.IsPrimaryKey {
-						addPrimaryKey = true
-					}
-					findField = true
-					qt.OutputFieldsId = append(qt.OutputFieldsId, field.FieldID)
-					plan.OutputFieldIds = append(plan.OutputFieldIds, field.FieldID)
-				} else {
-					if field.IsPrimaryKey && !addPrimaryKey {
-						qt.OutputFieldsId = append(qt.OutputFieldsId, field.FieldID)
-						plan.OutputFieldIds = append(plan.OutputFieldIds, field.FieldID)
-						addPrimaryKey = true
-					}
-				}
-			}
-			if !findField {
-				errMsg := "Field " + reqField + " not exist"
-				return errors.New(errMsg)
-			}
-		}
-	}
-	log.Debug("translate output fields to field ids", zap.Any("OutputFieldsID", qt.OutputFieldsId))
-
-	qt.RetrieveRequest.SerializedExprPlan, err = proto.Marshal(plan)
-	if err != nil {
-		return err
-	}
-	travelTimestamp := qt.query.TravelTimestamp
-	if travelTimestamp == 0 {
-		travelTimestamp = qt.BeginTs()
-	} else {
-		durationSeconds := tsoutil.CalculateDuration(qt.BeginTs(), travelTimestamp) / 1000
-		if durationSeconds > Params.CommonCfg.RetentionDuration {
-			duration := time.Second * time.Duration(durationSeconds)
-			return fmt.Errorf("only support to travel back to %s so far", duration.String())
-		}
-	}
-	guaranteeTimestamp := qt.query.GuaranteeTimestamp
-	if guaranteeTimestamp == 0 {
-		guaranteeTimestamp = qt.BeginTs()
-	}
-	qt.TravelTimestamp = travelTimestamp
-	qt.GuaranteeTimestamp = guaranteeTimestamp
-	deadline, ok := qt.TraceCtx().Deadline()
-	if ok {
-		qt.RetrieveRequest.TimeoutTimestamp = tsoutil.ComposeTSByTime(deadline, 0)
-	}
-
-	qt.ResultChannelID = Params.ProxyCfg.RetrieveResultChannelNames[0]
-	qt.DbID = 0 // todo(yukun)
-
-	qt.CollectionID = info.collID
-	qt.PartitionIDs = make([]UniqueID, 0)
-
-	partitionsMap, err := globalMetaCache.GetPartitions(ctx, collectionName)
-	if err != nil {
-		log.Debug("Failed to get partitions in collection.", zap.Any("collectionName", collectionName),
-			zap.Any("requestID", qt.Base.MsgID), zap.Any("requestType", "query"))
-		return err
-	}
-	log.Info("Get partitions in collection.", zap.Any("collectionName", collectionName),
-		zap.Any("requestID", qt.Base.MsgID), zap.Any("requestType", "query"))
-
-	partitionsRecord := make(map[UniqueID]bool)
-	for _, partitionName := range qt.query.PartitionNames {
-		pattern := fmt.Sprintf("^%s$", partitionName)
-		re, err := regexp.Compile(pattern)
-		if err != nil {
-			log.Debug("Failed to compile partition name regex expression.", zap.Any("partitionName", partitionName),
-				zap.Any("requestID", qt.Base.MsgID), zap.Any("requestType", "query"))
-			return errors.New("invalid partition names")
-		}
-		found := false
-		for name, pID := range partitionsMap {
-			if re.MatchString(name) {
-				if _, exist := partitionsRecord[pID]; !exist {
-					qt.PartitionIDs = append(qt.PartitionIDs, pID)
-					partitionsRecord[pID] = true
-				}
-				found = true
-			}
-		}
-		if !found {
-			// FIXME(wxyu): undefined behavior
-			errMsg := fmt.Sprintf("PartitonName: %s not found", partitionName)
-			return errors.New(errMsg)
-		}
-	}
-
-	log.Info("Query PreExecute done.",
-		zap.Any("requestID", qt.Base.MsgID), zap.Any("requestType", "query"))
-	return nil
-}
-
-func (qt *queryTask) Execute(ctx context.Context) error {
-	tr := timerecord.NewTimeRecorder(fmt.Sprintf("proxy execute query %d", qt.ID()))
-	defer tr.Elapse("done")
-
-	var tsMsg msgstream.TsMsg = &msgstream.RetrieveMsg{
-		RetrieveRequest: *qt.RetrieveRequest,
-		BaseMsg: msgstream.BaseMsg{
-			Ctx:            ctx,
-			HashValues:     []uint32{uint32(Params.ProxyCfg.ProxyID)},
-			BeginTimestamp: qt.Base.Timestamp,
-			EndTimestamp:   qt.Base.Timestamp,
-		},
-	}
-	msgPack := msgstream.MsgPack{
-		BeginTs: qt.Base.Timestamp,
-		EndTs:   qt.Base.Timestamp,
-		Msgs:    make([]msgstream.TsMsg, 1),
-	}
-	msgPack.Msgs[0] = tsMsg
-
-	stream, err := qt.chMgr.getDQLStream(qt.CollectionID)
-	if err != nil {
-		err = qt.chMgr.createDQLStream(qt.CollectionID)
-		if err != nil {
-			qt.result.Status.ErrorCode = commonpb.ErrorCode_UnexpectedError
-			qt.result.Status.Reason = err.Error()
-			return err
-		}
-		stream, err = qt.chMgr.getDQLStream(qt.CollectionID)
-		if err != nil {
-			qt.result.Status.ErrorCode = commonpb.ErrorCode_UnexpectedError
-			qt.result.Status.Reason = err.Error()
-			return err
-		}
-	}
-	tr.Record("get used message stream")
-
-	err = stream.Produce(&msgPack)
-	if err != nil {
-		log.Debug("Failed to send retrieve request.",
-			zap.Any("requestID", qt.Base.MsgID), zap.Any("requestType", "query"))
-	}
-	log.Debug("proxy sent one retrieveMsg",
-		zap.Int64("collectionID", qt.CollectionID),
-		zap.Int64("msgID", tsMsg.ID()),
-		zap.Int("length of search msg", len(msgPack.Msgs)),
-		zap.Uint64("timeoutTs", qt.RetrieveRequest.TimeoutTimestamp))
-	tr.Record("send retrieve request to message stream")
-
-	log.Info("Query Execute done.",
-		zap.Any("requestID", qt.Base.MsgID), zap.Any("requestType", "query"))
-	return err
-}
-
-func mergeRetrieveResults(retrieveResults []*internalpb.RetrieveResults) (*milvuspb.QueryResults, error) {
-	var ret *milvuspb.QueryResults
-	var skipDupCnt int64
-	var idSet = make(map[int64]struct{})
-
-	// merge results and remove duplicates
-	for _, rr := range retrieveResults {
-		// skip empty result, it will break merge result
-		if rr == nil || rr.Ids == nil || rr.Ids.GetIntId() == nil || len(rr.Ids.GetIntId().Data) == 0 {
-			continue
-		}
-
-		if ret == nil {
-			ret = &milvuspb.QueryResults{
-				FieldsData: make([]*schemapb.FieldData, len(rr.FieldsData)),
-			}
-		}
-
-		if len(ret.FieldsData) != len(rr.FieldsData) {
-			return nil, fmt.Errorf("mismatch FieldData in proxy RetrieveResults, expect %d get %d", len(ret.FieldsData), len(rr.FieldsData))
-		}
-
-		for i, id := range rr.Ids.GetIntId().GetData() {
-			if _, ok := idSet[id]; !ok {
-				typeutil.AppendFieldData(ret.FieldsData, rr.FieldsData, int64(i))
-				idSet[id] = struct{}{}
-			} else {
-				// primary keys duplicate
-				skipDupCnt++
-			}
-		}
-	}
-	log.Debug("skip duplicated query result", zap.Int64("count", skipDupCnt))
-
-	if ret == nil {
-		ret = &milvuspb.QueryResults{
-			FieldsData: []*schemapb.FieldData{},
-		}
-	}
-
-	return ret, nil
-}
-
-func (qt *queryTask) PostExecute(ctx context.Context) error {
-	tr := timerecord.NewTimeRecorder("queryTask PostExecute")
-	defer func() {
-		tr.Elapse("done")
-	}()
-	select {
-	case <-qt.TraceCtx().Done():
-		log.Debug("proxy", zap.Int64("Query: wait to finish failed, timeout!, taskID:", qt.ID()))
-		return fmt.Errorf("queryTask:wait to finish failed, timeout : %d", qt.ID())
-	case retrieveResults := <-qt.resultBuf:
-		filterRetrieveResults := make([]*internalpb.RetrieveResults, 0)
-		var reason string
-		for _, partialRetrieveResult := range retrieveResults {
-			if partialRetrieveResult.Status.ErrorCode == commonpb.ErrorCode_Success {
-				filterRetrieveResults = append(filterRetrieveResults, partialRetrieveResult)
-			} else {
-				reason += partialRetrieveResult.Status.Reason + "\n"
-			}
-		}
-
-		if len(filterRetrieveResults) == 0 {
-			qt.result = &milvuspb.QueryResults{
-				Status: &commonpb.Status{
-					ErrorCode: commonpb.ErrorCode_UnexpectedError,
-					Reason:    reason,
-				},
-				CollectionName: qt.collectionName,
-			}
-			log.Debug("Query failed on all querynodes.",
-				zap.Any("requestID", qt.Base.MsgID), zap.Any("requestType", "query"))
-			return errors.New(reason)
-		}
-
-		var err error
-		qt.result, err = mergeRetrieveResults(filterRetrieveResults)
-		if err != nil {
-			return err
-		}
-		qt.result.CollectionName = qt.collectionName
-
-		if len(qt.result.FieldsData) > 0 {
-			qt.result.Status = &commonpb.Status{
-				ErrorCode: commonpb.ErrorCode_Success,
-			}
-		} else {
-			log.Info("Query result is nil", zap.Any("requestID", qt.Base.MsgID), zap.Any("requestType", "query"))
-			qt.result.Status = &commonpb.Status{
-				ErrorCode: commonpb.ErrorCode_EmptyCollection,
-				Reason:    reason,
-			}
-			return nil
-		}
-
-		schema, err := globalMetaCache.GetCollectionSchema(ctx, qt.query.CollectionName)
-		if err != nil {
-			return err
-		}
-		for i := 0; i < len(qt.result.FieldsData); i++ {
-			for _, field := range schema.Fields {
-				if field.FieldID == qt.OutputFieldsId[i] {
-					qt.result.FieldsData[i].FieldName = field.Name
-					qt.result.FieldsData[i].FieldId = field.FieldID
-					qt.result.FieldsData[i].Type = field.DataType
-				}
-			}
-		}
-	}
-
-	log.Info("Query PostExecute done", zap.Any("requestID", qt.Base.MsgID), zap.Any("requestType", "query"))
-	return nil
 }
 
 type hasCollectionTask struct {
@@ -3269,7 +2151,7 @@ func (gibpt *getIndexBuildProgressTask) Execute(ctx context.Context) error {
 		gibpt.IndexName = Params.CommonCfg.DefaultIndexName
 	}
 
-	describeIndexReq := milvuspb.DescribeIndexRequest{
+	describeIndexReq := &milvuspb.DescribeIndexRequest{
 		Base: &commonpb.MsgBase{
 			MsgType:   commonpb.MsgType_DescribeIndex,
 			MsgID:     gibpt.Base.MsgID,
@@ -3281,7 +2163,7 @@ func (gibpt *getIndexBuildProgressTask) Execute(ctx context.Context) error {
 		//		IndexName:      gibpt.IndexName,
 	}
 
-	indexDescriptionResp, err2 := gibpt.rootCoord.DescribeIndex(ctx, &describeIndexReq)
+	indexDescriptionResp, err2 := gibpt.rootCoord.DescribeIndex(ctx, describeIndexReq)
 	if err2 != nil {
 		return err2
 	}
@@ -3473,6 +2355,7 @@ func (gist *getIndexStateTask) Execute(ctx context.Context) error {
 	}
 	gist.collectionID = collectionID
 
+	// Get partition result for the given collection.
 	showPartitionRequest := &milvuspb.ShowPartitionsRequest{
 		Base: &commonpb.MsgBase{
 			MsgType:   commonpb.MsgType_ShowPartitions,
@@ -3493,6 +2376,7 @@ func (gist *getIndexStateTask) Execute(ctx context.Context) error {
 		gist.IndexName = Params.CommonCfg.DefaultIndexName
 	}
 
+	// Retrieve index status and detailed index information.
 	describeIndexReq := milvuspb.DescribeIndexRequest{
 		Base: &commonpb.MsgBase{
 			MsgType:   commonpb.MsgType_DescribeIndex,
@@ -3510,6 +2394,7 @@ func (gist *getIndexStateTask) Execute(ctx context.Context) error {
 		return err2
 	}
 
+	// Check if the target index name exists.
 	matchIndexID := int64(-1)
 	foundIndexID := false
 	for _, desc := range indexDescriptionResp.IndexDescriptions {
@@ -3523,6 +2408,7 @@ func (gist *getIndexStateTask) Execute(ctx context.Context) error {
 		return fmt.Errorf("no index is created")
 	}
 
+	// Fetch segments for partitions.
 	var allSegmentIDs []UniqueID
 	for _, partitionID := range partitions.PartitionIDs {
 		showSegmentsRequest := &milvuspb.ShowSegmentsRequest{
@@ -3549,6 +2435,7 @@ func (gist *getIndexStateTask) Execute(ctx context.Context) error {
 		IndexBuildIDs: make([]UniqueID, 0),
 	}
 
+	// Fetch index build IDs from segments.
 	for _, segmentID := range allSegmentIDs {
 		describeSegmentRequest := &milvuspb.DescribeSegmentRequest{
 			Base: &commonpb.MsgBase{
@@ -4093,8 +2980,9 @@ type BaseDeleteTask = msgstream.DeleteMsg
 type deleteTask struct {
 	Condition
 	BaseDeleteTask
-	ctx       context.Context
-	req       *milvuspb.DeleteRequest
+	ctx        context.Context
+	deleteExpr string
+	//req       *milvuspb.DeleteRequest
 	result    *milvuspb.MutationResult
 	chMgr     channelsMgr
 	chTicker  channelsTimeTicker
@@ -4102,6 +2990,7 @@ type deleteTask struct {
 	pChannels []pChan
 
 	collectionID UniqueID
+	schema       *schemapb.CollectionSchema
 }
 
 func (dt *deleteTask) TraceCtx() context.Context {
@@ -4178,7 +3067,7 @@ func (dt *deleteTask) getChannels() ([]pChan, error) {
 	return channels, err
 }
 
-func getPrimaryKeysFromExpr(schema *schemapb.CollectionSchema, expr string) (res []int64, err error) {
+func getPrimaryKeysFromExpr(schema *schemapb.CollectionSchema, expr string) (res *schemapb.IDs, rowNum int64, err error) {
 	if len(expr) == 0 {
 		log.Warn("empty expr")
 		return
@@ -4186,20 +3075,43 @@ func getPrimaryKeysFromExpr(schema *schemapb.CollectionSchema, expr string) (res
 
 	plan, err := createExprPlan(schema, expr)
 	if err != nil {
-		return res, fmt.Errorf("failed to create expr plan, expr = %s", expr)
+		return res, 0, fmt.Errorf("failed to create expr plan, expr = %s", expr)
 	}
 
 	// delete request only support expr "id in [a, b]"
 	termExpr, ok := plan.Node.(*planpb.PlanNode_Predicates).Predicates.Expr.(*planpb.Expr_TermExpr)
 	if !ok {
-		return res, fmt.Errorf("invalid plan node type")
+		return res, 0, fmt.Errorf("invalid plan node type")
 	}
 
-	for _, v := range termExpr.TermExpr.Values {
-		res = append(res, v.GetInt64Val())
+	res = &schemapb.IDs{}
+	rowNum = int64(len(termExpr.TermExpr.Values))
+	switch termExpr.TermExpr.ColumnInfo.GetDataType() {
+	case schemapb.DataType_Int64:
+		ids := make([]int64, 0)
+		for _, v := range termExpr.TermExpr.Values {
+			ids = append(ids, v.GetInt64Val())
+		}
+		res.IdField = &schemapb.IDs_IntId{
+			IntId: &schemapb.LongArray{
+				Data: ids,
+			},
+		}
+	case schemapb.DataType_VarChar:
+		ids := make([]string, 0)
+		for _, v := range termExpr.TermExpr.Values {
+			ids = append(ids, v.GetStringVal())
+		}
+		res.IdField = &schemapb.IDs_StrId{
+			StrId: &schemapb.StringArray{
+				Data: ids,
+			},
+		}
+	default:
+		return res, 0, fmt.Errorf("invalid field data type specifyed in delete expr")
 	}
 
-	return res, nil
+	return res, rowNum, nil
 }
 
 func (dt *deleteTask) PreExecute(ctx context.Context) error {
@@ -4216,7 +3128,7 @@ func (dt *deleteTask) PreExecute(ctx context.Context) error {
 		Timestamp: dt.BeginTs(),
 	}
 
-	collName := dt.req.CollectionName
+	collName := dt.CollectionName
 	if err := validateCollectionName(collName); err != nil {
 		log.Error("Invalid collection name", zap.String("collectionName", collName))
 		return err
@@ -4230,8 +3142,8 @@ func (dt *deleteTask) PreExecute(ctx context.Context) error {
 	dt.collectionID = collID
 
 	// If partitionName is not empty, partitionID will be set.
-	if len(dt.req.PartitionName) > 0 {
-		partName := dt.req.PartitionName
+	if len(dt.PartitionName) > 0 {
+		partName := dt.PartitionName
 		if err := validatePartitionTag(partName, true); err != nil {
 			log.Error("Invalid partition name", zap.String("partitionName", partName))
 			return err
@@ -4246,30 +3158,29 @@ func (dt *deleteTask) PreExecute(ctx context.Context) error {
 		dt.DeleteRequest.PartitionID = common.InvalidPartitionID
 	}
 
-	schema, err := globalMetaCache.GetCollectionSchema(ctx, dt.req.CollectionName)
+	schema, err := globalMetaCache.GetCollectionSchema(ctx, collName)
 	if err != nil {
-		log.Error("Failed to get collection schema", zap.String("collectionName", dt.req.CollectionName))
+		log.Error("Failed to get collection schema", zap.String("collectionName", collName))
 		return err
 	}
+	dt.schema = schema
 
-	primaryKeys, err := getPrimaryKeysFromExpr(schema, dt.req.Expr)
+	// get delete.primaryKeys from delete expr
+	primaryKeys, numRow, err := getPrimaryKeysFromExpr(schema, dt.deleteExpr)
 	if err != nil {
 		log.Error("Failed to get primary keys from expr", zap.Error(err))
 		return err
 	}
-	log.Debug("get primary keys from expr", zap.Int("len of primary keys", len(primaryKeys)))
+
+	dt.DeleteRequest.NumRows = numRow
 	dt.DeleteRequest.PrimaryKeys = primaryKeys
+	log.Debug("get primary keys from expr", zap.Int64("len of primary keys", dt.DeleteRequest.NumRows))
 
 	// set result
-	dt.result.IDs.IdField = &schemapb.IDs_IntId{
-		IntId: &schemapb.LongArray{
-			Data: primaryKeys,
-		},
-	}
-	dt.result.DeleteCnt = int64(len(primaryKeys))
+	dt.result.IDs = primaryKeys
+	dt.result.DeleteCnt = dt.DeleteRequest.NumRows
 
-	rowNum := len(primaryKeys)
-	dt.Timestamps = make([]uint64, rowNum)
+	dt.Timestamps = make([]uint64, numRow)
 	for index := range dt.Timestamps {
 		dt.Timestamps[index] = dt.BeginTs()
 	}
@@ -4330,6 +3241,7 @@ func (dt *deleteTask) Execute(ctx context.Context) (err error) {
 				PartitionID:    partitionID,
 				CollectionName: collectionName,
 				PartitionName:  partitionName,
+				PrimaryKeys:    &schemapb.IDs{},
 			}
 			deleteMsg := &msgstream.DeleteMsg{
 				BaseMsg: msgstream.BaseMsg{
@@ -4342,7 +3254,8 @@ func (dt *deleteTask) Execute(ctx context.Context) (err error) {
 		curMsg := result[key].(*msgstream.DeleteMsg)
 		curMsg.HashValues = append(curMsg.HashValues, dt.HashValues[index])
 		curMsg.Timestamps = append(curMsg.Timestamps, dt.Timestamps[index])
-		curMsg.PrimaryKeys = append(curMsg.PrimaryKeys, dt.PrimaryKeys[index])
+		typeutil.AppendIDs(curMsg.PrimaryKeys, dt.PrimaryKeys, index)
+		curMsg.NumRows++
 	}
 
 	// send delete request to log broker

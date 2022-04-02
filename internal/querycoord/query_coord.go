@@ -494,7 +494,7 @@ func (qc *QueryCoord) loadBalanceSegmentLoop() {
 		case <-timer.C:
 			onlineNodeIDs := qc.cluster.onlineNodeIDs()
 			if len(onlineNodeIDs) == 0 {
-				log.Error("loadBalanceSegmentLoop: there are no online QueryNode to balance")
+				log.Error("[auto balance]there is no online QueryNode to do balance")
 				continue
 			}
 			// get mem info of online nodes from cluster
@@ -516,7 +516,7 @@ func (qc *QueryCoord) loadBalanceSegmentLoop() {
 				for _, segmentInfo := range segmentInfos {
 					leastInfo, err := qc.cluster.getSegmentInfoByID(ctx, segmentInfo.SegmentID)
 					if err != nil {
-						log.Warn("loadBalanceSegmentLoop: get segment info from QueryNode failed", zap.Int64("nodeID", nodeID), zap.Error(err))
+						log.Warn("[auto balance] failed to get segment information from QueryNode", zap.Int64("nodeID", nodeID), zap.Error(err))
 						updateSegmentInfoDone = false
 						break
 					}

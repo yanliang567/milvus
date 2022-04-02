@@ -389,3 +389,13 @@ func (s *Server) LoadBalance(ctx context.Context, req *querypb.LoadBalanceReques
 func (s *Server) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
 	return s.queryCoord.GetMetrics(ctx, req)
 }
+
+// GetReplicas returns the shard leaders of a certain collection.
+func (s *Server) GetReplicas(ctx context.Context, req *querypb.GetReplicasRequest) (*querypb.GetReplicasResponse, error) {
+	return s.queryCoord.GetReplicas(ctx, req)
+}
+
+// GetShardLeaders returns the shard leaders of a certain collection.
+func (s *Server) GetShardLeaders(ctx context.Context, req *querypb.GetShardLeadersRequest) (*querypb.GetShardLeadersResponse, error) {
+	return s.queryCoord.GetShardLeaders(ctx, req)
+}

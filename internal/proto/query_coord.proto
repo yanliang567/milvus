@@ -30,6 +30,10 @@ service QueryCoord {
 
   // https://wiki.lfaidata.foundation/display/MIL/MEP+8+--+Add+metrics+for+proxy
   rpc GetMetrics(milvus.GetMetricsRequest) returns (milvus.GetMetricsResponse) {}
+
+  // https://wiki.lfaidata.foundation/display/MIL/MEP+23+--+Multiple+memory+replication+design
+  rpc GetReplicas(GetReplicasRequest) returns (GetReplicasResponse) {}
+  rpc GetShardLeaders(GetShardLeadersRequest) returns (GetShardLeadersResponse) {}
 }
 
 service QueryNode {
@@ -46,6 +50,9 @@ service QueryNode {
   rpc ReleasePartitions(ReleasePartitionsRequest) returns (common.Status) {}
   rpc ReleaseSegments(ReleaseSegmentsRequest) returns (common.Status) {}
   rpc GetSegmentInfo(GetSegmentInfoRequest) returns (GetSegmentInfoResponse) {}
+
+  rpc Search(SearchRequest) returns (internal.SearchResults) {}
+  rpc Query(QueryRequest) returns (internal.RetrieveResults) {}
 
   // https://wiki.lfaidata.foundation/display/MIL/MEP+8+--+Add+metrics+for+proxy
   rpc GetMetrics(milvus.GetMetricsRequest) returns (milvus.GetMetricsResponse) {}
@@ -99,6 +106,7 @@ message LoadPartitionsRequest {
   int64 collectionID = 3;
   repeated int64 partitionIDs = 4;
   schema.CollectionSchema schema = 5;
+  int32 replica_number = 6;
 }
 
 message ReleasePartitionsRequest {
@@ -143,6 +151,33 @@ message GetSegmentInfoResponse {
   repeated SegmentInfo infos = 2;
 }
 
+message GetReplicasRequest {
+  common.MsgBase base = 1;
+  int64 collectionID = 2;
+  bool with_shard_nodes = 3;
+}
+
+message GetReplicasResponse {
+  common.Status status = 1;
+  repeated ReplicaInfo replicas = 2;
+}
+
+message GetShardLeadersRequest {
+  common.MsgBase base = 1;
+  int64 collectionID = 2;
+}
+
+message GetShardLeadersResponse {
+  common.Status status = 1;
+  repeated ShardLeadersList shards = 2;
+}
+
+message ShardLeadersList {  // All leaders of all replicas of one shard
+  string channel_name = 1;
+  repeated int64 node_ids = 2;
+  repeated string node_addrs = 3;
+}
+
 //-----------------query node grpc request and response proto----------------
 message AddQueryChannelRequest {
   common.MsgBase base = 1;
@@ -165,7 +200,7 @@ message RemoveQueryChannelRequest {
 message LoadMetaInfo {
   LoadType load_type = 1;
   int64 collectionID = 2;
-  repeated int64 partitionIDs = 3;  
+  repeated int64 partitionIDs = 3;
 }
 
 message WatchDmChannelsRequest {
@@ -198,11 +233,11 @@ message SegmentLoadInfo {
   repeated data.FieldBinlog statslogs = 8;
   repeated data.FieldBinlog deltalogs = 9;
   repeated int64 compactionFrom = 10; // segmentIDs compacted from
-  repeated VecFieldIndexInfo index_infos = 11;
+  repeated FieldIndexInfo index_infos = 11;
   int64 segment_size = 12;
 }
 
-message VecFieldIndexInfo {
+message FieldIndexInfo {
   int64 fieldID =1;
   bool enable_index = 2;
   string index_name = 3;
@@ -231,6 +266,18 @@ message ReleaseSegmentsRequest {
   int64 collectionID = 4;
   repeated int64 partitionIDs = 5;
   repeated int64 segmentIDs = 6;
+}
+
+message SearchRequest {
+  internal.SearchRequest req = 1;
+  string dml_channel = 2;
+  repeated int64 segmentIDs = 3;
+}
+
+message QueryRequest {
+  internal.RetrieveRequest req = 1;
+  string dml_channel = 2;
+  repeated int64 segmentIDs = 3;
 }
 
 //----------------request auto triggered by QueryCoord-----------------
@@ -305,7 +352,7 @@ message SegmentInfo {
   repeated int64 compactionFrom = 10;
   bool createdByCompaction = 11;
   common.SegmentState segment_state = 12;
-  repeated VecFieldIndexInfo index_infos = 13;
+  repeated FieldIndexInfo index_infos = 13;
   repeated int64 replica_ids = 14;
   repeated int64 node_ids = 15;
 }
@@ -319,6 +366,24 @@ message CollectionInfo {
   repeated int64 released_partitionIDs = 6;
   int64 inMemory_percentage = 7;
   repeated int64 replica_ids = 8;
+  int32 replica_number = 9;
+}
+
+message ReplicaInfo {    // ReplicaGroup
+  int64 replicaID = 1;
+  int64 collectionID = 2;
+  repeated int64 partition_ids = 3;    // empty indicates to load collection
+  repeated ShardReplica shard_replicas = 4;
+  repeated int64 node_ids = 5; // include leaders
+}
+
+message ShardReplica {
+    int64 leaderID = 1;
+    string leader_addr = 2; // IP:port
+    string dm_channel_name = 3;
+    // optional, DO NOT save it in meta, set it only for GetReplicas()
+    // if with_shard_nodes is true
+    repeated int64 node_ids = 4; 
 }
 
 message UnsubscribeChannels {
@@ -344,15 +409,3 @@ message SealedSegmentsChangeInfo {
   repeated SegmentChangeInfo infos = 2;
 }
 
-message ReplicaInfo {    // ReplicaGroup
-  int64 replica_id = 1;
-  int64 collection_id = 2;
-  repeated int64 partition_ids = 3;    // empty indicates to load collection
-  repeated ShardReplica shard_replicas = 4;
-}
-
-message ShardReplica {
-    int64 leader = 1;
-    string dm_channel_name = 2;
-    repeated int64 node_ids = 3;    // include leader
-}

@@ -317,8 +317,11 @@ func TestDataNode(t *testing.T) {
 	})
 
 	t.Run("Test Import", func(t *testing.T) {
-		req := &datapb.ImportTask{
-			CollectionName: "dummy",
+		req := &datapb.ImportTaskRequest{
+			ImportTask: &datapb.ImportTask{
+				CollectionId: 100,
+				PartitionId:  100,
+			},
 		}
 		stat, err := node.Import(node.ctx, req)
 		assert.NoError(t, err)

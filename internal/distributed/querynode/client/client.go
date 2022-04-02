@@ -20,6 +20,8 @@ import (
 	"context"
 	"fmt"
 
+	"google.golang.org/grpc"
+
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
@@ -28,7 +30,6 @@ import (
 	"github.com/milvus-io/milvus/internal/util/grpcclient"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	"google.golang.org/grpc"
 )
 
 var ClientParams paramtable.GrpcClientConfig
@@ -239,6 +240,34 @@ func (c *Client) ReleaseSegments(ctx context.Context, req *querypb.ReleaseSegmen
 		return nil, err
 	}
 	return ret.(*commonpb.Status), err
+}
+
+// Search performs replica search tasks in QueryNode.
+func (c *Client) Search(ctx context.Context, req *querypb.SearchRequest) (*internalpb.SearchResults, error) {
+	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(querypb.QueryNodeClient).Search(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*internalpb.SearchResults), err
+}
+
+// Query performs replica query tasks in QueryNode.
+func (c *Client) Query(ctx context.Context, req *querypb.QueryRequest) (*internalpb.RetrieveResults, error) {
+	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(querypb.QueryNodeClient).Query(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*internalpb.RetrieveResults), err
 }
 
 // GetSegmentInfo gets the information of the specified segments in QueryNode.

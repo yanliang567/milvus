@@ -464,7 +464,7 @@ func TestSegmentLoader_testLoadSealedSegmentWithIndex(t *testing.T) {
 	// generate index file for segment
 	indexPaths, err := generateIndex(segmentID)
 	assert.NoError(t, err)
-	indexInfo := &querypb.VecFieldIndexInfo{
+	indexInfo := &querypb.FieldIndexInfo{
 		FieldID:        simpleVecField.id,
 		EnableIndex:    true,
 		IndexName:      indexName,
@@ -493,7 +493,7 @@ func TestSegmentLoader_testLoadSealedSegmentWithIndex(t *testing.T) {
 				PartitionID:  defaultPartitionID,
 				CollectionID: defaultCollectionID,
 				BinlogPaths:  fieldBinlog,
-				IndexInfos:   []*querypb.VecFieldIndexInfo{indexInfo},
+				IndexInfos:   []*querypb.FieldIndexInfo{indexInfo},
 			},
 		},
 	}
@@ -503,7 +503,7 @@ func TestSegmentLoader_testLoadSealedSegmentWithIndex(t *testing.T) {
 
 	segment, err := node.historical.replica.getSegmentByID(segmentID)
 	assert.NoError(t, err)
-	vecFieldInfo, err := segment.getVectorFieldInfo(simpleVecField.id)
+	vecFieldInfo, err := segment.getIndexedFieldInfo(simpleVecField.id)
 	assert.NoError(t, err)
 	assert.NotNil(t, vecFieldInfo)
 	assert.Equal(t, true, vecFieldInfo.indexInfo.EnableIndex)
@@ -586,8 +586,8 @@ func testConsumingDeltaMsg(ctx context.Context, t *testing.T, position *msgstrea
 	msgChan := make(chan *msgstream.MsgPack)
 	go func() {
 		msgChan <- nil
-		deleteMsg1 := genDeleteMsg(int64(1), defaultCollectionID+1)
-		deleteMsg2 := genDeleteMsg(int64(1), defaultCollectionID)
+		deleteMsg1 := genDeleteMsg(int64(1), defaultCollectionID+1, schemapb.DataType_Int64)
+		deleteMsg2 := genDeleteMsg(int64(1), defaultCollectionID, schemapb.DataType_Int64)
 		msgChan <- &msgstream.MsgPack{Msgs: []msgstream.TsMsg{deleteMsg1, deleteMsg2}}
 	}()
 

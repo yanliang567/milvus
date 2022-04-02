@@ -18,6 +18,7 @@ package querynode
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"go.uber.org/zap"
@@ -552,6 +553,16 @@ func filterSegmentInfo(segmentInfos []*queryPb.SegmentInfo, segmentIDs map[int64
 func (node *QueryNode) isHealthy() bool {
 	code := node.stateCode.Load().(internalpb.StateCode)
 	return code == internalpb.StateCode_Healthy
+}
+
+// Search performs replica search tasks.
+func (node *QueryNode) Search(ctx context.Context, req *queryPb.SearchRequest) (*internalpb.SearchResults, error) {
+	return nil, errors.New("not implemented")
+}
+
+// Query performs replica query tasks.
+func (node *QueryNode) Query(ctx context.Context, req *queryPb.QueryRequest) (*internalpb.RetrieveResults, error) {
+	return nil, errors.New("not implemented")
 }
 
 // GetMetrics return system infos of the query node, such as total memory, memory usage, cpu usage ...

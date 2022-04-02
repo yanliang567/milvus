@@ -883,9 +883,8 @@ func (node *Proxy) ShowCollections(ctx context.Context, request *milvuspb.ShowCo
 		zap.String("DbName", request.DbName),
 		zap.Uint64("TimeStamp", request.TimeStamp),
 		zap.String("ShowType", request.Type.String()),
-		zap.Any("CollectionNames", request.CollectionNames),
-		zap.Any("result", sct.result),
-	)
+		zap.Int("len(CollectionNames)", len(request.CollectionNames)),
+		zap.Int("num_collections", len(sct.result.CollectionNames)))
 
 	metrics.ProxyDDLFunctionCall.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.ProxyID, 10), method, metrics.SuccessLabel).Inc()
 	metrics.ProxyDDLReqLatency.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.ProxyID, 10), method).Observe(float64(tr.ElapseSpan().Milliseconds()))
@@ -2298,17 +2297,10 @@ func (node *Proxy) Delete(ctx context.Context, request *milvuspb.DeleteRequest) 
 	method := "Delete"
 	tr := timerecord.NewTimeRecorder(method)
 
-	deleteReq := &milvuspb.DeleteRequest{
-		DbName:         request.DbName,
-		CollectionName: request.CollectionName,
-		PartitionName:  request.PartitionName,
-		Expr:           request.Expr,
-	}
-
 	dt := &deleteTask{
-		ctx:       ctx,
-		Condition: NewTaskCondition(ctx),
-		req:       deleteReq,
+		ctx:        ctx,
+		Condition:  NewTaskCondition(ctx),
+		deleteExpr: request.Expr,
 		BaseDeleteTask: BaseDeleteTask{
 			BaseMsg: msgstream.BaseMsg{
 				HashValues: request.HashKeys,
@@ -2318,6 +2310,7 @@ func (node *Proxy) Delete(ctx context.Context, request *milvuspb.DeleteRequest) 
 					MsgType: commonpb.MsgType_Delete,
 					MsgID:   0,
 				},
+				DbName:         request.DbName,
 				CollectionName: request.CollectionName,
 				PartitionName:  request.PartitionName,
 				// RowData: transfer column based request to this

@@ -17,7 +17,9 @@
 package funcutil
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -170,7 +172,7 @@ func GetAttrByKeyFromRepeatedKV(key string, kvs []*commonpb.KeyValuePair) (strin
 		}
 	}
 
-	return "", errors.New("key " + key + " not found")
+	return "", fmt.Errorf("key %s not found", key)
 }
 
 // CheckCtxValid check if the context is valid
@@ -343,4 +345,10 @@ func GetNumRowOfFieldData(fieldData *schemapb.FieldData) (uint64, error) {
 	}
 
 	return fieldNumRows, nil
+}
+
+// ReadBinary read byte slice as receiver.
+func ReadBinary(endian binary.ByteOrder, bs []byte, receiver interface{}) error {
+	buf := bytes.NewReader(bs)
+	return binary.Read(buf, endian, receiver)
 }

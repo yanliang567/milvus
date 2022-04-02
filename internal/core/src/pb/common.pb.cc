@@ -265,7 +265,7 @@ const char descriptor_table_protodef_common_2eproto[] PROTOBUF_SECTION_VARIABLE(
   "ceID\030\004 \001(\003\"7\n\tMsgHeader\022*\n\004base\030\001 \001(\0132\034."
   "milvus.proto.common.MsgBase\"M\n\014DMLMsgHea"
   "der\022*\n\004base\030\001 \001(\0132\034.milvus.proto.common."
-  "MsgBase\022\021\n\tshardName\030\002 \001(\t*\272\004\n\tErrorCode"
+  "MsgBase\022\021\n\tshardName\030\002 \001(\t*\363\004\n\tErrorCode"
   "\022\013\n\007Success\020\000\022\023\n\017UnexpectedError\020\001\022\021\n\rCo"
   "nnectFailed\020\002\022\024\n\020PermissionDenied\020\003\022\027\n\023C"
   "ollectionNotExists\020\004\022\023\n\017IllegalArgument\020"
@@ -279,26 +279,28 @@ const char descriptor_table_protodef_common_2eproto[] PROTOBUF_SECTION_VARIABLE(
   "\n\020CannotDeleteFile\020\024\022\023\n\017BuildIndexError\020"
   "\025\022\020\n\014IllegalNLIST\020\026\022\025\n\021IllegalMetricType"
   "\020\027\022\017\n\013OutOfMemory\020\030\022\021\n\rIndexNotExist\020\031\022\023"
-  "\n\017EmptyCollection\020\032\022\022\n\rDDRequestRace\020\350\007*"
-  "X\n\nIndexState\022\022\n\016IndexStateNone\020\000\022\014\n\010Uni"
-  "ssued\020\001\022\016\n\nInProgress\020\002\022\014\n\010Finished\020\003\022\n\n"
-  "\006Failed\020\004*s\n\014SegmentState\022\024\n\020SegmentStat"
-  "eNone\020\000\022\014\n\010NotExist\020\001\022\013\n\007Growing\020\002\022\n\n\006Se"
-  "aled\020\003\022\013\n\007Flushed\020\004\022\014\n\010Flushing\020\005\022\013\n\007Dro"
-  "pped\020\006*\251\t\n\007MsgType\022\r\n\tUndefined\020\000\022\024\n\020Cre"
-  "ateCollection\020d\022\022\n\016DropCollection\020e\022\021\n\rH"
-  "asCollection\020f\022\026\n\022DescribeCollection\020g\022\023"
-  "\n\017ShowCollections\020h\022\024\n\020GetSystemConfigs\020"
-  "i\022\022\n\016LoadCollection\020j\022\025\n\021ReleaseCollecti"
-  "on\020k\022\017\n\013CreateAlias\020l\022\r\n\tDropAlias\020m\022\016\n\n"
-  "AlterAlias\020n\022\024\n\017CreatePartition\020\310\001\022\022\n\rDr"
-  "opPartition\020\311\001\022\021\n\014HasPartition\020\312\001\022\026\n\021Des"
-  "cribePartition\020\313\001\022\023\n\016ShowPartitions\020\314\001\022\023"
-  "\n\016LoadPartitions\020\315\001\022\026\n\021ReleasePartitions"
-  "\020\316\001\022\021\n\014ShowSegments\020\372\001\022\024\n\017DescribeSegmen"
-  "t\020\373\001\022\021\n\014LoadSegments\020\374\001\022\024\n\017ReleaseSegmen"
-  "ts\020\375\001\022\024\n\017HandoffSegments\020\376\001\022\030\n\023LoadBalan"
-  "ceSegments\020\377\001\022\020\n\013CreateIndex\020\254\002\022\022\n\rDescr"
+  "\n\017EmptyCollection\020\032\022\033\n\027UpdateImportTaskF"
+  "ailure\020\033\022\032\n\026CollectionNameNotFound\020\034\022\022\n\r"
+  "DDRequestRace\020\350\007*X\n\nIndexState\022\022\n\016IndexS"
+  "tateNone\020\000\022\014\n\010Unissued\020\001\022\016\n\nInProgress\020\002"
+  "\022\014\n\010Finished\020\003\022\n\n\006Failed\020\004*s\n\014SegmentSta"
+  "te\022\024\n\020SegmentStateNone\020\000\022\014\n\010NotExist\020\001\022\013"
+  "\n\007Growing\020\002\022\n\n\006Sealed\020\003\022\013\n\007Flushed\020\004\022\014\n\010"
+  "Flushing\020\005\022\013\n\007Dropped\020\006*\300\t\n\007MsgType\022\r\n\tU"
+  "ndefined\020\000\022\024\n\020CreateCollection\020d\022\022\n\016Drop"
+  "Collection\020e\022\021\n\rHasCollection\020f\022\026\n\022Descr"
+  "ibeCollection\020g\022\023\n\017ShowCollections\020h\022\024\n\020"
+  "GetSystemConfigs\020i\022\022\n\016LoadCollection\020j\022\025"
+  "\n\021ReleaseCollection\020k\022\017\n\013CreateAlias\020l\022\r"
+  "\n\tDropAlias\020m\022\016\n\nAlterAlias\020n\022\024\n\017CreateP"
+  "artition\020\310\001\022\022\n\rDropPartition\020\311\001\022\021\n\014HasPa"
+  "rtition\020\312\001\022\026\n\021DescribePartition\020\313\001\022\023\n\016Sh"
+  "owPartitions\020\314\001\022\023\n\016LoadPartitions\020\315\001\022\026\n\021"
+  "ReleasePartitions\020\316\001\022\021\n\014ShowSegments\020\372\001\022"
+  "\024\n\017DescribeSegment\020\373\001\022\021\n\014LoadSegments\020\374\001"
+  "\022\024\n\017ReleaseSegments\020\375\001\022\024\n\017HandoffSegment"
+  "s\020\376\001\022\030\n\023LoadBalanceSegments\020\377\001\022\025\n\020Descri"
+  "beSegments\020\200\002\022\020\n\013CreateIndex\020\254\002\022\022\n\rDescr"
   "ibeIndex\020\255\002\022\016\n\tDropIndex\020\256\002\022\013\n\006Insert\020\220\003"
   "\022\013\n\006Delete\020\221\003\022\n\n\005Flush\020\222\003\022\013\n\006Search\020\364\003\022\021"
   "\n\014SearchResult\020\365\003\022\022\n\rGetIndexState\020\366\003\022\032\n"
@@ -343,7 +345,7 @@ static ::PROTOBUF_NAMESPACE_ID::internal::SCCInfoBase*const descriptor_table_com
 static ::PROTOBUF_NAMESPACE_ID::internal::once_flag descriptor_table_common_2eproto_once;
 static bool descriptor_table_common_2eproto_initialized = false;
 const ::PROTOBUF_NAMESPACE_ID::internal::DescriptorTable descriptor_table_common_2eproto = {
-  &descriptor_table_common_2eproto_initialized, descriptor_table_protodef_common_2eproto, "common.proto", 2927,
+  &descriptor_table_common_2eproto_initialized, descriptor_table_protodef_common_2eproto, "common.proto", 3007,
   &descriptor_table_common_2eproto_once, descriptor_table_common_2eproto_sccs, descriptor_table_common_2eproto_deps, 8, 0,
   schemas, file_default_instances, TableStruct_common_2eproto::offsets,
   file_level_metadata_common_2eproto, 8, file_level_enum_descriptors_common_2eproto, file_level_service_descriptors_common_2eproto,
@@ -386,6 +388,8 @@ bool ErrorCode_IsValid(int value) {
     case 24:
     case 25:
     case 26:
+    case 27:
+    case 28:
     case 1000:
       return true;
     default:
@@ -460,6 +464,7 @@ bool MsgType_IsValid(int value) {
     case 253:
     case 254:
     case 255:
+    case 256:
     case 300:
     case 301:
     case 302:

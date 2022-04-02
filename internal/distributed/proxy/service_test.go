@@ -186,6 +186,10 @@ func (m *MockRootCoord) ShowSegments(ctx context.Context, req *milvuspb.ShowSegm
 	return nil, nil
 }
 
+func (m *MockRootCoord) DescribeSegments(ctx context.Context, req *rootcoordpb.DescribeSegmentsRequest) (*rootcoordpb.DescribeSegmentsResponse, error) {
+	return nil, nil
+}
+
 func (m *MockRootCoord) ReleaseDQLMessageStream(ctx context.Context, in *proxypb.ReleaseDQLMessageStreamRequest) (*commonpb.Status, error) {
 	return nil, nil
 }
@@ -356,6 +360,14 @@ func (m *MockQueryCoord) GetMetrics(ctx context.Context, req *milvuspb.GetMetric
 	return nil, nil
 }
 
+func (m *MockQueryCoord) GetReplicas(ctx context.Context, req *querypb.GetReplicasRequest) (*querypb.GetReplicasResponse, error) {
+	return nil, nil
+}
+
+func (m *MockQueryCoord) GetShardLeaders(ctx context.Context, req *querypb.GetShardLeadersRequest) (*querypb.GetShardLeadersResponse, error) {
+	return nil, nil
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 type MockDataCoord struct {
 	MockBase
@@ -458,7 +470,7 @@ func (m *MockDataCoord) DropVirtualChannel(ctx context.Context, req *datapb.Drop
 	return &datapb.DropVirtualChannelResponse{}, nil
 }
 
-func (m *MockDataCoord) Import(ctx context.Context, req *datapb.ImportTask) (*datapb.ImportTaskResponse, error) {
+func (m *MockDataCoord) Import(ctx context.Context, req *datapb.ImportTaskRequest) (*datapb.ImportTaskResponse, error) {
 	return nil, nil
 }
 

@@ -16,6 +16,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <index/ScalarIndex.h>
 
 #include "FieldIndexing.h"
 #include "common/Schema.h"
@@ -74,10 +75,10 @@ class SegmentInternalInterface : public SegmentInterface {
     }
 
     template <typename T>
-    const knowhere::scalar::StructuredIndex<T>&
+    const scalar::ScalarIndex<T>&
     chunk_scalar_index(FieldOffset field_offset, int64_t chunk_id) const {
         static_assert(IsScalar<T>);
-        using IndexType = knowhere::scalar::StructuredIndex<T>;
+        using IndexType = scalar::ScalarIndex<T>;
         auto base_ptr = chunk_index_impl(field_offset, chunk_id);
         auto ptr = dynamic_cast<const IndexType*>(base_ptr);
         AssertInfo(ptr, "entry mismatch");
@@ -138,6 +139,9 @@ class SegmentInternalInterface : public SegmentInterface {
     virtual std::vector<SegOffset>
     search_ids(const BitsetView& view, Timestamp timestamp) const = 0;
 
+    virtual std::pair<std::unique_ptr<IdArray>, std::vector<SegOffset>>
+    search_ids(const IdArray& id_array, Timestamp timestamp) const = 0;
+
  protected:
     // internal API: return chunk_data in span
     virtual SpanBase
@@ -160,9 +164,6 @@ class SegmentInternalInterface : public SegmentInterface {
     // TODO: remove this hack when transfer is done
     virtual std::unique_ptr<DataArray>
     BulkSubScript(FieldOffset field_offset, const SegOffset* seg_offsets, int64_t count) const;
-
-    virtual std::pair<std::unique_ptr<IdArray>, std::vector<SegOffset>>
-    search_ids(const IdArray& id_array, Timestamp timestamp) const = 0;
 
     virtual void
     check_search(const query::Plan* plan) const = 0;

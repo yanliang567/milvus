@@ -196,7 +196,7 @@ func (c *mockDataNodeClient) Compaction(ctx context.Context, req *datapb.Compact
 	return &commonpb.Status{ErrorCode: commonpb.ErrorCode_UnexpectedError, Reason: "not implemented"}, nil
 }
 
-func (c *mockDataNodeClient) Import(ctx context.Context, in *datapb.ImportTask) (*commonpb.Status, error) {
+func (c *mockDataNodeClient) Import(ctx context.Context, in *datapb.ImportTaskRequest) (*commonpb.Status, error) {
 	return &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success}, nil
 }
 
@@ -381,6 +381,10 @@ func (m *mockRootCoordService) DescribeSegment(ctx context.Context, req *milvusp
 
 func (m *mockRootCoordService) ShowSegments(ctx context.Context, req *milvuspb.ShowSegmentsRequest) (*milvuspb.ShowSegmentsResponse, error) {
 	panic("not implemented") // TODO: Implement
+}
+
+func (m *mockRootCoordService) DescribeSegments(ctx context.Context, req *rootcoordpb.DescribeSegmentsRequest) (*rootcoordpb.DescribeSegmentsResponse, error) {
+	panic("implement me")
 }
 
 func (m *mockRootCoordService) GetDdChannel(ctx context.Context) (*milvuspb.StringResponse, error) {

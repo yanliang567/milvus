@@ -19,6 +19,8 @@ package types
 import (
 	"context"
 
+	clientv3 "go.etcd.io/etcd/client/v3"
+
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
@@ -29,7 +31,6 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 // TimeTickProvider is the interface all services implement
@@ -76,7 +77,7 @@ type DataNode interface {
 	//
 	// Return status indicates if this operation is processed successfully or fail cause;
 	// error is always nil
-	Import(ctx context.Context, req *datapb.ImportTask) (*commonpb.Status, error)
+	Import(ctx context.Context, req *datapb.ImportTaskRequest) (*commonpb.Status, error)
 }
 
 // DataNodeComponent is used by grpc server of DataNode
@@ -274,7 +275,7 @@ type DataCoord interface {
 	// The `Status` in response struct `ImportResponse` indicates if this operation is processed successfully or fail cause;
 	// the `tasks` in `ImportResponse` return an id list of tasks.
 	// error is always nil
-	Import(ctx context.Context, req *datapb.ImportTask) (*datapb.ImportTaskResponse, error)
+	Import(ctx context.Context, req *datapb.ImportTaskRequest) (*datapb.ImportTaskResponse, error)
 }
 
 // DataCoordComponent defines the interface of DataCoord component.
@@ -568,6 +569,8 @@ type RootCoord interface {
 	// `SegmentIDs` in `ShowSegmentsResponse` records all segment ids.
 	// error is always nil
 	ShowSegments(ctx context.Context, req *milvuspb.ShowSegmentsRequest) (*milvuspb.ShowSegmentsResponse, error)
+
+	DescribeSegments(ctx context.Context, in *rootcoordpb.DescribeSegmentsRequest) (*rootcoordpb.DescribeSegmentsResponse, error)
 
 	// ReleaseDQLMessageStream notifies RootCoord to release and close the search message stream of specific collection.
 	//
@@ -1130,6 +1133,9 @@ type QueryNode interface {
 	ReleaseSegments(ctx context.Context, req *querypb.ReleaseSegmentsRequest) (*commonpb.Status, error)
 	GetSegmentInfo(ctx context.Context, req *querypb.GetSegmentInfoRequest) (*querypb.GetSegmentInfoResponse, error)
 
+	Search(ctx context.Context, req *querypb.SearchRequest) (*internalpb.SearchResults, error)
+	Query(ctx context.Context, req *querypb.QueryRequest) (*internalpb.RetrieveResults, error)
+
 	// GetMetrics gets the metrics about QueryNode.
 	GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error)
 }
@@ -1163,6 +1169,9 @@ type QueryCoord interface {
 	LoadBalance(ctx context.Context, req *querypb.LoadBalanceRequest) (*commonpb.Status, error)
 
 	GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error)
+
+	GetReplicas(ctx context.Context, req *querypb.GetReplicasRequest) (*querypb.GetReplicasResponse, error)
+	GetShardLeaders(ctx context.Context, req *querypb.GetShardLeadersRequest) (*querypb.GetShardLeadersResponse, error)
 }
 
 // QueryCoordComponent is used by grpc server of QueryCoord

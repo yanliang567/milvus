@@ -19,6 +19,7 @@ package datacoord
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -434,14 +435,11 @@ func (s *Server) DropVirtualChannel(ctx context.Context, req *datapb.DropVirtual
 	}
 
 	log.Info("DropVChannel plan to remove", zap.String("channel", channel))
-	err = s.channelManager.RemoveChannel(channel)
+	err = s.channelManager.Release(nodeID, channel)
 	if err != nil {
-		log.Warn("DropVChannel failed to RemoveChannel", zap.String("channel", channel), zap.Error(err))
+		log.Warn("DropVChannel failed to ReleaseAndRemove", zap.String("channel", channel), zap.Error(err))
 	}
 	s.segmentManager.DropSegmentsOfChannel(ctx, channel)
-
-	// clean up removal flag
-	s.meta.FinishRemoveChannel(channel)
 
 	// no compaction triggerred in Drop procedure
 	resp.Status.ErrorCode = commonpb.ErrorCode_Success
@@ -963,8 +961,8 @@ func (s *Server) GetFlushState(ctx context.Context, req *milvuspb.GetFlushStateR
 }
 
 // Import data files(json, numpy, etc.) on MinIO/S3 storage, read and parse them into sealed segments
-func (s *Server) Import(ctx context.Context, req *datapb.ImportTask) (*datapb.ImportTaskResponse, error) {
-	log.Info("receive import request")
+func (s *Server) Import(ctx context.Context, itr *datapb.ImportTaskRequest) (*datapb.ImportTaskResponse, error) {
+	log.Info("receive import request", zap.Any("import task request", itr))
 	resp := &datapb.ImportTaskResponse{
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
@@ -972,11 +970,49 @@ func (s *Server) Import(ctx context.Context, req *datapb.ImportTask) (*datapb.Im
 	}
 
 	if s.isClosed() {
-		log.Warn("failed to import because of closed server", zap.String("collectionName", req.GetCollectionName()))
+		log.Warn("failed to import because of closed server", zap.Any("import task request", itr))
 		resp.Status.Reason = msgDataCoordIsUnhealthy(Params.DataCoordCfg.NodeID)
 		return resp, nil
 	}
 
+	workingNodes := itr.WorkingNodes
+	nodes := s.channelManager.store.GetNodes()
+	if len(nodes) == 0 {
+		log.Error("import failed as all dataNodes are offline", zap.Any("import task request", itr))
+		return resp, nil
+	}
+	avaNodes := getDiff(nodes, workingNodes)
+	if len(avaNodes) > 0 {
+		// If there exists available DataNodes, pick one at random.
+		dnID := avaNodes[rand.Intn(len(avaNodes))]
+		log.Info("picking a free dataNode",
+			zap.Any("all dataNodes", nodes),
+			zap.Int64("picking free dataNode with ID", dnID))
+		s.cluster.Import(ctx, dnID, itr)
+	} else {
+		// No DataNodes are available, choose a still working DataNode randomly.
+		dnID := nodes[rand.Intn(len(nodes))]
+		log.Info("all dataNodes are busy, picking a random dataNode still",
+			zap.Any("all dataNodes", nodes),
+			zap.Int64("picking dataNode with ID", dnID))
+		s.cluster.Import(ctx, dnID, itr)
+	}
+
 	resp.Status.ErrorCode = commonpb.ErrorCode_Success
 	return resp, nil
+}
+
+// getDiff returns the difference of base and remove. i.e. all items that are in `base` but not in `remove`.
+func getDiff(base, remove []int64) []int64 {
+	mb := make(map[int64]struct{}, len(remove))
+	for _, x := range remove {
+		mb[x] = struct{}{}
+	}
+	var diff []int64
+	for _, x := range base {
+		if _, found := mb[x]; !found {
+			diff = append(diff, x)
+		}
+	}
+	return diff
 }

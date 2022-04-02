@@ -34,20 +34,22 @@ import (
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 type MockQueryCoord struct {
-	states       *internalpb.ComponentStates
-	status       *commonpb.Status
-	err          error
-	initErr      error
-	startErr     error
-	stopErr      error
-	regErr       error
-	strResp      *milvuspb.StringResponse
-	showcolResp  *querypb.ShowCollectionsResponse
-	showpartResp *querypb.ShowPartitionsResponse
-	partResp     *querypb.GetPartitionStatesResponse
-	channelResp  *querypb.CreateQueryChannelResponse
-	infoResp     *querypb.GetSegmentInfoResponse
-	metricResp   *milvuspb.GetMetricsResponse
+	states           *internalpb.ComponentStates
+	status           *commonpb.Status
+	err              error
+	initErr          error
+	startErr         error
+	stopErr          error
+	regErr           error
+	strResp          *milvuspb.StringResponse
+	showcolResp      *querypb.ShowCollectionsResponse
+	showpartResp     *querypb.ShowPartitionsResponse
+	partResp         *querypb.GetPartitionStatesResponse
+	channelResp      *querypb.CreateQueryChannelResponse
+	infoResp         *querypb.GetSegmentInfoResponse
+	metricResp       *milvuspb.GetMetricsResponse
+	replicasResp     *querypb.GetReplicasResponse
+	shardLeadersResp *querypb.GetShardLeadersResponse
 }
 
 func (m *MockQueryCoord) Init() error {
@@ -140,6 +142,14 @@ func (m *MockQueryCoord) LoadBalance(ctx context.Context, req *querypb.LoadBalan
 
 func (m *MockQueryCoord) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
 	return m.metricResp, m.err
+}
+
+func (m *MockQueryCoord) GetReplicas(ctx context.Context, req *querypb.GetReplicasRequest) (*querypb.GetReplicasResponse, error) {
+	return m.replicasResp, m.err
+}
+
+func (m *MockQueryCoord) GetShardLeaders(ctx context.Context, req *querypb.GetShardLeadersRequest) (*querypb.GetShardLeadersResponse, error) {
+	return m.shardLeadersResp, m.err
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
