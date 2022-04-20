@@ -313,7 +313,7 @@ func (node *DataNode) handleWatchInfo(e *event, key string, data []byte) {
 		}
 
 		if isEndWatchState(watchInfo.State) {
-			log.Warn("DataNode received a PUT event with an end State", zap.String("state", watchInfo.State.String()))
+			log.Debug("DataNode received a PUT event with an end State", zap.String("state", watchInfo.State.String()))
 			return
 		}
 
@@ -328,14 +328,13 @@ func (node *DataNode) handleWatchInfo(e *event, key string, data []byte) {
 	actualManager, loaded := node.eventManagerMap.LoadOrStore(e.vChanName, newChannelEventManager(
 		node.handlePutEvent, node.handleDeleteEvent, retryWatchInterval,
 	))
-
 	if !loaded {
 		actualManager.(*channelEventManager).Run()
 	}
 
 	actualManager.(*channelEventManager).handleEvent(*e)
 
-	// Whenever a delete event comes, this eventManger will be removed from map
+	// Whenever a delete event comes, this eventManager will be removed from map
 	if e.eventType == deleteEventType {
 		if m, loaded := node.eventManagerMap.LoadAndDelete(e.vChanName); loaded {
 			m.(*channelEventManager).Close()
@@ -371,29 +370,15 @@ func (node *DataNode) handlePutEvent(watchInfo *datapb.ChannelWatchInfo, version
 		if err := node.flowgraphManager.addAndStart(node, watchInfo.GetVchan()); err != nil {
 			return fmt.Errorf("fail to add and start flowgraph for vChanName: %s, err: %v", vChanName, err)
 		}
-		log.Info("handle put event: new data sync service success", zap.String("vChanName", vChanName))
-		defer func() {
-			if err != nil {
-				node.releaseFlowgraph(vChanName)
-			}
-		}()
+
+		log.Debug("handle put event: new data sync service success", zap.String("vChanName", vChanName))
 		watchInfo.State = datapb.ChannelWatchState_WatchSuccess
 
 	case datapb.ChannelWatchState_ToRelease:
-		success := true
-		func() {
-			defer func() {
-				if x := recover(); x != nil {
-					log.Error("release flowgraph panic", zap.Any("recovered", x))
-					success = false
-				}
-			}()
-			node.releaseFlowgraph(vChanName)
-		}()
-		if !success {
-			watchInfo.State = datapb.ChannelWatchState_ReleaseFailure
-		} else {
+		if node.tryToReleaseFlowgraph(vChanName) {
 			watchInfo.State = datapb.ChannelWatchState_ReleaseSuccess
+		} else {
+			watchInfo.State = datapb.ChannelWatchState_ReleaseFailure
 		}
 	}
 
@@ -403,8 +388,8 @@ func (node *DataNode) handlePutEvent(watchInfo *datapb.ChannelWatchInfo, version
 	}
 
 	k := path.Join(Params.DataNodeCfg.ChannelWatchSubPath, fmt.Sprintf("%d", node.NodeID), vChanName)
-	log.Info("handle put event: try to save result state", zap.String("key", k), zap.String("state", watchInfo.State.String()))
 
+	log.Debug("handle put event: try to save result state", zap.String("key", k), zap.String("state", watchInfo.State.String()))
 	err = node.watchKv.CompareVersionAndSwap(k, version, string(v))
 	if err != nil {
 		return fmt.Errorf("fail to update watch state to etcd, vChanName: %s, state: %s, err: %w", vChanName, watchInfo.State.String(), err)
@@ -412,22 +397,33 @@ func (node *DataNode) handlePutEvent(watchInfo *datapb.ChannelWatchInfo, version
 	return nil
 }
 
-func (node *DataNode) handleDeleteEvent(vChanName string) {
-	node.releaseFlowgraph(vChanName)
+func (node *DataNode) handleDeleteEvent(vChanName string) bool {
+	return node.tryToReleaseFlowgraph(vChanName)
 }
 
-func (node *DataNode) releaseFlowgraph(vChanName string) {
+// tryToReleaseFlowgraph tries to release a flowgraph, returns false if failed
+func (node *DataNode) tryToReleaseFlowgraph(vChanName string) bool {
+	success := true
+	defer func() {
+		if x := recover(); x != nil {
+			log.Error("release flowgraph panic", zap.String("vChanName", vChanName), zap.Any("recovered", x))
+			success = false
+		}
+	}()
 	node.flowgraphManager.release(vChanName)
+	log.Info("try to release flowgraph success", zap.String("vChanName", vChanName))
+	return success
 }
 
 // BackGroundGC runs in background to release datanode resources
+// GOOSE TODO: remove background GC, using ToRelease for drop-collection after #15846
 func (node *DataNode) BackGroundGC(vChannelCh <-chan string) {
 	log.Info("DataNode Background GC Start")
 	for {
 		select {
 		case vchanName := <-vChannelCh:
 			log.Info("GC flowgraph", zap.String("vChanName", vchanName))
-			node.releaseFlowgraph(vchanName)
+			node.tryToReleaseFlowgraph(vchanName)
 		case <-node.ctx.Done():
 			log.Warn("DataNode context done, exiting background GC")
 			return
@@ -820,8 +816,28 @@ func (node *DataNode) Import(ctx context.Context, req *datapb.ImportTaskRequest)
 		}, nil
 	}
 	idAllocator, err := allocator2.NewIDAllocator(node.ctx, node.rootCoord, Params.DataNodeCfg.NodeID)
-	importWrapper := importutil.NewImportWrapper(ctx, schema, 2, Params.DataNodeCfg.FlushInsertBufferSize/(1024*1024), idAllocator, node.chunkManager, importFlushReqFunc(node, req, schema, ts))
+	importResult := &rootcoordpb.ImportResult{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+		},
+		TaskId:     req.GetImportTask().TaskId,
+		DatanodeId: node.NodeID,
+		State:      commonpb.ImportState_ImportPersisted,
+		Segments:   make([]int64, 0),
+		RowCount:   0,
+	}
+	importWrapper := importutil.NewImportWrapper(ctx, schema, 2, Params.DataNodeCfg.FlushInsertBufferSize, idAllocator, node.chunkManager,
+		importFlushReqFunc(node, req, importResult, schema, ts))
 	err = importWrapper.Import(req.GetImportTask().GetFiles(), req.GetImportTask().GetRowBased(), false)
+	if err != nil {
+		return &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_UnexpectedError,
+			Reason:    err.Error(),
+		}, nil
+	}
+
+	// report root coord that the import task has been finished
+	_, err = node.rootCoord.ReportImport(ctx, importResult)
 	if err != nil {
 		return &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
@@ -835,16 +851,23 @@ func (node *DataNode) Import(ctx context.Context, req *datapb.ImportTaskRequest)
 	return resp, nil
 }
 
-type importFlushFunc func(fields map[storage.FieldID]storage.FieldData) error
-
-func importFlushReqFunc(node *DataNode, req *datapb.ImportTaskRequest, schema *schemapb.CollectionSchema, ts Timestamp) importFlushFunc {
-	return func(fields map[storage.FieldID]storage.FieldData) error {
+func importFlushReqFunc(node *DataNode, req *datapb.ImportTaskRequest, res *rootcoordpb.ImportResult, schema *schemapb.CollectionSchema, ts Timestamp) importutil.ImportFlushFunc {
+	return func(fields map[storage.FieldID]storage.FieldData, shardNum int) error {
+		if shardNum >= len(req.GetImportTask().GetChannelNames()) {
+			log.Error("import task returns invalid shard number",
+				zap.Int("# of shards", shardNum),
+				zap.Int("# of channels", len(req.GetImportTask().GetChannelNames())),
+				zap.Any("channel names", req.GetImportTask().GetChannelNames()),
+			)
+			return fmt.Errorf("syncSegmentID Failed: invalid shard number %d", shardNum)
+		}
+		log.Info("import task flush segment", zap.Any("ChannelNames", req.ImportTask.ChannelNames), zap.Int("shardNum", shardNum))
 		segReqs := []*datapb.SegmentIDRequest{
 			{
-				ChannelName:  "test-channel",
+				ChannelName:  req.ImportTask.ChannelNames[shardNum],
 				Count:        1,
 				CollectionID: req.GetImportTask().GetCollectionId(),
-				PartitionID:  req.GetImportTask().GetCollectionId(),
+				PartitionID:  req.GetImportTask().GetPartitionId(),
 			},
 		}
 		segmentIDReq := &datapb.AssignSegmentIDRequest{
@@ -884,6 +907,15 @@ func importFlushReqFunc(node *DataNode, req *datapb.ImportTaskRequest, schema *s
 			}
 		}
 		fields[common.RowIDField] = fields[pkFieldID]
+		if status, _ := node.dataCoord.UpdateSegmentStatistics(context.TODO(), &datapb.UpdateSegmentStatisticsRequest{
+			Stats: []*datapb.SegmentStats{{
+				SegmentID: segmentID,
+				NumRows:   int64(rowNum),
+			}},
+		}); status.GetErrorCode() != commonpb.ErrorCode_Success {
+			// TODO: reportImport the failure.
+			return fmt.Errorf(status.GetReason())
+		}
 
 		data := BufferData{buffer: &InsertData{
 			Data: fields,
@@ -985,6 +1017,7 @@ func importFlushReqFunc(node *DataNode, req *datapb.ImportTaskRequest, schema *s
 			Field2BinlogPaths:   fieldInsert,
 			Field2StatslogPaths: fieldStats,
 			Importing:           true,
+			Flushed:             true,
 		}
 
 		err = retry.Do(context.Background(), func() error {
@@ -1005,7 +1038,9 @@ func importFlushReqFunc(node *DataNode, req *datapb.ImportTaskRequest, schema *s
 			return err
 		}
 
+		log.Info("segment imported and persisted", zap.Int64("segmentID", segmentID))
+		res.Segments = append(res.Segments, segmentID)
+		res.RowCount += int64(rowNum)
 		return nil
 	}
-
 }

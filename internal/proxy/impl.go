@@ -23,12 +23,15 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/milvus-io/milvus/internal/util"
+
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
+
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
@@ -142,8 +145,8 @@ func (node *Proxy) ReleaseDQLMessageStream(ctx context.Context, request *proxypb
 	}, nil
 }
 
-// TODO(dragondriver): add more detailed ut for ConsistencyLevel, should we support multiple consistency level in Proxy?
 // CreateCollection create a collection by the schema.
+// TODO(dragondriver): add more detailed ut for ConsistencyLevel, should we support multiple consistency level in Proxy?
 func (node *Proxy) CreateCollection(ctx context.Context, request *milvuspb.CreateCollectionRequest) (*commonpb.Status, error) {
 	if !node.checkHealthy() {
 		return unhealthyStatus(), nil
@@ -2397,11 +2400,10 @@ func (node *Proxy) Search(ctx context.Context, request *milvuspb.SearchRequest) 
 			},
 			ResultChannelID: strconv.FormatInt(Params.ProxyCfg.ProxyID, 10),
 		},
-		resultBuf: make(chan []*internalpb.SearchResults, 1),
-		query:     request,
-		chMgr:     node.chMgr,
-		qc:        node.queryCoord,
-		tr:        timerecord.NewTimeRecorder("search"),
+		request:            request,
+		qc:                 node.queryCoord,
+		tr:                 timerecord.NewTimeRecorder("search"),
+		getQueryNodePolicy: defaultGetQueryNodePolicy,
 	}
 
 	travelTs := request.TravelTimestamp
@@ -2514,11 +2516,11 @@ func (node *Proxy) Search(ctx context.Context, request *milvuspb.SearchRequest) 
 	metrics.ProxySearchCount.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.ProxyID, 10),
 		metrics.SearchLabel, metrics.SuccessLabel).Inc()
 	metrics.ProxySearchVectors.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.ProxyID, 10),
-		metrics.SearchLabel).Set(float64(qt.result.Results.NumQueries))
+		metrics.SearchLabel).Set(float64(qt.result.GetResults().GetNumQueries()))
 	searchDur := tr.ElapseSpan().Milliseconds()
 	metrics.ProxySearchLatency.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.ProxyID, 10),
 		metrics.SearchLabel).Observe(float64(searchDur))
-	metrics.ProxySearchLatencyPerNQ.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.ProxyID, 10)).Observe(float64(searchDur) / float64(qt.result.Results.NumQueries))
+	metrics.ProxySearchLatencyPerNQ.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.ProxyID, 10)).Observe(float64(searchDur) / float64(qt.result.GetResults().GetNumQueries()))
 	return qt.result, nil
 }
 
@@ -2639,10 +2641,10 @@ func (node *Proxy) Query(ctx context.Context, request *milvuspb.QueryRequest) (*
 			},
 			ResultChannelID: strconv.FormatInt(Params.ProxyCfg.ProxyID, 10),
 		},
-		resultBuf: make(chan []*internalpb.RetrieveResults),
-		query:     request,
-		chMgr:     node.chMgr,
-		qc:        node.queryCoord,
+		request:            request,
+		qc:                 node.queryCoord,
+		getQueryNodePolicy: defaultGetQueryNodePolicy,
+		queryShardPolicy:   roundRobinPolicy,
 	}
 
 	method := "Query"
@@ -3056,11 +3058,12 @@ func (node *Proxy) CalcDistance(ctx context.Context, request *milvuspb.CalcDista
 				},
 				ResultChannelID: strconv.FormatInt(Params.ProxyCfg.ProxyID, 10),
 			},
-			resultBuf: make(chan []*internalpb.RetrieveResults),
-			query:     queryRequest,
-			chMgr:     node.chMgr,
-			qc:        node.queryCoord,
-			ids:       ids.IdArray,
+			request: queryRequest,
+			qc:      node.queryCoord,
+			ids:     ids.IdArray,
+
+			getQueryNodePolicy: defaultGetQueryNodePolicy,
+			queryShardPolicy:   roundRobinPolicy,
 		}
 
 		err := node.sched.dqQueue.Enqueue(qt)
@@ -3713,6 +3716,7 @@ func (node *Proxy) RegisterLink(ctx context.Context, req *milvuspb.RegisterLinkR
 	}, nil
 }
 
+// GetMetrics gets the metrics of proxy
 // TODO(dragondriver): cache the Metrics and set a retention to the cache
 func (node *Proxy) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
 	log.Debug("Proxy.GetMetrics",
@@ -3815,6 +3819,13 @@ func (node *Proxy) LoadBalance(ctx context.Context, req *milvuspb.LoadBalanceReq
 	status := &commonpb.Status{
 		ErrorCode: commonpb.ErrorCode_UnexpectedError,
 	}
+
+	collectionID, err := globalMetaCache.GetCollectionID(ctx, req.GetCollectionName())
+	if err != nil {
+		log.Error("failed to get collection id", zap.String("collection name", req.GetCollectionName()), zap.Error(err))
+		status.Reason = err.Error()
+		return status, nil
+	}
 	infoResp, err := node.queryCoord.LoadBalance(ctx, &querypb.LoadBalanceRequest{
 		Base: &commonpb.MsgBase{
 			MsgType:   commonpb.MsgType_LoadBalanceSegments,
@@ -3826,6 +3837,7 @@ func (node *Proxy) LoadBalance(ctx context.Context, req *milvuspb.LoadBalanceReq
 		DstNodeIDs:       req.DstNodeIDs,
 		BalanceReason:    querypb.TriggerCondition_GrpcRequest,
 		SealedSegmentIDs: req.SealedSegmentIDs,
+		CollectionID:     collectionID,
 	})
 	if err != nil {
 		log.Error("Failed to LoadBalance from Query Coordinator",
@@ -3871,6 +3883,7 @@ func (node *Proxy) ManualCompaction(ctx context.Context, req *milvuspb.ManualCom
 	return resp, err
 }
 
+// GetCompactionStateWithPlans returns the compactions states with the given plan ID
 func (node *Proxy) GetCompactionStateWithPlans(ctx context.Context, req *milvuspb.GetCompactionPlansRequest) (*milvuspb.GetCompactionPlansResponse, error) {
 	log.Info("received GetCompactionStateWithPlans request", zap.Int64("compactionID", req.GetCompactionID()))
 	resp := &milvuspb.GetCompactionPlansResponse{}
@@ -3920,7 +3933,9 @@ func unhealthyStatus() *commonpb.Status {
 
 // Import data files(json, numpy, etc.) on MinIO/S3 storage, read and parse them into sealed segments
 func (node *Proxy) Import(ctx context.Context, req *milvuspb.ImportRequest) (*milvuspb.ImportResponse, error) {
-	log.Info("received import request")
+	log.Info("received import request",
+		zap.String("collection name", req.GetCollectionName()),
+		zap.Bool("row-based", req.GetRowBased()))
 	resp := &milvuspb.ImportResponse{
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_Success,
@@ -3943,20 +3958,21 @@ func (node *Proxy) Import(ctx context.Context, req *milvuspb.ImportRequest) (*mi
 	}
 	chNames, err := node.chMgr.getVChannels(collID)
 	if err != nil {
-		log.Error("get vChannels failed",
-			zap.Int64("collection ID", collID),
-			zap.Error(err))
-		resp.Status.ErrorCode = commonpb.ErrorCode_UnexpectedError
-		resp.Status.Reason = err.Error()
-		return resp, err
+		err = node.chMgr.createDMLMsgStream(collID)
+		if err != nil {
+			return nil, err
+		}
+		chNames, err = node.chMgr.getVChannels(collID)
+		if err != nil {
+			return nil, err
+		}
 	}
 	req.ChannelNames = chNames
+	if req.GetPartitionName() == "" {
+		req.PartitionName = Params.CommonCfg.DefaultPartitionName
+	}
 	// Call rootCoord to finish import.
 	resp, err = node.rootCoord.Import(ctx, req)
-	log.Info("received import response",
-		zap.String("collection name", req.GetCollectionName()),
-		zap.Any("resp", resp),
-		zap.Error(err))
 	return resp, err
 }
 
@@ -3974,7 +3990,7 @@ func (node *Proxy) GetReplicas(ctx context.Context, req *milvuspb.GetReplicasReq
 	return resp, err
 }
 
-// Check import task state from datanode
+// GetImportState checks import task state from datanode
 func (node *Proxy) GetImportState(ctx context.Context, req *milvuspb.GetImportStateRequest) (*milvuspb.GetImportStateResponse, error) {
 	log.Info("received get import state request", zap.Int64("taskID", req.GetTask()))
 	resp := &milvuspb.GetImportStateResponse{}
@@ -4165,6 +4181,12 @@ func (node *Proxy) UpdateCredential(ctx context.Context, req *milvuspb.UpdateCre
 
 func (node *Proxy) DeleteCredential(ctx context.Context, req *milvuspb.DeleteCredentialRequest) (*commonpb.Status, error) {
 	log.Debug("DeleteCredential", zap.String("role", typeutil.RootCoordRole), zap.String("username", req.Username))
+	if req.Username == util.UserRoot {
+		return &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_DeleteCredentialFailure,
+			Reason:    "user root cannot be deleted",
+		}, nil
+	}
 	result, err := node.rootCoord.DeleteCredential(ctx, req)
 	if err != nil { // for error like conntext timeout etc.
 		log.Error("delete credential fail", zap.String("username", req.Username), zap.Error(err))
@@ -4193,5 +4215,21 @@ func (node *Proxy) ListCredUsers(ctx context.Context, req *milvuspb.ListCredUser
 			ErrorCode: commonpb.ErrorCode_Success,
 		},
 		Usernames: usernames,
+	}, nil
+}
+
+// SendSearchResult needs to be removed TODO
+func (node *Proxy) SendSearchResult(ctx context.Context, req *internalpb.SearchResults) (*commonpb.Status, error) {
+	return &commonpb.Status{
+		ErrorCode: commonpb.ErrorCode_UnexpectedError,
+		Reason:    "Not implemented",
+	}, nil
+}
+
+// SendRetrieveResult needs to be removed TODO
+func (node *Proxy) SendRetrieveResult(ctx context.Context, req *internalpb.RetrieveResults) (*commonpb.Status, error) {
+	return &commonpb.Status{
+		ErrorCode: commonpb.ErrorCode_UnexpectedError,
+		Reason:    "Not implemented",
 	}, nil
 }

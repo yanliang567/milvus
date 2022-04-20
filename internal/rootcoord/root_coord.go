@@ -29,6 +29,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/util"
+	"github.com/milvus-io/milvus/internal/util/crypto"
+
 	"github.com/milvus-io/milvus/internal/util/dependency"
 
 	"github.com/golang/protobuf/proto"
@@ -1119,6 +1122,13 @@ func (c *Core) Init() error {
 			c.impTaskKv,
 			c.CallImportService,
 		)
+		// init data
+		encryptedRootPassword, _ := crypto.PasswordEncrypt(util.DefaultRootPassword)
+		initError = c.MetaTable.AddCredential(&internalpb.CredentialInfo{Username: util.UserRoot, EncryptedPassword: encryptedRootPassword})
+		if initError != nil {
+			return
+		}
+		log.Debug("RootCoord init user root done")
 	})
 	if initError != nil {
 		log.Debug("RootCoord init error", zap.Error(initError))
@@ -2236,13 +2246,20 @@ func (c *Core) Import(ctx context.Context, req *milvuspb.ImportRequest) (*milvus
 			zap.String("collection name", req.GetCollectionName()))
 		return nil, fmt.Errorf("collection ID not found for collection name %s", req.GetCollectionName())
 	}
+	var pID int64
+	var err error
+	if pID, err = c.MetaTable.getPartitionByName(cID, req.GetPartitionName(), 0); err != nil {
+		return nil, err
+	}
 	log.Info("receive import request",
 		zap.String("collection name", req.GetCollectionName()),
 		zap.Int64("collection ID", cID),
 		zap.String("partition name", req.GetPartitionName()),
+		zap.Int64("partition ID", pID),
 		zap.Int("# of files = ", len(req.GetFiles())),
+		zap.Bool("row-based", req.GetRowBased()),
 	)
-	resp := c.importManager.importJob(ctx, req, cID)
+	resp := c.importManager.importJob(ctx, req, cID, pID)
 	return resp, nil
 }
 
@@ -2307,9 +2324,10 @@ func (c *Core) ReportImport(ctx context.Context, ir *rootcoordpb.ImportResult) (
 			zap.Int64("task ID", ir.GetTaskId()))
 	}()
 
+	// TODO: Resurrect index check when ready.
 	// Start a loop to check segments' index states periodically.
-	c.wg.Add(1)
-	go c.checkCompleteIndexLoop(ctx, ti, colName, ir.Segments)
+	// c.wg.Add(1)
+	// go c.checkCompleteIndexLoop(ctx, ti, colName, ir.Segments)
 
 	return &commonpb.Status{
 		ErrorCode: commonpb.ErrorCode_Success,
@@ -2448,8 +2466,8 @@ func (c *Core) bringSegmentsOnline(ctx context.Context, segIDs []UniqueID) {
 	log.Info("bringing import task's segments online!", zap.Any("segment IDs", segIDs))
 	// TODO: Make update on segment states atomic.
 	for _, id := range segIDs {
-		// Explicitly mark segment states `flushed`.
-		c.CallUpdateSegmentStateService(ctx, id, commonpb.SegmentState_Flushed)
+		// Explicitly mark segment states `flushing`.
+		c.CallUpdateSegmentStateService(ctx, id, commonpb.SegmentState_Flushing)
 	}
 }
 
