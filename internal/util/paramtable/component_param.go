@@ -20,13 +20,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/milvus-io/milvus/internal/log"
 	"go.uber.org/zap"
+
+	"github.com/milvus-io/milvus/internal/log"
 )
 
 const (
 	// DefaultRetentionDuration defines the default duration for retention which is 5 days in seconds.
 	DefaultRetentionDuration = 3600 * 24 * 5
+
+	// DefaultIndexSliceSize defines the default slice size of index file when serializing.
+	DefaultIndexSliceSize = 4
 )
 
 // ComponentParam is used to quickly and easily access all components' configurations.
@@ -83,6 +87,10 @@ func (p *ComponentParam) PulsarEnable() bool {
 	return p.PulsarCfg.Address != ""
 }
 
+func (p *ComponentParam) KafkaEnable() bool {
+	return p.KafkaCfg.Address != ""
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // --- common ---
 type commonConfig struct {
@@ -114,7 +122,11 @@ type commonConfig struct {
 	DefaultIndexName     string
 	RetentionDuration    int64
 
-	SimdType string
+	SimdType       string
+	IndexSliceSize int64
+	StorageType    string
+
+	AuthorizationEnabled bool
 }
 
 func (p *commonConfig) init(base *BaseTable) {
@@ -148,6 +160,10 @@ func (p *commonConfig) init(base *BaseTable) {
 	p.initRetentionDuration()
 
 	p.initSimdType()
+	p.initIndexSliceSize()
+	p.initStorageType()
+
+	p.initEnableAuthorization()
 }
 
 func (p *commonConfig) initClusterPrefix() {
@@ -181,6 +197,7 @@ func (p *commonConfig) initProxySubName() {
 }
 
 // --- rootcoord ---
+// Deprecate
 func (p *commonConfig) initRootCoordTimeTick() {
 	keys := []string{
 		"common.chanNamePrefix.rootCoordTimeTick",
@@ -230,6 +247,7 @@ func (p *commonConfig) initQueryCoordSearch() {
 	p.QueryCoordSearch = p.initChanNamePrefix(keys)
 }
 
+// Deprecated, search result use grpc instead of a result channel
 func (p *commonConfig) initQueryCoordSearchResult() {
 	keys := []string{
 		"common.chanNamePrefix.searchResult",
@@ -238,6 +256,7 @@ func (p *commonConfig) initQueryCoordSearchResult() {
 	p.QueryCoordSearchResult = p.initChanNamePrefix(keys)
 }
 
+// Deprecate
 func (p *commonConfig) initQueryCoordTimeTick() {
 	keys := []string{
 		"common.chanNamePrefix.queryTimeTick",
@@ -272,6 +291,7 @@ func (p *commonConfig) initDataCoordStatistic() {
 	p.DataCoordStatistic = p.initChanNamePrefix(keys)
 }
 
+// Deprecate
 func (p *commonConfig) initDataCoordTimeTick() {
 	keys := []string{
 		"common.chanNamePrefix.dataCoordTimeTick",
@@ -324,6 +344,18 @@ func (p *commonConfig) initSimdType() {
 	p.SimdType = p.Base.LoadWithDefault2(keys, "auto")
 }
 
+func (p *commonConfig) initIndexSliceSize() {
+	p.IndexSliceSize = p.Base.ParseInt64WithDefault("common.indexSliceSize", DefaultIndexSliceSize)
+}
+
+func (p *commonConfig) initStorageType() {
+	p.StorageType = p.Base.LoadWithDefault("common.storageType", "minio")
+}
+
+func (p *commonConfig) initEnableAuthorization() {
+	p.AuthorizationEnabled = p.Base.ParseBool("common.security.authorizationEnabled", false)
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // --- rootcoord ---
 type rootCoordConfig struct {
@@ -335,6 +367,10 @@ type rootCoordConfig struct {
 	DmlChannelNum               int64
 	MaxPartitionNum             int64
 	MinSegmentSizeToEnableIndex int64
+	ImportTaskExpiration        float64
+	ImportTaskRetention         float64
+	ImportIndexCheckInterval    float64
+	ImportIndexWaitLimit        float64
 
 	// --- ETCD Path ---
 	ImportTaskSubPath string
@@ -348,6 +384,10 @@ func (p *rootCoordConfig) init(base *BaseTable) {
 	p.DmlChannelNum = p.Base.ParseInt64WithDefault("rootCoord.dmlChannelNum", 256)
 	p.MaxPartitionNum = p.Base.ParseInt64WithDefault("rootCoord.maxPartitionNum", 4096)
 	p.MinSegmentSizeToEnableIndex = p.Base.ParseInt64WithDefault("rootCoord.minSegmentSizeToEnableIndex", 1024)
+	p.ImportTaskExpiration = p.Base.ParseFloatWithDefault("rootCoord.importTaskExpiration", 3600)
+	p.ImportTaskRetention = p.Base.ParseFloatWithDefault("rootCoord.importTaskRetention", 3600*24)
+	p.ImportIndexCheckInterval = p.Base.ParseFloatWithDefault("rootCoord.importIndexCheckInterval", 60*5)
+	p.ImportIndexWaitLimit = p.Base.ParseFloatWithDefault("rootCoord.importIndexWaitLimit", 60*20)
 	p.ImportTaskSubPath = "importtask"
 }
 
@@ -367,6 +407,8 @@ type proxyConfig struct {
 	TimeTickInterval         time.Duration
 	MsgStreamTimeTickBufSize int64
 	MaxNameLength            int64
+	MaxUsernameLength        int64
+	MaxPasswordLength        int64
 	MaxFieldNum              int64
 	MaxShardNum              int32
 	MaxDimension             int64
@@ -391,6 +433,8 @@ func (p *proxyConfig) init(base *BaseTable) {
 
 	p.initMsgStreamTimeTickBufSize()
 	p.initMaxNameLength()
+	p.initMaxUsernameLength()
+	p.initMaxPasswordLength()
 	p.initMaxFieldNum()
 	p.initMaxShardNum()
 	p.initMaxDimension()
@@ -422,6 +466,24 @@ func (p *proxyConfig) initMaxNameLength() {
 		panic(err)
 	}
 	p.MaxNameLength = maxNameLength
+}
+
+func (p *proxyConfig) initMaxUsernameLength() {
+	str := p.Base.LoadWithDefault("proxy.maxUsernameLength", "32")
+	maxUsernameLength, err := strconv.ParseInt(str, 10, 64)
+	if err != nil {
+		panic(err)
+	}
+	p.MaxUsernameLength = maxUsernameLength
+}
+
+func (p *proxyConfig) initMaxPasswordLength() {
+	str := p.Base.LoadWithDefault("proxy.maxPasswordLength", "256")
+	maxPasswordLength, err := strconv.ParseInt(str, 10, 64)
+	if err != nil {
+		panic(err)
+	}
+	p.MaxPasswordLength = maxPasswordLength
 }
 
 func (p *proxyConfig) initMaxShardNum() {
@@ -599,7 +661,8 @@ type queryNodeConfig struct {
 	OverloadedMemoryThresholdPercentage float64
 
 	// cache limit
-	LocalFileCacheLimit int64
+	CacheEnabled     bool
+	CacheMemoryLimit int64
 }
 
 func (p *queryNodeConfig) init(base *BaseTable) {
@@ -621,7 +684,8 @@ func (p *queryNodeConfig) init(base *BaseTable) {
 
 	p.initOverloadedMemoryThresholdPercentage()
 
-	p.initLocalFileCacheLimit()
+	p.initCacheMemoryLimit()
+	p.initCacheEnabled()
 }
 
 // InitAlias initializes an alias for the QueryNode role.
@@ -696,13 +760,21 @@ func (p *queryNodeConfig) initOverloadedMemoryThresholdPercentage() {
 	p.OverloadedMemoryThresholdPercentage = float64(thresholdPercentage) / 100
 }
 
-func (p *queryNodeConfig) initLocalFileCacheLimit() {
-	overloadedMemoryThresholdPercentage := p.Base.LoadWithDefault("querynoe.chunkManager.localFileCacheLimit", "90")
-	localFileCacheLimit, err := strconv.ParseInt(overloadedMemoryThresholdPercentage, 10, 64)
+func (p *queryNodeConfig) initCacheMemoryLimit() {
+	overloadedMemoryThresholdPercentage := p.Base.LoadWithDefault("queryNode.cache.memoryLimit", "2147483648")
+	cacheMemoryLimit, err := strconv.ParseInt(overloadedMemoryThresholdPercentage, 10, 64)
 	if err != nil {
 		panic(err)
 	}
-	p.LocalFileCacheLimit = localFileCacheLimit
+	p.CacheMemoryLimit = cacheMemoryLimit
+}
+func (p *queryNodeConfig) initCacheEnabled() {
+	var err error
+	cacheEnabled := p.Base.LoadWithDefault("queryNode.cache.enabled", "true")
+	p.CacheEnabled, err = strconv.ParseBool(cacheEnabled)
+	if err != nil {
+		panic(err)
+	}
 }
 
 ///////////////////////////////////////////////////////////////////////////////

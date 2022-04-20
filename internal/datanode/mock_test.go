@@ -33,6 +33,7 @@ import (
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	s "github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 
@@ -53,8 +54,8 @@ const debug = false
 var emptyFlushAndDropFunc flushAndDropFunc = func(_ []*segmentFlushPack) {}
 
 func newIDLEDataNodeMock(ctx context.Context, pkType schemapb.DataType) *DataNode {
-	msFactory := msgstream.NewRmsFactory()
-	node := NewDataNode(ctx, msFactory)
+	factory := dependency.NewDefaultFactory(true)
+	node := NewDataNode(ctx, factory)
 
 	rc := &RootCoordFactory{
 		ID:             0,
@@ -85,8 +86,8 @@ func newHEALTHDataNodeMock(dmChannelName string) *DataNode {
 		}()
 	}
 
-	msFactory := msgstream.NewPmsFactory()
-	node := NewDataNode(ctx, msFactory)
+	factory := dependency.NewDefaultFactory(true)
+	node := NewDataNode(ctx, factory)
 
 	ms := &RootCoordFactory{
 		ID:             0,
@@ -170,6 +171,19 @@ type DataCoordFactory struct {
 
 	DropVirtualChannelError      bool
 	DropVirtualChannelNotSuccess bool
+}
+
+func (ds *DataCoordFactory) AssignSegmentID(ctx context.Context, req *datapb.AssignSegmentIDRequest) (*datapb.AssignSegmentIDResponse, error) {
+	return &datapb.AssignSegmentIDResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+		},
+		SegIDAssignments: []*datapb.SegmentIDAssignment{
+			{
+				SegID: 666,
+			},
+		},
+	}, nil
 }
 
 func (ds *DataCoordFactory) CompleteCompaction(ctx context.Context, req *datapb.CompactionResult) (*commonpb.Status, error) {
@@ -842,6 +856,12 @@ func (m *RootCoordFactory) AllocID(ctx context.Context, in *rootcoordpb.AllocIDR
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 		}}
 
+	if in.Count == 12 {
+		resp.Status.ErrorCode = commonpb.ErrorCode_Success
+		resp.ID = 1
+		resp.Count = 12
+	}
+
 	if m.ID == 0 {
 		resp.Status.Reason = "Zero ID"
 		return resp, nil
@@ -912,7 +932,7 @@ func (m *RootCoordFactory) GetComponentStates(ctx context.Context) (*internalpb.
 
 // FailMessageStreamFactory mock MessageStreamFactory failure
 type FailMessageStreamFactory struct {
-	msgstream.Factory
+	dependency.Factory
 }
 
 func (f *FailMessageStreamFactory) NewMsgStream(ctx context.Context) (msgstream.MsgStream, error) {

@@ -255,6 +255,8 @@ type DataCoord interface {
 	WatchChannels(ctx context.Context, req *datapb.WatchChannelsRequest) (*datapb.WatchChannelsResponse, error)
 	// GetFlushState gets the flush state of multiple segments
 	GetFlushState(ctx context.Context, req *milvuspb.GetFlushStateRequest) (*milvuspb.GetFlushStateResponse, error)
+	// SetSegmentState updates a segment's state explicitly.
+	SetSegmentState(ctx context.Context, req *datapb.SetSegmentStateRequest) (*datapb.SetSegmentStateResponse, error)
 
 	// DropVirtualChannel notifies DataCoord a virtual channel is dropped and
 	// updates related segments binlogs(including insert binlogs, stats logs and delta logs)
@@ -609,7 +611,7 @@ type RootCoord interface {
 	// error is always nil
 	Import(ctx context.Context, req *milvuspb.ImportRequest) (*milvuspb.ImportResponse, error)
 
-	// Check import task state from datanode
+	// GetImportState checks import task state from datanode
 	//
 	// ctx is the context to control request deadline and cancellation
 	// req contains the request params, including a task id
@@ -619,7 +621,7 @@ type RootCoord interface {
 	// error is always nil
 	GetImportState(ctx context.Context, req *milvuspb.GetImportStateRequest) (*milvuspb.GetImportStateResponse, error)
 
-	// Report impot task state to rootcoord
+	// ReportImport reports import task state to rootCoord
 	//
 	// ctx is the context to control request deadline and cancellation
 	// req contains the import results, including imported row count and an id list of generated segments
@@ -627,6 +629,17 @@ type RootCoord interface {
 	// response status contains the status/error code and failing reason if any error is returned
 	// error is always nil
 	ReportImport(ctx context.Context, req *rootcoordpb.ImportResult) (*commonpb.Status, error)
+
+	// CreateCredential create new user and password
+	CreateCredential(ctx context.Context, req *internalpb.CredentialInfo) (*commonpb.Status, error)
+	// UpdateCredential update password for a user
+	UpdateCredential(ctx context.Context, req *internalpb.CredentialInfo) (*commonpb.Status, error)
+	// DeleteCredential delete a user
+	DeleteCredential(ctx context.Context, req *milvuspb.DeleteCredentialRequest) (*commonpb.Status, error)
+	// ListCredUsers list all usernames
+	ListCredUsers(ctx context.Context, req *milvuspb.ListCredUsersRequest) (*milvuspb.ListCredUsersResponse, error)
+	// GetCredential get credential by username
+	GetCredential(ctx context.Context, req *rootcoordpb.GetCredentialRequest) (*rootcoordpb.GetCredentialResponse, error)
 }
 
 // RootCoordComponent is used by grpc server of RootCoord
@@ -684,6 +697,21 @@ type Proxy interface {
 	//
 	// error is returned only when some communication issue occurs.
 	InvalidateCollectionMetaCache(ctx context.Context, request *proxypb.InvalidateCollMetaCacheRequest) (*commonpb.Status, error)
+
+	// InvalidateCredentialCache notifies Proxy to clear all the credential cache of specified username.
+	//
+	// InvalidateCredentialCache should be called when there are credential changes for specified username.
+	// Such as `CreateCredential`, `UpdateCredential`, `DeleteCredential`, etc.
+	//
+	// InvalidateCredentialCache should always succeed even though the specified username doesn't exist in Proxy.
+	// So the code of response `Status` should be always `Success`.
+	//
+	// error is returned only when some communication issue occurs.
+	InvalidateCredentialCache(ctx context.Context, request *proxypb.InvalidateCredCacheRequest) (*commonpb.Status, error)
+
+	UpdateCredentialCache(ctx context.Context, request *proxypb.UpdateCredCacheRequest) (*commonpb.Status, error)
+
+	ClearCredUsersCache(ctx context.Context, request *internalpb.ClearCredUsersCacheRequest) (*commonpb.Status, error)
 
 	// ReleaseDQLMessageStream notifies Proxy to release and close the search message stream of specific collection.
 	//
@@ -1100,6 +1128,17 @@ type ProxyComponent interface {
 	// the `state` in `GetImportStateResponse` return the state of the import task.
 	// error is always nil
 	GetImportState(ctx context.Context, req *milvuspb.GetImportStateRequest) (*milvuspb.GetImportStateResponse, error)
+
+	GetReplicas(ctx context.Context, req *milvuspb.GetReplicasRequest) (*milvuspb.GetReplicasResponse, error)
+
+	// CreateCredential create new user and password
+	CreateCredential(ctx context.Context, req *milvuspb.CreateCredentialRequest) (*commonpb.Status, error)
+	// UpdateCredential update password for a user
+	UpdateCredential(ctx context.Context, req *milvuspb.UpdateCredentialRequest) (*commonpb.Status, error)
+	// DeleteCredential delete a user
+	DeleteCredential(ctx context.Context, req *milvuspb.DeleteCredentialRequest) (*commonpb.Status, error)
+	// ListCredUsers list all usernames
+	ListCredUsers(ctx context.Context, req *milvuspb.ListCredUsersRequest) (*milvuspb.ListCredUsersResponse, error)
 }
 
 // QueryNode is the interface `querynode` package implements
@@ -1170,7 +1209,7 @@ type QueryCoord interface {
 
 	GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error)
 
-	GetReplicas(ctx context.Context, req *querypb.GetReplicasRequest) (*querypb.GetReplicasResponse, error)
+	GetReplicas(ctx context.Context, req *milvuspb.GetReplicasRequest) (*milvuspb.GetReplicasResponse, error)
 	GetShardLeaders(ctx context.Context, req *querypb.GetShardLeadersRequest) (*querypb.GetShardLeadersResponse, error)
 }
 

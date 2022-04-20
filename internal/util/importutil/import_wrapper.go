@@ -4,9 +4,12 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	"os"
 	"path"
 	"strconv"
+	"strings"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/common"
@@ -14,8 +17,6 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 )
 
 const (
@@ -28,14 +29,15 @@ type ImportWrapper struct {
 	cancel           context.CancelFunc         // for canceling parse process
 	collectionSchema *schemapb.CollectionSchema // collection schema
 	shardNum         int32                      // sharding number of the collection
-	segmentSize      int32                      // maximum size of a segment in MB
+	segmentSize      int64                      // maximum size of a segment in MB
 	rowIDAllocator   *allocator.IDAllocator     // autoid allocator
+	chunkManager     storage.ChunkManager
 
-	callFlushFunc func(fields map[string]storage.FieldData) error // call back function to flush a segment
+	callFlushFunc func(fields map[storage.FieldID]storage.FieldData) error // call back function to flush a segment
 }
 
-func NewImportWrapper(ctx context.Context, collectionSchema *schemapb.CollectionSchema, shardNum int32, segmentSize int32,
-	idAlloc *allocator.IDAllocator, flushFunc func(fields map[string]storage.FieldData) error) *ImportWrapper {
+func NewImportWrapper(ctx context.Context, collectionSchema *schemapb.CollectionSchema, shardNum int32, segmentSize int64,
+	idAlloc *allocator.IDAllocator, cm storage.ChunkManager, flushFunc func(fields map[storage.FieldID]storage.FieldData) error) *ImportWrapper {
 	if collectionSchema == nil {
 		log.Error("import error: collection schema is nil")
 		return nil
@@ -66,6 +68,7 @@ func NewImportWrapper(ctx context.Context, collectionSchema *schemapb.Collection
 		segmentSize:      segmentSize,
 		rowIDAllocator:   idAlloc,
 		callFlushFunc:    flushFunc,
+		chunkManager:     cm,
 	}
 
 	return wrapper
@@ -77,16 +80,23 @@ func (p *ImportWrapper) Cancel() error {
 	return nil
 }
 
-func (p *ImportWrapper) printFieldsDataInfo(fieldsData map[string]storage.FieldData, msg string, files []string) {
+func (p *ImportWrapper) printFieldsDataInfo(fieldsData map[storage.FieldID]storage.FieldData, msg string, files []string) {
 	stats := make([]zapcore.Field, 0)
 	for k, v := range fieldsData {
-		stats = append(stats, zap.Int(k, v.RowNum()))
+		stats = append(stats, zap.Int(strconv.FormatInt(k, 10), v.RowNum()))
 	}
 
 	if len(files) > 0 {
 		stats = append(stats, zap.Any("files", files))
 	}
 	log.Debug(msg, stats...)
+}
+
+func getFileNameAndExt(filePath string) (string, string) {
+	fileName := path.Base(filePath)
+	fileType := path.Ext(fileName)
+	fileNameWithoutExt := strings.TrimSuffix(fileName, fileType)
+	return fileNameWithoutExt, fileType
 }
 
 // import process entry
@@ -99,13 +109,12 @@ func (p *ImportWrapper) Import(filePaths []string, rowBased bool, onlyValidate b
 		// according to shard number, so the callFlushFunc will be called in the JSONRowConsumer
 		for i := 0; i < len(filePaths); i++ {
 			filePath := filePaths[i]
-			fileName := path.Base(filePath)
-			fileType := path.Ext(fileName)
+			_, fileType := getFileNameAndExt(filePath)
 			log.Debug("imprort wrapper:  row-based file ", zap.Any("filePath", filePath), zap.Any("fileType", fileType))
 
 			if fileType == JSONFileExt {
 				err := func() error {
-					file, err := os.Open(filePath)
+					file, err := p.chunkManager.Reader(filePath)
 					if err != nil {
 						return err
 					}
@@ -115,7 +124,7 @@ func (p *ImportWrapper) Import(filePaths []string, rowBased bool, onlyValidate b
 					parser := NewJSONParser(p.ctx, p.collectionSchema)
 					var consumer *JSONRowConsumer
 					if !onlyValidate {
-						flushFunc := func(fields map[string]storage.FieldData) error {
+						flushFunc := func(fields map[storage.FieldID]storage.FieldData) error {
 							p.printFieldsDataInfo(fields, "import wrapper: prepare to flush segment", filePaths)
 							return p.callFlushFunc(fields)
 						}
@@ -146,14 +155,14 @@ func (p *ImportWrapper) Import(filePaths []string, rowBased bool, onlyValidate b
 		rowCount := 0
 
 		// function to combine column data into fieldsData
-		combineFunc := func(fields map[string]storage.FieldData) error {
+		combineFunc := func(fields map[storage.FieldID]storage.FieldData) error {
 			if len(fields) == 0 {
 				return nil
 			}
 
 			p.printFieldsDataInfo(fields, "imprort wrapper: combine field data", nil)
 
-			fieldNames := make([]string, 0)
+			fieldNames := make([]storage.FieldID, 0)
 			for k, v := range fields {
 				// ignore 0 row field
 				if v.RowNum() == 0 {
@@ -163,12 +172,12 @@ func (p *ImportWrapper) Import(filePaths []string, rowBased bool, onlyValidate b
 				// each column should be only combined once
 				data, ok := fieldsData[k]
 				if ok && data.RowNum() > 0 {
-					return errors.New("the field " + k + " is duplicated")
+					return errors.New("the field " + strconv.FormatInt(k, 10) + " is duplicated")
 				}
 
 				// check the row count. only count non-zero row fields
 				if rowCount > 0 && rowCount != v.RowNum() {
-					return errors.New("the field " + k + " row count " + strconv.Itoa(v.RowNum()) + " doesn't equal " + strconv.Itoa(rowCount))
+					return errors.New("the field " + strconv.FormatInt(k, 10) + " row count " + strconv.Itoa(v.RowNum()) + " doesn't equal " + strconv.Itoa(rowCount))
 				}
 				rowCount = v.RowNum()
 
@@ -183,13 +192,12 @@ func (p *ImportWrapper) Import(filePaths []string, rowBased bool, onlyValidate b
 		// parse/validate/consume data
 		for i := 0; i < len(filePaths); i++ {
 			filePath := filePaths[i]
-			fileName := path.Base(filePath)
-			fileType := path.Ext(fileName)
+			fileName, fileType := getFileNameAndExt(filePath)
 			log.Debug("imprort wrapper:  column-based file ", zap.Any("filePath", filePath), zap.Any("fileType", fileType))
 
 			if fileType == JSONFileExt {
 				err := func() error {
-					file, err := os.Open(filePath)
+					file, err := p.chunkManager.Reader(filePath)
 					if err != nil {
 						log.Error("imprort error: "+err.Error(), zap.String("filePath", filePath))
 						return err
@@ -218,7 +226,34 @@ func (p *ImportWrapper) Import(filePaths []string, rowBased bool, onlyValidate b
 					return err
 				}
 			} else if fileType == NumpyFileExt {
+				file, err := p.chunkManager.Reader(filePath)
+				if err != nil {
+					log.Error("imprort error: "+err.Error(), zap.String("filePath", filePath))
+					return err
+				}
+				defer file.Close()
+				var id storage.FieldID
+				for _, field := range p.collectionSchema.Fields {
+					if field.GetName() == fileName {
+						id = field.GetFieldID()
+					}
+				}
 
+				// the numpy parser return a storage.FieldData, here construct a map[string]storage.FieldData to combine
+				flushFunc := func(field storage.FieldData) error {
+					fields := make(map[storage.FieldID]storage.FieldData)
+					fields[id] = field
+					combineFunc(fields)
+					return nil
+				}
+
+				// for numpy file, we say the file name(without extension) is the filed name
+				parser := NewNumpyParser(p.ctx, p.collectionSchema, flushFunc)
+				err = parser.Parse(file, fileName, onlyValidate)
+				if err != nil {
+					log.Error("imprort error: "+err.Error(), zap.String("filePath", filePath))
+					return err
+				}
 			}
 		}
 
@@ -298,7 +333,7 @@ func (p *ImportWrapper) appendFunc(schema *schemapb.FieldSchema) func(src storag
 			arr.NumRows[0]++
 			return nil
 		}
-	case schemapb.DataType_String:
+	case schemapb.DataType_String, schemapb.DataType_VarChar:
 		return func(src storage.FieldData, n int, target storage.FieldData) error {
 			arr := target.(*storage.StringFieldData)
 			arr.Data = append(arr.Data, src.GetRow(n).(string))
@@ -309,7 +344,7 @@ func (p *ImportWrapper) appendFunc(schema *schemapb.FieldSchema) func(src storag
 	}
 }
 
-func (p *ImportWrapper) splitFieldsData(fieldsData map[string]storage.FieldData, files []string) error {
+func (p *ImportWrapper) splitFieldsData(fieldsData map[storage.FieldID]storage.FieldData, files []string) error {
 	if len(fieldsData) == 0 {
 		return errors.New("imprort error: fields data is empty")
 	}
@@ -320,7 +355,7 @@ func (p *ImportWrapper) splitFieldsData(fieldsData map[string]storage.FieldData,
 		if schema.GetIsPrimaryKey() {
 			primaryKey = schema
 		} else {
-			_, ok := fieldsData[schema.GetName()]
+			_, ok := fieldsData[schema.GetFieldID()]
 			if !ok {
 				return errors.New("imprort error: field " + schema.GetName() + " not provided")
 			}
@@ -336,7 +371,7 @@ func (p *ImportWrapper) splitFieldsData(fieldsData map[string]storage.FieldData,
 		break
 	}
 
-	primaryData, ok := fieldsData[primaryKey.GetName()]
+	primaryData, ok := fieldsData[primaryKey.GetFieldID()]
 	if !ok {
 		// generate auto id for primary key
 		if primaryKey.GetAutoID() {
@@ -356,7 +391,7 @@ func (p *ImportWrapper) splitFieldsData(fieldsData map[string]storage.FieldData,
 	}
 
 	// prepare segemnts
-	segmentsData := make([]map[string]storage.FieldData, 0, p.shardNum)
+	segmentsData := make([]map[storage.FieldID]storage.FieldData, 0, p.shardNum)
 	for i := 0; i < int(p.shardNum); i++ {
 		segmentData := initSegmentData(p.collectionSchema)
 		if segmentData == nil {
@@ -385,8 +420,8 @@ func (p *ImportWrapper) splitFieldsData(fieldsData map[string]storage.FieldData,
 
 		for k := 0; k < len(p.collectionSchema.Fields); k++ {
 			schema := p.collectionSchema.Fields[k]
-			srcData := fieldsData[schema.GetName()]
-			targetData := segmentsData[shard][schema.GetName()]
+			srcData := fieldsData[schema.GetFieldID()]
+			targetData := segmentsData[shard][schema.GetFieldID()]
 			appendFunc := appendFunctions[schema.GetName()]
 			err := appendFunc(srcData, i, targetData)
 			if err != nil {

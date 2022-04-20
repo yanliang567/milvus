@@ -18,6 +18,7 @@ package storage
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"os"
@@ -25,8 +26,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/milvus-io/milvus/internal/util/errorutil"
 	"golang.org/x/exp/mmap"
+
+	"github.com/milvus-io/milvus/internal/util/errorutil"
 )
 
 // LocalChunkManager is responsible for read and write local file.
@@ -47,13 +49,21 @@ func NewLocalChunkManager(opts ...Option) *LocalChunkManager {
 	}
 }
 
-// GetPath returns the path of local data if exists.
-func (lcm *LocalChunkManager) GetPath(filePath string) (string, error) {
+// Path returns the path of local data if exists.
+func (lcm *LocalChunkManager) Path(filePath string) (string, error) {
 	if !lcm.Exist(filePath) {
-		return "", errors.New("local file cannot be found with filePath:" + filePath)
+		return "", fmt.Errorf("local file cannot be found with filePath: %s", filePath)
 	}
 	absPath := path.Join(lcm.localPath, filePath)
 	return absPath, nil
+}
+
+func (lcm *LocalChunkManager) Reader(filePath string) (FileReader, error) {
+	if !lcm.Exist(filePath) {
+		return nil, errors.New("local file cannot be found with filePath:" + filePath)
+	}
+	absPath := path.Join(lcm.localPath, filePath)
+	return os.Open(absPath)
 }
 
 // Write writes the data to local storage.
@@ -100,7 +110,7 @@ func (lcm *LocalChunkManager) Exist(filePath string) bool {
 // Read reads the local storage data if exists.
 func (lcm *LocalChunkManager) Read(filePath string) ([]byte, error) {
 	if !lcm.Exist(filePath) {
-		return nil, errors.New("file not exist" + filePath)
+		return nil, fmt.Errorf("file not exist: %s", filePath)
 	}
 	absPath := path.Join(lcm.localPath, filePath)
 	file, err := os.Open(path.Clean(absPath))
@@ -180,7 +190,7 @@ func (lcm *LocalChunkManager) Mmap(filePath string) (*mmap.ReaderAt, error) {
 	return mmap.Open(path.Clean(absPath))
 }
 
-func (lcm *LocalChunkManager) GetSize(filePath string) (int64, error) {
+func (lcm *LocalChunkManager) Size(filePath string) (int64, error) {
 	absPath := path.Join(lcm.localPath, filePath)
 	fi, err := os.Stat(absPath)
 	if err != nil {

@@ -31,12 +31,16 @@ import (
 	"time"
 
 	ot "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
-	"github.com/milvus-io/milvus/internal/util/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 
-	"github.com/milvus-io/milvus/internal/util/paramtable"
+	"github.com/milvus-io/milvus/internal/util/crypto"
+	"github.com/milvus-io/milvus/internal/util/dependency"
+	"github.com/milvus-io/milvus/internal/util/trace"
+
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 
 	"github.com/milvus-io/milvus/internal/util/etcd"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
@@ -51,6 +55,7 @@ import (
 	"github.com/milvus-io/milvus/internal/util/distance"
 
 	"github.com/milvus-io/milvus/internal/proto/proxypb"
+	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
 
 	"github.com/golang/protobuf/proto"
 
@@ -92,10 +97,9 @@ import (
 	"github.com/milvus-io/milvus/internal/indexnode"
 	"github.com/milvus-io/milvus/internal/querynode"
 
-	"github.com/milvus-io/milvus/internal/querycoord"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/internal/mq/msgstream"
+	"github.com/milvus-io/milvus/internal/querycoord"
 
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
@@ -116,13 +120,6 @@ func init() {
 	Registry.MustRegister(prometheus.NewGoCollector())
 }
 
-func newMsgFactory(localMsg bool) msgstream.Factory {
-	if localMsg {
-		return msgstream.NewRmsFactory()
-	}
-	return msgstream.NewPmsFactory()
-}
-
 func runRootCoord(ctx context.Context, localMsg bool) *grpcrootcoord.Server {
 	var rc *grpcrootcoord.Server
 	var wg sync.WaitGroup
@@ -135,7 +132,7 @@ func runRootCoord(ctx context.Context, localMsg bool) *grpcrootcoord.Server {
 			defer log.Sync()
 		}
 
-		factory := newMsgFactory(localMsg)
+		factory := dependency.NewDefaultFactory(localMsg)
 		var err error
 		rc, err = grpcrootcoord.NewServer(ctx, factory)
 		if err != nil {
@@ -166,7 +163,7 @@ func runQueryCoord(ctx context.Context, localMsg bool) *grpcquerycoord.Server {
 			defer log.Sync()
 		}
 
-		factory := newMsgFactory(localMsg)
+		factory := dependency.NewDefaultFactory(localMsg)
 		var err error
 		qs, err = grpcquerycoord.NewServer(ctx, factory)
 		if err != nil {
@@ -198,7 +195,7 @@ func runQueryNode(ctx context.Context, localMsg bool, alias string) *grpcqueryno
 			defer log.Sync()
 		}
 
-		factory := newMsgFactory(localMsg)
+		factory := dependency.NewDefaultFactory(localMsg)
 		var err error
 		qn, err = grpcquerynode.NewServer(ctx, factory)
 		if err != nil {
@@ -229,7 +226,7 @@ func runDataCoord(ctx context.Context, localMsg bool) *grpcdatacoordclient.Serve
 			defer log.Sync()
 		}
 
-		factory := newMsgFactory(localMsg)
+		factory := dependency.NewDefaultFactory(localMsg)
 		ds = grpcdatacoordclient.NewServer(ctx, factory)
 		wg.Done()
 		err := ds.Run()
@@ -257,7 +254,7 @@ func runDataNode(ctx context.Context, localMsg bool, alias string) *grpcdatanode
 			defer log.Sync()
 		}
 
-		factory := newMsgFactory(localMsg)
+		factory := dependency.NewDefaultFactory(localMsg)
 		var err error
 		dn, err = grpcdatanode.NewServer(ctx, factory)
 		if err != nil {
@@ -288,8 +285,9 @@ func runIndexCoord(ctx context.Context, localMsg bool) *grpcindexcoord.Server {
 			defer log.Sync()
 		}
 
+		factory := dependency.NewDefaultFactory(localMsg)
 		var err error
-		is, err = grpcindexcoord.NewServer(ctx)
+		is, err = grpcindexcoord.NewServer(ctx, factory)
 		if err != nil {
 			panic(err)
 		}
@@ -319,8 +317,9 @@ func runIndexNode(ctx context.Context, localMsg bool, alias string) *grpcindexno
 			defer log.Sync()
 		}
 
+		factory := dependency.NewDefaultFactory(localMsg)
 		var err error
-		in, err = grpcindexnode.NewServer(ctx)
+		in, err = grpcindexnode.NewServer(ctx, factory)
 		if err != nil {
 			panic(err)
 		}
@@ -439,7 +438,7 @@ func TestProxy(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	localMsg := true
-	factory := newMsgFactory(localMsg)
+	factory := dependency.NewDefaultFactory(localMsg)
 	alias := "TestProxy"
 
 	rc := runRootCoord(ctx, localMsg)
@@ -1597,6 +1596,45 @@ func TestProxy(t *testing.T) {
 	})
 
 	wg.Add(1)
+	t.Run("test import", func(t *testing.T) {
+		defer wg.Done()
+		req := &milvuspb.ImportRequest{
+			CollectionName: collectionName,
+			Files:          []string{"f1", "f2", "f3"},
+		}
+		proxy.stateCode.Store(internalpb.StateCode_Healthy)
+		resp, err := proxy.Import(context.TODO(), req)
+		assert.EqualValues(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
+		assert.Nil(t, err)
+	})
+
+	wg.Add(1)
+	t.Run("test import collection ID not found", func(t *testing.T) {
+		defer wg.Done()
+		req := &milvuspb.ImportRequest{
+			CollectionName: "bad_collection_name",
+			Files:          []string{"f1", "f2", "f3"},
+		}
+		proxy.stateCode.Store(internalpb.StateCode_Healthy)
+		resp, err := proxy.Import(context.TODO(), req)
+		assert.EqualValues(t, commonpb.ErrorCode_UnexpectedError, resp.Status.ErrorCode)
+		assert.Error(t, err)
+	})
+
+	wg.Add(1)
+	t.Run("test import get vChannel fail", func(t *testing.T) {
+		defer wg.Done()
+		req := &milvuspb.ImportRequest{
+			CollectionName: "bad_collection_name",
+			Files:          []string{"f1", "f2", "f3"},
+		}
+		proxy.stateCode.Store(internalpb.StateCode_Healthy)
+		resp, err := proxy.Import(context.TODO(), req)
+		assert.EqualValues(t, commonpb.ErrorCode_UnexpectedError, resp.Status.ErrorCode)
+		assert.Error(t, err)
+	})
+
+	wg.Add(1)
 	t.Run("release collection", func(t *testing.T) {
 		defer wg.Done()
 		collectionID, err := globalMetaCache.GetCollectionID(ctx, collectionName)
@@ -1609,6 +1647,7 @@ func TestProxy(t *testing.T) {
 		})
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, resp.ErrorCode)
+		assert.Equal(t, "", resp.Reason)
 
 		// release dql message stream
 		resp, err = proxy.ReleaseDQLMessageStream(ctx, &proxypb.ReleaseDQLMessageStreamRequest{
@@ -1618,6 +1657,7 @@ func TestProxy(t *testing.T) {
 		})
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, resp.ErrorCode)
+		assert.Equal(t, "", resp.Reason)
 	})
 
 	wg.Add(1)
@@ -1880,6 +1920,7 @@ func TestProxy(t *testing.T) {
 		})
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, resp.ErrorCode)
+		assert.Equal(t, "", resp.Reason)
 
 		// invalidate meta cache
 		resp, err = proxy.InvalidateCollectionMetaCache(ctx, &proxypb.InvalidateCollMetaCacheRequest{
@@ -1927,6 +1968,163 @@ func TestProxy(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
 		assert.Equal(t, 0, len(resp.CollectionNames))
+	})
+
+	username := "test_username_" + funcutil.RandomString(15)
+	password := "xxx"
+
+	wg.Add(1)
+	t.Run("credential CREATE api", func(t *testing.T) {
+		defer wg.Done()
+
+		// 1. create credential
+		constructCreateCredentialRequest := func() *milvuspb.CreateCredentialRequest {
+			return &milvuspb.CreateCredentialRequest{
+				Base:     nil,
+				Username: username,
+				Password: crypto.Base64Encode(password),
+			}
+		}
+		// success
+		createCredentialReq := constructCreateCredentialRequest()
+		resp, err := proxy.CreateCredential(ctx, createCredentialReq)
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, resp.ErrorCode)
+
+		// recreate -> fail (user already exists)
+		resp, err = proxy.CreateCredential(ctx, createCredentialReq)
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.ErrorCode)
+
+		// invalid username
+		createCredentialReq.Username = "11_invalid_username"
+		resp, err = proxy.CreateCredential(ctx, createCredentialReq)
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.ErrorCode)
+
+		// invalid password (not decode)
+		createCredentialReq.Password = "not_decoded_password"
+		resp, err = proxy.CreateCredential(ctx, createCredentialReq)
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.ErrorCode)
+
+		// invalid password (length gt 256)
+		createCredentialReq.Password = "aaaaaaaaaabbbbbbbbbbccccccccccddddddddddeeeeeeeeeeffffffffffgggggggggghhhhhhhhhhiiiiiiiiiijjjjjjjjjjkkkkkkkkkkllllllllllmmmmmmmmmnnnnnnnnnnnooooooooooppppppppppqqqqqqqqqqrrrrrrrrrrsssssssssstttttttttttuuuuuuuuuuuvvvvvvvvvvwwwwwwwwwwwxxxxxxxxxxyyyyyyyyyzzzzzzzzzzz"
+		resp, err = proxy.CreateCredential(ctx, createCredentialReq)
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.ErrorCode)
+	})
+
+	wg.Add(1)
+	t.Run("credential UPDATE api", func(t *testing.T) {
+		defer wg.Done()
+
+		// 2. update credential
+		newPassword := "yyy"
+		constructUpdateCredentialRequest := func() *milvuspb.UpdateCredentialRequest {
+			return &milvuspb.UpdateCredentialRequest{
+				Base:        nil,
+				Username:    username,
+				OldPassword: crypto.Base64Encode(password),
+				NewPassword: crypto.Base64Encode(newPassword),
+			}
+		}
+		// cannot update non-existing user's password
+		updateCredentialReq := constructUpdateCredentialRequest()
+		updateCredentialReq.Username = "test_username_" + funcutil.RandomString(15)
+		updateResp, err := proxy.UpdateCredential(ctx, updateCredentialReq)
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, updateResp.ErrorCode)
+
+		// success
+		updateCredentialReq.Username = username
+		updateCredentialReq.NewPassword = crypto.Base64Encode(newPassword)
+		updateResp, err = proxy.UpdateCredential(ctx, updateCredentialReq)
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, updateResp.ErrorCode)
+
+		// invalid old password (not decode)
+		updateCredentialReq.OldPassword = password
+		updateCredentialReq.NewPassword = crypto.Base64Encode(newPassword)
+		updateResp, err = proxy.UpdateCredential(ctx, updateCredentialReq)
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, updateResp.ErrorCode)
+
+		// invalid new password (not decode)
+		updateCredentialReq.OldPassword = crypto.Base64Encode(password)
+		updateCredentialReq.NewPassword = newPassword
+		updateResp, err = proxy.UpdateCredential(ctx, updateCredentialReq)
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, updateResp.ErrorCode)
+
+		// invalid password (length gt 256)
+		updateCredentialReq.NewPassword = "aaaaaaaaaabbbbbbbbbbccccccccccddddddddddeeeeeeeeeeffffffffffgggggggggghhhhhhhhhhiiiiiiiiiijjjjjjjjjjkkkkkkkkkkllllllllllmmmmmmmmmnnnnnnnnnnnooooooooooppppppppppqqqqqqqqqqrrrrrrrrrrsssssssssstttttttttttuuuuuuuuuuuvvvvvvvvvvwwwwwwwwwwwxxxxxxxxxxyyyyyyyyyzzzzzzzzzzz"
+		updateResp, err = proxy.UpdateCredential(ctx, updateCredentialReq)
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, updateResp.ErrorCode)
+
+		// wrong password
+		updateCredentialReq.OldPassword = crypto.Base64Encode("wrong_password")
+		updateCredentialReq.NewPassword = crypto.Base64Encode(newPassword)
+		updateResp, err = proxy.UpdateCredential(ctx, updateCredentialReq)
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, updateResp.ErrorCode)
+	})
+
+	wg.Add(1)
+	t.Run("credential GET api", func(t *testing.T) {
+		defer wg.Done()
+
+		// 3. get credential
+		newPassword := "yyy"
+		constructGetCredentialRequest := func() *rootcoordpb.GetCredentialRequest {
+			return &rootcoordpb.GetCredentialRequest{
+				Base:     nil,
+				Username: username,
+			}
+		}
+		getCredentialReq := constructGetCredentialRequest()
+		getResp, err := rootCoordClient.GetCredential(ctx, getCredentialReq)
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, getResp.Status.ErrorCode)
+		assert.True(t, crypto.PasswordVerify(newPassword, getResp.Password))
+
+		getCredentialReq.Username = "("
+		getResp, err = rootCoordClient.GetCredential(ctx, getCredentialReq)
+		assert.Error(t, err)
+	})
+
+	wg.Add(1)
+	t.Run("credential LIST api", func(t *testing.T) {
+		defer wg.Done()
+
+		// 4. list credential usernames
+		constructListCredUsersRequest := func() *milvuspb.ListCredUsersRequest {
+			return &milvuspb.ListCredUsersRequest{
+				Base: nil,
+			}
+		}
+		listCredUsersReq := constructListCredUsersRequest()
+		listUsersResp, err := proxy.ListCredUsers(ctx, listCredUsersReq)
+		assert.NoError(t, err)
+		assert.True(t, len(listUsersResp.Usernames) > 0)
+	})
+
+	wg.Add(1)
+	t.Run("credential DELETE api", func(t *testing.T) {
+		defer wg.Done()
+
+		// 5. delete credential
+		constructDelCredRequest := func() *milvuspb.DeleteCredentialRequest {
+			return &milvuspb.DeleteCredentialRequest{
+				Base:     nil,
+				Username: username,
+			}
+		}
+		delCredReq := constructDelCredRequest()
+		deleteResp, err := proxy.DeleteCredential(ctx, delCredReq)
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, deleteResp.ErrorCode)
 	})
 
 	// proxy unhealthy
@@ -2688,6 +2886,39 @@ func TestProxy(t *testing.T) {
 		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.ErrorCode)
 	})
 
+	wg.Add(1)
+	t.Run("CreateCredential fail, timeout", func(t *testing.T) {
+		defer wg.Done()
+		resp, err := proxy.CreateCredential(shortCtx, &milvuspb.CreateCredentialRequest{Username: "xxx"})
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.ErrorCode)
+	})
+
+	wg.Add(1)
+	t.Run("UpdateCredential fail, timeout", func(t *testing.T) {
+		defer wg.Done()
+		resp, err := proxy.UpdateCredential(shortCtx, &milvuspb.UpdateCredentialRequest{Username: "xxx"})
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.ErrorCode)
+	})
+
+	wg.Add(1)
+	t.Run("DeleteCredential fail, timeout", func(t *testing.T) {
+		defer wg.Done()
+		resp, err := proxy.DeleteCredential(shortCtx, &milvuspb.DeleteCredentialRequest{Username: "xxx"})
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.ErrorCode)
+	})
+
+	wg.Add(1)
+	t.Run("ListCredUsers fail, timeout", func(t *testing.T) {
+		defer wg.Done()
+		globalMetaCache.ClearCredUsers() // precondition
+		resp, err := proxy.ListCredUsers(shortCtx, &milvuspb.ListCredUsersRequest{})
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
+	})
+
 	testServer.gracefulStop()
 
 	wg.Wait()
@@ -2794,38 +3025,66 @@ func TestProxy_GetComponentStates_state_code(t *testing.T) {
 	assert.NotEqual(t, commonpb.ErrorCode_Success, states.Status.ErrorCode)
 }
 
-func TestProxy__Import(t *testing.T) {
-	req := &milvuspb.ImportRequest{
-		CollectionName: "dummy",
-	}
-	rootCoord := &RootCoordMock{}
-	rootCoord.state.Store(internalpb.StateCode_Healthy)
-	t.Run("test import", func(t *testing.T) {
-
-		proxy := &Proxy{rootCoord: rootCoord}
-		proxy.stateCode.Store(internalpb.StateCode_Healthy)
-
-		resp, err := proxy.Import(context.TODO(), req)
-		assert.EqualValues(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
-		assert.Nil(t, err)
+func TestProxy_Import(t *testing.T) {
+	rc := NewRootCoordMock()
+	rc.Start()
+	defer rc.Stop()
+	err := InitMetaCache(rc)
+	assert.NoError(t, err)
+	rc.CreateCollection(context.TODO(), &milvuspb.CreateCollectionRequest{
+		Base: &commonpb.MsgBase{
+			MsgType:   commonpb.MsgType_DropCollection,
+			MsgID:     100,
+			Timestamp: 100,
+		},
+		CollectionName: "import_collection",
 	})
+	localMsg := true
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	factory := dependency.NewDefaultFactory(localMsg)
+	proxy, err := NewProxy(ctx, factory)
+	assert.NoError(t, err)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	t.Run("test import get vChannel failed", func(t *testing.T) {
+		defer wg.Done()
+		proxy.stateCode.Store(internalpb.StateCode_Healthy)
+		proxy.chMgr = newChannelsMgrImpl(nil, nil, nil, nil, nil)
+		resp, err := proxy.Import(context.TODO(),
+			&milvuspb.ImportRequest{
+				CollectionName: "import_collection",
+			})
+		assert.EqualValues(t, commonpb.ErrorCode_UnexpectedError, resp.Status.ErrorCode)
+		assert.Error(t, err)
+	})
+	wg.Add(1)
 	t.Run("test import with unhealthy", func(t *testing.T) {
-		proxy := &Proxy{rootCoord: rootCoord}
+		defer wg.Done()
+		req := &milvuspb.ImportRequest{
+			CollectionName: "dummy",
+		}
 		proxy.stateCode.Store(internalpb.StateCode_Abnormal)
 		resp, err := proxy.Import(context.TODO(), req)
 		assert.EqualValues(t, unhealthyStatus(), resp.Status)
-		assert.Nil(t, err)
+		assert.NoError(t, err)
 	})
+	resp, err := rc.DropCollection(context.TODO(), &milvuspb.DropCollectionRequest{
+		CollectionName: "import_collection",
+	})
+	wg.Wait()
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_Success, resp.ErrorCode)
+	rc.Stop()
 }
 
-func TestProxy__GetImportState(t *testing.T) {
+func TestProxy_GetImportState(t *testing.T) {
 	req := &milvuspb.GetImportStateRequest{
 		Task: 1,
 	}
 	rootCoord := &RootCoordMock{}
 	rootCoord.state.Store(internalpb.StateCode_Healthy)
 	t.Run("test get import state", func(t *testing.T) {
-
 		proxy := &Proxy{rootCoord: rootCoord}
 		proxy.stateCode.Store(internalpb.StateCode_Healthy)
 

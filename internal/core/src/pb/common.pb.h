@@ -128,6 +128,11 @@ enum ErrorCode : int {
   EmptyCollection = 26,
   UpdateImportTaskFailure = 27,
   CollectionNameNotFound = 28,
+  CreateCredentialFailure = 29,
+  UpdateCredentialFailure = 30,
+  DeleteCredentialFailure = 31,
+  GetCredentialFailure = 32,
+  ListCredUsersFailure = 33,
   DDRequestRace = 1000,
   ErrorCode_INT_MIN_SENTINEL_DO_NOT_USE_ = std::numeric_limits<::PROTOBUF_NAMESPACE_ID::int32>::min(),
   ErrorCode_INT_MAX_SENTINEL_DO_NOT_USE_ = std::numeric_limits<::PROTOBUF_NAMESPACE_ID::int32>::max()
@@ -187,12 +192,13 @@ enum SegmentState : int {
   Flushed = 4,
   Flushing = 5,
   Dropped = 6,
+  Importing = 7,
   SegmentState_INT_MIN_SENTINEL_DO_NOT_USE_ = std::numeric_limits<::PROTOBUF_NAMESPACE_ID::int32>::min(),
   SegmentState_INT_MAX_SENTINEL_DO_NOT_USE_ = std::numeric_limits<::PROTOBUF_NAMESPACE_ID::int32>::max()
 };
 bool SegmentState_IsValid(int value);
 constexpr SegmentState SegmentState_MIN = SegmentStateNone;
-constexpr SegmentState SegmentState_MAX = Dropped;
+constexpr SegmentState SegmentState_MAX = Importing;
 constexpr int SegmentState_ARRAYSIZE = SegmentState_MAX + 1;
 
 const ::PROTOBUF_NAMESPACE_ID::EnumDescriptor* SegmentState_descriptor();
@@ -269,12 +275,17 @@ enum MsgType : int {
   SegmentStatistics = 1206,
   SegmentFlushDone = 1207,
   DataNodeTt = 1208,
+  CreateCredential = 1500,
+  GetCredential = 1501,
+  DeleteCredential = 1502,
+  UpdateCredential = 1503,
+  ListCredUsernames = 1504,
   MsgType_INT_MIN_SENTINEL_DO_NOT_USE_ = std::numeric_limits<::PROTOBUF_NAMESPACE_ID::int32>::min(),
   MsgType_INT_MAX_SENTINEL_DO_NOT_USE_ = std::numeric_limits<::PROTOBUF_NAMESPACE_ID::int32>::max()
 };
 bool MsgType_IsValid(int value);
 constexpr MsgType MsgType_MIN = Undefined;
-constexpr MsgType MsgType_MAX = DataNodeTt;
+constexpr MsgType MsgType_MAX = ListCredUsernames;
 constexpr int MsgType_ARRAYSIZE = MsgType_MAX + 1;
 
 const ::PROTOBUF_NAMESPACE_ID::EnumDescriptor* MsgType_descriptor();

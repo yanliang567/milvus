@@ -214,6 +214,26 @@ func (m *MockRootCoord) ReportImport(ctx context.Context, req *rootcoordpb.Impor
 	return nil, nil
 }
 
+func (m *MockRootCoord) CreateCredential(ctx context.Context, req *internalpb.CredentialInfo) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockRootCoord) UpdateCredential(ctx context.Context, req *internalpb.CredentialInfo) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockRootCoord) DeleteCredential(ctx context.Context, req *milvuspb.DeleteCredentialRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockRootCoord) ListCredUsers(ctx context.Context, req *milvuspb.ListCredUsersRequest) (*milvuspb.ListCredUsersResponse, error) {
+	return nil, nil
+}
+
+func (m *MockRootCoord) GetCredential(ctx context.Context, req *rootcoordpb.GetCredentialRequest) (*rootcoordpb.GetCredentialResponse, error) {
+	return nil, nil
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 type MockIndexCoord struct {
 	MockBase
@@ -360,7 +380,7 @@ func (m *MockQueryCoord) GetMetrics(ctx context.Context, req *milvuspb.GetMetric
 	return nil, nil
 }
 
-func (m *MockQueryCoord) GetReplicas(ctx context.Context, req *querypb.GetReplicasRequest) (*querypb.GetReplicasResponse, error) {
+func (m *MockQueryCoord) GetReplicas(ctx context.Context, req *milvuspb.GetReplicasRequest) (*milvuspb.GetReplicasResponse, error) {
 	return nil, nil
 }
 
@@ -468,6 +488,10 @@ func (m *MockDataCoord) GetFlushState(ctx context.Context, req *milvuspb.GetFlus
 
 func (m *MockDataCoord) DropVirtualChannel(ctx context.Context, req *datapb.DropVirtualChannelRequest) (*datapb.DropVirtualChannelResponse, error) {
 	return &datapb.DropVirtualChannelResponse{}, nil
+}
+
+func (m *MockDataCoord) SetSegmentState(ctx context.Context, req *datapb.SetSegmentStateRequest) (*datapb.SetSegmentStateResponse, error) {
+	return &datapb.SetSegmentStateResponse{}, nil
 }
 
 func (m *MockDataCoord) Import(ctx context.Context, req *datapb.ImportTaskRequest) (*datapb.ImportTaskResponse, error) {
@@ -708,6 +732,38 @@ func (m *MockProxy) GetImportState(ctx context.Context, req *milvuspb.GetImportS
 	return nil, nil
 }
 
+func (m *MockProxy) GetReplicas(ctx context.Context, req *milvuspb.GetReplicasRequest) (*milvuspb.GetReplicasResponse, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) InvalidateCredentialCache(ctx context.Context, request *proxypb.InvalidateCredCacheRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) UpdateCredentialCache(ctx context.Context, request *proxypb.UpdateCredCacheRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) ClearCredUsersCache(ctx context.Context, request *internalpb.ClearCredUsersCacheRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) CreateCredential(ctx context.Context, req *milvuspb.CreateCredentialRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) UpdateCredential(ctx context.Context, req *milvuspb.UpdateCredentialRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) DeleteCredential(ctx context.Context, req *milvuspb.DeleteCredentialRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) ListCredUsers(ctx context.Context, req *milvuspb.ListCredUsersRequest) (*milvuspb.ListCredUsersResponse, error) {
+	return nil, nil
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 func Test_NewServer(t *testing.T) {
 	ctx := context.Background()
@@ -938,6 +994,41 @@ func Test_NewServer(t *testing.T) {
 
 	t.Run("GetCompactionStateWithPlans", func(t *testing.T) {
 		_, err := server.GetCompactionStateWithPlans(ctx, nil)
+		assert.Nil(t, err)
+	})
+
+	t.Run("CreateCredential", func(t *testing.T) {
+		_, err := server.CreateCredential(ctx, nil)
+		assert.Nil(t, err)
+	})
+
+	t.Run("UpdateCredential", func(t *testing.T) {
+		_, err := server.UpdateCredential(ctx, nil)
+		assert.Nil(t, err)
+	})
+
+	t.Run("DeleteCredential", func(t *testing.T) {
+		_, err := server.DeleteCredential(ctx, nil)
+		assert.Nil(t, err)
+	})
+
+	t.Run("ListCredUsers", func(t *testing.T) {
+		_, err := server.ListCredUsers(ctx, nil)
+		assert.Nil(t, err)
+	})
+
+	t.Run("InvalidateCredentialCache", func(t *testing.T) {
+		_, err := server.InvalidateCredentialCache(ctx, nil)
+		assert.Nil(t, err)
+	})
+
+	t.Run("UpdateCredentialCache", func(t *testing.T) {
+		_, err := server.UpdateCredentialCache(ctx, nil)
+		assert.Nil(t, err)
+	})
+
+	t.Run("ClearCredUsersCache", func(t *testing.T) {
+		_, err := server.ClearCredUsersCache(ctx, nil)
 		assert.Nil(t, err)
 	})
 

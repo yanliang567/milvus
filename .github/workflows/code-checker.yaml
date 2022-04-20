@@ -82,7 +82,7 @@ jobs:
         uses: actions/setup-go@v2.2.0
         if: ${{  matrix.os == 'macos-11' }}
         with:
-          go-version: '^1.17.1'
+          go-version: '~1.17.1'
       - name: Mac Cache Go Mod Volumes
         if: ${{  matrix.os == 'macos-11' }}
         uses: actions/cache@v1
@@ -109,7 +109,7 @@ jobs:
           if [[ ! -d "/var/tmp/ccache" ]];then
             mkdir -p /var/tmp/ccache
           fi
-          brew install boost libomp ninja tbb ccache
+          brew install boost libomp ninja tbb openblas ccache
           make check-proto-product && make verifiers
   centos:
     name: Code Checker CentOS 7

@@ -25,7 +25,6 @@
 #include <boost/dynamic_bitset.hpp>
 #include <NamedType/named_type.hpp>
 
-#include "knowhere/utils/BitsetView.h"
 #include "knowhere/common/MetricType.h"
 #include "pb/schema.pb.h"
 #include "utils/Types.h"
@@ -61,49 +60,6 @@ constexpr std::false_type always_false{};
 template <typename T>
 using aligned_vector = std::vector<T, boost::alignment::aligned_allocator<T, 64>>;
 
-///////////////////////////////////////////////////////////////////////////////////////////////////
-struct SearchResult {
-    SearchResult() = default;
-    SearchResult(int64_t num_queries, int64_t topk) : topk_(topk), num_queries_(num_queries) {
-        auto count = get_row_count();
-        distances_.resize(count);
-        ids_.resize(count);
-    }
-
-    int64_t
-    get_row_count() const {
-        return topk_ * num_queries_;
-    }
-
- public:
-    int64_t num_queries_;
-    int64_t topk_;
-    std::vector<float> distances_;
-    std::vector<int64_t> ids_;
-
- public:
-    // TODO(gexi): utilize these fields
-    void* segment_;
-    std::vector<int64_t> result_offsets_;
-    std::vector<int64_t> primary_keys_;
-    std::vector<std::vector<char>> row_data_;
-};
-
-using SearchResultPtr = std::shared_ptr<SearchResult>;
-using SearchResultOpt = std::optional<SearchResult>;
-
-struct RetrieveResult {
-    RetrieveResult() = default;
-
- public:
-    void* segment_;
-    std::vector<int64_t> result_offsets_;
-    std::vector<DataArray> field_data_;
-};
-
-using RetrieveResultPtr = std::shared_ptr<RetrieveResult>;
-using RetrieveResultOpt = std::optional<RetrieveResult>;
-
 namespace impl {
 // hide identifier name to make auto-completion happy
 struct FieldIdTag;
@@ -117,17 +73,8 @@ using FieldName = fluent::NamedType<std::string, impl::FieldNameTag, fluent::Com
 using FieldOffset = fluent::NamedType<int64_t, impl::FieldOffsetTag, fluent::Comparable, fluent::Hashable>;
 using SegOffset = fluent::NamedType<int64_t, impl::SegOffsetTag, fluent::Arithmetic>;
 
-using BitsetView = faiss::BitsetView;
-inline BitsetView
-BitsetSubView(const BitsetView& view, int64_t offset, int64_t size) {
-    if (view.empty()) {
-        return BitsetView();
-    }
-    assert(offset % 8 == 0);
-    return BitsetView(view.data() + offset / 8, size);
-}
-
 using BitsetType = boost::dynamic_bitset<>;
+using BitsetTypePtr = std::shared_ptr<boost::dynamic_bitset<>>;
 using BitsetTypeOpt = std::optional<BitsetType>;
 
 }  // namespace milvus

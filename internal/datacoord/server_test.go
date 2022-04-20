@@ -30,7 +30,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.uber.org/zap"
+
 	"github.com/milvus-io/milvus/internal/common"
+	"github.com/milvus-io/milvus/internal/kv"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
@@ -38,14 +45,10 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/etcd"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
-	"github.com/stretchr/testify/require"
-	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.uber.org/zap"
 )
 
 func TestMain(m *testing.M) {
@@ -616,7 +619,7 @@ func TestService_WatchServices(t *testing.T) {
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc, syscall.SIGINT)
 	defer signal.Reset(syscall.SIGINT)
-	factory := msgstream.NewPmsFactory()
+	factory := dependency.NewDefaultFactory(true)
 	svr := CreateServer(context.TODO(), factory)
 	svr.session = &sessionutil.Session{
 		TriggerKill: true,
@@ -1077,7 +1080,7 @@ func TestDataNodeTtChannel(t *testing.T) {
 			Partitions: []int64{0},
 		})
 
-		ttMsgStream, err := svr.msFactory.NewMsgStream(context.TODO())
+		ttMsgStream, err := svr.factory.NewMsgStream(context.TODO())
 		assert.Nil(t, err)
 		ttMsgStream.AsProducer([]string{Params.CommonCfg.DataCoordTimeTick})
 		ttMsgStream.Start()
@@ -1145,7 +1148,7 @@ func TestDataNodeTtChannel(t *testing.T) {
 			Schema:     newTestSchema(),
 			Partitions: []int64{0},
 		})
-		ttMsgStream, err := svr.msFactory.NewMsgStream(context.TODO())
+		ttMsgStream, err := svr.factory.NewMsgStream(context.TODO())
 		assert.Nil(t, err)
 		ttMsgStream.AsProducer([]string{Params.CommonCfg.DataCoordTimeTick})
 		ttMsgStream.Start()
@@ -1227,7 +1230,7 @@ func TestDataNodeTtChannel(t *testing.T) {
 			Partitions: []int64{0},
 		})
 
-		ttMsgStream, err := svr.msFactory.NewMsgStream(context.TODO())
+		ttMsgStream, err := svr.factory.NewMsgStream(context.TODO())
 		assert.Nil(t, err)
 		ttMsgStream.AsProducer([]string{Params.CommonCfg.DataCoordTimeTick})
 		ttMsgStream.Start()
@@ -2012,7 +2015,7 @@ func TestOptions(t *testing.T) {
 		})
 		assert.NotNil(t, opt)
 
-		factory := msgstream.NewPmsFactory()
+		factory := dependency.NewDefaultFactory(true)
 
 		svr := CreateServer(context.TODO(), factory, opt)
 		dn, err := svr.dataNodeCreator(context.Background(), "")
@@ -2261,6 +2264,116 @@ func TestGetFlushState(t *testing.T) {
 	})
 }
 
+type mockTxnKVext struct {
+	kv.MockTxnKV
+}
+
+func (m *mockTxnKVext) LoadWithPrefix(prefix string) ([]string, []string, error) {
+	return []string{}, []string{}, nil
+}
+
+func (m *mockTxnKVext) MultiSave(kvs map[string]string) error {
+	return errors.New("(testing only) injected error")
+}
+
+func TestDataCoordServer_SetSegmentState(t *testing.T) {
+	t.Run("normal case", func(t *testing.T) {
+		svr := newTestServer(t, nil)
+		defer closeTestServer(t, svr)
+		segment := &datapb.SegmentInfo{
+			ID:            1000,
+			CollectionID:  100,
+			PartitionID:   0,
+			InsertChannel: "c1",
+			NumOfRows:     0,
+			State:         commonpb.SegmentState_Growing,
+			StartPosition: &internalpb.MsgPosition{
+				ChannelName: "c1",
+				MsgID:       []byte{},
+				MsgGroup:    "",
+				Timestamp:   0,
+			},
+		}
+		err := svr.meta.AddSegment(NewSegmentInfo(segment))
+		assert.Nil(t, err)
+		// Set segment state.
+		svr.SetSegmentState(context.TODO(), &datapb.SetSegmentStateRequest{
+			SegmentId: 1000,
+			NewState:  commonpb.SegmentState_Flushed,
+		})
+		// Verify that the state has been updated.
+		resp, err := svr.GetSegmentStates(context.TODO(), &datapb.GetSegmentStatesRequest{
+			Base: &commonpb.MsgBase{
+				MsgType:   0,
+				MsgID:     0,
+				Timestamp: 0,
+				SourceID:  0,
+			},
+			SegmentIDs: []int64{1000},
+		})
+		assert.Nil(t, err)
+		assert.EqualValues(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
+		assert.EqualValues(t, 1, len(resp.States))
+		assert.EqualValues(t, commonpb.SegmentState_Flushed, resp.States[0].State)
+	})
+
+	t.Run("dataCoord meta set state error", func(t *testing.T) {
+		svr := newTestServer(t, nil)
+		svr.meta.Lock()
+		func() {
+			defer svr.meta.Unlock()
+			svr.meta, _ = newMeta(&mockTxnKVext{})
+		}()
+		defer closeTestServer(t, svr)
+		segment := &datapb.SegmentInfo{
+			ID:            1000,
+			CollectionID:  100,
+			PartitionID:   0,
+			InsertChannel: "c1",
+			NumOfRows:     0,
+			State:         commonpb.SegmentState_Growing,
+			StartPosition: &internalpb.MsgPosition{
+				ChannelName: "c1",
+				MsgID:       []byte{},
+				MsgGroup:    "",
+				Timestamp:   0,
+			},
+		}
+		svr.meta.AddSegment(NewSegmentInfo(segment))
+		// Set segment state.
+		svr.SetSegmentState(context.TODO(), &datapb.SetSegmentStateRequest{
+			SegmentId: 1000,
+			NewState:  commonpb.SegmentState_Flushed,
+		})
+		// Verify that the state has been updated.
+		resp, err := svr.GetSegmentStates(context.TODO(), &datapb.GetSegmentStatesRequest{
+			Base: &commonpb.MsgBase{
+				MsgType:   0,
+				MsgID:     0,
+				Timestamp: 0,
+				SourceID:  0,
+			},
+			SegmentIDs: []int64{1000},
+		})
+		assert.Nil(t, err)
+		assert.EqualValues(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
+		assert.EqualValues(t, 1, len(resp.States))
+		assert.EqualValues(t, commonpb.SegmentState_Flushed, resp.States[0].State)
+	})
+
+	t.Run("with closed server", func(t *testing.T) {
+		svr := newTestServer(t, nil)
+		closeTestServer(t, svr)
+		resp, err := svr.SetSegmentState(context.TODO(), &datapb.SetSegmentStateRequest{
+			SegmentId: 1000,
+			NewState:  commonpb.SegmentState_Flushed,
+		})
+		assert.Nil(t, err)
+		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp.GetStatus().GetErrorCode())
+		assert.Equal(t, serverNotServingErrMsg, resp.GetStatus().GetReason())
+	})
+}
+
 func TestImport(t *testing.T) {
 	t.Run("normal case", func(t *testing.T) {
 		svr := newTestServer(t, nil)
@@ -2279,9 +2392,7 @@ func TestImport(t *testing.T) {
 		})
 		assert.Nil(t, err)
 		assert.EqualValues(t, commonpb.ErrorCode_Success, resp.Status.GetErrorCode())
-
 		etcd.StopEtcdServer()
-
 	})
 
 	t.Run("no free node", func(t *testing.T) {
@@ -2302,9 +2413,7 @@ func TestImport(t *testing.T) {
 		})
 		assert.Nil(t, err)
 		assert.EqualValues(t, commonpb.ErrorCode_Success, resp.Status.GetErrorCode())
-
 		etcd.StopEtcdServer()
-
 	})
 
 	t.Run("no datanode available", func(t *testing.T) {
@@ -2319,9 +2428,7 @@ func TestImport(t *testing.T) {
 		})
 		assert.Nil(t, err)
 		assert.EqualValues(t, commonpb.ErrorCode_UnexpectedError, resp.Status.GetErrorCode())
-
 		etcd.StopEtcdServer()
-
 	})
 
 	t.Run("with closed server", func(t *testing.T) {
@@ -2386,9 +2493,7 @@ func newTestServer(t *testing.T, receiveCh chan interface{}, opts ...Option) *Se
 	var err error
 	Params.Init()
 	Params.CommonCfg.DataCoordTimeTick = Params.CommonCfg.DataCoordTimeTick + strconv.Itoa(rand.Int())
-	factory := msgstream.NewPmsFactory()
-	err = factory.Init(&Params)
-	assert.Nil(t, err)
+	factory := dependency.NewDefaultFactory(true)
 
 	etcdCli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
 	assert.Nil(t, err)

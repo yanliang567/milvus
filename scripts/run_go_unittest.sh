@@ -38,7 +38,7 @@ echo "Running go unittest under $MILVUS_DIR"
 
 go test -race -cover "${MILVUS_DIR}/allocator/..." -failfast
 go test -race -cover "${MILVUS_DIR}/kv/..." -failfast
-go test -race -cover "${MILVUS_DIR}/mq/..." -failfast
+go test -race -cover $(go list "${MILVUS_DIR}/mq/..." | grep -v kafka)  -failfast
 go test -race -cover "${MILVUS_DIR}/storage" -failfast
 go test -race -cover "${MILVUS_DIR}/tso/..." -failfast
 go test -race -cover "${MILVUS_DIR}/util/funcutil/..." -failfast
@@ -47,6 +47,7 @@ go test -race -cover "${MILVUS_DIR}/util/retry/..." -failfast
 go test -race -cover "${MILVUS_DIR}/util/sessionutil/..." -failfast
 go test -race -cover "${MILVUS_DIR}/util/trace/..." -failfast
 go test -race -cover "${MILVUS_DIR}/util/typeutil/..." -failfast
+go test -race -cover "${MILVUS_DIR}/util/importutil/..." -failfast
 
 # TODO: remove to distributed
 #go test -race -cover "${MILVUS_DIR}/proxy/..." -failfast

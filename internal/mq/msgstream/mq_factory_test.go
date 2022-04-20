@@ -18,6 +18,7 @@ package msgstream
 
 import (
 	"context"
+	"io/ioutil"
 	"os"
 	"testing"
 
@@ -25,9 +26,7 @@ import (
 )
 
 func TestPmsFactory(t *testing.T) {
-	pmsFactory := NewPmsFactory()
-
-	pmsFactory.Init(&Params)
+	pmsFactory := NewPmsFactory(&Params.PulsarCfg)
 
 	ctx := context.Background()
 	_, err := pmsFactory.NewMsgStream(ctx)
@@ -40,22 +39,16 @@ func TestPmsFactory(t *testing.T) {
 	assert.Nil(t, err)
 }
 
-func TestPmsFactory_Init(t *testing.T) {
-	rmsFactory := NewRmsFactory()
-	err := rmsFactory.Init(&Params)
-	assert.Nil(t, err)
-}
-
 func TestRmsFactory(t *testing.T) {
-	os.Setenv("ROCKSMQ_PATH", "/tmp/milvus")
 	defer os.Unsetenv("ROCKSMQ_PATH")
 
-	rmsFactory := NewRmsFactory()
+	dir, err := ioutil.TempDir(os.TempDir(), "mq")
+	assert.Nil(t, err)
 
-	rmsFactory.Init(&Params)
+	rmsFactory := NewRmsFactory(dir)
 
 	ctx := context.Background()
-	_, err := rmsFactory.NewMsgStream(ctx)
+	_, err = rmsFactory.NewMsgStream(ctx)
 	assert.Nil(t, err)
 
 	_, err = rmsFactory.NewTtMsgStream(ctx)
@@ -63,10 +56,21 @@ func TestRmsFactory(t *testing.T) {
 
 	_, err = rmsFactory.NewQueryMsgStream(ctx)
 	assert.Nil(t, err)
+
+	err = os.RemoveAll(dir)
+	assert.Nil(t, err)
 }
 
-func TestRmsFactory_Init(t *testing.T) {
-	rmsFactory := NewRmsFactory()
-	err := rmsFactory.Init(&Params)
+func TestKafkaFactory(t *testing.T) {
+	kmsFactory := NewKmsFactory(&Params.KafkaCfg)
+
+	ctx := context.Background()
+	_, err := kmsFactory.NewMsgStream(ctx)
+	assert.Nil(t, err)
+
+	_, err = kmsFactory.NewTtMsgStream(ctx)
+	assert.Nil(t, err)
+
+	_, err = kmsFactory.NewQueryMsgStream(ctx)
 	assert.Nil(t, err)
 }

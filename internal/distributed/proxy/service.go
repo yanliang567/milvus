@@ -26,36 +26,49 @@ import (
 	"sync"
 	"time"
 
+	grpc_auth "github.com/grpc-ecosystem/go-grpc-middleware/auth"
+
+	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/gin-gonic/gin"
 	ot "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
-	dcc "github.com/milvus-io/milvus/internal/distributed/datacoord/client"
-	icc "github.com/milvus-io/milvus/internal/distributed/indexcoord/client"
-	"github.com/milvus-io/milvus/internal/distributed/proxy/httpserver"
-	qcc "github.com/milvus-io/milvus/internal/distributed/querycoord/client"
-	rcc "github.com/milvus-io/milvus/internal/distributed/rootcoord/client"
-	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/mq/msgstream"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
-	"github.com/milvus-io/milvus/internal/proto/milvuspb"
-	"github.com/milvus-io/milvus/internal/proto/proxypb"
-	"github.com/milvus-io/milvus/internal/proxy"
-	"github.com/milvus-io/milvus/internal/types"
-	"github.com/milvus-io/milvus/internal/util/etcd"
-	"github.com/milvus-io/milvus/internal/util/funcutil"
-	"github.com/milvus-io/milvus/internal/util/paramtable"
-	"github.com/milvus-io/milvus/internal/util/trace"
-	"github.com/milvus-io/milvus/internal/util/typeutil"
 	"github.com/opentracing/opentracing-go"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/keepalive"
+
+	dcc "github.com/milvus-io/milvus/internal/distributed/datacoord/client"
+	icc "github.com/milvus-io/milvus/internal/distributed/indexcoord/client"
+	"github.com/milvus-io/milvus/internal/distributed/proxy/httpserver"
+	qcc "github.com/milvus-io/milvus/internal/distributed/querycoord/client"
+	rcc "github.com/milvus-io/milvus/internal/distributed/rootcoord/client"
+	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/proto/commonpb"
+	"github.com/milvus-io/milvus/internal/proto/internalpb"
+	"github.com/milvus-io/milvus/internal/proto/milvuspb"
+	"github.com/milvus-io/milvus/internal/proto/proxypb"
+	"github.com/milvus-io/milvus/internal/proxy"
+	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/dependency"
+	"github.com/milvus-io/milvus/internal/util/etcd"
+	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
+	"github.com/milvus-io/milvus/internal/util/trace"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
 var Params paramtable.GrpcServerConfig
 var HTTPParams paramtable.HTTPConfig
+
+var (
+	errMissingMetadata = status.Errorf(codes.InvalidArgument, "missing metadata")
+	errInvalidToken    = status.Errorf(codes.Unauthenticated, "invalid token")
+)
 
 // Server is the Proxy Server
 type Server struct {
@@ -80,7 +93,7 @@ type Server struct {
 }
 
 // NewServer create a Proxy server.
-func NewServer(ctx context.Context, factory msgstream.Factory) (*Server, error) {
+func NewServer(ctx context.Context, factory dependency.Factory) (*Server, error) {
 
 	var err error
 	server := &Server{
@@ -154,8 +167,15 @@ func (s *Server) startGrpcLoop(grpcPort int) {
 		grpc.KeepaliveParams(kasp),
 		grpc.MaxRecvMsgSize(Params.ServerMaxRecvSize),
 		grpc.MaxSendMsgSize(Params.ServerMaxSendSize),
-		grpc.UnaryInterceptor(ot.UnaryServerInterceptor(opts...)),
-		grpc.StreamInterceptor(ot.StreamServerInterceptor(opts...)))
+		grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
+			ot.UnaryServerInterceptor(opts...),
+			grpc_auth.UnaryServerInterceptor(proxy.AuthenticationInterceptor),
+		)),
+		grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(
+			ot.StreamServerInterceptor(opts...),
+			grpc_auth.StreamServerInterceptor(proxy.AuthenticationInterceptor),
+		)),
+	)
 	proxypb.RegisterProxyServer(s.grpcServer, s)
 	milvuspb.RegisterMilvusServiceServer(s.grpcServer, s)
 	grpc_health_v1.RegisterHealthServer(s.grpcServer, s)
@@ -358,6 +378,8 @@ func (s *Server) init() error {
 		return err
 	}
 	log.Debug("init Proxy done")
+	// Intentionally print to stdout, which is usually a sign that Milvus is ready to serve.
+	fmt.Println("---Milvus Proxy successfully initialized and ready to serve!---")
 
 	return nil
 }
@@ -647,6 +669,10 @@ func (s *Server) GetImportState(ctx context.Context, req *milvuspb.GetImportStat
 	return s.proxy.GetImportState(ctx, req)
 }
 
+func (s *Server) GetReplicas(ctx context.Context, req *milvuspb.GetReplicasRequest) (*milvuspb.GetReplicasResponse, error) {
+	return s.proxy.GetReplicas(ctx, req)
+}
+
 // Check is required by gRPC healthy checking
 func (s *Server) Check(ctx context.Context, req *grpc_health_v1.HealthCheckRequest) (*grpc_health_v1.HealthCheckResponse, error) {
 	ret := &grpc_health_v1.HealthCheckResponse{
@@ -683,4 +709,32 @@ func (s *Server) Watch(req *grpc_health_v1.HealthCheckRequest, server grpc_healt
 	}
 	ret.Status = grpc_health_v1.HealthCheckResponse_SERVING
 	return server.Send(ret)
+}
+
+func (s *Server) InvalidateCredentialCache(ctx context.Context, request *proxypb.InvalidateCredCacheRequest) (*commonpb.Status, error) {
+	return s.proxy.InvalidateCredentialCache(ctx, request)
+}
+
+func (s *Server) UpdateCredentialCache(ctx context.Context, request *proxypb.UpdateCredCacheRequest) (*commonpb.Status, error) {
+	return s.proxy.UpdateCredentialCache(ctx, request)
+}
+
+func (s *Server) ClearCredUsersCache(ctx context.Context, request *internalpb.ClearCredUsersCacheRequest) (*commonpb.Status, error) {
+	return s.proxy.ClearCredUsersCache(ctx, request)
+}
+
+func (s *Server) CreateCredential(ctx context.Context, req *milvuspb.CreateCredentialRequest) (*commonpb.Status, error) {
+	return s.proxy.CreateCredential(ctx, req)
+}
+
+func (s *Server) UpdateCredential(ctx context.Context, req *milvuspb.UpdateCredentialRequest) (*commonpb.Status, error) {
+	return s.proxy.UpdateCredential(ctx, req)
+}
+
+func (s *Server) DeleteCredential(ctx context.Context, req *milvuspb.DeleteCredentialRequest) (*commonpb.Status, error) {
+	return s.proxy.DeleteCredential(ctx, req)
+}
+
+func (s *Server) ListCredUsers(ctx context.Context, req *milvuspb.ListCredUsersRequest) (*milvuspb.ListCredUsersResponse, error) {
+	return s.proxy.ListCredUsers(ctx, req)
 }

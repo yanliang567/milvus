@@ -36,17 +36,21 @@ const (
 type ServiceParam struct {
 	BaseTable
 
-	EtcdCfg    EtcdConfig
-	PulsarCfg  PulsarConfig
-	RocksmqCfg RocksmqConfig
-	MinioCfg   MinioConfig
+	LocalStorageCfg LocalStorageConfig
+	EtcdCfg         EtcdConfig
+	PulsarCfg       PulsarConfig
+	KafkaCfg        KafkaConfig
+	RocksmqCfg      RocksmqConfig
+	MinioCfg        MinioConfig
 }
 
 func (p *ServiceParam) Init() {
 	p.BaseTable.Init()
 
+	p.LocalStorageCfg.init(&p.BaseTable)
 	p.EtcdCfg.init(&p.BaseTable)
 	p.PulsarCfg.init(&p.BaseTable)
+	p.KafkaCfg.init(&p.BaseTable)
 	p.RocksmqCfg.init(&p.BaseTable)
 	p.MinioCfg.init(&p.BaseTable)
 }
@@ -145,6 +149,21 @@ func (p *EtcdConfig) initEtcdLogPath() {
 	p.EtcdLogPath = p.Base.LoadWithDefault("etcd.log.path", defaultEtcdLogPath)
 }
 
+type LocalStorageConfig struct {
+	Base *BaseTable
+
+	Path string
+}
+
+func (p *LocalStorageConfig) init(base *BaseTable) {
+	p.Base = base
+	p.initPath()
+}
+
+func (p *LocalStorageConfig) initPath() {
+	p.Path = p.Base.LoadWithDefault("localStorage.path", "/var/lib/milvus/data")
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // --- pulsar ---
 type PulsarConfig struct {
@@ -181,6 +200,25 @@ func (p *PulsarConfig) initMaxMessageSize() {
 			p.MaxMessageSize = maxMessageSize
 		}
 	}
+}
+
+// --- kafka ---
+type KafkaConfig struct {
+	Base    *BaseTable
+	Address string
+}
+
+func (k *KafkaConfig) init(base *BaseTable) {
+	k.Base = base
+	k.initAddress()
+}
+
+func (k *KafkaConfig) initAddress() {
+	addr, err := k.Base.Load("_KafkaBrokerList")
+	if err != nil {
+		panic(err)
+	}
+	k.Address = addr
 }
 
 ///////////////////////////////////////////////////////////////////////////////

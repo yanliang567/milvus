@@ -29,7 +29,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/util/dependency"
+
 	"github.com/golang/protobuf/proto"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.uber.org/zap"
+
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/kv"
@@ -57,8 +62,6 @@ import (
 	"github.com/milvus-io/milvus/internal/util/trace"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.uber.org/zap"
 )
 
 // UniqueID is an alias of typeutil.UniqueID.
@@ -84,11 +87,7 @@ func metricProxy(v int64) string {
 	return fmt.Sprintf("client_%d", v)
 }
 
-var (
-	Params                     paramtable.ComponentParam
-	CheckCompleteIndexInterval = 3 * time.Minute
-	TaskTimeLimit              = 3 * time.Hour
-)
+var Params paramtable.ComponentParam
 
 // Core root coordinator core
 type Core struct {
@@ -151,6 +150,9 @@ type Core struct {
 
 	CallWatchChannels func(ctx context.Context, collectionID int64, channelNames []string) error
 
+	// Update segment state.
+	CallUpdateSegmentStateService func(ctx context.Context, segID typeutil.UniqueID, ss commonpb.SegmentState) error
+
 	//assign import task to data service
 	CallImportService func(ctx context.Context, req *datapb.ImportTaskRequest) *datapb.ImportTaskResponse
 
@@ -179,7 +181,7 @@ type Core struct {
 
 	session *sessionutil.Session
 
-	msFactory ms.Factory
+	factory dependency.Factory
 
 	//import manager
 	importManager *importManager
@@ -188,14 +190,14 @@ type Core struct {
 // --------------------- function --------------------------
 
 // NewCore creates a new rootcoord core
-func NewCore(c context.Context, factory ms.Factory) (*Core, error) {
+func NewCore(c context.Context, factory dependency.Factory) (*Core, error) {
 	ctx, cancel := context.WithCancel(c)
 	rand.Seed(time.Now().UnixNano())
 	core := &Core{
-		ctx:       ctx,
-		cancel:    cancel,
-		ddlLock:   sync.Mutex{},
-		msFactory: factory,
+		ctx:     ctx,
+		cancel:  cancel,
+		ddlLock: sync.Mutex{},
+		factory: factory,
 	}
 	core.UpdateStateCode(internalpb.StateCode_Abnormal)
 	return core, nil
@@ -277,6 +279,9 @@ func (c *Core) checkInit() error {
 	}
 	if c.CallGetFlushedSegmentsService == nil {
 		return fmt.Errorf("callGetFlushedSegmentsService is nil")
+	}
+	if c.CallUpdateSegmentStateService == nil {
+		return fmt.Errorf("CallUpdateSegmentStateService is nil")
 	}
 	if c.CallWatchChannels == nil {
 		return fmt.Errorf("callWatchChannels is nil")
@@ -462,46 +467,11 @@ func (c *Core) getSegments(ctx context.Context, collID typeutil.UniqueID) (map[t
 }
 
 func (c *Core) setMsgStreams() error {
-	if Params.PulsarCfg.Address == "" {
-		return fmt.Errorf("pulsar address is empty")
-	}
 	if Params.CommonCfg.RootCoordSubName == "" {
 		return fmt.Errorf("RootCoordSubName is empty")
 	}
 
-	// rootcoord time tick channel
-	if Params.CommonCfg.RootCoordTimeTick == "" {
-		return fmt.Errorf("timeTickChannel is empty")
-	}
-	timeTickStream, _ := c.msFactory.NewMsgStream(c.ctx)
-	metrics.RootCoordNumOfMsgStream.Inc()
-	timeTickStream.AsProducer([]string{Params.CommonCfg.RootCoordTimeTick})
-	log.Debug("RootCoord register timetick producer success", zap.String("channel name", Params.CommonCfg.RootCoordTimeTick))
-
 	c.SendTimeTick = func(t typeutil.Timestamp, reason string) error {
-		msgPack := ms.MsgPack{}
-		baseMsg := ms.BaseMsg{
-			BeginTimestamp: t,
-			EndTimestamp:   t,
-			HashValues:     []uint32{0},
-		}
-		timeTickResult := internalpb.TimeTickMsg{
-			Base: &commonpb.MsgBase{
-				MsgType:   commonpb.MsgType_TimeTick,
-				MsgID:     0,
-				Timestamp: t,
-				SourceID:  c.session.ServerID,
-			},
-		}
-		timeTickMsg := &ms.TimeTickMsg{
-			BaseMsg:     baseMsg,
-			TimeTickMsg: timeTickResult,
-		}
-		msgPack.Msgs = append(msgPack.Msgs, timeTickMsg)
-		if err := timeTickStream.Broadcast(&msgPack); err != nil {
-			return err
-		}
-
 		pc := c.chanTimeTick.listDmlChannels()
 		pt := make([]uint64, len(pc))
 		for i := 0; i < len(pt); i++ {
@@ -518,10 +488,6 @@ func (c *Core) setMsgStreams() error {
 			Timestamps:       pt,
 			DefaultTimestamp: t,
 		}
-		//log.Debug("update timetick",
-		//	zap.Any("DefaultTs", t),
-		//	zap.Any("sourceID", c.session.ServerID),
-		//	zap.Any("reason", reason))
 		return c.chanTimeTick.updateTimeTick(&ttMsg, reason)
 	}
 
@@ -601,7 +567,7 @@ func (c *Core) SetNewProxyClient(f func(sess *sessionutil.Session) (types.Proxy,
 	}
 }
 
-// SetDataCoord set datacoord
+// SetDataCoord set dataCoord.
 func (c *Core) SetDataCoord(ctx context.Context, s types.DataCoord) error {
 	initCh := make(chan struct{})
 	go func() {
@@ -716,6 +682,29 @@ func (c *Core) SetDataCoord(ctx context.Context, s types.DataCoord) error {
 			return nil, fmt.Errorf("get flushed segments from data coord failed, reason = %s", rsp.Status.Reason)
 		}
 		return rsp.Segments, nil
+	}
+
+	c.CallUpdateSegmentStateService = func(ctx context.Context, segID typeutil.UniqueID, ss commonpb.SegmentState) (retErr error) {
+		defer func() {
+			if err := recover(); err != nil {
+				retErr = fmt.Errorf("update segment state from data coord panic, msg = %v", err)
+			}
+		}()
+		<-initCh
+		req := &datapb.SetSegmentStateRequest{
+			SegmentId: segID,
+			NewState:  ss,
+		}
+		resp, err := s.SetSegmentState(ctx, req)
+		if err != nil || resp.GetStatus().GetErrorCode() != commonpb.ErrorCode_Success {
+			log.Error("failed to update segment state",
+				zap.Any("request", req), zap.Any("response", resp), zap.Error(err))
+			return err
+		}
+		log.Info("successfully set segment state",
+			zap.Int64("segment ID", req.GetSegmentId()),
+			zap.String("new segment state", req.GetNewState().String()))
+		return nil
 	}
 
 	c.CallWatchChannels = func(ctx context.Context, collectionID int64, channelNames []string) (retErr error) {
@@ -1101,12 +1090,10 @@ func (c *Core) Init() error {
 			return tsoAllocator.GetLastSavedTime()
 		}
 
-		if initError = c.msFactory.Init(&Params); initError != nil {
-			return
-		}
+		c.factory.Init(&Params)
 
 		chanMap := c.MetaTable.ListCollectionPhysicalChannels()
-		c.chanTimeTick = newTimeTickSync(c.ctx, c.session.ServerID, c.msFactory, chanMap)
+		c.chanTimeTick = newTimeTickSync(c.ctx, c.session.ServerID, c.factory, chanMap)
 		c.chanTimeTick.addSession(c.session)
 		c.proxyClientManager = newProxyClientManager(c)
 
@@ -1132,7 +1119,6 @@ func (c *Core) Init() error {
 			c.impTaskKv,
 			c.CallImportService,
 		)
-		c.importManager.init(c.ctx)
 	})
 	if initError != nil {
 		log.Debug("RootCoord init error", zap.Error(initError))
@@ -1261,7 +1247,7 @@ func (c *Core) reSendDdMsg(ctx context.Context, force bool) error {
 	return c.MetaTable.txn.Save(DDMsgSendPrefix, strconv.FormatBool(true))
 }
 
-// Start start rootcoord
+// Start starts RootCoord.
 func (c *Core) Start() error {
 	if err := c.checkInit(); err != nil {
 		log.Debug("RootCoord Start checkInit failed", zap.Error(err))
@@ -1269,7 +1255,6 @@ func (c *Core) Start() error {
 	}
 
 	log.Debug(typeutil.RootCoordRole, zap.Int64("node id", c.session.ServerID))
-	log.Debug(typeutil.RootCoordRole, zap.String("time tick channel name", Params.CommonCfg.RootCoordTimeTick))
 
 	c.startOnce.Do(func() {
 		if err := c.proxyManager.WatchProxy(); err != nil {
@@ -1281,11 +1266,12 @@ func (c *Core) Start() error {
 			log.Fatal("RootCoord Start reSendDdMsg failed", zap.Error(err))
 			panic(err)
 		}
-		c.wg.Add(4)
+		c.wg.Add(5)
 		go c.startTimeTickLoop()
 		go c.tsLoop()
 		go c.chanTimeTick.startWatch(&c.wg)
 		go c.checkFlushedSegmentsLoop()
+		go c.importManager.expireOldTasksLoop(&c.wg)
 		Params.RootCoordCfg.CreatedTime = time.Now()
 		Params.RootCoordCfg.UpdatedTime = time.Now()
 	})
@@ -1293,7 +1279,7 @@ func (c *Core) Start() error {
 	return nil
 }
 
-// Stop stop rootcoord
+// Stop stops rootCoord.
 func (c *Core) Stop() error {
 	c.UpdateStateCode(internalpb.StateCode_Abnormal)
 
@@ -2260,32 +2246,24 @@ func (c *Core) Import(ctx context.Context, req *milvuspb.ImportRequest) (*milvus
 	return resp, nil
 }
 
-// TODO: Implement this.
-// Check import task state from datanode
+// GetImportState returns the current state of an import task.
 func (c *Core) GetImportState(ctx context.Context, req *milvuspb.GetImportStateRequest) (*milvuspb.GetImportStateResponse, error) {
 	if code, ok := c.checkHealthy(); !ok {
 		return &milvuspb.GetImportStateResponse{
 			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]),
 		}, nil
 	}
-
-	log.Info("receive get import state request")
-	resp := &milvuspb.GetImportStateResponse{
-		Status: &commonpb.Status{
-			ErrorCode: commonpb.ErrorCode_Success,
-		},
-	}
-
-	return resp, nil
+	return c.importManager.getTaskState(req.GetTask()), nil
 }
 
 // ReportImport reports import task state to RootCoord.
 func (c *Core) ReportImport(ctx context.Context, ir *rootcoordpb.ImportResult) (*commonpb.Status, error) {
+	log.Info("receive import state report",
+		zap.Int64("task ID", ir.GetTaskId()),
+		zap.Any("import state", ir.GetState()))
 	if code, ok := c.checkHealthy(); !ok {
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]), nil
 	}
-
-	log.Info("receive import state report", zap.Any("import result", ir.String()))
 	// Upon receiving ReportImport request, update the related task's state in task store.
 	ti, err := c.importManager.updateTaskState(ir)
 	if err != nil {
@@ -2294,6 +2272,16 @@ func (c *Core) ReportImport(ctx context.Context, ir *rootcoordpb.ImportResult) (
 			Reason:    err.Error(),
 		}, nil
 	}
+
+	// That's all for reporting, if task hasn't reached persisted or completed status yet.
+	if ti.GetState().GetStateCode() != commonpb.ImportState_ImportPersisted &&
+		ti.GetState().GetStateCode() != commonpb.ImportState_ImportCompleted {
+		log.Debug("transitional import state received, return immediately", zap.Any("import result", ir))
+		return &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+		}, nil
+	}
+
 	// Reverse look up collection name on collection ID.
 	var colName string
 	for k, v := range c.MetaTable.collName2ID {
@@ -2309,17 +2297,15 @@ func (c *Core) ReportImport(ctx context.Context, ir *rootcoordpb.ImportResult) (
 		}, nil
 	}
 
-	// Start a loop to check segments' index states periodically.
-	c.wg.Add(1)
-	go c.checkCompleteIndexLoop(ctx, ti, colName, ir.Segments)
-
 	// When DataNode has done its thing, remove it from the busy node list.
-	c.importManager.busyNodesLock.Lock()
-	defer c.importManager.busyNodesLock.Unlock()
-	delete(c.importManager.busyNodes, ir.GetDatanodeId())
-	log.Info("dataNode is no longer busy",
-		zap.Int64("dataNode ID", ir.GetDatanodeId()),
-		zap.Int64("task ID", ir.GetTaskId()))
+	func() {
+		c.importManager.busyNodesLock.Lock()
+		defer c.importManager.busyNodesLock.Unlock()
+		delete(c.importManager.busyNodes, ir.GetDatanodeId())
+		log.Info("dataNode is no longer busy",
+			zap.Int64("dataNode ID", ir.GetDatanodeId()),
+			zap.Int64("task ID", ir.GetTaskId()))
+	}()
 
 	// Start a loop to check segments' index states periodically.
 	c.wg.Add(1)
@@ -2394,7 +2380,9 @@ func (c *Core) CountCompleteIndex(ctx context.Context, collectionName string, co
 	log.Debug("proxy GetIndexState", zap.Int("# of IndexBuildIDs", len(getIndexStatesRequest.IndexBuildIDs)), zap.Error(err))
 
 	if len(getIndexStatesRequest.IndexBuildIDs) == 0 {
-		log.Info("empty index build IDs returned", zap.String("collection name", collectionName), zap.Int64("collection ID", collectionID))
+		log.Info("empty index build IDs returned",
+			zap.String("collection name", collectionName),
+			zap.Int64("collection ID", collectionID))
 		return 0, nil
 	}
 	states, err := c.CallGetIndexStatesService(ctx, getIndexStatesRequest.IndexBuildIDs)
@@ -2421,41 +2409,51 @@ func (c *Core) CountCompleteIndex(ctx context.Context, collectionName string, co
 
 // checkCompleteIndexLoop checks index build states for an import task's segments and bring these segments online when
 // the criteria are met. checkCompleteIndexLoop does the check every CheckCompleteIndexInterval and exits if:
-// (1) a certain percent of indices are built, (2) when context is done or (3) when the task is expired.
+// (1) a certain percent of indices are built, (2) when context is done or (3) when `ImportIndexWaitLimit` has passed.
 func (c *Core) checkCompleteIndexLoop(ctx context.Context, ti *datapb.ImportTaskInfo, colName string, segIDs []UniqueID) {
 	defer c.wg.Done()
-	ticker := time.NewTicker(CheckCompleteIndexInterval)
-	spent := time.Duration(time.Unix(time.Now().Unix()-ti.GetCreateTs(), 0).Nanosecond())
-	log.Info("reporting task time left",
-		zap.Int64("task ID", ti.GetId()),
-		zap.Int64("minutes remaining", int64((TaskTimeLimit-spent).Minutes())))
-	// TODO: Replace with real task time limit.
-	expireTicker := time.NewTicker(TaskTimeLimit - spent)
+	ticker := time.NewTicker(time.Duration(Params.RootCoordCfg.ImportIndexCheckInterval*1000) * time.Millisecond)
+	defer ticker.Stop()
+	expireTicker := time.NewTicker(time.Duration(Params.RootCoordCfg.ImportIndexWaitLimit*1000) * time.Millisecond)
+	defer expireTicker.Stop()
 	for {
 		select {
 		case <-c.ctx.Done():
-			log.Info("(in loop)context done, exiting checkCompleteIndexLoop", zap.Int64("task ID", ti.GetId()))
+			log.Info("(in check complete index loop) context done, exiting checkCompleteIndexLoop",
+				zap.Int64("task ID", ti.GetId()))
 			return
 		case <-ticker.C:
-			log.Info("(in loop)check segments' index states", zap.Int64("task ID", ti.GetId()))
+			log.Info("(in check complete index loop) check segments' index states", zap.Int64("task ID", ti.GetId()))
 			if ct, err := c.CountCompleteIndex(ctx, colName, ti.GetCollectionId(), segIDs); err == nil &&
 				segmentsOnlineReady(ct, len(segIDs)) {
-				log.Info("(in loop)segment indices are ready",
+				log.Info("segment indices are ready",
 					zap.Int64("task ID", ti.GetId()),
 					zap.Int("total # of segments", len(segIDs)),
 					zap.Int("# of segments with index ready", ct))
-				c.importManager.bringSegmentsOnline(ti)
+				c.bringSegmentsOnline(ctx, segIDs)
 				return
 			}
 		case <-expireTicker.C:
-			log.Info("(in loop)task has expired, stop waiting for segment results", zap.Int64("task ID", ti.GetId()))
+			log.Info("(in check complete index loop) waited for sufficiently long time, bring segments online",
+				zap.Int64("task ID", ti.GetId()))
+			c.bringSegmentsOnline(ctx, segIDs)
 			return
 		}
-
 	}
 }
 
-// segmentsOnlineReady returns true if segments are ready to go up online (a.k.a. searchable).
+// bringSegmentsOnline brings the segments online so that data in these segments become searchable
+// it is done by changing segments' states from `importing` to `flushed`.
+func (c *Core) bringSegmentsOnline(ctx context.Context, segIDs []UniqueID) {
+	log.Info("bringing import task's segments online!", zap.Any("segment IDs", segIDs))
+	// TODO: Make update on segment states atomic.
+	for _, id := range segIDs {
+		// Explicitly mark segment states `flushed`.
+		c.CallUpdateSegmentStateService(ctx, id, commonpb.SegmentState_Flushed)
+	}
+}
+
+// segmentsOnlineReady returns true if segments are ready to go up online (a.k.a. become searchable).
 func segmentsOnlineReady(idxBuilt, segCount int) bool {
 	// Consider segments are ready when:
 	// (1) all but up to 2 segments have indices ready, or
@@ -2464,4 +2462,188 @@ func segmentsOnlineReady(idxBuilt, segCount int) bool {
 		return true
 	}
 	return false
+}
+
+// ExpireCredCache will call invalidate credential cache
+func (c *Core) ExpireCredCache(ctx context.Context, username string) error {
+	req := proxypb.InvalidateCredCacheRequest{
+		Base: &commonpb.MsgBase{
+			MsgType:  0, //TODO, msg type
+			MsgID:    0, //TODO, msg id
+			SourceID: c.session.ServerID,
+		},
+		Username: username,
+	}
+	return c.proxyClientManager.InvalidateCredentialCache(ctx, &req)
+}
+
+// UpdateCredCache will call update credential cache
+func (c *Core) UpdateCredCache(ctx context.Context, credInfo *internalpb.CredentialInfo) error {
+	req := proxypb.UpdateCredCacheRequest{
+		Base: &commonpb.MsgBase{
+			MsgType:  0, //TODO, msg type
+			MsgID:    0, //TODO, msg id
+			SourceID: c.session.ServerID,
+		},
+		Username: credInfo.Username,
+		Password: credInfo.EncryptedPassword,
+	}
+	return c.proxyClientManager.UpdateCredentialCache(ctx, &req)
+}
+
+// ClearCredUsersCache will call clear credential usernames cache
+func (c *Core) ClearCredUsersCache(ctx context.Context) error {
+	req := internalpb.ClearCredUsersCacheRequest{}
+	return c.proxyClientManager.ClearCredUsersCache(ctx, &req)
+}
+
+// CreateCredential create new user and password
+// 	1. decode ciphertext password to raw password
+// 	2. encrypt raw password
+// 	3. save in to etcd
+func (c *Core) CreateCredential(ctx context.Context, credInfo *internalpb.CredentialInfo) (*commonpb.Status, error) {
+	metrics.RootCoordCreateCredentialCounter.WithLabelValues(metrics.TotalLabel).Inc()
+	tr := timerecord.NewTimeRecorder("CreateCredential")
+	log.Debug("CreateCredential", zap.String("role", typeutil.RootCoordRole),
+		zap.String("username", credInfo.Username))
+
+	if cred, _ := c.MetaTable.getCredential(credInfo.Username); cred != nil {
+		return failStatus(commonpb.ErrorCode_CreateCredentialFailure, "user already exists:"+credInfo.Username), nil
+	}
+	// update proxy's local cache
+	err := c.ClearCredUsersCache(ctx)
+	if err != nil {
+		log.Error("CreateCredential clear credential username list cache failed", zap.String("role", typeutil.RootCoordRole),
+			zap.String("username", credInfo.Username), zap.Error(err))
+		metrics.RootCoordCreateCredentialCounter.WithLabelValues(metrics.FailLabel).Inc()
+		return failStatus(commonpb.ErrorCode_CreateCredentialFailure, "CreateCredential failed: "+err.Error()), nil
+	}
+	// insert to db
+	err = c.MetaTable.AddCredential(credInfo)
+	if err != nil {
+		log.Error("CreateCredential save credential failed", zap.String("role", typeutil.RootCoordRole),
+			zap.String("username", credInfo.Username), zap.Error(err))
+		metrics.RootCoordCreateCredentialCounter.WithLabelValues(metrics.FailLabel).Inc()
+		return failStatus(commonpb.ErrorCode_CreateCredentialFailure, "CreateCredential failed: "+err.Error()), nil
+	}
+	log.Debug("CreateCredential success", zap.String("role", typeutil.RootCoordRole),
+		zap.String("username", credInfo.Username))
+
+	metrics.RootCoordCreateCredentialCounter.WithLabelValues(metrics.SuccessLabel).Inc()
+	metrics.RootCoordCredentialWriteTypeLatency.WithLabelValues("CreateCredential").Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.RootCoordNumOfCredentials.Inc()
+	return succStatus(), nil
+}
+
+// GetCredential get credential by username
+func (c *Core) GetCredential(ctx context.Context, in *rootcoordpb.GetCredentialRequest) (*rootcoordpb.GetCredentialResponse, error) {
+	metrics.RootCoordGetCredentialCounter.WithLabelValues(metrics.TotalLabel).Inc()
+	tr := timerecord.NewTimeRecorder("GetCredential")
+	log.Debug("GetCredential", zap.String("role", typeutil.RootCoordRole),
+		zap.String("username", in.Username))
+
+	credInfo, err := c.MetaTable.getCredential(in.Username)
+	if err != nil {
+		log.Error("GetCredential query credential failed", zap.String("role", typeutil.RootCoordRole),
+			zap.String("username", in.Username), zap.Error(err))
+		metrics.RootCoordGetCredentialCounter.WithLabelValues(metrics.FailLabel).Inc()
+		return &rootcoordpb.GetCredentialResponse{
+			Status: failStatus(commonpb.ErrorCode_GetCredentialFailure, "GetCredential failed: "+err.Error()),
+		}, err
+	}
+	log.Debug("GetCredential success", zap.String("role", typeutil.RootCoordRole),
+		zap.String("username", in.Username))
+
+	metrics.RootCoordGetCredentialCounter.WithLabelValues(metrics.SuccessLabel).Inc()
+	metrics.RootCoordCredentialReadTypeLatency.WithLabelValues("GetCredential", in.Username).Observe(float64(tr.ElapseSpan().Milliseconds()))
+	return &rootcoordpb.GetCredentialResponse{
+		Status:   succStatus(),
+		Username: credInfo.Username,
+		Password: credInfo.EncryptedPassword,
+	}, nil
+}
+
+// UpdateCredential update password for a user
+func (c *Core) UpdateCredential(ctx context.Context, credInfo *internalpb.CredentialInfo) (*commonpb.Status, error) {
+	metrics.RootCoordUpdateCredentialCounter.WithLabelValues(metrics.TotalLabel).Inc()
+	tr := timerecord.NewTimeRecorder("UpdateCredential")
+	log.Debug("UpdateCredential", zap.String("role", typeutil.RootCoordRole),
+		zap.String("username", credInfo.Username))
+	// update proxy's local cache
+	err := c.UpdateCredCache(ctx, credInfo)
+	if err != nil {
+		log.Error("UpdateCredential update credential cache failed", zap.String("role", typeutil.RootCoordRole),
+			zap.String("username", credInfo.Username), zap.Error(err))
+		metrics.RootCoordUpdateCredentialCounter.WithLabelValues(metrics.FailLabel).Inc()
+		return failStatus(commonpb.ErrorCode_UpdateCredentialFailure, "UpdateCredential failed: "+err.Error()), nil
+	}
+	// update data on storage
+	err = c.MetaTable.AddCredential(credInfo)
+	if err != nil {
+		log.Error("UpdateCredential save credential failed", zap.String("role", typeutil.RootCoordRole),
+			zap.String("username", credInfo.Username), zap.Error(err))
+		metrics.RootCoordUpdateCredentialCounter.WithLabelValues(metrics.FailLabel).Inc()
+		return failStatus(commonpb.ErrorCode_UpdateCredentialFailure, "UpdateCredential failed: "+err.Error()), nil
+	}
+	log.Debug("UpdateCredential success", zap.String("role", typeutil.RootCoordRole),
+		zap.String("username", credInfo.Username))
+
+	metrics.RootCoordUpdateCredentialCounter.WithLabelValues(metrics.SuccessLabel).Inc()
+	metrics.RootCoordCredentialWriteTypeLatency.WithLabelValues("UpdateCredential").Observe(float64(tr.ElapseSpan().Milliseconds()))
+	return succStatus(), nil
+}
+
+// DeleteCredential delete a user
+func (c *Core) DeleteCredential(ctx context.Context, in *milvuspb.DeleteCredentialRequest) (*commonpb.Status, error) {
+	metrics.RootCoordDeleteCredentialCounter.WithLabelValues(metrics.TotalLabel).Inc()
+	tr := timerecord.NewTimeRecorder("DeleteCredential")
+
+	log.Debug("DeleteCredential", zap.String("role", typeutil.RootCoordRole),
+		zap.String("username", in.Username))
+	// invalidate proxy's local cache
+	err := c.ExpireCredCache(ctx, in.Username)
+	if err != nil {
+		log.Error("DeleteCredential expire credential cache failed", zap.String("role", typeutil.RootCoordRole),
+			zap.String("username", in.Username), zap.Error(err))
+		metrics.RootCoordDeleteCredentialCounter.WithLabelValues(metrics.FailLabel).Inc()
+		return failStatus(commonpb.ErrorCode_DeleteCredentialFailure, "DeleteCredential failed: "+err.Error()), nil
+	}
+	// delete data on storage
+	err = c.MetaTable.DeleteCredential(in.Username)
+	if err != nil {
+		log.Error("DeleteCredential remove credential failed", zap.String("role", typeutil.RootCoordRole),
+			zap.String("username", in.Username), zap.Error(err))
+		metrics.RootCoordDeleteCredentialCounter.WithLabelValues(metrics.FailLabel).Inc()
+		return failStatus(commonpb.ErrorCode_DeleteCredentialFailure, "DeleteCredential failed: "+err.Error()), err
+	}
+	log.Debug("DeleteCredential success", zap.String("role", typeutil.RootCoordRole),
+		zap.String("username", in.Username))
+
+	metrics.RootCoordDeleteCredentialCounter.WithLabelValues(metrics.SuccessLabel).Inc()
+	metrics.RootCoordCredentialWriteTypeLatency.WithLabelValues("DeleteCredential").Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.RootCoordNumOfCredentials.Dec()
+	return succStatus(), nil
+}
+
+// ListCredUsers list all usernames
+func (c *Core) ListCredUsers(ctx context.Context, in *milvuspb.ListCredUsersRequest) (*milvuspb.ListCredUsersResponse, error) {
+	metrics.RootCoordListCredUsersCounter.WithLabelValues(metrics.TotalLabel).Inc()
+	tr := timerecord.NewTimeRecorder("ListCredUsers")
+
+	credInfo, err := c.MetaTable.ListCredentialUsernames()
+	if err != nil {
+		log.Error("ListCredUsers query usernames failed", zap.String("role", typeutil.RootCoordRole),
+			zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
+		return &milvuspb.ListCredUsersResponse{
+			Status: failStatus(commonpb.ErrorCode_ListCredUsersFailure, "ListCredUsers failed: "+err.Error()),
+		}, err
+	}
+	log.Debug("ListCredUsers success", zap.String("role", typeutil.RootCoordRole))
+
+	metrics.RootCoordListCredUsersCounter.WithLabelValues(metrics.SuccessLabel).Inc()
+	metrics.RootCoordCredentialReadTypeLatency.WithLabelValues("ListCredUsers", "ALL.API").Observe(float64(tr.ElapseSpan().Milliseconds()))
+	return &milvuspb.ListCredUsersResponse{
+		Status:    succStatus(),
+		Usernames: credInfo.Usernames,
+	}, nil
 }

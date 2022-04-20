@@ -186,6 +186,7 @@ TEST(Query, ExecWithPredicateLoader) {
     int topk = 5;
 
     Json json = SearchResultToJson(*sr);
+#ifdef __linux__
     auto ref = json::parse(R"(
 [
   [
@@ -196,6 +197,18 @@ TEST(Query, ExecWithPredicateLoader) {
 	["66353->5.696000", "41087->5.917000", "97780->6.811000", "99239->7.562000", "86527->7.751000"]
   ]
 ])");
+#else  // for mac
+    auto ref = json::parse(R"(
+[
+  [
+    ["982->0.000000", "31864->4.270000", "18916->4.651000", "71547->5.125000", "13227->6.010000"],
+    ["96984->4.192000", "65514->6.011000", "89328->6.138000", "80284->6.526000", "68218->6.563000"],
+    ["30119->2.464000", "52595->4.323000", "32673->4.851000", "74834->5.009000", "50806->5.446000"],
+    ["99625->6.129000", "86582->6.900000", "10069->7.388000", "89982->7.672000", "85934->7.792000"],
+    ["37759->3.581000", "97019->5.557000", "53543->5.844000", "63535->6.439000", "94009->6.572000"]
+  ]
+])");
+#endif
     std::cout << json.dump(2);
     ASSERT_EQ(json.dump(2), ref.dump(2));
 }
@@ -301,6 +314,7 @@ TEST(Query, ExecWithPredicate) {
     int topk = 5;
 
     Json json = SearchResultToJson(*sr);
+#ifdef __linux__
     auto ref = json::parse(R"(
 [
 	[
@@ -311,6 +325,18 @@ TEST(Query, ExecWithPredicate) {
 		["66353->5.696000", "41087->5.917000", "97780->6.811000", "99239->7.562000", "86527->7.751000"]
 	]
 ])");
+#else  // for mac
+    auto ref = json::parse(R"(
+[
+	[
+        ["982->0.000000", "31864->4.270000", "18916->4.651000", "71547->5.125000", "13227->6.010000"],
+        ["96984->4.192000", "65514->6.011000", "89328->6.138000", "80284->6.526000", "68218->6.563000"],
+        ["30119->2.464000", "52595->4.323000", "32673->4.851000", "74834->5.009000", "50806->5.446000"],
+        ["99625->6.129000", "86582->6.900000", "10069->7.388000", "89982->7.672000", "85934->7.792000"],
+        ["37759->3.581000", "97019->5.557000", "53543->5.844000", "63535->6.439000", "94009->6.572000"]
+    ]
+])");
+#endif
     std::cout << json.dump(2);
     ASSERT_EQ(json.dump(2), ref.dump(2));
 }
@@ -498,6 +524,7 @@ TEST(Query, ExecWithoutPredicate) {
     std::vector<std::vector<std::string>> results;
     int topk = 5;
     auto json = SearchResultToJson(*sr);
+#ifdef __linux__
     auto ref = json::parse(R"(
 [
 	[
@@ -508,6 +535,18 @@ TEST(Query, ExecWithoutPredicate) {
 		["66353->5.696000", "41087->5.917000", "24554->6.195000", "68019->6.654000", "97780->6.811000"]
 	]
 ])");
+#else  // for mac
+    auto ref = json::parse(R"(
+[
+	[
+        ["982->0.000000", "31864->4.270000", "18916->4.651000", "78227->4.808000", "71547->5.125000"],
+        ["96984->4.192000", "45733->4.912000", "32891->5.016000", "65514->6.011000", "89328->6.138000"],
+        ["30119->2.464000", "52595->4.323000", "32673->4.851000", "74834->5.009000", "76784->5.195000"],
+        ["99625->6.129000", "86582->6.900000", "60608->7.285000", "10069->7.388000", "89982->7.672000"],
+        ["37759->3.581000", "45814->4.872000", "97019->5.557000", "23626->5.839000", "53543->5.844000"]
+    ]
+])");
+#endif
     std::cout << json.dump(2);
     ASSERT_EQ(json.dump(2), ref.dump(2));
 }
@@ -598,9 +637,9 @@ TEST(Query, FillSegment) {
     // dispatch here
     int N = 100000;
     auto dataset = DataGen(schema, N);
-    const auto std_vec = dataset.get_col<int64_t>(1);
-    const auto std_vfloat_vec = dataset.get_col<float>(0);
-    const auto std_i32_vec = dataset.get_col<int32_t>(2);
+    const auto std_vec = dataset.get_col<int64_t>(1);       // ids field
+    const auto std_vfloat_vec = dataset.get_col<float>(0);  // vector field
+    const auto std_i32_vec = dataset.get_col<int32_t>(2);   // scalar field
 
     std::vector<std::unique_ptr<SegmentInternalInterface>> segments;
     segments.emplace_back([&] {
@@ -662,16 +701,20 @@ TEST(Query, FillSegment) {
         result->result_offsets_.resize(topk * num_queries);
         segment->FillTargetEntry(plan.get(), *result);
 
-        auto ans = result->row_data_;
-        ASSERT_EQ(ans.size(), topk * num_queries);
-        int64_t std_index = 0;
+        auto fields_data = result->output_fields_data_;
+        auto fields_meta = result->output_fields_meta_;
+        ASSERT_EQ(fields_data.size(), 2);
+        ASSERT_EQ(fields_data.size(), 2);
+        ASSERT_EQ(fields_meta[0].get_sizeof(), sizeof(float) * dim);
+        ASSERT_EQ(fields_meta[1].get_sizeof(), sizeof(int32_t));
+        ASSERT_EQ(fields_data[0].size(), fields_meta[0].get_sizeof() * topk * num_queries);
+        ASSERT_EQ(fields_data[1].size(), fields_meta[1].get_sizeof() * topk * num_queries);
 
-        for (auto& vec : ans) {
-            ASSERT_EQ(vec.size(), sizeof(int64_t) + sizeof(float) * dim + sizeof(int32_t));
+        for (int i = 0; i < topk * num_queries; i++) {
             int64_t val;
-            memcpy(&val, vec.data(), sizeof(int64_t));
+            memcpy(&val, &result->ids_data_[i * sizeof(int64_t)], sizeof(int64_t));
 
-            auto internal_offset = result->ids_[std_index];
+            auto internal_offset = result->ids_[i];
             auto std_val = std_vec[internal_offset];
             auto std_i32 = std_i32_vec[internal_offset];
             std::vector<float> std_vfloat(dim);
@@ -679,14 +722,16 @@ TEST(Query, FillSegment) {
 
             ASSERT_EQ(val, std_val) << "io:" << internal_offset;
             if (val != -1) {
+                // check vector field
                 std::vector<float> vfloat(dim);
+                memcpy(vfloat.data(), &fields_data[0][i * sizeof(float) * dim], dim * sizeof(float));
+                ASSERT_EQ(vfloat, std_vfloat);
+
+                // check int32 field
                 int i32;
-                memcpy(vfloat.data(), vec.data() + sizeof(int64_t), dim * sizeof(float));
-                memcpy(&i32, vec.data() + sizeof(int64_t) + dim * sizeof(float), sizeof(int32_t));
-                ASSERT_EQ(vfloat, std_vfloat) << std_index;
-                ASSERT_EQ(i32, std_i32) << std_index;
+                memcpy(&i32, &fields_data[1][i * sizeof(int32_t)], sizeof(int32_t));
+                ASSERT_EQ(i32, std_i32);
             }
-            ++std_index;
         }
     }
 }

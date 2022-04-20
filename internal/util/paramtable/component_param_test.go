@@ -40,9 +40,13 @@ func TestComponentParam(t *testing.T) {
 		t.Logf("default index name = %s", Params.DefaultIndexName)
 
 		assert.Equal(t, Params.RetentionDuration, int64(DefaultRetentionDuration))
+		t.Logf("default retention duration = %d", Params.RetentionDuration)
 
 		assert.NotEqual(t, Params.SimdType, "")
 		t.Logf("knowhere simd type = %s", Params.SimdType)
+
+		assert.Equal(t, Params.IndexSliceSize, int64(DefaultIndexSliceSize))
+		t.Logf("knowhere index slice size = %d", Params.IndexSliceSize)
 
 		// -- proxy --
 		assert.Equal(t, Params.ProxySubName, "by-dev-proxy")
@@ -100,9 +104,16 @@ func TestComponentParam(t *testing.T) {
 
 		assert.NotEqual(t, Params.MaxPartitionNum, 0)
 		t.Logf("master MaxPartitionNum = %d", Params.MaxPartitionNum)
-
 		assert.NotEqual(t, Params.MinSegmentSizeToEnableIndex, 0)
 		t.Logf("master MinSegmentSizeToEnableIndex = %d", Params.MinSegmentSizeToEnableIndex)
+		assert.NotEqual(t, Params.ImportTaskExpiration, 0)
+		t.Logf("master ImportTaskExpiration = %f", Params.ImportTaskExpiration)
+		assert.NotEqual(t, Params.ImportTaskRetention, 0)
+		t.Logf("master ImportTaskRetention = %f", Params.ImportTaskRetention)
+		assert.NotEqual(t, Params.ImportIndexCheckInterval, 0)
+		t.Logf("master ImportIndexCheckInterval = %f", Params.ImportIndexCheckInterval)
+		assert.NotEqual(t, Params.ImportIndexWaitLimit, 0)
+		t.Logf("master ImportIndexWaitLimit = %f", Params.ImportIndexWaitLimit)
 
 		Params.CreatedTime = time.Now()
 		Params.UpdatedTime = time.Now()
