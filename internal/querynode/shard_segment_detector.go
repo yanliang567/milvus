@@ -132,7 +132,6 @@ func (sd *etcdShardSegmentDetector) watch(ch clientv3.WatchChan, collectionID in
 				}
 			}
 			for _, e := range evt.Events {
-				log.Debug("segment evt", zap.Any("evt", evt))
 				switch e.Type {
 				case mvccpb.PUT:
 					sd.handlePutEvent(e, collectionID, replicaID, vchannel)
@@ -193,9 +192,6 @@ func (sd *etcdShardSegmentDetector) handleDelEvent(e *clientv3.Event, collection
 func (sd *etcdShardSegmentDetector) parseSegmentInfo(bs []byte) (*querypb.SegmentInfo, error) {
 	info := &querypb.SegmentInfo{}
 	err := proto.Unmarshal(bs, info)
-	if err == nil {
-		log.Debug("segment info", zap.Any("segmentInfo", info))
-	}
 	return info, err
 }
 

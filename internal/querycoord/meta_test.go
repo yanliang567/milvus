@@ -115,15 +115,15 @@ func TestMetaFunc(t *testing.T) {
 		PartitionID:  defaultPartitionID,
 		SegmentID:    defaultSegmentID,
 		NodeID:       nodeID,
+		NodeIds:      []int64{nodeID},
 	}
 	meta := &MetaReplica{
-		client:            kv,
 		collectionInfos:   map[UniqueID]*querypb.CollectionInfo{},
 		queryChannelInfos: map[UniqueID]*querypb.QueryChannelInfo{},
 		dmChannelInfos:    map[string]*querypb.DmChannelWatchInfo{},
 		segmentsInfo:      segmentsInfo,
 	}
-
+	meta.setKvClient(kv)
 	dmChannels := []string{"testDm1", "testDm2"}
 
 	t.Run("Test ShowPartitionFail", func(t *testing.T) {
@@ -231,6 +231,7 @@ func TestMetaFunc(t *testing.T) {
 				CollectionID: defaultCollectionID,
 				DmChannel:    channel,
 				NodeIDLoaded: nodeID,
+				NodeIds:      []int64{nodeID},
 			})
 		}
 		err = meta.setDmChannelInfos(dmChannelWatchInfos)
@@ -307,7 +308,6 @@ func TestReloadMetaFromKV(t *testing.T) {
 		return newID, nil
 	}
 	meta := &MetaReplica{
-		client:            kv,
 		idAllocator:       idAllocator,
 		collectionInfos:   map[UniqueID]*querypb.CollectionInfo{},
 		queryChannelInfos: map[UniqueID]*querypb.QueryChannelInfo{},
@@ -316,6 +316,7 @@ func TestReloadMetaFromKV(t *testing.T) {
 		segmentsInfo:      newSegmentsInfo(kv),
 		replicas:          NewReplicaInfos(),
 	}
+	meta.setKvClient(kv)
 
 	kvs := make(map[string]string)
 	collectionInfo := &querypb.CollectionInfo{
@@ -390,6 +391,7 @@ func TestCreateQueryChannel(t *testing.T) {
 		PartitionID:  defaultPartitionID,
 		SegmentID:    defaultSegmentID,
 		NodeID:       nodeID,
+		NodeIds:      []int64{nodeID},
 	}
 
 	fixedQueryChannel := Params.CommonCfg.QueryCoordSearch + "-0"
@@ -407,12 +409,12 @@ func TestCreateQueryChannel(t *testing.T) {
 	}
 
 	m := &MetaReplica{
-		client:            kv,
 		collectionInfos:   map[UniqueID]*querypb.CollectionInfo{},
 		queryChannelInfos: map[UniqueID]*querypb.QueryChannelInfo{},
 		dmChannelInfos:    map[string]*querypb.DmChannelWatchInfo{},
 		segmentsInfo:      segmentsInfo,
 	}
+	m.setKvClient(kv)
 	for _, test := range tests {
 		t.Run(test.description, func(t *testing.T) {
 			info := m.createQueryChannel(test.inID)
@@ -420,5 +422,4 @@ func TestCreateQueryChannel(t *testing.T) {
 			assert.Equal(t, info.GetQueryResultChannel(), test.outResultChannel)
 		})
 	}
-
 }

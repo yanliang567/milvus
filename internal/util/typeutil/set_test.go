@@ -14,34 +14,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package proxy
+package typeutil
 
 import (
-	"strconv"
-	"time"
+	"testing"
 
-	"github.com/patrickmn/go-cache"
+	"github.com/stretchr/testify/assert"
 )
 
-type idCache struct {
-	cache *cache.Cache
-}
+func TestUniqueSet(t *testing.T) {
+	set := make(UniqueSet)
+	set.Insert(5, 7, 9)
+	assert.True(t, set.Contain(5))
+	assert.True(t, set.Contain(7))
+	assert.True(t, set.Contain(9))
+	assert.True(t, set.Contain(5, 7, 9))
 
-func newIDCache(defaultExpiration, cleanupInterval time.Duration) *idCache {
-	c := cache.New(defaultExpiration, cleanupInterval)
-	return &idCache{
-		cache: c,
-	}
-}
-
-func (r *idCache) Set(id UniqueID, value bool) {
-	r.cache.Set(strconv.FormatInt(id, 36), value, 0)
-}
-
-func (r *idCache) Get(id UniqueID) (value bool, exists bool) {
-	valueRaw, exists := r.cache.Get(strconv.FormatInt(id, 36))
-	if valueRaw == nil {
-		return false, exists
-	}
-	return valueRaw.(bool), exists
+	set.Remove(7)
+	assert.True(t, set.Contain(5))
+	assert.False(t, set.Contain(7))
+	assert.True(t, set.Contain(9))
+	assert.False(t, set.Contain(5, 7, 9))
 }

@@ -163,7 +163,6 @@ func (nd *etcdShardNodeDetector) handlePutEvent(e *clientv3.Event, collectionID,
 		return
 	}
 	if info.CollectionID != collectionID || info.ReplicaID != replicaID {
-		log.Warn("here")
 		return
 	}
 	if e.PrevKv != nil {
@@ -265,8 +264,5 @@ func (nd *etcdShardNodeDetector) handleDelEvent(e *clientv3.Event, collectionID,
 func (nd *etcdShardNodeDetector) parseReplicaInfo(bs []byte) (*milvuspb.ReplicaInfo, error) {
 	info := &milvuspb.ReplicaInfo{}
 	err := proto.Unmarshal(bs, info)
-	if err == nil {
-		log.Debug("ReplicaInfo", zap.Any("info", info))
-	}
 	return info, err
 }

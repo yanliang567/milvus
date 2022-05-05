@@ -55,7 +55,7 @@ import (
 )
 
 const (
-	connEtcdMaxRetryTime = 100000
+	connEtcdMaxRetryTime = 100
 	allPartitionID       = 0 // paritionID means no filtering
 )
 
@@ -241,8 +241,8 @@ func (s *Server) initSession() error {
 		return errors.New("failed to initialize session")
 	}
 	s.session.Init(typeutil.DataCoordRole, Params.DataCoordCfg.Address, true, true)
-	Params.DataCoordCfg.NodeID = s.session.ServerID
-	Params.SetLogger(Params.DataCoordCfg.NodeID)
+	Params.DataCoordCfg.SetNodeID(s.session.ServerID)
+	Params.SetLogger(Params.DataCoordCfg.GetNodeID())
 	return nil
 }
 
@@ -518,7 +518,7 @@ func (s *Server) handleTimetickMessage(ctx context.Context, ttMsg *msgstream.Dat
 	}
 
 	utcT, _ := tsoutil.ParseHybridTs(ts)
-	metrics.DataCoordSyncUTC.WithLabelValues().Set(float64(utcT))
+	metrics.DataCoordSyncEpoch.WithLabelValues(ch).Set(float64(utcT))
 
 	s.updateSegmentStatistics(ttMsg.GetSegmentsStats())
 
@@ -539,7 +539,9 @@ func (s *Server) handleTimetickMessage(ctx context.Context, ttMsg *msgstream.Dat
 		return nil
 	}
 
-	log.Info("flush segments", zap.Int64s("segmentIDs", flushableIDs), zap.Int("markSegments count", len(staleSegments)))
+	log.Info("start flushing segments",
+		zap.Int64s("segment IDs", flushableIDs),
+		zap.Int("# of stale/mark segments", len(staleSegments)))
 
 	s.setLastFlushTime(flushableSegments)
 	s.setLastFlushTime(staleSegments)
@@ -814,7 +816,7 @@ func (s *Server) loadCollectionFromRootCoord(ctx context.Context, collectionID i
 	resp, err := s.rootCoordClient.DescribeCollection(ctx, &milvuspb.DescribeCollectionRequest{
 		Base: &commonpb.MsgBase{
 			MsgType:  commonpb.MsgType_DescribeCollection,
-			SourceID: Params.DataCoordCfg.NodeID,
+			SourceID: Params.DataCoordCfg.GetNodeID(),
 		},
 		DbName:       "",
 		CollectionID: collectionID,
@@ -827,7 +829,7 @@ func (s *Server) loadCollectionFromRootCoord(ctx context.Context, collectionID i
 			MsgType:   commonpb.MsgType_ShowPartitions,
 			MsgID:     0,
 			Timestamp: 0,
-			SourceID:  Params.DataCoordCfg.NodeID,
+			SourceID:  Params.DataCoordCfg.GetNodeID(),
 		},
 		DbName:         "",
 		CollectionName: resp.Schema.Name,

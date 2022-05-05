@@ -378,16 +378,14 @@ func (it *IndexBuildTask) loadFieldData(ctx context.Context) (storage.FieldID, s
 	loadVectorDuration := it.tr.RecordSpan()
 	log.Debug("IndexNode load data success", zap.Int64("buildId", it.req.IndexBuildID))
 	it.tr.Record("load field data done")
+	metrics.IndexNodeLoadFieldLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.GetNodeID(), 10)).Observe(float64(loadVectorDuration))
 
 	var insertCodec storage.InsertCodec
 	collectionID, partitionID, segmentID, insertData, err2 := insertCodec.DeserializeAll(blobs)
 	if err2 != nil {
 		return storage.InvalidUniqueID, nil, err2
 	}
-
-	// TODO: @xiaocai2333 metrics.IndexNodeLoadBinlogLatency should be added above, put here to get segmentID.
-	metrics.IndexNodeLoadBinlogLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10)).Observe(float64(loadVectorDuration))
-	metrics.IndexNodeDecodeBinlogLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10)).Observe(float64(it.tr.RecordSpan()))
+	metrics.IndexNodeDecodeFieldLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.GetNodeID(), 10)).Observe(float64(it.tr.RecordSpan()))
 
 	if len(insertData.Data) != 1 {
 		return storage.InvalidUniqueID, nil, errors.New("we expect only one field in deserialized insert data")
@@ -443,7 +441,7 @@ func (it *IndexBuildTask) buildIndex(ctx context.Context) ([]*storage.Blob, erro
 			}
 		}
 
-		metrics.IndexNodeKnowhereBuildIndexLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10)).Observe(float64(it.tr.RecordSpan()))
+		metrics.IndexNodeKnowhereBuildIndexLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.GetNodeID(), 10)).Observe(float64(it.tr.RecordSpan()))
 
 		it.tr.Record("build index done")
 	}
@@ -480,7 +478,7 @@ func (it *IndexBuildTask) buildIndex(ctx context.Context) ([]*storage.Blob, erro
 		return nil, err
 	}
 	encodeIndexFileDur := it.tr.Record("index codec serialize done")
-	metrics.IndexNodeEncodeIndexFileLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10)).Observe(float64(encodeIndexFileDur.Milliseconds()))
+	metrics.IndexNodeEncodeIndexFileLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.GetNodeID(), 10)).Observe(float64(encodeIndexFileDur.Milliseconds()))
 	return serializedIndexBlobs, nil
 }
 
@@ -499,7 +497,6 @@ func (it *IndexBuildTask) saveIndex(ctx context.Context, blobs []*storage.Blob) 
 	it.savePaths = make([]string, blobCnt)
 	saveIndexFile := func(idx int) error {
 		blob := blobs[idx]
-		log.Info("xxxxxxxxxxxxxxxxxxxxxxxxxx")
 		savePath := getSavePathByKey(blob.Key)
 		saveIndexFileFn := func() error {
 			v, err := it.etcdKV.Load(it.req.MetaPath)
@@ -507,14 +504,12 @@ func (it *IndexBuildTask) saveIndex(ctx context.Context, blobs []*storage.Blob) 
 				log.Warn("IndexNode load meta failed", zap.Any("path", it.req.MetaPath), zap.Error(err))
 				return err
 			}
-			log.Info("ggggggggggggggggggggggg")
 			indexMeta := indexpb.IndexMeta{}
 			err = proto.Unmarshal([]byte(v), &indexMeta)
 			if err != nil {
 				log.Warn("IndexNode Unmarshal indexMeta error ", zap.Error(err))
 				return err
 			}
-			log.Info("hhhhhhhhhhhhhhhhhhhhhh")
 			//log.Debug("IndexNode Unmarshal indexMeta success ", zap.Any("meta", indexMeta))
 			if indexMeta.Version > it.req.Version {
 				log.Warn("IndexNode try saveIndexFile failed req.Version is low", zap.Any("req.Version", it.req.Version),
@@ -579,7 +574,7 @@ func (it *IndexBuildTask) Execute(ctx context.Context) error {
 		return err
 	}
 	saveIndexFileDur := it.tr.Record("index file save done")
-	metrics.IndexNodeSaveIndexFileLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10)).Observe(float64(saveIndexFileDur.Milliseconds()))
+	metrics.IndexNodeSaveIndexFileLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.GetNodeID(), 10)).Observe(float64(saveIndexFileDur.Milliseconds()))
 	it.tr.Elapse("index building all done")
 	log.Info("IndexNode CreateIndex successfully ", zap.Int64("collect", it.collectionID),
 		zap.Int64("partition", it.partitionID), zap.Int64("segment", it.segmentID))

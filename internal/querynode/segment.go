@@ -33,7 +33,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"strconv"
 	"sync"
 	"unsafe"
 
@@ -44,7 +43,6 @@ import (
 
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/golang/protobuf/proto"
-	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/common"
@@ -165,7 +163,7 @@ func (s *Segment) getIndexedFieldInfo(fieldID UniqueID) (*IndexedFieldInfo, erro
 			indexInfo:   info.indexInfo,
 		}, nil
 	}
-	return nil, errors.New("Invalid fieldID " + strconv.Itoa(int(fieldID)))
+	return nil, fmt.Errorf("Invalid fieldID %d", fieldID)
 }
 
 func (s *Segment) hasLoadIndexForIndexedField(fieldID int64) bool {
@@ -315,7 +313,7 @@ func (s *Segment) search(plan *SearchPlan,
 	log.Debug("do search on segment", zap.Int64("segmentID", s.segmentID), zap.Int32("segmentType", int32(s.segmentType)))
 	tr := timerecord.NewTimeRecorder("cgoSearch")
 	status := C.Search(s.segmentPtr, plan.cSearchPlan, cPlaceHolderGroup, ts, &searchResult.cSearchResult, C.int64_t(s.segmentID))
-	metrics.QueryNodeSQSegmentLatencyInCore.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.QueryNodeID), metrics.SearchLabel).Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.QueryNodeSQSegmentLatencyInCore.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID()), metrics.SearchLabel).Observe(float64(tr.ElapseSpan().Milliseconds()))
 	if err := HandleCStatus(&status, "Search failed"); err != nil {
 		return nil, err
 	}
@@ -345,7 +343,7 @@ func (s *Segment) retrieve(plan *RetrievePlan) (*segcorepb.RetrieveResults, erro
 	ts := C.uint64_t(plan.Timestamp)
 	tr := timerecord.NewTimeRecorder("cgoRetrieve")
 	status := C.Retrieve(s.segmentPtr, plan.cRetrievePlan, ts, &retrieveResult.cRetrieveResult)
-	metrics.QueryNodeSQSegmentLatencyInCore.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.QueryNodeID),
+	metrics.QueryNodeSQSegmentLatencyInCore.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID()),
 		metrics.QueryLabel).Observe(float64(tr.ElapseSpan().Milliseconds()))
 	if err := HandleCStatus(&status, "Retrieve failed"); err != nil {
 		return nil, err
@@ -609,8 +607,7 @@ func (s *Segment) segmentPreDelete(numOfRecords int) int64 {
 	return int64(offset)
 }
 
-// TODO: remove reference of slice
-func (s *Segment) segmentInsert(offset int64, entityIDs *[]UniqueID, timestamps *[]Timestamp, records *[]*commonpb.Blob) error {
+func (s *Segment) segmentInsert(offset int64, entityIDs []UniqueID, timestamps []Timestamp, record *segcorepb.InsertRecord) error {
 	/*
 		CStatus
 		Insert(CSegmentInterface c_segment,
@@ -632,36 +629,23 @@ func (s *Segment) segmentInsert(offset int64, entityIDs *[]UniqueID, timestamps 
 		return errors.New("null seg core pointer")
 	}
 
-	// Blobs to one big blob
-	var numOfRow = len(*entityIDs)
-	var sizeofPerRow = len((*records)[0].Value)
+	insertRecordBlob := proto.MarshalTextString(record)
 
-	assert.Equal(nil, numOfRow, len(*records))
-	if numOfRow != len(*records) {
-		return errors.New("entityIDs row num not equal to length of records")
-	}
+	cInsertRecordBlob := C.CString(insertRecordBlob)
+	defer C.free(unsafe.Pointer(cInsertRecordBlob))
 
-	var rawData = make([]byte, numOfRow*sizeofPerRow)
-	var copyOffset = 0
-	for i := 0; i < len(*records); i++ {
-		copy(rawData[copyOffset:], (*records)[i].Value)
-		copyOffset += sizeofPerRow
-	}
-
+	var numOfRow = len(entityIDs)
 	var cOffset = C.int64_t(offset)
 	var cNumOfRows = C.int64_t(numOfRow)
-	var cEntityIdsPtr = (*C.int64_t)(&(*entityIDs)[0])
-	var cTimestampsPtr = (*C.uint64_t)(&(*timestamps)[0])
-	var cSizeofPerRow = C.int(sizeofPerRow)
-	var cRawDataVoidPtr = unsafe.Pointer(&rawData[0])
+	var cEntityIdsPtr = (*C.int64_t)(&(entityIDs)[0])
+	var cTimestampsPtr = (*C.uint64_t)(&(timestamps)[0])
+
 	status := C.Insert(s.segmentPtr,
 		cOffset,
 		cNumOfRows,
 		cEntityIdsPtr,
 		cTimestampsPtr,
-		cRawDataVoidPtr,
-		cSizeofPerRow,
-		cNumOfRows)
+		cInsertRecordBlob)
 	if err := HandleCStatus(&status, "Insert failed"); err != nil {
 		return err
 	}
@@ -697,6 +681,7 @@ func (s *Segment) segmentDelete(offset int64, entityIDs []primaryKey, timestamps
 	var cSize = C.int64_t(len(entityIDs))
 	var cTimestampsPtr = (*C.uint64_t)(&(timestamps)[0])
 
+	ids := &schemapb.IDs{}
 	pkType := entityIDs[0].Type()
 	switch pkType {
 	case schemapb.DataType_Int64:
@@ -704,22 +689,39 @@ func (s *Segment) segmentDelete(offset int64, entityIDs []primaryKey, timestamps
 		for index, entity := range entityIDs {
 			int64Pks[index] = entity.(*int64PrimaryKey).Value
 		}
-		var cEntityIdsPtr = (*C.int64_t)(&int64Pks[0])
-		status := C.Delete(s.segmentPtr, cOffset, cSize, cEntityIdsPtr, cTimestampsPtr)
-		if err := HandleCStatus(&status, "Delete failed"); err != nil {
-			return err
+		ids.IdField = &schemapb.IDs_IntId{
+			IntId: &schemapb.LongArray{
+				Data: int64Pks,
+			},
 		}
 	case schemapb.DataType_VarChar:
-		//TODO::
+		varCharPks := make([]string, len(entityIDs))
+		for index, entity := range entityIDs {
+			varCharPks[index] = entity.(*varCharPrimaryKey).Value
+		}
+		ids.IdField = &schemapb.IDs_StrId{
+			StrId: &schemapb.StringArray{
+				Data: varCharPks,
+			},
+		}
 	default:
 		return fmt.Errorf("invalid data type of primary keys")
+	}
+
+	dataBlob := proto.MarshalTextString(ids)
+	cDataBlob := C.CString(dataBlob)
+	defer C.free(unsafe.Pointer(cDataBlob))
+
+	status := C.Delete(s.segmentPtr, cOffset, cSize, cDataBlob, cTimestampsPtr)
+	if err := HandleCStatus(&status, "Delete failed"); err != nil {
+		return err
 	}
 
 	return nil
 }
 
 //-------------------------------------------------------------------------------------- interfaces for sealed segment
-func (s *Segment) segmentLoadFieldData(fieldID int64, rowCount int, data interface{}) error {
+func (s *Segment) segmentLoadFieldData(fieldID int64, rowCount int64, data *schemapb.FieldData) error {
 	/*
 		CStatus
 		LoadFieldData(CSegmentInterface c_segment, CLoadFieldDataInfo load_field_data_info);
@@ -734,56 +736,10 @@ func (s *Segment) segmentLoadFieldData(fieldID int64, rowCount int, data interfa
 		return errors.New(errMsg)
 	}
 
-	// data interface check
-	var dataPointer unsafe.Pointer
-	emptyErr := errors.New("null field data to be loaded")
-	switch d := data.(type) {
-	case []bool:
-		if len(d) <= 0 {
-			return emptyErr
-		}
-		dataPointer = unsafe.Pointer(&d[0])
-	case []byte:
-		if len(d) <= 0 {
-			return emptyErr
-		}
-		dataPointer = unsafe.Pointer(&d[0])
-	case []int8:
-		if len(d) <= 0 {
-			return emptyErr
-		}
-		dataPointer = unsafe.Pointer(&d[0])
-	case []int16:
-		if len(d) <= 0 {
-			return emptyErr
-		}
-		dataPointer = unsafe.Pointer(&d[0])
-	case []int32:
-		if len(d) <= 0 {
-			return emptyErr
-		}
-		dataPointer = unsafe.Pointer(&d[0])
-	case []int64:
-		if len(d) <= 0 {
-			return emptyErr
-		}
-		dataPointer = unsafe.Pointer(&d[0])
-	case []float32:
-		if len(d) <= 0 {
-			return emptyErr
-		}
-		dataPointer = unsafe.Pointer(&d[0])
-	case []float64:
-		if len(d) <= 0 {
-			return emptyErr
-		}
-		dataPointer = unsafe.Pointer(&d[0])
-	case []string:
-		// TODO: support string type
-		return errors.New("we cannot support string type now")
-	default:
-		return errors.New("illegal field data type")
-	}
+	dataBlob := proto.MarshalTextString(data)
+
+	cDataBlob := C.CString(dataBlob)
+	defer C.free(unsafe.Pointer(cDataBlob))
 
 	/*
 		typedef struct CLoadFieldDataInfo {
@@ -794,7 +750,7 @@ func (s *Segment) segmentLoadFieldData(fieldID int64, rowCount int, data interfa
 	*/
 	loadInfo := C.CLoadFieldDataInfo{
 		field_id:  C.int64_t(fieldID),
-		blob:      dataPointer,
+		blob:      cDataBlob,
 		row_count: C.int64_t(rowCount),
 	}
 
@@ -805,7 +761,7 @@ func (s *Segment) segmentLoadFieldData(fieldID int64, rowCount int, data interfa
 
 	log.Debug("load field done",
 		zap.Int64("fieldID", fieldID),
-		zap.Int("row count", rowCount),
+		zap.Int64("row count", rowCount),
 		zap.Int64("segmentID", s.ID()))
 
 	return nil
@@ -826,29 +782,49 @@ func (s *Segment) segmentLoadDeletedRecord(primaryKeys []primaryKey, timestamps 
 		return fmt.Errorf("empty pks to delete")
 	}
 	pkType := primaryKeys[0].Type()
+	ids := &schemapb.IDs{}
 	switch pkType {
 	case schemapb.DataType_Int64:
 		int64Pks := make([]int64, len(primaryKeys))
 		for index, pk := range primaryKeys {
 			int64Pks[index] = pk.(*int64PrimaryKey).Value
 		}
-		loadInfo := C.CLoadDeletedRecordInfo{
-			timestamps:   unsafe.Pointer(&timestamps[0]),
-			primary_keys: unsafe.Pointer(&int64Pks[0]),
-			row_count:    C.int64_t(rowCount),
-		}
-		/*
-			CStatus
-			LoadDeletedRecord(CSegmentInterface c_segment, CLoadDeletedRecordInfo deleted_record_info)
-		*/
-		status := C.LoadDeletedRecord(s.segmentPtr, loadInfo)
-		if err := HandleCStatus(&status, "LoadDeletedRecord failed"); err != nil {
-			return err
+		ids.IdField = &schemapb.IDs_IntId{
+			IntId: &schemapb.LongArray{
+				Data: int64Pks,
+			},
 		}
 	case schemapb.DataType_VarChar:
-		//TODO::
+		varCharPks := make([]string, len(primaryKeys))
+		for index, pk := range primaryKeys {
+			varCharPks[index] = pk.(*varCharPrimaryKey).Value
+		}
+		ids.IdField = &schemapb.IDs_StrId{
+			StrId: &schemapb.StringArray{
+				Data: varCharPks,
+			},
+		}
 	default:
 		return fmt.Errorf("invalid data type of primary keys")
+	}
+
+	idsBlob := proto.MarshalTextString(ids)
+
+	cIdsBlob := C.CString(idsBlob)
+	defer C.free(unsafe.Pointer(cIdsBlob))
+
+	loadInfo := C.CLoadDeletedRecordInfo{
+		timestamps:   unsafe.Pointer(&timestamps[0]),
+		primary_keys: cIdsBlob,
+		row_count:    C.int64_t(rowCount),
+	}
+	/*
+		CStatus
+		LoadDeletedRecord(CSegmentInterface c_segment, CLoadDeletedRecordInfo deleted_record_info)
+	*/
+	status := C.LoadDeletedRecord(s.segmentPtr, loadInfo)
+	if err := HandleCStatus(&status, "LoadDeletedRecord failed"); err != nil {
+		return err
 	}
 
 	log.Debug("load deleted record done",
@@ -857,14 +833,14 @@ func (s *Segment) segmentLoadDeletedRecord(primaryKeys []primaryKey, timestamps 
 	return nil
 }
 
-func (s *Segment) segmentLoadIndexData(bytesIndex [][]byte, indexInfo *querypb.FieldIndexInfo) error {
+func (s *Segment) segmentLoadIndexData(bytesIndex [][]byte, indexInfo *querypb.FieldIndexInfo, fieldType schemapb.DataType) error {
 	loadIndexInfo, err := newLoadIndexInfo()
 	defer deleteLoadIndexInfo(loadIndexInfo)
 	if err != nil {
 		return err
 	}
 
-	err = loadIndexInfo.appendIndexInfo(bytesIndex, indexInfo)
+	err = loadIndexInfo.appendIndexInfo(bytesIndex, indexInfo, fieldType)
 	if err != nil {
 		return err
 	}

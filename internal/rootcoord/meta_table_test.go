@@ -118,23 +118,12 @@ func Test_MockKV(t *testing.T) {
 	assert.NotNil(t, err)
 	assert.EqualError(t, err, "load prefix error")
 
-	// tenant
-	prefix[TenantMetaPrefix] = []string{"tenant-prefix"}
-	_, err = NewMetaTable(kt, k1)
-	assert.NotNil(t, err)
-
-	value, err := proto.Marshal(&pb.TenantMeta{})
-	assert.Nil(t, err)
-	prefix[TenantMetaPrefix] = []string{string(value)}
-	_, err = NewMetaTable(kt, k1)
-	assert.NotNil(t, err)
-
 	// proxy
 	prefix[ProxyMetaPrefix] = []string{"porxy-meta"}
 	_, err = NewMetaTable(kt, k1)
 	assert.NotNil(t, err)
 
-	value, err = proto.Marshal(&pb.ProxyMeta{})
+	value, err := proto.Marshal(&pb.ProxyMeta{})
 	assert.Nil(t, err)
 	prefix[ProxyMetaPrefix] = []string{string(value)}
 	_, err = NewMetaTable(kt, k1)
@@ -181,20 +170,9 @@ func Test_MockKV(t *testing.T) {
 	prefix[CollectionAliasMetaPrefix] = []string{"alias-meta"}
 
 	k1.save = func(key string, value string, ts typeutil.Timestamp) error {
-		return fmt.Errorf("save tenant error")
-	}
-	assert.Panics(t, func() { m1.AddTenant(&pb.TenantMeta{}, 0) })
-	//err = m1.AddTenant(&pb.TenantMeta{}, 0)
-	//assert.NotNil(t, err)
-	//assert.EqualError(t, err, "save tenant error")
-
-	k1.save = func(key string, value string, ts typeutil.Timestamp) error {
 		return fmt.Errorf("save proxy error")
 	}
 	assert.Panics(t, func() { m1.AddProxy(&pb.ProxyMeta{}) })
-	//err = m1.AddProxy(&pb.ProxyMeta{}, 0)
-	//assert.NotNil(t, err)
-	//assert.EqualError(t, err, "save proxy error")
 }
 
 func TestMetaTable(t *testing.T) {
@@ -251,7 +229,7 @@ func TestMetaTable(t *testing.T) {
 					Name:         "field110",
 					IsPrimaryKey: false,
 					Description:  "",
-					DataType:     0,
+					DataType:     schemapb.DataType_FloatVector,
 					TypeParams: []*commonpb.KeyValuePair{
 						{
 							Key:   "field110-k1",
@@ -493,11 +471,6 @@ func TestMetaTable(t *testing.T) {
 	wg.Add(1)
 	t.Run("reload meta", func(t *testing.T) {
 		defer wg.Done()
-		te := pb.TenantMeta{
-			ID: 100,
-		}
-		err := mt.AddTenant(&te, 0)
-		assert.Nil(t, err)
 		po := pb.ProxyMeta{
 			ID: 101,
 		}
@@ -1140,7 +1113,9 @@ func TestMetaTable(t *testing.T) {
 	wg.Add(1)
 	t.Run("add credential failed", func(t *testing.T) {
 		defer wg.Done()
-
+		mockTxnKV.save = func(key, value string) error {
+			return fmt.Errorf("save error")
+		}
 		err = mt.AddCredential(&internalpb.CredentialInfo{Username: "x", EncryptedPassword: "a\xc5z"})
 		assert.NotNil(t, err)
 	})

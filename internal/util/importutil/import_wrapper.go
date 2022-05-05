@@ -14,14 +14,18 @@ import (
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/proto/commonpb"
+	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/storage"
+	"github.com/milvus-io/milvus/internal/util/timerecord"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
 const (
 	JSONFileExt  = ".json"
 	NumpyFileExt = ".npy"
+	MaxFileSize  = 4 * 1024 * 1024 * 1024 // maximum size of each file
 )
 
 type ImportWrapper struct {
@@ -34,10 +38,14 @@ type ImportWrapper struct {
 	chunkManager     storage.ChunkManager
 
 	callFlushFunc ImportFlushFunc // call back function to flush a segment
+
+	importResult *rootcoordpb.ImportResult                 // import result
+	reportFunc   func(res *rootcoordpb.ImportResult) error // report import state to rootcoord
 }
 
 func NewImportWrapper(ctx context.Context, collectionSchema *schemapb.CollectionSchema, shardNum int32, segmentSize int64,
-	idAlloc *allocator.IDAllocator, cm storage.ChunkManager, flushFunc ImportFlushFunc) *ImportWrapper {
+	idAlloc *allocator.IDAllocator, cm storage.ChunkManager, flushFunc ImportFlushFunc,
+	importResult *rootcoordpb.ImportResult, reportFunc func(res *rootcoordpb.ImportResult) error) *ImportWrapper {
 	if collectionSchema == nil {
 		log.Error("import error: collection schema is nil")
 		return nil
@@ -69,6 +77,8 @@ func NewImportWrapper(ctx context.Context, collectionSchema *schemapb.Collection
 		rowIDAllocator:   idAlloc,
 		callFlushFunc:    flushFunc,
 		chunkManager:     cm,
+		importResult:     importResult,
+		reportFunc:       reportFunc,
 	}
 
 	return wrapper
@@ -99,10 +109,41 @@ func getFileNameAndExt(filePath string) (string, string) {
 	return fileNameWithoutExt, fileType
 }
 
+func (p *ImportWrapper) fileValidation(filePaths []string, rowBased bool) error {
+	for i := 0; i < len(filePaths); i++ {
+		filePath := filePaths[i]
+		_, fileType := getFileNameAndExt(filePath)
+
+		// check file type
+		if rowBased {
+			if fileType != JSONFileExt {
+				return errors.New("unsupported file type for row-based mode: " + filePath)
+			}
+		} else {
+			if fileType != JSONFileExt && fileType != NumpyFileExt {
+				return errors.New("unsupported file type for column-based mode: " + filePath)
+			}
+		}
+
+		// check file size
+		size, _ := p.chunkManager.Size(filePath)
+		if size > MaxFileSize {
+			return errors.New("the file " + filePath + " size exceeds the maximum file size: " + strconv.FormatInt(MaxFileSize, 10) + " bytes")
+		}
+	}
+
+	return nil
+}
+
 // import process entry
 // filePath and rowBased are from ImportTask
 // if onlyValidate is true, this process only do validation, no data generated, callFlushFunc will not be called
 func (p *ImportWrapper) Import(filePaths []string, rowBased bool, onlyValidate bool) error {
+	err := p.fileValidation(filePaths, rowBased)
+	if err != nil {
+		return err
+	}
+
 	if rowBased {
 		// parse and consume row-based files
 		// for row-based files, the JSONRowConsumer will generate autoid for primary key, and split rows into segments
@@ -110,16 +151,26 @@ func (p *ImportWrapper) Import(filePaths []string, rowBased bool, onlyValidate b
 		for i := 0; i < len(filePaths); i++ {
 			filePath := filePaths[i]
 			_, fileType := getFileNameAndExt(filePath)
-			log.Info("imprort wrapper:  row-based file ", zap.Any("filePath", filePath), zap.Any("fileType", fileType))
+			log.Info("import wrapper:  row-based file ", zap.Any("filePath", filePath), zap.Any("fileType", fileType))
 
 			if fileType == JSONFileExt {
 				err := func() error {
+					tr := timerecord.NewTimeRecorder("json parser: " + filePath)
+
+					// for minio storage, chunkManager will download file into local memory
+					// for local storage, chunkManager open the file directly
 					file, err := p.chunkManager.Reader(filePath)
 					if err != nil {
 						return err
 					}
 					defer file.Close()
+					tr.Record("downloaded")
 
+					// report file process state
+					p.importResult.State = commonpb.ImportState_ImportDownloaded
+					p.reportFunc(p.importResult)
+
+					// parse file
 					reader := bufio.NewReader(file)
 					parser := NewJSONParser(p.ctx, p.collectionSchema)
 					var consumer *JSONRowConsumer
@@ -131,17 +182,26 @@ func (p *ImportWrapper) Import(filePaths []string, rowBased bool, onlyValidate b
 						consumer = NewJSONRowConsumer(p.collectionSchema, p.rowIDAllocator, p.shardNum, p.segmentSize, flushFunc)
 					}
 					validator := NewJSONRowValidator(p.collectionSchema, consumer)
-
 					err = parser.ParseRows(reader, validator)
 					if err != nil {
 						return err
 					}
 
+					// for row-based files, auto-id is generated within JSONRowConsumer
+					if consumer != nil {
+						p.importResult.AutoIds = append(p.importResult.AutoIds, consumer.IDRange()...)
+					}
+
+					// report file process state
+					p.importResult.State = commonpb.ImportState_ImportParsed
+					p.reportFunc(p.importResult)
+
+					tr.Record("parsed")
 					return nil
 				}()
 
 				if err != nil {
-					log.Error("imprort error: "+err.Error(), zap.String("filePath", filePath))
+					log.Error("import error: "+err.Error(), zap.String("filePath", filePath))
 					return err
 				}
 			}
@@ -160,7 +220,9 @@ func (p *ImportWrapper) Import(filePaths []string, rowBased bool, onlyValidate b
 				return nil
 			}
 
-			p.printFieldsDataInfo(fields, "imprort wrapper: combine field data", nil)
+			p.printFieldsDataInfo(fields, "import wrapper: combine field data", nil)
+			tr := timerecord.NewTimeRecorder("combine field data")
+			defer tr.Elapse("finished")
 
 			fieldNames := make([]storage.FieldID, 0)
 			for k, v := range fields {
@@ -193,17 +255,26 @@ func (p *ImportWrapper) Import(filePaths []string, rowBased bool, onlyValidate b
 		for i := 0; i < len(filePaths); i++ {
 			filePath := filePaths[i]
 			fileName, fileType := getFileNameAndExt(filePath)
-			log.Info("imprort wrapper:  column-based file ", zap.Any("filePath", filePath), zap.Any("fileType", fileType))
+			log.Info("import wrapper:  column-based file ", zap.Any("filePath", filePath), zap.Any("fileType", fileType))
 
 			if fileType == JSONFileExt {
 				err := func() error {
+					tr := timerecord.NewTimeRecorder("json parser: " + filePath)
+
+					// for minio storage, chunkManager will download file into local memory
+					// for local storage, chunkManager open the file directly
 					file, err := p.chunkManager.Reader(filePath)
 					if err != nil {
-						log.Error("imprort error: "+err.Error(), zap.String("filePath", filePath))
 						return err
 					}
 					defer file.Close()
+					tr.Record("downloaded")
 
+					// report file process state
+					p.importResult.State = commonpb.ImportState_ImportDownloaded
+					p.reportFunc(p.importResult)
+
+					// parse file
 					reader := bufio.NewReader(file)
 					parser := NewJSONParser(p.ctx, p.collectionSchema)
 					var consumer *JSONColumnConsumer
@@ -214,44 +285,70 @@ func (p *ImportWrapper) Import(filePaths []string, rowBased bool, onlyValidate b
 
 					err = parser.ParseColumns(reader, validator)
 					if err != nil {
-						log.Error("imprort error: "+err.Error(), zap.String("filePath", filePath))
 						return err
 					}
 
+					// report file process state
+					p.importResult.State = commonpb.ImportState_ImportParsed
+					p.reportFunc(p.importResult)
+
+					tr.Record("parsed")
 					return nil
 				}()
 
 				if err != nil {
-					log.Error("imprort error: "+err.Error(), zap.String("filePath", filePath))
+					log.Error("import error: "+err.Error(), zap.String("filePath", filePath))
 					return err
 				}
 			} else if fileType == NumpyFileExt {
-				file, err := p.chunkManager.Reader(filePath)
-				if err != nil {
-					log.Error("imprort error: "+err.Error(), zap.String("filePath", filePath))
-					return err
-				}
-				defer file.Close()
-				var id storage.FieldID
-				for _, field := range p.collectionSchema.Fields {
-					if field.GetName() == fileName {
-						id = field.GetFieldID()
+				err := func() error {
+					tr := timerecord.NewTimeRecorder("json parser: " + filePath)
+
+					// for minio storage, chunkManager will download file into local memory
+					// for local storage, chunkManager open the file directly
+					file, err := p.chunkManager.Reader(filePath)
+					if err != nil {
+						return err
 					}
-				}
+					defer file.Close()
+					tr.Record("downloaded")
 
-				// the numpy parser return a storage.FieldData, here construct a map[string]storage.FieldData to combine
-				flushFunc := func(field storage.FieldData) error {
-					fields := make(map[storage.FieldID]storage.FieldData)
-					fields[id] = field
-					combineFunc(fields)
+					// report file process state
+					p.importResult.State = commonpb.ImportState_ImportDownloaded
+					p.reportFunc(p.importResult)
+
+					var id storage.FieldID
+					for _, field := range p.collectionSchema.Fields {
+						if field.GetName() == fileName {
+							id = field.GetFieldID()
+						}
+					}
+
+					// the numpy parser return a storage.FieldData, here construct a map[string]storage.FieldData to combine
+					flushFunc := func(field storage.FieldData) error {
+						fields := make(map[storage.FieldID]storage.FieldData)
+						fields[id] = field
+						combineFunc(fields)
+						return nil
+					}
+
+					// for numpy file, we say the file name(without extension) is the filed name
+					parser := NewNumpyParser(p.ctx, p.collectionSchema, flushFunc)
+					err = parser.Parse(file, fileName, onlyValidate)
+					if err != nil {
+						return err
+					}
+
+					// report file process state
+					p.importResult.State = commonpb.ImportState_ImportParsed
+					p.reportFunc(p.importResult)
+
+					tr.Record("parsed")
 					return nil
-				}
+				}()
 
-				// for numpy file, we say the file name(without extension) is the filed name
-				parser := NewNumpyParser(p.ctx, p.collectionSchema, flushFunc)
-				err = parser.Parse(file, fileName, onlyValidate)
 				if err != nil {
-					log.Error("imprort error: "+err.Error(), zap.String("filePath", filePath))
+					log.Error("import error: "+err.Error(), zap.String("filePath", filePath))
 					return err
 				}
 			}
@@ -260,12 +357,14 @@ func (p *ImportWrapper) Import(filePaths []string, rowBased bool, onlyValidate b
 		// split fields data into segments
 		err := p.splitFieldsData(fieldsData, filePaths)
 		if err != nil {
-			log.Error("imprort error: " + err.Error())
+			log.Error("import error: " + err.Error())
 			return err
 		}
 	}
 
-	return nil
+	// report file process state
+	p.importResult.State = commonpb.ImportState_ImportPersisted
+	return p.reportFunc(p.importResult)
 }
 
 func (p *ImportWrapper) appendFunc(schema *schemapb.FieldSchema) func(src storage.FieldData, n int, target storage.FieldData) error {
@@ -346,48 +445,67 @@ func (p *ImportWrapper) appendFunc(schema *schemapb.FieldSchema) func(src storag
 
 func (p *ImportWrapper) splitFieldsData(fieldsData map[storage.FieldID]storage.FieldData, files []string) error {
 	if len(fieldsData) == 0 {
-		return errors.New("imprort error: fields data is empty")
+		return errors.New("import error: fields data is empty")
 	}
 
+	tr := timerecord.NewTimeRecorder("split field data")
+	defer tr.Elapse("finished")
+
+	// check existence of each field
+	// check row count, all fields row count must be equal
+	// firstly get the max row count
+	rowCount := 0
+	rowCounter := make(map[string]int)
 	var primaryKey *schemapb.FieldSchema
 	for i := 0; i < len(p.collectionSchema.Fields); i++ {
 		schema := p.collectionSchema.Fields[i]
 		if schema.GetIsPrimaryKey() {
 			primaryKey = schema
-		} else {
-			_, ok := fieldsData[schema.GetFieldID()]
+		}
+
+		if !schema.GetAutoID() {
+			v, ok := fieldsData[schema.GetFieldID()]
 			if !ok {
-				return errors.New("imprort error: field " + schema.GetName() + " not provided")
+				return errors.New("import error: field " + schema.GetName() + " not provided")
+			}
+			rowCounter[schema.GetName()] = v.RowNum()
+			if v.RowNum() > rowCount {
+				rowCount = v.RowNum()
 			}
 		}
 	}
 	if primaryKey == nil {
-		return errors.New("imprort error: primary key field is not found")
+		return errors.New("import error: primary key field is not found")
 	}
 
-	rowCount := 0
-	for _, v := range fieldsData {
-		rowCount = v.RowNum()
-		break
+	for name, count := range rowCounter {
+		if count != rowCount {
+			return errors.New("import error: field " + name + " row count " + strconv.Itoa(count) + " is not equal to other fields " + strconv.Itoa(rowCount))
+		}
 	}
 
 	primaryData, ok := fieldsData[primaryKey.GetFieldID()]
 	if !ok {
-		// generate auto id for primary key
-		if primaryKey.GetAutoID() {
-			var rowIDBegin typeutil.UniqueID
-			var rowIDEnd typeutil.UniqueID
-			rowIDBegin, rowIDEnd, _ = p.rowIDAllocator.Alloc(uint32(rowCount))
+		return errors.New("import error: primary key field is not provided")
+	}
 
-			primaryDataArr := primaryData.(*storage.Int64FieldData)
-			for i := rowIDBegin; i < rowIDEnd; i++ {
-				primaryDataArr.Data = append(primaryDataArr.Data, rowIDBegin+i)
-			}
+	// generate auto id for primary key
+	if primaryKey.GetAutoID() {
+		log.Info("import wrapper: generating auto-id", zap.Any("rowCount", rowCount))
+		var rowIDBegin typeutil.UniqueID
+		var rowIDEnd typeutil.UniqueID
+		rowIDBegin, rowIDEnd, _ = p.rowIDAllocator.Alloc(uint32(rowCount))
+
+		primaryDataArr := primaryData.(*storage.Int64FieldData)
+		for i := rowIDBegin; i < rowIDEnd; i++ {
+			primaryDataArr.Data = append(primaryDataArr.Data, rowIDBegin+i)
 		}
+
+		p.importResult.AutoIds = append(p.importResult.AutoIds, rowIDBegin, rowIDEnd)
 	}
 
 	if primaryData.RowNum() <= 0 {
-		return errors.New("imprort error: primary key " + primaryKey.GetName() + " not provided")
+		return errors.New("import error: primary key " + primaryKey.GetName() + " not provided")
 	}
 
 	// prepare segemnts
@@ -406,7 +524,7 @@ func (p *ImportWrapper) splitFieldsData(fieldsData map[storage.FieldID]storage.F
 		schema := p.collectionSchema.Fields[i]
 		appendFunc := p.appendFunc(schema)
 		if appendFunc == nil {
-			return errors.New("imprort error: unsupported field data type")
+			return errors.New("import error: unsupported field data type")
 		}
 		appendFunctions[schema.GetName()] = appendFunc
 	}

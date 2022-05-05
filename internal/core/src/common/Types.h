@@ -22,32 +22,60 @@
 #include <utility>
 #include <vector>
 #include <boost/align/aligned_allocator.hpp>
+#include <boost/container/vector.hpp>
 #include <boost/dynamic_bitset.hpp>
 #include <NamedType/named_type.hpp>
+#include <variant>
 
 #include "knowhere/common/MetricType.h"
 #include "pb/schema.pb.h"
-#include "utils/Types.h"
+#include "pb/segcore.pb.h"
 
 namespace milvus {
 
+using idx_t = int64_t;
+using offset_t = int32_t;
+using date_t = int32_t;
+using distance_t = float;
+
+enum class DataType {
+    NONE = 0,
+    BOOL = 1,
+    INT8 = 2,
+    INT16 = 3,
+    INT32 = 4,
+    INT64 = 5,
+
+    FLOAT = 10,
+    DOUBLE = 11,
+
+    STRING = 20,
+    VARCHAR = 21,
+
+    VECTOR_BINARY = 100,
+    VECTOR_FLOAT = 101,
+};
+
 using Timestamp = uint64_t;  // TODO: use TiKV-like timestamp
 constexpr auto MAX_TIMESTAMP = std::numeric_limits<Timestamp>::max();
-
-using engine::DataType;
-using engine::idx_t;
+constexpr auto MAX_ROW_COUNT = std::numeric_limits<idx_t>::max();
 
 using ScalarArray = proto::schema::ScalarField;
 using DataArray = proto::schema::FieldData;
 using VectorArray = proto::schema::VectorField;
 using IdArray = proto::schema::IDs;
 using MetricType = faiss::MetricType;
+using InsertData = proto::segcore::InsertRecord;
+using PkType = std::variant<std::monostate, int64_t, std::string>;
 
 MetricType
 GetMetricType(const std::string& type);
 
 std::string
 MetricTypeToName(MetricType metric_type);
+
+bool
+IsPrimaryKeyDataType(DataType data_type);
 
 // NOTE: dependent type
 // used at meta-template programming
@@ -70,11 +98,16 @@ struct SegOffsetTag;
 
 using FieldId = fluent::NamedType<int64_t, impl::FieldIdTag, fluent::Comparable, fluent::Hashable>;
 using FieldName = fluent::NamedType<std::string, impl::FieldNameTag, fluent::Comparable, fluent::Hashable>;
-using FieldOffset = fluent::NamedType<int64_t, impl::FieldOffsetTag, fluent::Comparable, fluent::Hashable>;
+// using FieldOffset = fluent::NamedType<int64_t, impl::FieldOffsetTag, fluent::Comparable, fluent::Hashable>;
 using SegOffset = fluent::NamedType<int64_t, impl::SegOffsetTag, fluent::Arithmetic>;
 
 using BitsetType = boost::dynamic_bitset<>;
 using BitsetTypePtr = std::shared_ptr<boost::dynamic_bitset<>>;
 using BitsetTypeOpt = std::optional<BitsetType>;
 
+template <typename Type>
+using FixedVector = boost::container::vector<Type>;
+
+const FieldId RowFieldID = FieldId(0);
+const FieldId TimestampFieldID = FieldId(1);
 }  // namespace milvus

@@ -16,27 +16,27 @@
 
 namespace milvus::segcore {
 extern "C" void
-SegcoreInit() {
-    milvus::config::KnowhereInitImpl();
-#if defined(EMBEDDED_MILVUS)
-    el::Configurations defaultConf;
-    defaultConf.setToDefault();
-    // Disable all logs for embedded milvus.
-    defaultConf.set(el::Level::Trace, el::ConfigurationType::Enabled, "false");
-    defaultConf.set(el::Level::Debug, el::ConfigurationType::Enabled, "false");
-    defaultConf.set(el::Level::Info, el::ConfigurationType::Enabled, "false");
-    defaultConf.set(el::Level::Warning, el::ConfigurationType::Enabled, "false");
-    defaultConf.set(el::Level::Error, el::ConfigurationType::Enabled, "false");
-    defaultConf.set(el::Level::Fatal, el::ConfigurationType::Enabled, "false");
-    el::Loggers::reconfigureLogger("default", defaultConf);
-#endif
+SegcoreInit(const char* conf_file) {
+    milvus::config::KnowhereInitImpl(conf_file);
 }
 
+// TODO merge small index config into one config map, including enable/disable small_index
 extern "C" void
 SegcoreSetChunkRows(const int64_t value) {
     milvus::segcore::SegcoreConfig& config = milvus::segcore::SegcoreConfig::default_config();
     config.set_chunk_rows(value);
-    LOG_SEGCORE_DEBUG_ << "set config chunk_size: " << config.get_chunk_rows();
+}
+
+extern "C" void
+SegcoreSetNlist(const int64_t value) {
+    milvus::segcore::SegcoreConfig& config = milvus::segcore::SegcoreConfig::default_config();
+    config.set_nlist(value);
+}
+
+extern "C" void
+SegcoreSetNprobe(const int64_t value) {
+    milvus::segcore::SegcoreConfig& config = milvus::segcore::SegcoreConfig::default_config();
+    config.set_nprobe(value);
 }
 
 // return value must be freed by the caller

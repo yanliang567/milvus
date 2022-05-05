@@ -30,7 +30,9 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
+	"github.com/milvus-io/milvus/internal/proto/querypb"
 	queryPb "github.com/milvus-io/milvus/internal/proto/querypb"
+	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/util/etcd"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
@@ -126,7 +128,8 @@ func TestImpl_WatchDmChannels(t *testing.T) {
 	node, err := genSimpleQueryNode(ctx)
 	assert.NoError(t, err)
 
-	schema := genSimpleSegCoreSchema()
+	pkType := schemapb.DataType_Int64
+	schema := genTestCollectionSchema(pkType)
 
 	req := &queryPb.WatchDmChannelsRequest{
 		Base: &commonpb.MsgBase{
@@ -155,7 +158,8 @@ func TestImpl_LoadSegments(t *testing.T) {
 	node, err := genSimpleQueryNode(ctx)
 	assert.NoError(t, err)
 
-	schema := genSimpleSegCoreSchema()
+	pkType := schemapb.DataType_Int64
+	schema := genTestCollectionSchema(pkType)
 
 	req := &queryPb.LoadSegmentsRequest{
 		Base: &commonpb.MsgBase{
@@ -341,7 +345,7 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 		seg, err := node.historical.replica.getSegmentByID(defaultSegmentID)
 		assert.NoError(t, err)
 
-		seg.setIndexedFieldInfo(simpleVecField.id, &IndexedFieldInfo{
+		seg.setIndexedFieldInfo(simpleFloatVecField.id, &IndexedFieldInfo{
 			indexInfo: &queryPb.FieldIndexInfo{
 				IndexName: "query-node-test",
 				IndexID:   UniqueID(0),
@@ -584,7 +588,9 @@ func TestImpl_Search(t *testing.T) {
 	node, err := genSimpleQueryNode(ctx)
 	require.NoError(t, err)
 
-	req, err := genSimpleSearchRequest(IndexFaissIDMap)
+	pkType := schemapb.DataType_Int64
+	schema := genTestCollectionSchema(pkType)
+	req, err := genSearchRequest(defaultNQ, IndexFaissIDMap, schema)
 	require.NoError(t, err)
 
 	node.queryShardService.addQueryShard(defaultCollectionID, defaultDMLChannel, defaultReplicaID)
@@ -601,9 +607,12 @@ func TestImpl_Query(t *testing.T) {
 	defer cancel()
 
 	node, err := genSimpleQueryNode(ctx)
+	defer node.Stop()
 	require.NoError(t, err)
 
-	req, err := genSimpleRetrieveRequest()
+	pkType := schemapb.DataType_Int64
+	schema := genTestCollectionSchema(pkType)
+	req, err := genRetrieveRequest(schema)
 	require.NoError(t, err)
 
 	node.queryShardService.addQueryShard(defaultCollectionID, defaultDMLChannel, defaultReplicaID)
@@ -613,4 +622,76 @@ func TestImpl_Query(t *testing.T) {
 		DmlChannel: defaultDMLChannel,
 	})
 	assert.NoError(t, err)
+}
+
+func TestImpl_SyncReplicaSegments(t *testing.T) {
+	t.Run("QueryNode not healthy", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		node, err := genSimpleQueryNode(ctx)
+		defer node.Stop()
+		assert.NoError(t, err)
+
+		node.UpdateStateCode(internalpb.StateCode_Abnormal)
+
+		resp, err := node.SyncReplicaSegments(ctx, &querypb.SyncReplicaSegmentsRequest{})
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp.GetErrorCode())
+	})
+
+	t.Run("Sync non-exist channel", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		node, err := genSimpleQueryNode(ctx)
+		defer node.Stop()
+		assert.NoError(t, err)
+
+		resp, err := node.SyncReplicaSegments(ctx, &querypb.SyncReplicaSegmentsRequest{
+			VchannelName: defaultDMLChannel,
+			ReplicaSegments: []*queryPb.ReplicaSegmentsInfo{
+				{
+					NodeId:      1,
+					PartitionId: defaultPartitionID,
+					SegmentIds:  []int64{1},
+				},
+			},
+		})
+
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp.GetErrorCode())
+	})
+
+	t.Run("Normal sync segments", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		node, err := genSimpleQueryNode(ctx)
+		defer node.Stop()
+		assert.NoError(t, err)
+
+		node.ShardClusterService.addShardCluster(defaultCollectionID, defaultReplicaID, defaultDMLChannel)
+
+		resp, err := node.SyncReplicaSegments(ctx, &querypb.SyncReplicaSegmentsRequest{
+			VchannelName: defaultDMLChannel,
+			ReplicaSegments: []*queryPb.ReplicaSegmentsInfo{
+				{
+					NodeId:      1,
+					PartitionId: defaultPartitionID,
+					SegmentIds:  []int64{1},
+				},
+			},
+		})
+
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetErrorCode())
+		t.Log(resp.GetReason())
+
+		cs, ok := node.ShardClusterService.getShardCluster(defaultDMLChannel)
+		require.True(t, ok)
+		segment, ok := cs.getSegment(1)
+		require.True(t, ok)
+		assert.Equal(t, int64(1), segment.nodeID)
+		assert.Equal(t, defaultPartitionID, segment.partitionID)
+		assert.Equal(t, segmentStateLoaded, segment.state)
+
+	})
 }

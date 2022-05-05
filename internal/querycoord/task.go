@@ -35,6 +35,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
 const timeoutForRPC = 10 * time.Second
@@ -340,11 +341,23 @@ func (lct *loadCollectionTask) updateTaskProcess() {
 
 	}
 	if allDone {
-		err := lct.meta.setLoadPercentage(collectionID, 0, 100, querypb.LoadType_LoadCollection)
+		err := syncReplicaSegments(lct.ctx, lct.cluster, childTasks)
+		if err != nil {
+			log.Error("loadCollectionTask: failed to sync replica segments to shard leader",
+				zap.Int64("taskID", lct.getTaskID()),
+				zap.Int64("collectionID", collectionID),
+				zap.Error(err))
+			lct.setResultInfo(err)
+			return
+		}
+
+		err = lct.meta.setLoadPercentage(collectionID, 0, 100, querypb.LoadType_LoadCollection)
 		if err != nil {
 			log.Error("loadCollectionTask: set load percentage to meta's collectionInfo", zap.Int64("collectionID", collectionID))
 			lct.setResultInfo(err)
+			return
 		}
+
 		lct.once.Do(func() {
 			metrics.QueryCoordLoadCount.WithLabelValues(metrics.SuccessLabel).Inc()
 			metrics.QueryCoordLoadLatency.WithLabelValues().Observe(float64(lct.elapseSpan().Milliseconds()))
@@ -363,7 +376,7 @@ func (lct *loadCollectionTask) preExecute(ctx context.Context) error {
 	collectionID := lct.CollectionID
 	schema := lct.Schema
 	lct.setResultInfo(nil)
-	log.Debug("start do loadCollectionTask",
+	log.Info("start do loadCollectionTask",
 		zap.Int64("msgID", lct.getTaskID()),
 		zap.Int64("collectionID", collectionID),
 		zap.Stringer("schema", schema),
@@ -381,7 +394,7 @@ func (lct *loadCollectionTask) execute(ctx context.Context) error {
 		lct.setResultInfo(err)
 		return err
 	}
-	log.Debug("loadCollectionTask: get collection's all partitionIDs", zap.Int64("collectionID", collectionID), zap.Int64s("partitionIDs", partitionIds), zap.Int64("msgID", lct.Base.MsgID))
+	log.Info("loadCollectionTask: get collection's all partitionIDs", zap.Int64("collectionID", collectionID), zap.Int64s("partitionIDs", partitionIds), zap.Int64("msgID", lct.Base.MsgID))
 
 	var (
 		replicas          = make([]*milvuspb.ReplicaInfo, lct.ReplicaNumber)
@@ -524,10 +537,10 @@ func (lct *loadCollectionTask) execute(ctx context.Context) error {
 					DmChannelName: task.WatchDmChannelsRequest.Infos[0].ChannelName,
 				})
 			}
-			log.Debug("loadCollectionTask: add a childTask", zap.Int64("collectionID", collectionID), zap.Int32("task type", int32(internalTask.msgType())), zap.Int64("msgID", lct.Base.MsgID))
+			log.Info("loadCollectionTask: add a childTask", zap.Int64("collectionID", collectionID), zap.Int32("task type", int32(internalTask.msgType())), zap.Int64("msgID", lct.Base.MsgID))
 		}
 		metrics.QueryCoordNumChildTasks.WithLabelValues().Add(float64(len(internalTasks)))
-		log.Debug("loadCollectionTask: assign child task done", zap.Int64("collectionID", collectionID), zap.Int64("msgID", lct.Base.MsgID))
+		log.Info("loadCollectionTask: assign child task done", zap.Int64("collectionID", collectionID), zap.Int64("msgID", lct.Base.MsgID))
 	}
 
 	err = lct.meta.addCollection(collectionID, querypb.LoadType_LoadCollection, lct.Schema)
@@ -553,7 +566,7 @@ func (lct *loadCollectionTask) execute(ctx context.Context) error {
 		}
 	}
 
-	log.Debug("LoadCollection execute done",
+	log.Info("LoadCollection execute done",
 		zap.Int64("msgID", lct.getTaskID()),
 		zap.Int64("collectionID", collectionID))
 	return nil
@@ -570,7 +583,7 @@ func (lct *loadCollectionTask) postExecute(ctx context.Context) error {
 		}
 	}
 
-	log.Debug("loadCollectionTask postExecute done",
+	log.Info("loadCollectionTask postExecute done",
 		zap.Int64("msgID", lct.getTaskID()),
 		zap.Int64("collectionID", collectionID))
 	return nil
@@ -605,7 +618,7 @@ func (lct *loadCollectionTask) rollBack(ctx context.Context) []task {
 		panic(err)
 	}
 
-	log.Debug("loadCollectionTask: generate rollBack task for loadCollectionTask", zap.Int64("collectionID", lct.CollectionID), zap.Int64("msgID", lct.Base.MsgID))
+	log.Info("loadCollectionTask: generate rollBack task for loadCollectionTask", zap.Int64("collectionID", lct.CollectionID), zap.Int64("msgID", lct.Base.MsgID))
 	return resultTasks
 }
 
@@ -650,7 +663,7 @@ func (rct *releaseCollectionTask) updateTaskProcess() {
 func (rct *releaseCollectionTask) preExecute(context.Context) error {
 	collectionID := rct.CollectionID
 	rct.setResultInfo(nil)
-	log.Debug("start do releaseCollectionTask",
+	log.Info("start do releaseCollectionTask",
 		zap.Int64("msgID", rct.getTaskID()),
 		zap.Int64("collectionID", collectionID))
 	return nil
@@ -686,7 +699,7 @@ func (rct *releaseCollectionTask) execute(ctx context.Context) error {
 			}
 
 			rct.addChildTask(releaseCollectionTask)
-			log.Debug("releaseCollectionTask: add a releaseCollectionTask to releaseCollectionTask's childTask", zap.Any("task", releaseCollectionTask))
+			log.Info("releaseCollectionTask: add a releaseCollectionTask to releaseCollectionTask's childTask", zap.Any("task", releaseCollectionTask))
 		}
 	} else {
 		err := rct.cluster.releaseCollection(ctx, rct.NodeID, rct.ReleaseCollectionRequest)
@@ -698,7 +711,7 @@ func (rct *releaseCollectionTask) execute(ctx context.Context) error {
 		}
 	}
 
-	log.Debug("releaseCollectionTask Execute done",
+	log.Info("releaseCollectionTask Execute done",
 		zap.Int64("msgID", rct.getTaskID()),
 		zap.Int64("collectionID", collectionID),
 		zap.Int64("nodeID", rct.NodeID))
@@ -711,7 +724,7 @@ func (rct *releaseCollectionTask) postExecute(context.Context) error {
 		rct.clearChildTasks()
 	}
 
-	log.Debug("releaseCollectionTask postExecute done",
+	log.Info("releaseCollectionTask postExecute done",
 		zap.Int64("msgID", rct.getTaskID()),
 		zap.Int64("collectionID", collectionID),
 		zap.Int64("nodeID", rct.NodeID))
@@ -781,11 +794,22 @@ func (lpt *loadPartitionTask) updateTaskProcess() {
 		}
 	}
 	if allDone {
+		err := syncReplicaSegments(lpt.ctx, lpt.cluster, childTasks)
+		if err != nil {
+			log.Error("loadPartitionTask: failed to sync replica segments to shard leader",
+				zap.Int64("taskID", lpt.getTaskID()),
+				zap.Int64("collectionID", collectionID),
+				zap.Error(err))
+			lpt.setResultInfo(err)
+			return
+		}
+
 		for _, id := range partitionIDs {
 			err := lpt.meta.setLoadPercentage(collectionID, id, 100, querypb.LoadType_LoadPartition)
 			if err != nil {
 				log.Error("loadPartitionTask: set load percentage to meta's collectionInfo", zap.Int64("collectionID", collectionID), zap.Int64("partitionID", id))
 				lpt.setResultInfo(err)
+				return
 			}
 		}
 		lpt.once.Do(func() {
@@ -805,7 +829,7 @@ func (lpt *loadPartitionTask) preExecute(context.Context) error {
 
 	collectionID := lpt.CollectionID
 	lpt.setResultInfo(nil)
-	log.Debug("start do loadPartitionTask",
+	log.Info("start do loadPartitionTask",
 		zap.Int64("msgID", lpt.getTaskID()),
 		zap.Int64("collectionID", collectionID))
 	return nil
@@ -954,10 +978,10 @@ func (lpt *loadPartitionTask) execute(ctx context.Context) error {
 					DmChannelName: task.WatchDmChannelsRequest.Infos[0].ChannelName,
 				})
 			}
-			log.Debug("loadPartitionTask: add a childTask", zap.Int64("collectionID", collectionID), zap.Int32("task type", int32(internalTask.msgType())))
+			log.Info("loadPartitionTask: add a childTask", zap.Int64("collectionID", collectionID), zap.Int32("task type", int32(internalTask.msgType())))
 		}
 		metrics.QueryCoordNumChildTasks.WithLabelValues().Add(float64(len(internalTasks)))
-		log.Debug("loadPartitionTask: assign child task done", zap.Int64("collectionID", collectionID), zap.Int64s("partitionIDs", partitionIDs), zap.Int64("msgID", lpt.Base.MsgID))
+		log.Info("loadPartitionTask: assign child task done", zap.Int64("collectionID", collectionID), zap.Int64s("partitionIDs", partitionIDs), zap.Int64("msgID", lpt.Base.MsgID))
 	}
 
 	err = lpt.meta.addCollection(collectionID, querypb.LoadType_LoadPartition, lpt.Schema)
@@ -983,7 +1007,7 @@ func (lpt *loadPartitionTask) execute(ctx context.Context) error {
 		}
 	}
 
-	log.Debug("loadPartitionTask Execute done",
+	log.Info("loadPartitionTask Execute done",
 		zap.Int64("msgID", lpt.getTaskID()),
 		zap.Int64("collectionID", collectionID),
 		zap.Int64s("partitionIDs", partitionIDs),
@@ -1003,7 +1027,7 @@ func (lpt *loadPartitionTask) postExecute(ctx context.Context) error {
 		}
 	}
 
-	log.Debug("loadPartitionTask postExecute done",
+	log.Info("loadPartitionTask postExecute done",
 		zap.Int64("msgID", lpt.getTaskID()),
 		zap.Int64("collectionID", collectionID),
 		zap.Int64s("partitionIDs", partitionIDs))
@@ -1042,7 +1066,7 @@ func (lpt *loadPartitionTask) rollBack(ctx context.Context) []task {
 		log.Error("loadPartitionTask: release collection info from meta failed", zap.Int64("collectionID", collectionID), zap.Int64("msgID", lpt.Base.MsgID), zap.Error(err))
 		panic(err)
 	}
-	log.Debug("loadPartitionTask: generate rollBack task for loadPartitionTask", zap.Int64("collectionID", collectionID), zap.Int64("msgID", lpt.Base.MsgID))
+	log.Info("loadPartitionTask: generate rollBack task for loadPartitionTask", zap.Int64("collectionID", collectionID), zap.Int64("msgID", lpt.Base.MsgID))
 	return resultTasks
 }
 
@@ -1089,7 +1113,7 @@ func (rpt *releasePartitionTask) preExecute(context.Context) error {
 	collectionID := rpt.CollectionID
 	partitionIDs := rpt.PartitionIDs
 	rpt.setResultInfo(nil)
-	log.Debug("start do releasePartitionTask",
+	log.Info("start do releasePartitionTask",
 		zap.Int64("msgID", rpt.getTaskID()),
 		zap.Int64("collectionID", collectionID),
 		zap.Int64s("partitionIDs", partitionIDs))
@@ -1117,7 +1141,7 @@ func (rpt *releasePartitionTask) execute(ctx context.Context) error {
 				meta:                     rpt.meta,
 			}
 			rpt.addChildTask(releasePartitionTask)
-			log.Debug("releasePartitionTask: add a releasePartitionTask to releasePartitionTask's childTask", zap.Int64("collectionID", collectionID), zap.Int64("msgID", rpt.Base.MsgID))
+			log.Info("releasePartitionTask: add a releasePartitionTask to releasePartitionTask's childTask", zap.Int64("collectionID", collectionID), zap.Int64("msgID", rpt.Base.MsgID))
 		}
 	} else {
 		err := rpt.cluster.releasePartitions(ctx, rpt.NodeID, rpt.ReleasePartitionsRequest)
@@ -1129,7 +1153,7 @@ func (rpt *releasePartitionTask) execute(ctx context.Context) error {
 		}
 	}
 
-	log.Debug("releasePartitionTask Execute done",
+	log.Info("releasePartitionTask Execute done",
 		zap.Int64("msgID", rpt.getTaskID()),
 		zap.Int64("collectionID", collectionID),
 		zap.Int64s("partitionIDs", partitionIDs),
@@ -1144,7 +1168,7 @@ func (rpt *releasePartitionTask) postExecute(context.Context) error {
 		rpt.clearChildTasks()
 	}
 
-	log.Debug("releasePartitionTask postExecute done",
+	log.Info("releasePartitionTask postExecute done",
 		zap.Int64("msgID", rpt.getTaskID()),
 		zap.Int64("collectionID", collectionID),
 		zap.Int64s("partitionIDs", partitionIDs),
@@ -1207,7 +1231,7 @@ func (lst *loadSegmentTask) preExecute(context.Context) error {
 		segmentIDs = append(segmentIDs, info.SegmentID)
 	}
 	lst.setResultInfo(nil)
-	log.Debug("start do loadSegmentTask",
+	log.Info("start do loadSegmentTask",
 		zap.Int64s("segmentIDs", segmentIDs),
 		zap.Int64("loaded nodeID", lst.DstNodeID),
 		zap.Int64("taskID", lst.getTaskID()))
@@ -1224,13 +1248,13 @@ func (lst *loadSegmentTask) execute(ctx context.Context) error {
 		return err
 	}
 
-	log.Debug("loadSegmentTask Execute done",
+	log.Info("loadSegmentTask Execute done",
 		zap.Int64("taskID", lst.getTaskID()))
 	return nil
 }
 
 func (lst *loadSegmentTask) postExecute(context.Context) error {
-	log.Debug("loadSegmentTask postExecute done",
+	log.Info("loadSegmentTask postExecute done",
 		zap.Int64("taskID", lst.getTaskID()))
 	return nil
 }
@@ -1306,7 +1330,7 @@ func (rst *releaseSegmentTask) timestamp() Timestamp {
 func (rst *releaseSegmentTask) preExecute(context.Context) error {
 	segmentIDs := rst.SegmentIDs
 	rst.setResultInfo(nil)
-	log.Debug("start do releaseSegmentTask",
+	log.Info("start do releaseSegmentTask",
 		zap.Int64s("segmentIDs", segmentIDs),
 		zap.Int64("loaded nodeID", rst.NodeID),
 		zap.Int64("taskID", rst.getTaskID()))
@@ -1323,7 +1347,7 @@ func (rst *releaseSegmentTask) execute(ctx context.Context) error {
 		return err
 	}
 
-	log.Debug("releaseSegmentTask Execute done",
+	log.Info("releaseSegmentTask Execute done",
 		zap.Int64s("segmentIDs", rst.SegmentIDs),
 		zap.Int64("taskID", rst.getTaskID()))
 	return nil
@@ -1331,7 +1355,7 @@ func (rst *releaseSegmentTask) execute(ctx context.Context) error {
 
 func (rst *releaseSegmentTask) postExecute(context.Context) error {
 	segmentIDs := rst.SegmentIDs
-	log.Debug("releaseSegmentTask postExecute done",
+	log.Info("releaseSegmentTask postExecute done",
 		zap.Int64s("segmentIDs", segmentIDs),
 		zap.Int64("taskID", rst.getTaskID()))
 	return nil
@@ -1385,7 +1409,7 @@ func (wdt *watchDmChannelTask) preExecute(context.Context) error {
 		channels = append(channels, info.ChannelName)
 	}
 	wdt.setResultInfo(nil)
-	log.Debug("start do watchDmChannelTask",
+	log.Info("start do watchDmChannelTask",
 		zap.Strings("dmChannels", channels),
 		zap.Int64("loaded nodeID", wdt.NodeID),
 		zap.Int64("taskID", wdt.getTaskID()))
@@ -1402,13 +1426,13 @@ func (wdt *watchDmChannelTask) execute(ctx context.Context) error {
 		return err
 	}
 
-	log.Debug("watchDmChannelsTask Execute done",
+	log.Info("watchDmChannelsTask Execute done",
 		zap.Int64("taskID", wdt.getTaskID()))
 	return nil
 }
 
 func (wdt *watchDmChannelTask) postExecute(context.Context) error {
-	log.Debug("watchDmChannelTask postExecute done",
+	log.Info("watchDmChannelTask postExecute done",
 		zap.Int64("taskID", wdt.getTaskID()))
 	return nil
 }
@@ -1500,7 +1524,7 @@ func (wdt *watchDeltaChannelTask) preExecute(context.Context) error {
 		channels = append(channels, info.ChannelName)
 	}
 	wdt.setResultInfo(nil)
-	log.Debug("start do watchDeltaChannelTask",
+	log.Info("start do watchDeltaChannelTask",
 		zap.Strings("deltaChannels", channels),
 		zap.Int64("loaded nodeID", wdt.NodeID),
 		zap.Int64("taskID", wdt.getTaskID()))
@@ -1517,13 +1541,13 @@ func (wdt *watchDeltaChannelTask) execute(ctx context.Context) error {
 		return err
 	}
 
-	log.Debug("watchDeltaChannelsTask Execute done",
+	log.Info("watchDeltaChannelsTask Execute done",
 		zap.Int64("taskID", wdt.getTaskID()))
 	return nil
 }
 
 func (wdt *watchDeltaChannelTask) postExecute(context.Context) error {
-	log.Debug("watchDeltaChannelTask postExecute done",
+	log.Info("watchDeltaChannelTask postExecute done",
 		zap.Int64("taskID", wdt.getTaskID()))
 	return nil
 }
@@ -1570,7 +1594,7 @@ func (wqt *watchQueryChannelTask) updateTaskProcess() {
 
 func (wqt *watchQueryChannelTask) preExecute(context.Context) error {
 	wqt.setResultInfo(nil)
-	log.Debug("start do watchQueryChannelTask",
+	log.Info("start do watchQueryChannelTask",
 		zap.Int64("collectionID", wqt.CollectionID),
 		zap.String("queryChannel", wqt.QueryChannel),
 		zap.String("queryResultChannel", wqt.QueryResultChannel),
@@ -1584,12 +1608,15 @@ func (wqt *watchQueryChannelTask) execute(ctx context.Context) error {
 
 	err := wqt.cluster.addQueryChannel(wqt.ctx, wqt.NodeID, wqt.AddQueryChannelRequest)
 	if err != nil {
-		log.Warn("watchQueryChannelTask: watchQueryChannel occur error", zap.Int64("taskID", wqt.getTaskID()), zap.Error(err))
+		log.Warn("watchQueryChannelTask: watchQueryChannel occur error",
+			zap.Int64("taskID", wqt.getTaskID()),
+			zap.String("channel", wqt.AddQueryChannelRequest.QueryChannel),
+			zap.Error(err))
 		wqt.setResultInfo(err)
 		return err
 	}
 
-	log.Debug("watchQueryChannelTask Execute done",
+	log.Info("watchQueryChannelTask Execute done",
 		zap.Int64("collectionID", wqt.CollectionID),
 		zap.String("queryChannel", wqt.QueryChannel),
 		zap.String("queryResultChannel", wqt.QueryResultChannel),
@@ -1598,7 +1625,7 @@ func (wqt *watchQueryChannelTask) execute(ctx context.Context) error {
 }
 
 func (wqt *watchQueryChannelTask) postExecute(context.Context) error {
-	log.Debug("watchQueryChannelTask postExecute done",
+	log.Info("watchQueryChannelTask postExecute done",
 		zap.Int64("collectionID", wqt.CollectionID),
 		zap.String("queryChannel", wqt.QueryChannel),
 		zap.String("queryResultChannel", wqt.QueryResultChannel),
@@ -1638,7 +1665,7 @@ func (ht *handoffTask) preExecute(context.Context) error {
 	for _, info := range segmentInfos {
 		segmentIDs = append(segmentIDs, info.SegmentID)
 	}
-	log.Debug("start do handoff segments task",
+	log.Info("start do handoff segments task",
 		zap.Int64s("segmentIDs", segmentIDs))
 	return nil
 }
@@ -1652,12 +1679,12 @@ func (ht *handoffTask) execute(ctx context.Context) error {
 
 		collectionInfo, err := ht.meta.getCollectionInfoByID(collectionID)
 		if err != nil {
-			log.Debug("handoffTask: collection has not been loaded into memory", zap.Int64("collectionID", collectionID), zap.Int64("segmentID", segmentID))
+			log.Warn("handoffTask: collection has not been loaded into memory", zap.Int64("collectionID", collectionID), zap.Int64("segmentID", segmentID))
 			continue
 		}
 
 		if collectionInfo.LoadType == querypb.LoadType_LoadCollection && ht.meta.hasReleasePartition(collectionID, partitionID) {
-			log.Debug("handoffTask: partition has not been released", zap.Int64("collectionID", collectionID), zap.Int64("partitionID", partitionID))
+			log.Warn("handoffTask: partition has not been released", zap.Int64("collectionID", collectionID), zap.Int64("partitionID", partitionID))
 			continue
 		}
 
@@ -1669,7 +1696,7 @@ func (ht *handoffTask) execute(ctx context.Context) error {
 		}
 
 		if collectionInfo.LoadType != querypb.LoadType_LoadCollection && !partitionLoaded {
-			log.Debug("handoffTask: partition has not been loaded into memory", zap.Int64("collectionID", collectionID), zap.Int64("partitionID", partitionID), zap.Int64("segmentID", segmentID))
+			log.Warn("handoffTask: partition has not been loaded into memory", zap.Int64("collectionID", collectionID), zap.Int64("partitionID", partitionID), zap.Int64("segmentID", segmentID))
 			continue
 		}
 
@@ -1759,7 +1786,7 @@ func (ht *handoffTask) execute(ctx context.Context) error {
 			}
 			for _, internalTask := range internalTasks {
 				ht.addChildTask(internalTask)
-				log.Debug("handoffTask: add a childTask", zap.Int32("task type", int32(internalTask.msgType())), zap.Int64("segmentID", segmentID))
+				log.Info("handoffTask: add a childTask", zap.Int32("task type", int32(internalTask.msgType())), zap.Int64("segmentID", segmentID))
 			}
 		} else {
 			err = fmt.Errorf("sealed segment has been exist on query node, segmentID is %d", segmentID)
@@ -1769,10 +1796,7 @@ func (ht *handoffTask) execute(ctx context.Context) error {
 		}
 	}
 
-	log.Debug("handoffTask: assign child task done", zap.Any("segmentInfos", segmentInfos))
-
-	log.Debug("handoffTask Execute done",
-		zap.Int64("taskID", ht.getTaskID()))
+	log.Info("handoffTask: assign child task done", zap.Any("segmentInfos", segmentInfos), zap.Int64("taskID", ht.getTaskID()))
 	return nil
 }
 
@@ -1781,9 +1805,7 @@ func (ht *handoffTask) postExecute(context.Context) error {
 		ht.clearChildTasks()
 	}
 
-	log.Debug("handoffTask postExecute done",
-		zap.Int64("taskID", ht.getTaskID()))
-
+	log.Info("handoffTask postExecute done", zap.Int64("taskID", ht.getTaskID()))
 	return nil
 }
 
@@ -1826,7 +1848,7 @@ func (lbt *loadBalanceTask) timestamp() Timestamp {
 
 func (lbt *loadBalanceTask) preExecute(context.Context) error {
 	lbt.setResultInfo(nil)
-	log.Debug("start do loadBalanceTask",
+	log.Info("start do loadBalanceTask",
 		zap.Int32("trigger type", int32(lbt.triggerCondition)),
 		zap.Int64s("sourceNodeIDs", lbt.SourceNodeIDs),
 		zap.Any("balanceReason", lbt.BalanceReason),
@@ -1887,7 +1909,7 @@ func (lbt *loadBalanceTask) checkForManualLoadBalance() error {
 
 	lbt.replicaID = replicaID
 
-	log.Debug("start do loadBalanceTask",
+	log.Info("start do loadBalanceTask",
 		zap.Int32("trigger type", int32(lbt.triggerCondition)),
 		zap.Int64s("sourceNodeIDs", lbt.SourceNodeIDs),
 		zap.Any("balanceReason", lbt.BalanceReason),
@@ -1903,16 +1925,16 @@ func (lbt *loadBalanceTask) execute(ctx context.Context) error {
 		for _, nodeID := range lbt.SourceNodeIDs {
 			segmentID2Info := make(map[UniqueID]*querypb.SegmentInfo)
 			dmChannel2WatchInfo := make(map[string]*querypb.DmChannelWatchInfo)
-			recoveredCollectionIDs := make(map[UniqueID]struct{})
+			recoveredCollectionIDs := make(typeutil.UniqueSet)
 			segmentInfos := lbt.meta.getSegmentInfosByNode(nodeID)
 			for _, segmentInfo := range segmentInfos {
 				segmentID2Info[segmentInfo.SegmentID] = segmentInfo
-				recoveredCollectionIDs[segmentInfo.CollectionID] = struct{}{}
+				recoveredCollectionIDs.Insert(segmentInfo.CollectionID)
 			}
 			dmChannelWatchInfos := lbt.meta.getDmChannelInfosByNodeID(nodeID)
 			for _, watchInfo := range dmChannelWatchInfos {
 				dmChannel2WatchInfo[watchInfo.DmChannel] = watchInfo
-				recoveredCollectionIDs[watchInfo.CollectionID] = struct{}{}
+				recoveredCollectionIDs.Insert(watchInfo.CollectionID)
 			}
 
 			for collectionID := range recoveredCollectionIDs {
@@ -1939,7 +1961,7 @@ func (lbt *loadBalanceTask) execute(ctx context.Context) error {
 				} else {
 					toRecoverPartitionIDs = collectionInfo.PartitionIDs
 				}
-				log.Debug("loadBalanceTask: get collection's all partitionIDs", zap.Int64("collectionID", collectionID), zap.Int64s("partitionIDs", toRecoverPartitionIDs))
+				log.Info("loadBalanceTask: get collection's all partitionIDs", zap.Int64("collectionID", collectionID), zap.Int64s("partitionIDs", toRecoverPartitionIDs))
 				replica, err := lbt.getReplica(nodeID, collectionID)
 				if err != nil {
 					lbt.setResultInfo(err)
@@ -1956,27 +1978,27 @@ func (lbt *loadBalanceTask) execute(ctx context.Context) error {
 
 					for _, segmentBingLog := range binlogs {
 						segmentID := segmentBingLog.SegmentID
-						if info, ok := segmentID2Info[segmentID]; ok {
+						if _, ok := segmentID2Info[segmentID]; ok {
 							segmentLoadInfo := lbt.broker.generateSegmentLoadInfo(ctx, collectionID, partitionID, segmentBingLog, true, schema)
+
 							msgBase := proto.Clone(lbt.Base).(*commonpb.MsgBase)
 							msgBase.MsgType = commonpb.MsgType_LoadSegments
-							for _, replica := range info.ReplicaIds {
-								loadSegmentReq := &querypb.LoadSegmentsRequest{
-									Base:         msgBase,
-									Infos:        []*querypb.SegmentLoadInfo{segmentLoadInfo},
-									Schema:       schema,
+
+							loadSegmentReq := &querypb.LoadSegmentsRequest{
+								Base:         msgBase,
+								Infos:        []*querypb.SegmentLoadInfo{segmentLoadInfo},
+								Schema:       schema,
+								CollectionID: collectionID,
+
+								LoadMeta: &querypb.LoadMetaInfo{
+									LoadType:     collectionInfo.LoadType,
 									CollectionID: collectionID,
-
-									LoadMeta: &querypb.LoadMetaInfo{
-										LoadType:     collectionInfo.LoadType,
-										CollectionID: collectionID,
-										PartitionIDs: toRecoverPartitionIDs,
-									},
-									ReplicaID: replica,
-								}
-
-								loadSegmentReqs = append(loadSegmentReqs, loadSegmentReq)
+									PartitionIDs: toRecoverPartitionIDs,
+								},
+								ReplicaID: replica.ReplicaID,
 							}
+
+							loadSegmentReqs = append(loadSegmentReqs, loadSegmentReq)
 						}
 					}
 
@@ -2038,9 +2060,9 @@ func (lbt *loadBalanceTask) execute(ctx context.Context) error {
 		}
 		for _, internalTask := range internalTasks {
 			lbt.addChildTask(internalTask)
-			log.Debug("loadBalanceTask: add a childTask", zap.Int32("task type", int32(internalTask.msgType())), zap.Any("task", internalTask))
+			log.Info("loadBalanceTask: add a childTask", zap.Int32("task type", int32(internalTask.msgType())), zap.Any("task", internalTask))
 		}
-		log.Debug("loadBalanceTask: assign child task done", zap.Int64s("sourceNodeIDs", lbt.SourceNodeIDs))
+		log.Info("loadBalanceTask: assign child task done", zap.Int64s("sourceNodeIDs", lbt.SourceNodeIDs))
 	}
 
 	if lbt.triggerCondition == querypb.TriggerCondition_LoadBalance {
@@ -2173,12 +2195,12 @@ func (lbt *loadBalanceTask) execute(ctx context.Context) error {
 		}
 		for _, internalTask := range internalTasks {
 			lbt.addChildTask(internalTask)
-			log.Debug("loadBalanceTask: add a childTask", zap.Int32("task type", int32(internalTask.msgType())), zap.Any("balance request", lbt.LoadBalanceRequest))
+			log.Info("loadBalanceTask: add a childTask", zap.Int32("task type", int32(internalTask.msgType())), zap.Any("balance request", lbt.LoadBalanceRequest))
 		}
-		log.Debug("loadBalanceTask: assign child task done", zap.Any("balance request", lbt.LoadBalanceRequest))
+		log.Info("loadBalanceTask: assign child task done", zap.Any("balance request", lbt.LoadBalanceRequest))
 	}
 
-	log.Debug("loadBalanceTask Execute done",
+	log.Info("loadBalanceTask Execute done",
 		zap.Int32("trigger type", int32(lbt.triggerCondition)),
 		zap.Int64s("sourceNodeIDs", lbt.SourceNodeIDs),
 		zap.Any("balanceReason", lbt.BalanceReason),
@@ -2200,6 +2222,13 @@ func (lbt *loadBalanceTask) getReplica(nodeID, collectionID int64) (*milvuspb.Re
 }
 
 func (lbt *loadBalanceTask) postExecute(context.Context) error {
+	err := syncReplicaSegments(lbt.ctx, lbt.cluster, lbt.getChildTask())
+	if err != nil {
+		log.Error("loadBalanceTask: failed to sync replica segments to shard leaders",
+			zap.Int64("taskID", lbt.getTaskID()),
+			zap.Error(err))
+	}
+
 	if lbt.getResultInfo().ErrorCode != commonpb.ErrorCode_Success {
 		lbt.clearChildTasks()
 	}
@@ -2208,16 +2237,61 @@ func (lbt *loadBalanceTask) postExecute(context.Context) error {
 	// then the queryCoord will panic, and the nodeInfo should not be removed immediately
 	// after queryCoord recovery, the balanceTask will redo
 	if lbt.triggerCondition == querypb.TriggerCondition_NodeDown && lbt.getResultInfo().ErrorCode == commonpb.ErrorCode_Success {
+		offlineNodes := make(map[UniqueID]struct{}, len(lbt.SourceNodeIDs))
+		for _, nodeID := range lbt.SourceNodeIDs {
+			offlineNodes[nodeID] = struct{}{}
+		}
+		replicas := make(map[UniqueID]*milvuspb.ReplicaInfo)
+
 		for _, id := range lbt.SourceNodeIDs {
 			err := lbt.cluster.removeNodeInfo(id)
 			if err != nil {
 				//TODO:: clear node info after removeNodeInfo failed
-				log.Error("loadBalanceTask: occur error when removing node info from cluster", zap.Int64("nodeID", id))
+				log.Warn("loadBalanceTask: occur error when removing node info from cluster",
+					zap.Int64("nodeID", id),
+					zap.Error(err))
+				continue
 			}
+
+			replica, err := lbt.getReplica(id, lbt.CollectionID)
+			if err != nil {
+				log.Warn("failed to get replica for removing offline querynode from it",
+					zap.Int64("querynodeID", id),
+					zap.Int64("collectionID", lbt.CollectionID),
+					zap.Error(err))
+				continue
+			}
+			replicas[replica.ReplicaID] = replica
 		}
+
+		log.Debug("removing offline nodes from replicas...",
+			zap.Int("len(replicas)", len(replicas)))
+		wg := sync.WaitGroup{}
+		for _, replica := range replicas {
+			wg.Add(1)
+			go func(replica *milvuspb.ReplicaInfo) {
+				defer wg.Done()
+
+				onlineNodes := make([]UniqueID, 0, len(replica.NodeIds))
+				for _, nodeID := range replica.NodeIds {
+					if _, ok := offlineNodes[nodeID]; !ok {
+						onlineNodes = append(onlineNodes, nodeID)
+					}
+				}
+				replica.NodeIds = onlineNodes
+
+				err := lbt.meta.setReplicaInfo(replica)
+				if err != nil {
+					log.Warn("failed to remove offline nodes from replica info",
+						zap.Int64("replicaID", replica.ReplicaID),
+						zap.Error(err))
+				}
+			}(replica)
+		}
+		wg.Wait()
 	}
 
-	log.Debug("loadBalanceTask postExecute done",
+	log.Info("loadBalanceTask postExecute done",
 		zap.Int32("trigger type", int32(lbt.triggerCondition)),
 		zap.Int64s("sourceNodeIDs", lbt.SourceNodeIDs),
 		zap.Any("balanceReason", lbt.BalanceReason),
@@ -2230,21 +2304,21 @@ func assignInternalTask(ctx context.Context,
 	loadSegmentRequests []*querypb.LoadSegmentsRequest,
 	watchDmChannelRequests []*querypb.WatchDmChannelsRequest,
 	wait bool, excludeNodeIDs []int64, includeNodeIDs []int64, replicaID int64) ([]task, error) {
-	log.Debug("assignInternalTask: start assign task to query node")
+
 	internalTasks := make([]task, 0)
 	err := cluster.allocateSegmentsToQueryNode(ctx, loadSegmentRequests, wait, excludeNodeIDs, includeNodeIDs, replicaID)
 	if err != nil {
-		log.Error("assignInternalTask: assign segment to node failed", zap.Any("load segments requests", loadSegmentRequests))
+		log.Error("assignInternalTask: assign segment to node failed", zap.Error(err))
 		return nil, err
 	}
-	log.Debug("assignInternalTask: assign segment to node success")
+	log.Info("assignInternalTask: assign segment to node success", zap.Int("load segments", len(loadSegmentRequests)))
 
 	err = cluster.allocateChannelsToQueryNode(ctx, watchDmChannelRequests, wait, excludeNodeIDs, includeNodeIDs, replicaID)
 	if err != nil {
-		log.Error("assignInternalTask: assign dmChannel to node failed", zap.Any("watch dmChannel requests", watchDmChannelRequests))
+		log.Error("assignInternalTask: assign dmChannel to node failed", zap.Error(err))
 		return nil, err
 	}
-	log.Debug("assignInternalTask: assign dmChannel to node success")
+	log.Info("assignInternalTask: assign dmChannel to node success", zap.Int("watch dmchannels", len(watchDmChannelRequests)))
 
 	if len(loadSegmentRequests) > 0 {
 		sort.Slice(loadSegmentRequests, func(i, j int) bool {
@@ -2335,7 +2409,7 @@ func mergeWatchDeltaChannelInfo(infos []*datapb.VchannelInfo) []*datapb.Vchannel
 	for _, index := range minPositions {
 		result = append(result, infos[index])
 	}
-	log.Debug("merge delta channels finished",
+	log.Info("merge delta channels finished",
 		zap.Any("origin info length", len(infos)),
 		zap.Any("merged info length", len(result)),
 	)

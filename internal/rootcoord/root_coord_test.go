@@ -49,6 +49,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util"
 	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/etcd"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
@@ -192,6 +193,15 @@ func (d *dataMock) SetSegmentState(ctx context.Context, req *datapb.SetSegmentSt
 
 func (d *dataMock) Import(ctx context.Context, req *datapb.ImportTaskRequest) (*datapb.ImportTaskResponse, error) {
 	return &datapb.ImportTaskResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+			Reason:    "",
+		},
+	}, nil
+}
+
+func (d *dataMock) Flush(ctx context.Context, req *datapb.FlushRequest) (*datapb.FlushResponse, error) {
+	return &datapb.FlushResponse{
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_Success,
 			Reason:    "",
@@ -624,6 +634,56 @@ func TestRootCoordInit(t *testing.T) {
 	core.session.TriggerKill = false
 	err = core.Register()
 	assert.NoError(t, err)
+}
+
+func TestRootCoordInitData(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	coreFactory := dependency.NewDefaultFactory(true)
+	Params.Init()
+	Params.RootCoordCfg.DmlChannelNum = TestDMLChannelNum
+
+	etcdCli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
+	assert.NoError(t, err)
+	defer etcdCli.Close()
+
+	core, err := NewCore(ctx, coreFactory)
+	assert.NoError(t, err)
+	core.SetEtcdClient(etcdCli)
+
+	randVal := rand.Int()
+	Params.EtcdCfg.MetaRootPath = fmt.Sprintf("/%d/%s", randVal, Params.EtcdCfg.MetaRootPath)
+	Params.EtcdCfg.KvRootPath = fmt.Sprintf("/%d/%s", randVal, Params.EtcdCfg.KvRootPath)
+
+	// 1. normal init
+	err = core.Init()
+	assert.NoError(t, err)
+
+	// 2. mock init data error
+	// firstly delete data
+	err = core.MetaTable.DeleteCredential(util.UserRoot)
+	assert.NoError(t, err)
+
+	snapshotKV, err := newMetaSnapshot(etcdCli, Params.EtcdCfg.MetaRootPath, TimestampPrefix, 7)
+	assert.NotNil(t, snapshotKV)
+	assert.NoError(t, err)
+	txnKV := etcdkv.NewEtcdKV(etcdCli, Params.EtcdCfg.MetaRootPath)
+	mt, err := NewMetaTable(txnKV, snapshotKV)
+	assert.NoError(t, err)
+	mockTxnKV := &mockTestTxnKV{
+		TxnKV:  mt.txn,
+		save:   func(key, value string) error { return txnKV.Save(key, value) },
+		remove: func(key string) error { return txnKV.Remove(key) },
+	}
+	mt.txn = mockTxnKV
+	// mock save data error
+	mockTxnKV.save = func(key, value string) error {
+		return fmt.Errorf("save error")
+	}
+	core.MetaTable = mt
+	err = core.initData()
+	assert.Error(t, err)
 }
 
 func TestRootCoord_Base(t *testing.T) {
@@ -1280,6 +1340,11 @@ func TestRootCoord_Base(t *testing.T) {
 	wg.Add(1)
 	t.Run("import", func(t *testing.T) {
 		defer wg.Done()
+		tID := typeutil.UniqueID(0)
+		core.importManager.idAllocator = func(count uint32) (typeutil.UniqueID, typeutil.UniqueID, error) {
+			tID++
+			return tID, 0, nil
+		}
 		req := &milvuspb.ImportRequest{
 			CollectionName: collName,
 			PartitionName:  partName,
@@ -1311,9 +1376,18 @@ func TestRootCoord_Base(t *testing.T) {
 	t.Run("get import state", func(t *testing.T) {
 		defer wg.Done()
 		req := &milvuspb.GetImportStateRequest{
-			Task: 0,
+			Task: 1,
 		}
 		rsp, err := core.GetImportState(ctx, req)
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, rsp.Status.ErrorCode)
+	})
+
+	wg.Add(1)
+	t.Run("list import stasks", func(t *testing.T) {
+		defer wg.Done()
+		req := &milvuspb.ListImportTasksRequest{}
+		rsp, err := core.ListImportTasks(ctx, req)
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, rsp.Status.ErrorCode)
 	})
@@ -1361,17 +1435,22 @@ func TestRootCoord_Base(t *testing.T) {
 	wg.Add(1)
 	t.Run("report import collection name not found", func(t *testing.T) {
 		defer wg.Done()
-		req := &milvuspb.ImportRequest{
-			CollectionName: "new" + collName,
-			PartitionName:  partName,
-			RowBased:       true,
-			Files:          []string{"f1", "f2", "f3"},
+		var tID = typeutil.UniqueID(100)
+		core.importManager.idAllocator = func(count uint32) (typeutil.UniqueID, typeutil.UniqueID, error) {
+			tID++
+			return tID, 0, nil
 		}
 		core.MetaTable.collName2ID["new"+collName] = 123
 		core.MetaTable.collID2Meta[123] = etcdpb.CollectionInfo{
 			ID:             123,
 			PartitionIDs:   []int64{456},
 			PartitionNames: []string{"testPartition"}}
+		req := &milvuspb.ImportRequest{
+			CollectionName: "new" + collName,
+			PartitionName:  partName,
+			RowBased:       true,
+			Files:          []string{"f1", "f2", "f3"},
+		}
 		rsp, err := core.Import(ctx, req)
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, rsp.Status.ErrorCode)
@@ -1379,7 +1458,7 @@ func TestRootCoord_Base(t *testing.T) {
 		delete(core.MetaTable.collID2Meta, 123)
 
 		reqIR := &rootcoordpb.ImportResult{
-			TaskId:   3,
+			TaskId:   101,
 			RowCount: 100,
 			Segments: []int64{1003, 1004, 1005},
 			State:    commonpb.ImportState_ImportCompleted,
@@ -1393,7 +1472,7 @@ func TestRootCoord_Base(t *testing.T) {
 	t.Run("report import with transitional state", func(t *testing.T) {
 		defer wg.Done()
 		req := &rootcoordpb.ImportResult{
-			TaskId:   0,
+			TaskId:   1,
 			RowCount: 100,
 			Segments: []int64{1000, 1001, 1002},
 			State:    commonpb.ImportState_ImportDownloaded,
@@ -1408,7 +1487,7 @@ func TestRootCoord_Base(t *testing.T) {
 	t.Run("report import bring segments online", func(t *testing.T) {
 		defer wg.Done()
 		req := &rootcoordpb.ImportResult{
-			TaskId:   0,
+			TaskId:   1,
 			RowCount: 100,
 			Segments: []int64{1000, 1001, 1002},
 			State:    commonpb.ImportState_ImportCompleted,
@@ -1423,7 +1502,7 @@ func TestRootCoord_Base(t *testing.T) {
 	t.Run("report import bring segments online with set segment state fail", func(t *testing.T) {
 		defer wg.Done()
 		req := &rootcoordpb.ImportResult{
-			TaskId:   0,
+			TaskId:   1,
 			RowCount: 100,
 			Segments: []int64{999}, /* pre-injected failure for segment ID = 999 */
 			State:    commonpb.ImportState_ImportCompleted,
@@ -1439,7 +1518,7 @@ func TestRootCoord_Base(t *testing.T) {
 		// Mark task 0 as failed.
 		core.importManager.updateTaskState(
 			&rootcoordpb.ImportResult{
-				TaskId:   0,
+				TaskId:   1,
 				RowCount: 100,
 				State:    commonpb.ImportState_ImportFailed,
 				Segments: []int64{1000, 1001, 1002},
@@ -1447,7 +1526,7 @@ func TestRootCoord_Base(t *testing.T) {
 		// Now try to update this task with a complete status.
 		resp, err := core.ReportImport(context.WithValue(ctx, ctxKey{}, ""),
 			&rootcoordpb.ImportResult{
-				TaskId:   0,
+				TaskId:   1,
 				RowCount: 100,
 				State:    commonpb.ImportState_ImportCompleted,
 				Segments: []int64{1000, 1001, 1002},
@@ -2559,6 +2638,10 @@ func TestRootCoord_Base(t *testing.T) {
 		})
 		assert.NoError(t, err)
 		assert.NotEqual(t, commonpb.ErrorCode_Success, rsp11.ErrorCode)
+
+		rsp12, err := core.ListImportTasks(ctx, &milvuspb.ListImportTasksRequest{})
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, rsp12.Status.ErrorCode)
 	})
 
 	wg.Add(1)

@@ -45,7 +45,7 @@ type Client struct {
 	sess       *sessionutil.Session
 }
 
-// NewClient create root coordinator client with specified ectd info and timeout
+// NewClient create root coordinator client with specified etcd info and timeout
 // ctx execution control context
 // metaRoot is the path in etcd for root coordinator registration
 // etcdEndpoints are the address list for etcd end points
@@ -62,6 +62,9 @@ func NewClient(ctx context.Context, metaRoot string, etcdCli *clientv3.Client) (
 		grpcClient: &grpcclient.ClientBase{
 			ClientMaxRecvSize: ClientParams.ClientMaxRecvSize,
 			ClientMaxSendSize: ClientParams.ClientMaxSendSize,
+			DialTimeout:       ClientParams.DialTimeout,
+			KeepAliveTime:     ClientParams.KeepAliveTime,
+			KeepAliveTimeout:  ClientParams.KeepAliveTimeout,
 		},
 		sess: sess,
 	}
@@ -515,6 +518,20 @@ func (c *Client) GetImportState(ctx context.Context, req *milvuspb.GetImportStat
 		return nil, err
 	}
 	return ret.(*milvuspb.GetImportStateResponse), err
+}
+
+// List id array of all import tasks
+func (c *Client) ListImportTasks(ctx context.Context, req *milvuspb.ListImportTasksRequest) (*milvuspb.ListImportTasksResponse, error) {
+	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(rootcoordpb.RootCoordClient).ListImportTasks(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*milvuspb.ListImportTasksResponse), err
 }
 
 // Report impot task state to rootcoord

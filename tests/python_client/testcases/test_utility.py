@@ -21,6 +21,8 @@ default_nb = ct.default_nb
 num_loaded_entities = "num_loaded_entities"
 num_total_entities = "num_total_entities"
 loading_progress = "loading_progress"
+num_loaded_partitions = "num_loaded_partitions"
+not_loaded_partitions = "not_loaded_partitions"
 
 
 class TestUtilityParams(TestcaseBase):
@@ -242,6 +244,7 @@ class TestUtilityParams(TestcaseBase):
                                            check_task=CheckTasks.err_res, check_items=err_msg)
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.xfail(reason="issue to be discussed")
     @pytest.mark.parametrize("partition_names", [[ct.default_tag], [ct.default_partition_name, ct.default_tag]])
     def test_loading_progress_not_existed_partitions(self, partition_names):
         """
@@ -761,20 +764,19 @@ class TestUtilityBase(TestcaseBase):
         assert res["indexed_rows"] == nb
 
     @pytest.mark.tags(CaseLabel.L2)
-    @pytest.mark.xfail(reason="https://github.com/milvus-io/milvus/issues/16468")
     def test_loading_progress_without_loading(self):
         """
         target: test loading progress without loading
         method: insert and flush data, call loading_progress without loading
-        expected: loaded entities is 0
+        expected: raise exception
         """
         collection_w = self.init_collection_wrap()
         df = cf.gen_default_dataframe_data()
         collection_w.insert(df)
         assert collection_w.num_entities == ct.default_nb
-        exp_res = {loading_progress: '0%'}
-        res, _ = self.utility_wrap.loading_progress(collection_w.name)
-        assert res == exp_res
+        error = {ct.err_code: 1, ct.err_msg: {"has not been loaded into QueryNode"}}
+        self.utility_wrap.loading_progress(collection_w.name,
+                                           check_task=CheckTasks.err_res, check_items=error)
 
     @pytest.mark.tags(CaseLabel.L1)
     @pytest.mark.parametrize("nb", [ct.default_nb, 5000])
@@ -818,25 +820,24 @@ class TestUtilityBase(TestcaseBase):
         collection_w = self.init_collection_wrap()
         collection_w.load()
         res, _ = self.utility_wrap.loading_progress(collection_w.name)
-        exp_res = {loading_progress: '100%'}
+        exp_res = {loading_progress: '100%', num_loaded_partitions: 1, not_loaded_partitions: []}
+
         assert exp_res == res
 
     @pytest.mark.tags(CaseLabel.L1)
-    @pytest.mark.xfail(reason="https://github.com/milvus-io/milvus/issues/16468")
     def test_loading_progress_after_release(self):
         """
-        target: test loading progress without loading
-        method: insert and flush data, call loading_progress without loading
-        expected: loaded entities is 0
+        target: test loading progress after release
+        method: insert and flush data, call loading_progress after release
+        expected: raise exception
         """
         collection_w = self.init_collection_general(prefix, insert_data=True)[0]
         collection_w.release()
-        exp_res = {loading_progress: '0%'}
-        res, _ = self.utility_wrap.loading_progress(collection_w.name)
-        assert res == exp_res
+        error = {ct.err_code: 1, ct.err_msg: {"has not been loaded into QueryNode"}}
+        self.utility_wrap.loading_progress(collection_w.name,
+                                           check_task=CheckTasks.err_res, check_items=error)
 
     @pytest.mark.tags(CaseLabel.L2)
-    @pytest.mark.xfail(reason="https://github.com/milvus-io/milvus/issues/16468")
     def test_loading_progress_with_release_partition(self):
         """
         target: test loading progress after release part partitions
@@ -852,7 +853,6 @@ class TestUtilityBase(TestcaseBase):
         assert res[loading_progress] == '50%'
 
     @pytest.mark.tags(CaseLabel.L2)
-    @pytest.mark.xfail(reason="https://github.com/milvus-io/milvus/issues/16468")
     def test_loading_progress_with_load_partition(self):
         """
         target: test loading progress after load partition
@@ -892,7 +892,7 @@ class TestUtilityBase(TestcaseBase):
         cw.load()
         self.utility_wrap.wait_for_loading_complete(cw.name)
         res, _ = self.utility_wrap.loading_progress(cw.name)
-        exp_res = {loading_progress: "100%"}
+        exp_res = {loading_progress: "100%", not_loaded_partitions: [], num_loaded_partitions: 1}
         assert res == exp_res
 
     @pytest.mark.tags(CaseLabel.L1)
@@ -1458,7 +1458,7 @@ class TestUtilityAdvanced(TestcaseBase):
                 cnt += r.num_rows
         assert cnt == nb
 
-    @pytest.mark.tags(CaseLabel.Loadbalance)
+    @pytest.mark.tags(CaseLabel.L3)
     def test_load_balance_normal(self):
         """
         target: test load balance of collection
@@ -1489,7 +1489,7 @@ class TestUtilityAdvanced(TestcaseBase):
         des_node_ids = all_querynodes[1:]
         sealed_segment_ids = segment_distribution[src_node_id]["sealed"]
         # load balance
-        self.utility_wrap.load_balance(src_node_id, des_node_ids, sealed_segment_ids)
+        self.utility_wrap.load_balance(collection_w.name, src_node_id, des_node_ids, sealed_segment_ids)
         # get segments distribution after load balance
         res, _ = self.utility_wrap.get_query_segment_info(c_name)
         segment_distribution = cf.get_segment_distribution(res)
@@ -1531,7 +1531,7 @@ class TestUtilityAdvanced(TestcaseBase):
         dst_node_ids = all_querynodes[1:]
         sealed_segment_ids = segment_distribution[src_node_id]["sealed"]
         # load balance
-        self.utility_wrap.load_balance(invalid_src_node_id, dst_node_ids, sealed_segment_ids, 
+        self.utility_wrap.load_balance(collection_w.name, invalid_src_node_id, dst_node_ids, sealed_segment_ids,
                                        check_task=CheckTasks.err_res,
                                        check_items={ct.err_code: 1, ct.err_msg: "is not exist to balance"})
 
@@ -1566,7 +1566,7 @@ class TestUtilityAdvanced(TestcaseBase):
         dst_node_ids = [node["identifier"] for node in ms.index_nodes]
         sealed_segment_ids = segment_distribution[src_node_id]["sealed"]
         # load balance
-        self.utility_wrap.load_balance(src_node_id, dst_node_ids, sealed_segment_ids, 
+        self.utility_wrap.load_balance(collection_w.name, src_node_id, dst_node_ids, sealed_segment_ids,
                                        check_task=CheckTasks.err_res,
                                        check_items={ct.err_code: 1, ct.err_msg: "no available queryNode to allocate"})
 
@@ -1606,6 +1606,92 @@ class TestUtilityAdvanced(TestcaseBase):
         else:
             sealed_segment_ids.append(max(segment_distribution[src_node_id]["sealed"]) + 1)
         # load balance
-        self.utility_wrap.load_balance(src_node_id, dst_node_ids, sealed_segment_ids, 
+        self.utility_wrap.load_balance(collection_w.name, src_node_id, dst_node_ids, sealed_segment_ids,
                                        check_task=CheckTasks.err_res,
                                        check_items={ct.err_code: 1, ct.err_msg: "is not exist"})
+
+    @pytest.mark.tags(CaseLabel.L3)
+    def test_load_balance_in_one_group(self):
+        """
+        target: test load balance of collection in one group
+        method: init a collection, load with multi replicas and load balance among the querynodes in one group
+        expected: load balance successfully
+        """
+        # init a collection
+        c_name = cf.gen_unique_str(prefix)
+        collection_w = self.init_collection_wrap(name=c_name)
+        ms = MilvusSys()
+        nb = 3000
+        df = cf.gen_default_dataframe_data(nb)
+        collection_w.insert(df)
+        # get sealed segments
+        collection_w.num_entities
+        collection_w.load(replica_number=2)
+        # get growing segments
+        collection_w.insert(df)
+        # get replicas information
+        res, _ = collection_w.get_replicas()
+        # prepare load balance params
+        # find a group which has multi nodes
+        group_nodes = []
+        for g in res.groups:
+            if len(g.group_nodes) >= 2:
+                group_nodes = list(g.group_nodes)
+                break
+        src_node_id = group_nodes[0]
+        dst_node_ids = group_nodes[1:]
+        res, _ = self.utility_wrap.get_query_segment_info(c_name)
+        segment_distribution = cf.get_segment_distribution(res)
+        sealed_segment_ids = segment_distribution[src_node_id]["sealed"]
+        # load balance
+        self.utility_wrap.load_balance(collection_w.name, src_node_id, dst_node_ids, sealed_segment_ids)
+        # get segments distribution after load balance
+        res, _ = self.utility_wrap.get_query_segment_info(c_name)
+        segment_distribution = cf.get_segment_distribution(res)
+        sealed_segment_ids_after_load_banalce = segment_distribution[src_node_id]["sealed"]
+        # assert
+        assert sealed_segment_ids_after_load_banalce == []
+        des_sealed_segment_ids = []
+        for des_node_id in dst_node_ids:
+            des_sealed_segment_ids += segment_distribution[des_node_id]["sealed"]
+        # assert sealed_segment_ids is subset of des_sealed_segment_ids
+        assert set(sealed_segment_ids).issubset(des_sealed_segment_ids)
+
+    @pytest.mark.tags(CaseLabel.L3)
+    def test_load_balance_not_in_one_group(self):
+        """
+        target: test load balance of collection in one group
+        method: init a collection, load with multi replicas and load balance among the querynodes in different group
+        expected: load balance failed
+        """
+        # init a collection
+        c_name = cf.gen_unique_str(prefix)
+        collection_w = self.init_collection_wrap(name=c_name)
+        ms = MilvusSys()
+        nb = 3000
+        df = cf.gen_default_dataframe_data(nb)
+        collection_w.insert(df)
+        # get sealed segments
+        collection_w.num_entities
+        collection_w.load(replica_number=2)
+        # get growing segments
+        collection_w.insert(df)
+        # get replicas information
+        res, _ = collection_w.get_replicas()
+        # prepare load balance params
+        all_querynodes = [node["identifier"] for node in ms.query_nodes]
+        # find a group which has multi nodes
+        group_nodes = []
+        for g in res.groups:
+            if len(g.group_nodes) >= 2:
+                group_nodes = list(g.group_nodes)
+                break
+        src_node_id = group_nodes[0]              
+        dst_node_ids = list(set(all_querynodes) - set(group_nodes))
+        res, _ = self.utility_wrap.get_query_segment_info(c_name)
+        segment_distribution = cf.get_segment_distribution(res)
+        sealed_segment_ids = segment_distribution[src_node_id]["sealed"]
+        # load balance
+        self.utility_wrap.load_balance(collection_w.name, src_node_id, dst_node_ids, sealed_segment_ids,
+                                       check_task=CheckTasks.err_res,
+                                       check_items={ct.err_code: 1, ct.err_msg: "must be in the same replica group"})

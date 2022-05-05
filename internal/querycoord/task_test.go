@@ -480,8 +480,11 @@ func Test_LoadCollectionExecuteFail(t *testing.T) {
 func TestLoadCollectionNoEnoughNodeFail(t *testing.T) {
 	refreshParams()
 	ctx := context.Background()
+	defer removeAllSession()
+
 	queryCoord, err := startQueryCoord(ctx)
 	assert.Nil(t, err)
+	defer queryCoord.Stop()
 
 	node1, err := startQueryNodeServer(ctx)
 	assert.Nil(t, err)
@@ -489,16 +492,13 @@ func TestLoadCollectionNoEnoughNodeFail(t *testing.T) {
 	assert.Nil(t, err)
 	waitQueryNodeOnline(queryCoord.cluster, node1.queryNodeID)
 	waitQueryNodeOnline(queryCoord.cluster, node2.queryNodeID)
+	defer node1.stop()
+	defer node2.stop()
 
 	loadCollectionTask := genLoadCollectionTask(ctx, queryCoord)
 	loadCollectionTask.ReplicaNumber = 3
 	err = queryCoord.scheduler.processTask(loadCollectionTask)
 	assert.Error(t, err)
-
-	assert.NoError(t, node1.stop())
-	assert.NoError(t, node2.stop())
-	assert.NoError(t, queryCoord.Stop())
-	assert.NoError(t, removeAllSession())
 }
 
 func Test_LoadPartitionAssignTaskFail(t *testing.T) {
@@ -925,7 +925,7 @@ func TestLoadBalanceSegmentsTask(t *testing.T) {
 	})
 
 	t.Run("Test LoadBalanceByNode", func(t *testing.T) {
-		baseTask := newBaseTask(ctx, querypb.TriggerCondition_LoadBalance)
+		baseTask := newBaseTask(ctx, querypb.TriggerCondition_NodeDown)
 		loadBalanceTask := &loadBalanceTask{
 			baseTask: baseTask,
 			LoadBalanceRequest: &querypb.LoadBalanceRequest{
@@ -934,6 +934,7 @@ func TestLoadBalanceSegmentsTask(t *testing.T) {
 				},
 				SourceNodeIDs: []int64{node1.queryNodeID},
 				CollectionID:  defaultCollectionID,
+				BalanceReason: querypb.TriggerCondition_NodeDown,
 			},
 			broker:  queryCoord.broker,
 			cluster: queryCoord.cluster,
@@ -942,6 +943,7 @@ func TestLoadBalanceSegmentsTask(t *testing.T) {
 		err = queryCoord.scheduler.Enqueue(loadBalanceTask)
 		assert.Nil(t, err)
 		waitTaskFinalState(loadBalanceTask, taskExpired)
+		assert.Equal(t, commonpb.ErrorCode_Success, loadBalanceTask.result.ErrorCode)
 	})
 
 	t.Run("Test LoadBalanceWithEmptySourceNode", func(t *testing.T) {
@@ -1163,6 +1165,7 @@ func TestLoadBalanceAndReschedulSegmentTaskAfterNodeDown(t *testing.T) {
 }
 
 func TestLoadBalanceAndRescheduleDmChannelTaskAfterNodeDown(t *testing.T) {
+	defer removeAllSession()
 	refreshParams()
 	ctx := context.Background()
 	queryCoord, err := startQueryCoord(ctx)
@@ -1214,9 +1217,6 @@ func TestLoadBalanceAndRescheduleDmChannelTaskAfterNodeDown(t *testing.T) {
 			break
 		}
 	}
-
-	err = removeAllSession()
-	assert.Nil(t, err)
 }
 
 func TestMergeWatchDeltaChannelInfo(t *testing.T) {

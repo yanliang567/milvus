@@ -35,6 +35,8 @@ import (
 	"sync"
 	"unsafe"
 
+	"github.com/milvus-io/milvus/internal/util/typeutil"
+
 	"github.com/milvus-io/milvus/internal/metrics"
 
 	"go.uber.org/zap"
@@ -119,7 +121,7 @@ OUTER:
 		c.vChannels = append(c.vChannels, dstChan)
 	}
 
-	metrics.QueryNodeNumDmlChannels.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Add(float64(len(c.vChannels)))
+	metrics.QueryNodeNumDmlChannels.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID())).Add(float64(len(c.vChannels)))
 }
 
 // getVChannels get virtual channels of collection
@@ -147,7 +149,7 @@ func (c *Collection) removeVChannel(channel Channel) {
 		zap.String("channel", channel),
 	)
 
-	metrics.QueryNodeNumDmlChannels.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Sub(float64(len(c.vChannels)))
+	metrics.QueryNodeNumDmlChannels.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID())).Sub(float64(len(c.vChannels)))
 }
 
 // addPChannels add physical channels to physical channels of collection
@@ -244,7 +246,7 @@ OUTER:
 		c.vDeltaChannels = append(c.vDeltaChannels, dstChan)
 	}
 
-	metrics.QueryNodeNumDeltaChannels.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Add(float64(len(c.vDeltaChannels)))
+	metrics.QueryNodeNumDeltaChannels.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID())).Add(float64(len(c.vDeltaChannels)))
 }
 
 func (c *Collection) removeVDeltaChannel(channel Channel) {
@@ -262,7 +264,7 @@ func (c *Collection) removeVDeltaChannel(channel Channel) {
 		zap.String("channel", channel),
 	)
 
-	metrics.QueryNodeNumDeltaChannels.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Sub(float64(len(c.vDeltaChannels)))
+	metrics.QueryNodeNumDeltaChannels.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID())).Sub(float64(len(c.vDeltaChannels)))
 }
 
 // setReleaseTime records when collection is released
@@ -287,6 +289,19 @@ func (c *Collection) setLoadType(l loadType) {
 // getLoadType get the loadType of collection, which is loadTypeCollection or loadTypePartition
 func (c *Collection) getLoadType() loadType {
 	return c.loadType
+}
+
+// getFieldType get the field type according to the field id.
+func (c *Collection) getFieldType(fieldID FieldID) (schemapb.DataType, error) {
+	helper, err := typeutil.CreateSchemaHelper(c.schema)
+	if err != nil {
+		return schemapb.DataType_None, err
+	}
+	field, err := helper.GetFieldFromID(fieldID)
+	if err != nil {
+		return schemapb.DataType_None, err
+	}
+	return field.GetDataType(), nil
 }
 
 // newCollection returns a new Collection

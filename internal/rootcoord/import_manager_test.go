@@ -18,6 +18,7 @@ package rootcoord
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -28,6 +29,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -36,6 +38,15 @@ type customKV struct {
 }
 
 func TestImportManager_NewImportManager(t *testing.T) {
+	var countLock sync.RWMutex
+	var globalCount = typeutil.UniqueID(0)
+
+	var idAlloc = func(count uint32) (typeutil.UniqueID, typeutil.UniqueID, error) {
+		countLock.Lock()
+		defer countLock.Unlock()
+		globalCount++
+		return globalCount, 0, nil
+	}
 	Params.RootCoordCfg.ImportTaskSubPath = "test_import_task"
 	Params.RootCoordCfg.ImportTaskExpiration = 1
 	mockKv := &kv.MockMetaKV{}
@@ -75,7 +86,7 @@ func TestImportManager_NewImportManager(t *testing.T) {
 		defer wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		mgr := newImportManager(ctx, mockKv, fn)
+		mgr := newImportManager(ctx, mockKv, idAlloc, fn)
 		assert.NotNil(t, mgr)
 		mgr.init(ctx)
 		var wgLoop sync.WaitGroup
@@ -89,7 +100,7 @@ func TestImportManager_NewImportManager(t *testing.T) {
 		defer wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
 		defer cancel()
-		mgr := newImportManager(ctx, mockKv, fn)
+		mgr := newImportManager(ctx, mockKv, idAlloc, fn)
 		assert.NotNil(t, mgr)
 		mgr.init(context.TODO())
 		var wgLoop sync.WaitGroup
@@ -103,7 +114,7 @@ func TestImportManager_NewImportManager(t *testing.T) {
 		defer wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		mgr := newImportManager(ctx, mockKv, fn)
+		mgr := newImportManager(ctx, mockKv, idAlloc, fn)
 		assert.NotNil(t, mgr)
 		mgr.pendingTasks = append(mgr.pendingTasks, &datapb.ImportTaskInfo{
 			Id: 300,
@@ -123,11 +134,20 @@ func TestImportManager_NewImportManager(t *testing.T) {
 }
 
 func TestImportManager_ImportJob(t *testing.T) {
+	var countLock sync.RWMutex
+	var globalCount = typeutil.UniqueID(0)
+
+	var idAlloc = func(count uint32) (typeutil.UniqueID, typeutil.UniqueID, error) {
+		countLock.Lock()
+		defer countLock.Unlock()
+		globalCount++
+		return globalCount, 0, nil
+	}
 	Params.RootCoordCfg.ImportTaskSubPath = "test_import_task"
 	colID := int64(100)
 	mockKv := &kv.MockMetaKV{}
 	mockKv.InMemKv = make(map[string]string)
-	mgr := newImportManager(context.TODO(), mockKv, nil)
+	mgr := newImportManager(context.TODO(), mockKv, idAlloc, nil)
 	resp := mgr.importJob(context.TODO(), nil, colID, 0)
 	assert.NotEqual(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
 
@@ -162,12 +182,12 @@ func TestImportManager_ImportJob(t *testing.T) {
 		}
 	}
 
-	mgr = newImportManager(context.TODO(), mockKv, fn)
+	mgr = newImportManager(context.TODO(), mockKv, idAlloc, fn)
 	resp = mgr.importJob(context.TODO(), rowReq, colID, 0)
 	assert.Equal(t, len(rowReq.Files), len(mgr.pendingTasks))
 	assert.Equal(t, 0, len(mgr.workingTasks))
 
-	mgr = newImportManager(context.TODO(), mockKv, fn)
+	mgr = newImportManager(context.TODO(), mockKv, idAlloc, fn)
 	resp = mgr.importJob(context.TODO(), colReq, colID, 0)
 	assert.Equal(t, 1, len(mgr.pendingTasks))
 	assert.Equal(t, 0, len(mgr.workingTasks))
@@ -180,12 +200,12 @@ func TestImportManager_ImportJob(t *testing.T) {
 		}
 	}
 
-	mgr = newImportManager(context.TODO(), mockKv, fn)
+	mgr = newImportManager(context.TODO(), mockKv, idAlloc, fn)
 	resp = mgr.importJob(context.TODO(), rowReq, colID, 0)
 	assert.Equal(t, 0, len(mgr.pendingTasks))
 	assert.Equal(t, len(rowReq.Files), len(mgr.workingTasks))
 
-	mgr = newImportManager(context.TODO(), mockKv, fn)
+	mgr = newImportManager(context.TODO(), mockKv, idAlloc, fn)
 	resp = mgr.importJob(context.TODO(), colReq, colID, 0)
 	assert.Equal(t, 0, len(mgr.pendingTasks))
 	assert.Equal(t, 1, len(mgr.workingTasks))
@@ -207,13 +227,22 @@ func TestImportManager_ImportJob(t *testing.T) {
 		}
 	}
 
-	mgr = newImportManager(context.TODO(), mockKv, fn)
+	mgr = newImportManager(context.TODO(), mockKv, idAlloc, fn)
 	resp = mgr.importJob(context.TODO(), rowReq, colID, 0)
 	assert.Equal(t, len(rowReq.Files)-2, len(mgr.pendingTasks))
 	assert.Equal(t, 2, len(mgr.workingTasks))
 }
 
 func TestImportManager_TaskState(t *testing.T) {
+	var countLock sync.RWMutex
+	var globalCount = typeutil.UniqueID(0)
+
+	var idAlloc = func(count uint32) (typeutil.UniqueID, typeutil.UniqueID, error) {
+		countLock.Lock()
+		defer countLock.Unlock()
+		globalCount++
+		return globalCount, 0, nil
+	}
 	Params.RootCoordCfg.ImportTaskSubPath = "test_import_task"
 	colID := int64(100)
 	mockKv := &kv.MockMetaKV{}
@@ -233,7 +262,7 @@ func TestImportManager_TaskState(t *testing.T) {
 		Files:          []string{"f1", "f2", "f3"},
 	}
 
-	mgr := newImportManager(context.TODO(), mockKv, fn)
+	mgr := newImportManager(context.TODO(), mockKv, idAlloc, fn)
 	mgr.importJob(context.TODO(), rowReq, colID, 0)
 
 	state := &rootcoordpb.ImportResult{
@@ -243,7 +272,7 @@ func TestImportManager_TaskState(t *testing.T) {
 	assert.NotNil(t, err)
 
 	state = &rootcoordpb.ImportResult{
-		TaskId:   1,
+		TaskId:   2,
 		RowCount: 1000,
 		State:    commonpb.ImportState_ImportCompleted,
 		Infos: []*commonpb.KeyValuePair{
@@ -259,7 +288,7 @@ func TestImportManager_TaskState(t *testing.T) {
 	}
 	ti, err := mgr.updateTaskState(state)
 	assert.NoError(t, err)
-	assert.Equal(t, int64(1), ti.GetId())
+	assert.Equal(t, int64(2), ti.GetId())
 	assert.Equal(t, int64(100), ti.GetCollectionId())
 	assert.Equal(t, int64(100), ti.GetCollectionId())
 	assert.Equal(t, int64(0), ti.GetPartitionId())
@@ -271,11 +300,105 @@ func TestImportManager_TaskState(t *testing.T) {
 	resp := mgr.getTaskState(10000)
 	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp.Status.ErrorCode)
 
-	resp = mgr.getTaskState(1)
+	resp = mgr.getTaskState(2)
 	assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
 	assert.Equal(t, commonpb.ImportState_ImportCompleted, resp.State)
 
-	resp = mgr.getTaskState(0)
+	resp = mgr.getTaskState(1)
 	assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
 	assert.Equal(t, commonpb.ImportState_ImportPending, resp.State)
+}
+
+func TestImportManager_AllocFail(t *testing.T) {
+	var idAlloc = func(count uint32) (typeutil.UniqueID, typeutil.UniqueID, error) {
+		return 0, 0, errors.New("injected failure")
+	}
+	Params.RootCoordCfg.ImportTaskSubPath = "test_import_task"
+	colID := int64(100)
+	mockKv := &kv.MockMetaKV{}
+	mockKv.InMemKv = make(map[string]string)
+	fn := func(ctx context.Context, req *datapb.ImportTaskRequest) *datapb.ImportTaskResponse {
+		return &datapb.ImportTaskResponse{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_Success,
+			},
+		}
+	}
+
+	rowReq := &milvuspb.ImportRequest{
+		CollectionName: "c1",
+		PartitionName:  "p1",
+		RowBased:       true,
+		Files:          []string{"f1", "f2", "f3"},
+	}
+
+	mgr := newImportManager(context.TODO(), mockKv, idAlloc, fn)
+	mgr.importJob(context.TODO(), rowReq, colID, 0)
+}
+
+func TestImportManager_ListAllTasks(t *testing.T) {
+	var countLock sync.RWMutex
+	var globalCount = typeutil.UniqueID(0)
+
+	var idAlloc = func(count uint32) (typeutil.UniqueID, typeutil.UniqueID, error) {
+		countLock.Lock()
+		defer countLock.Unlock()
+		globalCount++
+		return globalCount, 0, nil
+	}
+
+	Params.RootCoordCfg.ImportTaskSubPath = "test_import_task"
+	colID := int64(100)
+	mockKv := &kv.MockMetaKV{}
+	mockKv.InMemKv = make(map[string]string)
+
+	// reject some tasks so there are 3 tasks left in pending list
+	fn := func(ctx context.Context, req *datapb.ImportTaskRequest) *datapb.ImportTaskResponse {
+		return &datapb.ImportTaskResponse{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+			},
+		}
+	}
+
+	rowReq := &milvuspb.ImportRequest{
+		CollectionName: "c1",
+		PartitionName:  "p1",
+		RowBased:       true,
+		Files:          []string{"f1", "f2", "f3"},
+	}
+
+	mgr := newImportManager(context.TODO(), mockKv, idAlloc, fn)
+	mgr.importJob(context.TODO(), rowReq, colID, 0)
+
+	tasks := mgr.listAllTasks()
+	assert.Equal(t, len(rowReq.Files), len(tasks))
+
+	resp := mgr.getTaskState(1)
+	assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
+	assert.Equal(t, commonpb.ImportState_ImportPending, resp.State)
+	assert.Equal(t, int64(1), resp.Id)
+
+	// accept tasks to working list
+	mgr.callImportService = func(ctx context.Context, req *datapb.ImportTaskRequest) *datapb.ImportTaskResponse {
+		return &datapb.ImportTaskResponse{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_Success,
+			},
+		}
+	}
+
+	mgr.importJob(context.TODO(), rowReq, colID, 0)
+	tasks = mgr.listAllTasks()
+	assert.Equal(t, len(rowReq.Files)*2, len(tasks))
+
+	// the id of tasks must be 1,2,3,4,5,6(sequence not guaranteed)
+	ids := make(map[int64]struct{})
+	for i := 0; i < len(tasks); i++ {
+		ids[int64(i)+1] = struct{}{}
+	}
+	for i := 0; i < len(tasks); i++ {
+		delete(ids, tasks[i].Id)
+	}
+	assert.Equal(t, 0, len(ids))
 }

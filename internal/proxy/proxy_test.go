@@ -564,7 +564,7 @@ func TestProxy(t *testing.T) {
 		states, err := proxy.GetComponentStates(ctx)
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, states.Status.ErrorCode)
-		assert.Equal(t, Params.ProxyCfg.ProxyID, states.State.NodeID)
+		assert.Equal(t, Params.ProxyCfg.GetNodeID(), states.State.NodeID)
 		assert.Equal(t, typeutil.ProxyRole, states.State.Role)
 		assert.Equal(t, proxy.stateCode.Load().(internalpb.StateCode), states.State.StateCode)
 	})
@@ -1078,31 +1078,16 @@ func TestProxy(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
 		segmentIDs = resp.CollSegIDs[collectionName].Data
+		log.Info("flush collection", zap.Int64s("segments to be flushed", segmentIDs))
 
 		f := func() bool {
-			states := make(map[int64]commonpb.SegmentState) // segment id -> segment state
-			for _, id := range segmentIDs {
-				states[id] = commonpb.SegmentState_Sealed
-			}
-			resp, err := proxy.GetPersistentSegmentInfo(ctx, &milvuspb.GetPersistentSegmentInfoRequest{
-				Base:           nil,
-				DbName:         dbName,
-				CollectionName: collectionName,
+			resp, err := proxy.GetFlushState(ctx, &milvuspb.GetFlushStateRequest{
+				SegmentIDs: segmentIDs,
 			})
-			assert.NoError(t, err)
-			assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
-			for _, info := range resp.Infos {
-				states[info.SegmentID] = info.State
+			if err != nil {
+				return false
 			}
-			for id, state := range states {
-				if state != commonpb.SegmentState_Flushed {
-					log.Debug("waiting for segment to be flushed",
-						zap.Int64("segment id", id),
-						zap.Any("state", state))
-					return false
-				}
-			}
-			return true
+			return resp.GetFlushed()
 		}
 
 		// waiting for flush operation to be done
@@ -1266,6 +1251,20 @@ func TestProxy(t *testing.T) {
 		})
 		assert.NoError(t, err)
 		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
+	})
+
+	wg.Add(1)
+	t.Run("get replicas", func(t *testing.T) {
+		defer wg.Done()
+
+		collectionID, err := globalMetaCache.GetCollectionID(ctx, collectionName)
+		assert.NoError(t, err)
+
+		resp, err := proxy.GetReplicas(ctx, &milvuspb.GetReplicasRequest{
+			CollectionID: collectionID,
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, 1, len(resp.Replicas))
 	})
 
 	// nprobe := 10
@@ -3085,6 +3084,27 @@ func TestProxy_GetImportState(t *testing.T) {
 		proxy := &Proxy{rootCoord: rootCoord}
 		proxy.stateCode.Store(internalpb.StateCode_Abnormal)
 		resp, err := proxy.GetImportState(context.TODO(), req)
+		assert.EqualValues(t, unhealthyStatus(), resp.Status)
+		assert.Nil(t, err)
+	})
+}
+
+func TestProxy_ListImportTasks(t *testing.T) {
+	req := &milvuspb.ListImportTasksRequest{}
+	rootCoord := &RootCoordMock{}
+	rootCoord.state.Store(internalpb.StateCode_Healthy)
+	t.Run("test list import tasks", func(t *testing.T) {
+		proxy := &Proxy{rootCoord: rootCoord}
+		proxy.stateCode.Store(internalpb.StateCode_Healthy)
+
+		resp, err := proxy.ListImportTasks(context.TODO(), req)
+		assert.EqualValues(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
+		assert.Nil(t, err)
+	})
+	t.Run("test list import tasks with unhealthy", func(t *testing.T) {
+		proxy := &Proxy{rootCoord: rootCoord}
+		proxy.stateCode.Store(internalpb.StateCode_Abnormal)
+		resp, err := proxy.ListImportTasks(context.TODO(), req)
 		assert.EqualValues(t, unhealthyStatus(), resp.Status)
 		assert.Nil(t, err)
 	})

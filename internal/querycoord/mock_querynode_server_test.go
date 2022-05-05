@@ -71,6 +71,7 @@ type queryNodeServerMock struct {
 	releaseCollection   rpcHandler
 	releasePartition    rpcHandler
 	releaseSegments     rpcHandler
+	syncReplicaSegments rpcHandler
 	getSegmentInfos     func() (*querypb.GetSegmentInfoResponse, error)
 	getMetrics          func() (*milvuspb.GetMetricsResponse, error)
 
@@ -95,6 +96,7 @@ func newQueryNodeServerMock(ctx context.Context) *queryNodeServerMock {
 		releaseCollection:   returnSuccessResult,
 		releasePartition:    returnSuccessResult,
 		releaseSegments:     returnSuccessResult,
+		syncReplicaSegments: returnSuccessResult,
 		getSegmentInfos:     returnSuccessGetSegmentInfoResult,
 		getMetrics:          returnSuccessGetMetricsResult,
 
@@ -231,6 +233,7 @@ func (qs *queryNodeServerMock) LoadSegments(ctx context.Context, req *querypb.Lo
 			SegmentState: commonpb.SegmentState_Sealed,
 			MemSize:      info.NumOfRows * int64(sizePerRecord),
 			NumRows:      info.NumOfRows,
+			NodeIds:      []UniqueID{qs.queryNodeID},
 		}
 		globalSegInfosMutex.Lock()
 		qs.segmentInfos[info.SegmentID] = segmentInfo
@@ -269,6 +272,10 @@ func (qs *queryNodeServerMock) GetSegmentInfo(ctx context.Context, req *querypb.
 		res.Infos = segmentInfos
 	}
 	return res, err
+}
+
+func (qs *queryNodeServerMock) SyncReplicaSegments(ctx context.Context, req *querypb.SyncReplicaSegmentsRequest) (*commonpb.Status, error) {
+	return qs.syncReplicaSegments()
 }
 
 func (qs *queryNodeServerMock) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {

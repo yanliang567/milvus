@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/stretchr/testify/assert"
@@ -47,10 +48,12 @@ func (m *mockSegmentDetector) watchSegments(collectionID int64, replicaID int64,
 }
 
 type mockShardQueryNode struct {
-	searchResult *internalpb.SearchResults
-	searchErr    error
-	queryResult  *internalpb.RetrieveResults
-	queryErr     error
+	searchResult          *internalpb.SearchResults
+	searchErr             error
+	queryResult           *internalpb.RetrieveResults
+	queryErr              error
+	releaseSegmentsResult *commonpb.Status
+	releaseSegmentsErr    error
 }
 
 func (m *mockShardQueryNode) Search(_ context.Context, _ *querypb.SearchRequest) (*internalpb.SearchResults, error) {
@@ -59,6 +62,10 @@ func (m *mockShardQueryNode) Search(_ context.Context, _ *querypb.SearchRequest)
 
 func (m *mockShardQueryNode) Query(_ context.Context, _ *querypb.QueryRequest) (*internalpb.RetrieveResults, error) {
 	return m.queryResult, m.queryErr
+}
+
+func (m *mockShardQueryNode) ReleaseSegments(ctx context.Context, in *querypb.ReleaseSegmentsRequest) (*commonpb.Status, error) {
+	return m.releaseSegmentsResult, m.releaseSegmentsErr
 }
 
 func (m *mockShardQueryNode) Stop() error {
@@ -626,6 +633,108 @@ func TestShardCluster_segmentEvent(t *testing.T) {
 	})
 }
 
+func TestShardCluster_SyncSegments(t *testing.T) {
+	collectionID := int64(1)
+	vchannelName := "dml_1_1_v0"
+	replicaID := int64(0)
+
+	t.Run("sync new segments", func(t *testing.T) {
+		segmentEvents := []segmentEvent{}
+
+		evtCh := make(chan segmentEvent, 10)
+		sc := NewShardCluster(collectionID, replicaID, vchannelName,
+			&mockNodeDetector{}, &mockSegmentDetector{
+				initSegments: segmentEvents,
+				evtCh:        evtCh,
+			}, buildMockQueryNode)
+		defer sc.Close()
+
+		sc.SyncSegments([]*querypb.ReplicaSegmentsInfo{
+			{
+				NodeId:     1,
+				SegmentIds: []int64{1},
+			},
+			{
+				NodeId:     2,
+				SegmentIds: []int64{2},
+			},
+			{
+				NodeId:     3,
+				SegmentIds: []int64{3},
+			},
+		}, segmentStateLoaded)
+		assert.Eventually(t, func() bool {
+			seg, has := sc.getSegment(1)
+			return has && seg.nodeID == 1 && seg.state == segmentStateLoaded
+		}, time.Second, time.Millisecond)
+		assert.Eventually(t, func() bool {
+			seg, has := sc.getSegment(2)
+			return has && seg.nodeID == 2 && seg.state == segmentStateLoaded
+		}, time.Second, time.Millisecond)
+		assert.Eventually(t, func() bool {
+			seg, has := sc.getSegment(3)
+			return has && seg.nodeID == 3 && seg.state == segmentStateLoaded
+		}, time.Second, time.Millisecond)
+
+	})
+
+	t.Run("sync existing segments", func(t *testing.T) {
+		segmentEvents := []segmentEvent{
+			{
+				segmentID: 1,
+				nodeID:    1,
+				state:     segmentStateOffline,
+			},
+			{
+				segmentID: 2,
+				nodeID:    2,
+				state:     segmentStateOffline,
+			},
+			{
+				segmentID: 3,
+				nodeID:    3,
+				state:     segmentStateOffline,
+			},
+		}
+
+		evtCh := make(chan segmentEvent, 10)
+		sc := NewShardCluster(collectionID, replicaID, vchannelName,
+			&mockNodeDetector{}, &mockSegmentDetector{
+				initSegments: segmentEvents,
+				evtCh:        evtCh,
+			}, buildMockQueryNode)
+		defer sc.Close()
+
+		sc.SyncSegments([]*querypb.ReplicaSegmentsInfo{
+			{
+				NodeId:     1,
+				SegmentIds: []int64{1},
+			},
+			{
+				NodeId:     2,
+				SegmentIds: []int64{2},
+			},
+			{
+				NodeId:     3,
+				SegmentIds: []int64{3},
+			},
+		}, segmentStateLoaded)
+		assert.Eventually(t, func() bool {
+			seg, has := sc.getSegment(1)
+			return has && seg.nodeID == 1 && seg.state == segmentStateLoaded
+		}, time.Second, time.Millisecond)
+		assert.Eventually(t, func() bool {
+			seg, has := sc.getSegment(2)
+			return has && seg.nodeID == 2 && seg.state == segmentStateLoaded
+		}, time.Second, time.Millisecond)
+		assert.Eventually(t, func() bool {
+			seg, has := sc.getSegment(3)
+			return has && seg.nodeID == 3 && seg.state == segmentStateLoaded
+		}, time.Second, time.Millisecond)
+	})
+
+}
+
 func TestShardCluster_Search(t *testing.T) {
 	collectionID := int64(1)
 	vchannelName := "dml_1_1_v0"
@@ -1022,4 +1131,488 @@ func TestShardCluster_Query(t *testing.T) {
 		assert.Error(t, err)
 	})
 
+}
+
+func TestShardCluster_ReferenceCount(t *testing.T) {
+	collectionID := int64(1)
+	vchannelName := "dml_1_1_v0"
+	replicaID := int64(0)
+	//	ctx := context.Background()
+
+	t.Run("normal alloc & finish", func(t *testing.T) {
+		nodeEvents := []nodeEvent{
+			{
+				nodeID:   1,
+				nodeAddr: "addr_1",
+			},
+			{
+				nodeID:   2,
+				nodeAddr: "addr_2",
+			},
+		}
+
+		segmentEvents := []segmentEvent{
+			{
+				segmentID: 1,
+				nodeID:    1,
+				state:     segmentStateLoaded,
+			},
+			{
+				segmentID: 2,
+				nodeID:    2,
+				state:     segmentStateLoaded,
+			},
+		}
+		sc := NewShardCluster(collectionID, replicaID, vchannelName,
+			&mockNodeDetector{
+				initNodes: nodeEvents,
+			}, &mockSegmentDetector{
+				initSegments: segmentEvents,
+			}, buildMockQueryNode)
+		defer sc.Close()
+
+		allocs := sc.segmentAllocations(nil)
+
+		sc.mut.RLock()
+		for _, segment := range sc.segments {
+			assert.Greater(t, segment.inUse, int32(0))
+		}
+		sc.mut.RUnlock()
+
+		assert.True(t, sc.segmentsInUse([]int64{1, 2}))
+		assert.True(t, sc.segmentsInUse([]int64{1, 2, -1}))
+
+		sc.finishUsage(allocs)
+		sc.mut.RLock()
+		for _, segment := range sc.segments {
+			assert.EqualValues(t, segment.inUse, 0)
+		}
+		sc.mut.RUnlock()
+
+		assert.False(t, sc.segmentsInUse([]int64{1, 2}))
+		assert.False(t, sc.segmentsInUse([]int64{1, 2, -1}))
+	})
+
+	t.Run("alloc & finish with modified alloc", func(t *testing.T) {
+		nodeEvents := []nodeEvent{
+			{
+				nodeID:   1,
+				nodeAddr: "addr_1",
+			},
+			{
+				nodeID:   2,
+				nodeAddr: "addr_2",
+			},
+		}
+
+		segmentEvents := []segmentEvent{
+			{
+				segmentID: 1,
+				nodeID:    1,
+				state:     segmentStateLoaded,
+			},
+			{
+				segmentID: 2,
+				nodeID:    2,
+				state:     segmentStateLoaded,
+			},
+		}
+		sc := NewShardCluster(collectionID, replicaID, vchannelName,
+			&mockNodeDetector{
+				initNodes: nodeEvents,
+			}, &mockSegmentDetector{
+				initSegments: segmentEvents,
+			}, buildMockQueryNode)
+		defer sc.Close()
+
+		allocs := sc.segmentAllocations(nil)
+
+		sc.mut.RLock()
+		for _, segment := range sc.segments {
+			assert.Greater(t, segment.inUse, int32(0))
+		}
+		sc.mut.RUnlock()
+
+		for node, segments := range allocs {
+			segments = append(segments, -1) // add non-exist segment
+			// shall be ignored in finishUsage
+			allocs[node] = segments
+		}
+
+		assert.NotPanics(t, func() {
+			sc.finishUsage(allocs)
+		})
+		sc.mut.RLock()
+		for _, segment := range sc.segments {
+			assert.EqualValues(t, segment.inUse, 0)
+		}
+		sc.mut.RUnlock()
+	})
+
+	t.Run("wait segments online", func(t *testing.T) {
+		nodeEvents := []nodeEvent{
+			{
+				nodeID:   1,
+				nodeAddr: "addr_1",
+			},
+			{
+				nodeID:   2,
+				nodeAddr: "addr_2",
+			},
+		}
+
+		segmentEvents := []segmentEvent{
+			{
+				segmentID: 1,
+				nodeID:    1,
+				state:     segmentStateLoaded,
+			},
+			{
+				segmentID: 2,
+				nodeID:    2,
+				state:     segmentStateLoaded,
+			},
+		}
+		evtCh := make(chan segmentEvent, 10)
+		sc := NewShardCluster(collectionID, replicaID, vchannelName,
+			&mockNodeDetector{
+				initNodes: nodeEvents,
+			}, &mockSegmentDetector{
+				initSegments: segmentEvents,
+				evtCh:        evtCh,
+			}, buildMockQueryNode)
+		defer sc.Close()
+
+		assert.True(t, sc.segmentsOnline([]int64{1, 2}))
+		assert.False(t, sc.segmentsOnline([]int64{1, 2, 3}))
+
+		sig := make(chan struct{})
+		go func() {
+			sc.waitSegmentsOnline([]int64{1, 2, 3})
+			close(sig)
+		}()
+
+		evtCh <- segmentEvent{
+			eventType: segmentAdd,
+			segmentID: 3,
+			nodeID:    1,
+			state:     segmentStateLoaded,
+		}
+
+		<-sig
+		assert.True(t, sc.segmentsOnline([]int64{1, 2, 3}))
+	})
+}
+
+func TestShardCluster_HandoffSegments(t *testing.T) {
+	collectionID := int64(1)
+	otherCollectionID := int64(2)
+	vchannelName := "dml_1_1_v0"
+	otherVchannelName := "dml_1_2_v0"
+	replicaID := int64(0)
+
+	t.Run("handoff without using segments", func(t *testing.T) {
+		nodeEvents := []nodeEvent{
+			{
+				nodeID:   1,
+				nodeAddr: "addr_1",
+			},
+			{
+				nodeID:   2,
+				nodeAddr: "addr_2",
+			},
+		}
+
+		segmentEvents := []segmentEvent{
+			{
+				segmentID: 1,
+				nodeID:    1,
+				state:     segmentStateLoaded,
+			},
+			{
+				segmentID: 2,
+				nodeID:    2,
+				state:     segmentStateLoaded,
+			},
+		}
+		sc := NewShardCluster(collectionID, replicaID, vchannelName,
+			&mockNodeDetector{
+				initNodes: nodeEvents,
+			}, &mockSegmentDetector{
+				initSegments: segmentEvents,
+			}, buildMockQueryNode)
+		defer sc.Close()
+
+		err := sc.HandoffSegments(&querypb.SegmentChangeInfo{
+			OnlineSegments: []*querypb.SegmentInfo{
+				{SegmentID: 2, NodeID: 2, CollectionID: collectionID, DmChannel: vchannelName, NodeIds: []UniqueID{2}},
+			},
+			OfflineSegments: []*querypb.SegmentInfo{
+				{SegmentID: 1, NodeID: 1, CollectionID: collectionID, DmChannel: vchannelName, NodeIds: []UniqueID{1}},
+			},
+		})
+		if err != nil {
+			t.Log(err.Error())
+		}
+		assert.NoError(t, err)
+
+		sc.mut.RLock()
+		_, has := sc.segments[1]
+		sc.mut.RUnlock()
+
+		assert.False(t, has)
+	})
+	t.Run("handoff with growing segment(segment not recorded)", func(t *testing.T) {
+		nodeEvents := []nodeEvent{
+			{
+				nodeID:   1,
+				nodeAddr: "addr_1",
+			},
+			{
+				nodeID:   2,
+				nodeAddr: "addr_2",
+			},
+		}
+
+		segmentEvents := []segmentEvent{
+			{
+				segmentID: 1,
+				nodeID:    1,
+				state:     segmentStateLoaded,
+			},
+			{
+				segmentID: 2,
+				nodeID:    2,
+				state:     segmentStateLoaded,
+			},
+		}
+		sc := NewShardCluster(collectionID, replicaID, vchannelName,
+			&mockNodeDetector{
+				initNodes: nodeEvents,
+			}, &mockSegmentDetector{
+				initSegments: segmentEvents,
+			}, buildMockQueryNode)
+		defer sc.Close()
+
+		err := sc.HandoffSegments(&querypb.SegmentChangeInfo{
+			OnlineSegments: []*querypb.SegmentInfo{
+				{SegmentID: 2, NodeID: 2, CollectionID: collectionID, DmChannel: vchannelName, NodeIds: []UniqueID{2}},
+				{SegmentID: 4, NodeID: 2, CollectionID: otherCollectionID, DmChannel: otherVchannelName, NodeIds: []UniqueID{2}},
+			},
+			OfflineSegments: []*querypb.SegmentInfo{
+				{SegmentID: 3, NodeID: 1, CollectionID: collectionID, DmChannel: vchannelName, NodeIds: []UniqueID{1}},
+				{SegmentID: 5, NodeID: 2, CollectionID: otherCollectionID, DmChannel: otherVchannelName, NodeIds: []UniqueID{2}},
+			},
+		})
+		assert.NoError(t, err)
+
+		sc.mut.RLock()
+		_, has := sc.segments[3]
+		sc.mut.RUnlock()
+
+		assert.False(t, has)
+	})
+	t.Run("handoff wait online and usage", func(t *testing.T) {
+		nodeEvents := []nodeEvent{
+			{
+				nodeID:   1,
+				nodeAddr: "addr_1",
+			},
+			{
+				nodeID:   2,
+				nodeAddr: "addr_2",
+			},
+		}
+
+		segmentEvents := []segmentEvent{
+			{
+				segmentID: 1,
+				nodeID:    1,
+				state:     segmentStateLoaded,
+			},
+			{
+				segmentID: 2,
+				nodeID:    2,
+				state:     segmentStateLoaded,
+			},
+		}
+		evtCh := make(chan segmentEvent, 10)
+		sc := NewShardCluster(collectionID, replicaID, vchannelName,
+			&mockNodeDetector{
+				initNodes: nodeEvents,
+			}, &mockSegmentDetector{
+				initSegments: segmentEvents,
+				evtCh:        evtCh,
+			}, buildMockQueryNode)
+		defer sc.Close()
+
+		// add rc to all segments
+		allocs := sc.segmentAllocations(nil)
+
+		sig := make(chan struct{})
+		go func() {
+			err := sc.HandoffSegments(&querypb.SegmentChangeInfo{
+				OnlineSegments: []*querypb.SegmentInfo{
+					{SegmentID: 3, NodeID: 1, CollectionID: collectionID, DmChannel: vchannelName, NodeIds: []UniqueID{1}},
+				},
+				OfflineSegments: []*querypb.SegmentInfo{
+					{SegmentID: 1, NodeID: 1, CollectionID: collectionID, DmChannel: vchannelName, NodeIds: []UniqueID{1}},
+				},
+			})
+
+			assert.NoError(t, err)
+			close(sig)
+		}()
+
+		sc.mut.RLock()
+		// still waiting online
+		assert.Equal(t, 0, len(sc.handoffs))
+		sc.mut.RUnlock()
+
+		evtCh <- segmentEvent{
+			eventType: segmentAdd,
+			segmentID: 3,
+			nodeID:    1,
+			state:     segmentStateLoaded,
+		}
+
+		// wait for handoff appended into list
+		assert.Eventually(t, func() bool {
+			sc.mut.RLock()
+			defer sc.mut.RUnlock()
+			return len(sc.handoffs) > 0
+		}, time.Second, time.Millisecond*10)
+
+		tmpAllocs := sc.segmentAllocations(nil)
+		found := false
+		for _, segments := range tmpAllocs {
+			if inList(segments, int64(1)) {
+				found = true
+				break
+			}
+		}
+		// segment 1 shall not be allocated again!
+		assert.False(t, found)
+		sc.finishUsage(tmpAllocs)
+		// rc shall be 0 now
+		sc.finishUsage(allocs)
+
+		// wait handoff finished
+		<-sig
+
+		sc.mut.RLock()
+		_, has := sc.segments[1]
+		sc.mut.RUnlock()
+
+		assert.False(t, has)
+	})
+
+	t.Run("handoff from non-exist node", func(t *testing.T) {
+		nodeEvents := []nodeEvent{
+			{
+				nodeID:   1,
+				nodeAddr: "addr_1",
+			},
+			{
+				nodeID:   2,
+				nodeAddr: "addr_2",
+			},
+		}
+
+		segmentEvents := []segmentEvent{
+			{
+				segmentID: 1,
+				nodeID:    1,
+				state:     segmentStateLoaded,
+			},
+			{
+				segmentID: 2,
+				nodeID:    2,
+				state:     segmentStateLoaded,
+			},
+		}
+		evtCh := make(chan segmentEvent, 10)
+		sc := NewShardCluster(collectionID, replicaID, vchannelName,
+			&mockNodeDetector{
+				initNodes: nodeEvents,
+			}, &mockSegmentDetector{
+				initSegments: segmentEvents,
+				evtCh:        evtCh,
+			}, buildMockQueryNode)
+		defer sc.Close()
+
+		err := sc.HandoffSegments(&querypb.SegmentChangeInfo{
+			OnlineSegments: []*querypb.SegmentInfo{
+				{SegmentID: 2, NodeID: 2, CollectionID: collectionID, DmChannel: vchannelName, NodeIds: []UniqueID{2}},
+			},
+			OfflineSegments: []*querypb.SegmentInfo{
+				{SegmentID: 1, NodeID: 3, CollectionID: collectionID, DmChannel: vchannelName, NodeIds: []UniqueID{3}},
+			},
+		})
+
+		assert.Error(t, err)
+	})
+
+	t.Run("release failed", func(t *testing.T) {
+		nodeEvents := []nodeEvent{
+			{
+				nodeID:   1,
+				nodeAddr: "addr_1",
+			},
+			{
+				nodeID:   2,
+				nodeAddr: "addr_2",
+			},
+		}
+
+		segmentEvents := []segmentEvent{
+			{
+				segmentID: 1,
+				nodeID:    1,
+				state:     segmentStateLoaded,
+			},
+			{
+				segmentID: 2,
+				nodeID:    2,
+				state:     segmentStateLoaded,
+			},
+		}
+		evtCh := make(chan segmentEvent, 10)
+		mqn := &mockShardQueryNode{}
+		sc := NewShardCluster(collectionID, replicaID, vchannelName,
+			&mockNodeDetector{
+				initNodes: nodeEvents,
+			}, &mockSegmentDetector{
+				initSegments: segmentEvents,
+				evtCh:        evtCh,
+			}, func(nodeID int64, addr string) shardQueryNode {
+				return mqn
+			})
+		defer sc.Close()
+
+		mqn.releaseSegmentsErr = errors.New("mocked error")
+
+		err := sc.HandoffSegments(&querypb.SegmentChangeInfo{
+			OfflineSegments: []*querypb.SegmentInfo{
+				{SegmentID: 1, NodeID: 1, CollectionID: collectionID, DmChannel: vchannelName, NodeIds: []UniqueID{1}},
+			},
+		})
+
+		assert.Error(t, err)
+
+		mqn.releaseSegmentsErr = nil
+		mqn.releaseSegmentsResult = &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_UnexpectedError,
+			Reason:    "mocked error",
+		}
+
+		err = sc.HandoffSegments(&querypb.SegmentChangeInfo{
+			OfflineSegments: []*querypb.SegmentInfo{
+				{SegmentID: 2, NodeID: 2, CollectionID: collectionID, DmChannel: vchannelName, NodeIds: []UniqueID{2}},
+			},
+		})
+
+		assert.Error(t, err)
+
+	})
 }

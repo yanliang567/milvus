@@ -11,23 +11,28 @@
 
 #pragma once
 
-#include <cstdint>
-#include "exceptions/EasyAssert.h"
+#include <string>
+#include "query/Expr.h"
+#include "common/Utils.h"
 
-namespace milvus {
+namespace milvus::query {
 
-inline int64_t
-upper_align(int64_t value, int64_t align) {
-    Assert(align > 0);
-    auto groups = (value + align - 1) / align;
-    return groups * align;
+template <typename T, typename U>
+inline bool
+Match(const T& x, const U& y, OpType op) {
+    PanicInfo("not supported");
 }
 
-inline int64_t
-upper_div(int64_t value, int64_t align) {
-    Assert(align > 0);
-    auto groups = (value + align - 1) / align;
-    return groups;
+template <>
+inline bool
+Match<std::string>(const std::string& str, const std::string& val, OpType op) {
+    switch (op) {
+        case OpType::PrefixMatch:
+            return PrefixMatch(str, val);
+        case OpType::PostfixMatch:
+            return PostfixMatch(str, val);
+        default:
+            PanicInfo("not supported");
+    }
 }
-
-}  // namespace milvus
+}  // namespace milvus::query

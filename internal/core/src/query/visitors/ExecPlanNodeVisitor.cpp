@@ -61,7 +61,7 @@ empty_search_result(int64_t num_queries, int64_t topk, int64_t round_decimal, Me
     SubSearchResult result(num_queries, topk, metric_type, round_decimal);
     final_result.num_queries_ = num_queries;
     final_result.topk_ = topk;
-    final_result.ids_ = std::move(result.mutable_ids());
+    final_result.seg_offsets_ = std::move(result.mutable_seg_offsets());
     final_result.distances_ = std::move(result.mutable_distances());
     return final_result;
 }
@@ -131,7 +131,7 @@ ExecPlanNodeVisitor::visit(RetrievePlanNode& node) {
 
     segment->mask_with_delete(bitset_holder, active_count, timestamp_);
     BitsetView final_view = bitset_holder;
-    auto seg_offsets = std::move(segment->search_ids(final_view, timestamp_));
+    auto seg_offsets = segment->search_ids(final_view, timestamp_);
     retrieve_result.result_offsets_.assign((int64_t*)seg_offsets.data(),
                                            (int64_t*)seg_offsets.data() + seg_offsets.size());
     retrieve_result_opt_ = std::move(retrieve_result);

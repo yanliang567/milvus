@@ -35,21 +35,20 @@ import (
 type UniqueID = typeutil.UniqueID
 
 const (
+	DefaultMilvusYaml           = "milvus.yaml"
+	DefaultEasyloggingYaml      = "easylogging.yaml"
 	DefaultMinioHost            = "localhost"
 	DefaultMinioPort            = "9000"
 	DefaultMinioAccessKey       = "minioadmin"
 	DefaultMinioSecretAccessKey = "minioadmin"
 	DefaultMinioUseSSL          = "false"
 	DefaultMinioBucketName      = "a-bucket"
-	DefaultPulsarHost           = "localhost"
-	DefaultPulsarPort           = "6650"
 	DefaultEtcdEndpoints        = "localhost:2379"
-	DefaultRocksmqPath          = "/var/lib/milvus/rdb_data"
 	DefaultInsertBufferSize     = "16777216"
 	DefaultEnvPrefix            = "milvus"
 )
 
-var DefaultYaml = "milvus.yaml"
+var defaultYaml = DefaultMilvusYaml
 
 // Base abstracts BaseTable
 // TODO: it's never used, consider to substitute BaseTable or to remove it
@@ -79,7 +78,7 @@ type BaseTable struct {
 // GlobalInitWithYaml should be called only in standalone and embedded Milvus.
 func (gp *BaseTable) GlobalInitWithYaml(yaml string) {
 	gp.once.Do(func() {
-		DefaultYaml = yaml
+		defaultYaml = yaml
 		gp.Init()
 	})
 }
@@ -88,7 +87,7 @@ func (gp *BaseTable) GlobalInitWithYaml(yaml string) {
 func (gp *BaseTable) Init() {
 	gp.params = memkv.NewMemoryKV()
 	gp.configDir = gp.initConfPath()
-	gp.loadFromYaml(DefaultYaml)
+	gp.loadFromYaml(defaultYaml)
 	gp.tryLoadFromEnv()
 	gp.InitLogCfg()
 }
@@ -391,6 +390,13 @@ func (gp *BaseTable) InitLogCfg() {
 // SetLogConfig set log config of the base table
 func (gp *BaseTable) SetLogConfig() {
 	gp.LogCfgFunc = func(cfg log.Config) {
+		var err error
+		grpclog, err := gp.Load("grpc.log.level")
+		if err != nil {
+			cfg.GrpcLevel = DefaultLogLevel
+		} else {
+			cfg.GrpcLevel = strings.ToUpper(grpclog)
+		}
 		logutil.SetupLogger(&cfg)
 		defer log.Sync()
 	}

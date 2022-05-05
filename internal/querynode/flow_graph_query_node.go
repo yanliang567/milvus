@@ -60,7 +60,7 @@ func newQueryNodeFlowGraph(ctx context.Context,
 		flowGraph:    flowgraph.NewTimeTickedFlowGraph(ctx1),
 	}
 
-	dmStreamNode, err := q.newDmInputNode(ctx1, factory)
+	dmStreamNode, err := q.newDmInputNode(ctx1, factory, collectionID, channel)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +130,7 @@ func newQueryNodeDeltaFlowGraph(ctx context.Context,
 		flowGraph:    flowgraph.NewTimeTickedFlowGraph(ctx1),
 	}
 
-	dmStreamNode, err := q.newDmInputNode(ctx1, factory)
+	dmStreamNode, err := q.newDmInputNode(ctx1, factory, collectionID, channel)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +183,7 @@ func newQueryNodeDeltaFlowGraph(ctx context.Context,
 }
 
 // newDmInputNode returns a new inputNode
-func (q *queryNodeFlowGraph) newDmInputNode(ctx context.Context, factory msgstream.Factory) (*flowgraph.InputNode, error) {
+func (q *queryNodeFlowGraph) newDmInputNode(ctx context.Context, factory msgstream.Factory, collectionID UniqueID, channel Channel) (*flowgraph.InputNode, error) {
 	insertStream, err := factory.NewTtMsgStream(ctx)
 	if err != nil {
 		return nil, err
@@ -193,8 +193,8 @@ func (q *queryNodeFlowGraph) newDmInputNode(ctx context.Context, factory msgstre
 
 	maxQueueLength := Params.QueryNodeCfg.FlowGraphMaxQueueLength
 	maxParallelism := Params.QueryNodeCfg.FlowGraphMaxParallelism
-
-	node := flowgraph.NewInputNode(insertStream, "dmlInputNode", maxQueueLength, maxParallelism)
+	name := fmt.Sprintf("dmInputNode-query-%d-%s", collectionID, channel)
+	node := flowgraph.NewInputNode(insertStream, name, maxQueueLength, maxParallelism)
 	return node, nil
 }
 
@@ -210,7 +210,7 @@ func (q *queryNodeFlowGraph) consumeFlowGraph(channel Channel, subName ConsumeSu
 		zap.Any("subName", subName),
 	)
 	q.consumerCnt++
-	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Inc()
+	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID())).Inc()
 	return nil
 }
 
@@ -226,7 +226,7 @@ func (q *queryNodeFlowGraph) consumeFlowGraphFromLatest(channel Channel, subName
 		zap.Any("subName", subName),
 	)
 	q.consumerCnt++
-	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Inc()
+	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID())).Inc()
 	return nil
 }
 
@@ -239,7 +239,7 @@ func (q *queryNodeFlowGraph) seekQueryNodeFlowGraph(position *internalpb.MsgPosi
 		zap.Any("channel", position.ChannelName),
 	)
 	q.consumerCnt++
-	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Inc()
+	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID())).Inc()
 	return err
 }
 
@@ -248,7 +248,7 @@ func (q *queryNodeFlowGraph) close() {
 	q.cancel()
 	q.flowGraph.Close()
 	if q.dmlStream != nil && q.consumerCnt > 0 {
-		metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Sub(float64(q.consumerCnt))
+		metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID())).Sub(float64(q.consumerCnt))
 	}
 	log.Debug("stop query node flow graph",
 		zap.Any("collectionID", q.collectionID),

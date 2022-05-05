@@ -283,12 +283,23 @@ func (q *queryShard) setServiceableTime(t Timestamp, tp tsType) {
 
 func (q *queryShard) search(ctx context.Context, req *querypb.SearchRequest) (*internalpb.SearchResults, error) {
 	collectionID := req.Req.CollectionID
+	partitionIDs := req.Req.PartitionIDs
 	segmentIDs := req.SegmentIDs
 	timestamp := req.Req.TravelTimestamp
 
 	// check ctx timeout
 	if !funcutil.CheckCtxValid(ctx) {
 		return nil, errors.New("search context timeout")
+	}
+
+	// lock historic meta-replica
+	q.historical.replica.queryRLock()
+	defer q.historical.replica.queryRUnlock()
+
+	// lock streaming meta-replica for shard leader
+	if len(req.SegmentIDs) == 0 {
+		q.streaming.replica.queryRLock()
+		defer q.streaming.replica.queryRUnlock()
 	}
 
 	// check if collection has been released
@@ -302,7 +313,6 @@ func (q *queryShard) search(ctx context.Context, req *querypb.SearchRequest) (*i
 	}
 
 	// deserialize query plan
-
 	var plan *SearchPlan
 	if req.Req.GetDslType() == commonpb.DslType_BoolExprV1 {
 		expr := req.Req.SerializedExprPlan
@@ -341,17 +351,15 @@ func (q *queryShard) search(ctx context.Context, req *querypb.SearchRequest) (*i
 
 	if len(segmentIDs) == 0 {
 		// segmentIDs not specified, searching as shard leader
-		return q.searchLeader(ctx, req, searchRequests, collectionID, schemaHelper, plan, topK, queryNum, timestamp)
+		return q.searchLeader(ctx, req, searchRequests, collectionID, partitionIDs, schemaHelper, plan, topK, queryNum, timestamp)
 	}
 
 	// segmentIDs specified search as shard follower
-	return q.searchFollower(ctx, req, searchRequests, collectionID, schemaHelper, plan, topK, queryNum, timestamp)
+	return q.searchFollower(ctx, req, searchRequests, collectionID, partitionIDs, schemaHelper, plan, topK, queryNum, timestamp)
 }
 
-func (q *queryShard) searchLeader(ctx context.Context, req *querypb.SearchRequest, searchRequests []*searchRequest, collectionID UniqueID,
+func (q *queryShard) searchLeader(ctx context.Context, req *querypb.SearchRequest, searchRequests []*searchRequest, collectionID UniqueID, partitionIDs []UniqueID,
 	schemaHelper *typeutil.SchemaHelper, plan *SearchPlan, topK int64, queryNum int64, timestamp Timestamp) (*internalpb.SearchResults, error) {
-	q.streaming.replica.queryRLock()
-	defer q.streaming.replica.queryRUnlock()
 	cluster, ok := q.clusterService.getShardCluster(req.GetDmlChannel())
 	if !ok {
 		return nil, fmt.Errorf("channel %s leader is not here", req.GetDmlChannel())
@@ -391,7 +399,7 @@ func (q *queryShard) searchLeader(ctx context.Context, req *querypb.SearchReques
 		q.waitUntilServiceable(ctx, guaranteeTs, tsTypeDML)
 		// shard leader queries its own streaming data
 		// TODO add context
-		sResults, _, _, sErr := q.streaming.search(searchRequests, collectionID, req.Req.PartitionIDs, req.DmlChannel, plan, timestamp)
+		sResults, _, _, sErr := q.streaming.search(searchRequests, collectionID, partitionIDs, req.DmlChannel, plan, timestamp)
 		mut.Lock()
 		defer mut.Unlock()
 		if sErr != nil {
@@ -437,7 +445,7 @@ func (q *queryShard) searchLeader(ctx context.Context, req *querypb.SearchReques
 			return nil, err
 		}
 
-		blobs, err := marshal(collectionID, 0, streamingResults, int(numSegment), reqSlices)
+		blobs, err := marshal(collectionID, 0, streamingResults, plan, int(numSegment), reqSlices)
 		defer deleteSearchResultDataBlobs(blobs)
 		if err != nil {
 			log.Warn("marshal for streaming results error", zap.Error(err))
@@ -467,11 +475,10 @@ func (q *queryShard) searchLeader(ctx context.Context, req *querypb.SearchReques
 			zap.Int("result No.", i),
 			zap.Int64("nq", sData.NumQueries),
 			zap.Int64("topk", sData.TopK),
-			zap.String("ids", sData.Ids.String()),
-			zap.Any("len(FieldsData)", len(sData.FieldsData)))
+			zap.Int64s("topks", sData.Topks))
 	}
 
-	reducedResultData, err := reduceSearchResultData(searchResultData, queryNum, plan.getTopK(), plan.getMetricType())
+	reducedResultData, err := reduceSearchResultData(searchResultData, queryNum, plan.getTopK(), plan)
 	if err != nil {
 		log.Warn("shard leader reduce errors", zap.Error(err))
 		return nil, err
@@ -486,22 +493,26 @@ func (q *queryShard) searchLeader(ctx context.Context, req *querypb.SearchReques
 			zap.String("shard", q.channel))
 	} else {
 		log.Debug("shard leader send non-nil results to proxy",
-			zap.String("shard", q.channel),
-			zap.String("ids", reducedResultData.Ids.String()))
+			zap.String("shard", q.channel))
 		// printSearchResultData(reducedResultData, q.channel)
 	}
 	return searchResults, nil
 }
 
-func (q *queryShard) searchFollower(ctx context.Context, req *querypb.SearchRequest, searchRequests []*searchRequest, collectionID UniqueID,
+func (q *queryShard) searchFollower(ctx context.Context, req *querypb.SearchRequest, searchRequests []*searchRequest, collectionID UniqueID, partitionIDs []UniqueID,
 	schemaHelper *typeutil.SchemaHelper, plan *SearchPlan, topK int64, queryNum int64, timestamp Timestamp) (*internalpb.SearchResults, error) {
-	q.historical.replica.queryRLock()
-	defer q.historical.replica.queryRUnlock()
 	segmentIDs := req.GetSegmentIDs()
 	// hold request until guarantee timestamp >= service timestamp
 	guaranteeTs := req.GetReq().GetGuaranteeTimestamp()
 	q.waitUntilServiceable(ctx, guaranteeTs, tsTypeDelta)
-	// search each segments by segment IDs in request
+
+	// validate segmentIDs in request
+	err := q.historical.validateSegmentIDs(segmentIDs, collectionID, partitionIDs)
+	if err != nil {
+		log.Warn("segmentIDs in search request fails validation", zap.Int64s("segmentIDs", segmentIDs))
+		return nil, err
+	}
+
 	historicalResults, _, err := q.historical.searchSegments(segmentIDs, searchRequests, plan, timestamp)
 	if err != nil {
 		return nil, err
@@ -524,7 +535,7 @@ func (q *queryShard) searchFollower(ctx context.Context, req *querypb.SearchRequ
 		return nil, err
 	}
 
-	blobs, err := marshal(collectionID, 0, historicalResults, int(numSegment), reqSlices)
+	blobs, err := marshal(collectionID, 0, historicalResults, plan, int(numSegment), reqSlices)
 	defer deleteSearchResultDataBlobs(blobs)
 	if err != nil {
 		log.Warn("marshal for historical results error", zap.Error(err))
@@ -552,21 +563,15 @@ func (q *queryShard) searchFollower(ctx context.Context, req *querypb.SearchRequ
 	return resp, nil
 }
 
-func reduceSearchResultData(searchResultData []*schemapb.SearchResultData, nq int64, topk int64, metricType string) (*schemapb.SearchResultData, error) {
+func reduceSearchResultData(searchResultData []*schemapb.SearchResultData, nq int64, topk int64, plan *SearchPlan) (*schemapb.SearchResultData, error) {
 	if len(searchResultData) == 0 {
 		return &schemapb.SearchResultData{
 			NumQueries: nq,
 			TopK:       topk,
 			FieldsData: make([]*schemapb.FieldData, 0),
 			Scores:     make([]float32, 0),
-			Ids: &schemapb.IDs{
-				IdField: &schemapb.IDs_IntId{
-					IntId: &schemapb.LongArray{
-						Data: make([]int64, 0),
-					},
-				},
-			},
-			Topks: make([]int64, 0),
+			Ids:        &schemapb.IDs{},
+			Topks:      make([]int64, 0),
 		}, nil
 	}
 	ret := &schemapb.SearchResultData{
@@ -574,42 +579,38 @@ func reduceSearchResultData(searchResultData []*schemapb.SearchResultData, nq in
 		TopK:       topk,
 		FieldsData: make([]*schemapb.FieldData, len(searchResultData[0].FieldsData)),
 		Scores:     make([]float32, 0),
-		Ids: &schemapb.IDs{
-			IdField: &schemapb.IDs_IntId{
-				IntId: &schemapb.LongArray{
-					Data: make([]int64, 0),
-				},
-			},
-		},
-		Topks: make([]int64, 0),
+		Ids:        &schemapb.IDs{},
+		Topks:      make([]int64, 0),
+	}
+
+	resultOffsets := make([][]int64, len(searchResultData))
+	for i := 0; i < len(searchResultData); i++ {
+		resultOffsets[i] = make([]int64, len(searchResultData[i].Topks))
+		for j := int64(1); j < nq; j++ {
+			resultOffsets[i][j] = resultOffsets[i][j-1] + searchResultData[i].Topks[j-1]
+		}
 	}
 
 	var skipDupCnt int64
-	var dummyCnt int64
-	// var realTopK int64 = -1
 	for i := int64(0); i < nq; i++ {
 		offsets := make([]int64, len(searchResultData))
 
-		var idSet = make(map[int64]struct{})
+		var idSet = make(map[interface{}]struct{})
 		var j int64
 		for j = 0; j < topk; {
-			sel := selectSearchResultData(searchResultData, offsets, topk, i)
+			sel := selectSearchResultData(searchResultData, resultOffsets, offsets, i)
 			if sel == -1 {
 				break
 			}
-			idx := i*topk + offsets[sel]
+			idx := resultOffsets[sel][i] + offsets[sel]
 
-			id := searchResultData[sel].Ids.GetIntId().Data[idx]
+			id := typeutil.GetPK(searchResultData[sel].GetIds(), idx)
 			score := searchResultData[sel].Scores[idx]
-			// ignore invalid search result
-			if id == -1 {
-				continue
-			}
 
 			// remove duplicates
 			if _, ok := idSet[id]; !ok {
 				typeutil.AppendFieldData(ret.FieldsData, searchResultData[sel].FieldsData, idx)
-				ret.Ids.GetIntId().Data = append(ret.Ids.GetIntId().Data, id)
+				typeutil.AppendPKs(ret.Ids, id)
 				ret.Scores = append(ret.Scores, score)
 				idSet[id] = struct{}{}
 				j++
@@ -619,24 +620,14 @@ func reduceSearchResultData(searchResultData []*schemapb.SearchResultData, nq in
 			}
 			offsets[sel]++
 		}
-		// add empty data
-		for j < topk {
-			typeutil.AppendFieldData(ret.FieldsData, searchResultData[0].FieldsData, 0)
-			ret.Ids.GetIntId().Data = append(ret.Ids.GetIntId().Data, -1)
-			ret.Scores = append(ret.Scores, -1*float32(math.MaxFloat32))
-			j++
-			dummyCnt++
-		}
 
 		// if realTopK != -1 && realTopK != j {
 		// 	log.Warn("Proxy Reduce Search Result", zap.Error(errors.New("the length (topk) between all result of query is different")))
 		// 	// return nil, errors.New("the length (topk) between all result of query is different")
 		// }
-		// realTopK = j
-		// ret.Topks = append(ret.Topks, realTopK)
+		ret.Topks = append(ret.Topks, j)
 	}
-	log.Debug("skip duplicated search result", zap.Int64("count", skipDupCnt))
-	log.Debug("add dummy data in search result", zap.Int64("count", dummyCnt))
+	log.Debug("skip duplicated search result", zap.Int64("count", skipDupCnt), zap.Any("ret", ret))
 	// ret.TopK = realTopK
 
 	// if !distance.PositivelyRelated(metricType) {
@@ -648,21 +639,18 @@ func reduceSearchResultData(searchResultData []*schemapb.SearchResultData, nq in
 	return ret, nil
 }
 
-func selectSearchResultData(dataArray []*schemapb.SearchResultData, offsets []int64, topk int64, qi int64) int {
+func selectSearchResultData(dataArray []*schemapb.SearchResultData, resultOffsets [][]int64, offsets []int64, qi int64) int {
 	sel := -1
 	maxDistance := -1 * float32(math.MaxFloat32)
 	for i, offset := range offsets { // query num, the number of ways to merge
-		if offset >= topk {
+		if offset >= dataArray[i].Topks[qi] {
 			continue
 		}
-		idx := qi*topk + offset
-		id := dataArray[i].Ids.GetIntId().Data[idx]
-		if id != -1 {
-			distance := dataArray[i].Scores[idx]
-			if distance > maxDistance {
-				sel = i
-				maxDistance = distance
-			}
+		idx := resultOffsets[i][qi] + offset
+		distance := dataArray[i].Scores[idx]
+		if distance > maxDistance {
+			sel = i
+			maxDistance = distance
 		}
 	}
 	return sel
@@ -700,7 +688,7 @@ func encodeSearchResultData(searchResultData *schemapb.SearchResultData, nq int6
 	if err != nil {
 		return nil, err
 	}
-	if searchResultData != nil && searchResultData.Ids != nil && len(searchResultData.Ids.GetIntId().Data) != 0 {
+	if searchResultData != nil && searchResultData.Ids != nil && typeutil.GetSizeOfIDs(searchResultData.Ids) != 0 {
 		searchResults.SlicedBlob = slicedBlob
 	}
 	return
@@ -716,6 +704,16 @@ func (q *queryShard) query(ctx context.Context, req *querypb.QueryRequest) (*int
 	// check ctx timeout
 	if !funcutil.CheckCtxValid(ctx) {
 		return nil, errors.New("search context timeout")
+	}
+
+	// lock historic meta-replica
+	q.historical.replica.queryRLock()
+	defer q.historical.replica.queryRUnlock()
+
+	// lock streaming meta-replica for shard leader
+	if len(req.SegmentIDs) == 0 {
+		q.streaming.replica.queryRLock()
+		defer q.streaming.replica.queryRUnlock()
 	}
 
 	// check if collection has been released
@@ -755,8 +753,6 @@ func (q *queryShard) query(ctx context.Context, req *querypb.QueryRequest) (*int
 
 	// check if shard leader b.c only leader receives request with no segment specified
 	if len(req.GetSegmentIDs()) == 0 {
-		q.streaming.replica.queryRLock()
-		defer q.streaming.replica.queryRUnlock()
 		cluster, ok := q.clusterService.getShardCluster(req.GetDmlChannel())
 		if !ok {
 			return nil, fmt.Errorf("channel %s leader is not here", req.GetDmlChannel())
@@ -832,12 +828,17 @@ func (q *queryShard) query(ctx context.Context, req *querypb.QueryRequest) (*int
 		log.Debug("leader retrieve result", zap.String("channel", req.DmlChannel), zap.String("ids", mergedResults.Ids.String()))
 		return mergedResults, nil
 	}
-	q.historical.replica.queryRLock()
-	defer q.historical.replica.queryRUnlock()
+
 	// hold request until guarantee timestamp >= service timestamp
 	guaranteeTs := req.GetReq().GetGuaranteeTimestamp()
 	q.waitUntilServiceable(ctx, guaranteeTs, tsTypeDelta)
-	// shard follower considers solely historical segments
+
+	// validate segmentIDs in request
+	err = q.historical.validateSegmentIDs(segmentIDs, collectionID, partitionIDs)
+	if err != nil {
+		log.Warn("segmentIDs in query request fails validation", zap.Int64s("segmentIDs", segmentIDs))
+		return nil, err
+	}
 	retrieveResults, err := q.historical.retrieveBySegmentIDs(collectionID, segmentIDs, q.vectorChunkManager, plan)
 	if err != nil {
 		return nil, err
@@ -860,7 +861,7 @@ func (q *queryShard) query(ctx context.Context, req *querypb.QueryRequest) (*int
 func mergeInternalRetrieveResults(retrieveResults []*internalpb.RetrieveResults) (*internalpb.RetrieveResults, error) {
 	var ret *internalpb.RetrieveResults
 	var skipDupCnt int64
-	var idSet = make(map[int64]struct{})
+	var idSet = make(map[interface{}]struct{})
 
 	// merge results and remove duplicates
 	for _, rr := range retrieveResults {
@@ -871,13 +872,7 @@ func mergeInternalRetrieveResults(retrieveResults []*internalpb.RetrieveResults)
 
 		if ret == nil {
 			ret = &internalpb.RetrieveResults{
-				Ids: &schemapb.IDs{
-					IdField: &schemapb.IDs_IntId{
-						IntId: &schemapb.LongArray{
-							Data: []int64{},
-						},
-					},
-				},
+				Ids:        &schemapb.IDs{},
 				FieldsData: make([]*schemapb.FieldData, len(rr.FieldsData)),
 			}
 		}
@@ -887,10 +882,11 @@ func mergeInternalRetrieveResults(retrieveResults []*internalpb.RetrieveResults)
 			return nil, fmt.Errorf("mismatch FieldData in RetrieveResults")
 		}
 
-		dstIds := ret.Ids.GetIntId()
-		for i, id := range rr.Ids.GetIntId().GetData() {
+		numPks := typeutil.GetSizeOfIDs(rr.GetIds())
+		for i := 0; i < numPks; i++ {
+			id := typeutil.GetPK(rr.GetIds(), int64(i))
 			if _, ok := idSet[id]; !ok {
-				dstIds.Data = append(dstIds.Data, id)
+				typeutil.AppendPKs(ret.Ids, id)
 				typeutil.AppendFieldData(ret.FieldsData, rr.FieldsData, int64(i))
 				idSet[id] = struct{}{}
 			} else {

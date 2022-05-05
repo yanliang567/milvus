@@ -36,6 +36,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -58,7 +59,6 @@ import (
 	"github.com/milvus-io/milvus/internal/util"
 	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
-	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
@@ -147,9 +147,9 @@ func (node *QueryNode) initSession() error {
 		return fmt.Errorf("session is nil, the etcd client connection may have failed")
 	}
 	node.session.Init(typeutil.QueryNodeRole, Params.QueryNodeCfg.QueryNodeIP+":"+strconv.FormatInt(Params.QueryNodeCfg.QueryNodePort, 10), false, true)
-	Params.QueryNodeCfg.QueryNodeID = node.session.ServerID
-	Params.SetLogger(Params.QueryNodeCfg.QueryNodeID)
-	log.Debug("QueryNode", zap.Int64("nodeID", Params.QueryNodeCfg.QueryNodeID), zap.String("node address", node.session.Address))
+	Params.QueryNodeCfg.SetNodeID(node.session.ServerID)
+	Params.SetLogger(Params.QueryNodeCfg.GetNodeID())
+	log.Debug("QueryNode", zap.Int64("nodeID", Params.QueryNodeCfg.GetNodeID()), zap.String("node address", node.session.Address))
 	return nil
 }
 
@@ -177,11 +177,19 @@ func (node *QueryNode) Register() error {
 
 // InitSegcore set init params of segCore, such as chunckRows, SIMD type...
 func (node *QueryNode) InitSegcore() {
-	C.SegcoreInit()
+	cEasyloggingYaml := C.CString(path.Join(Params.BaseTable.GetConfigDir(), paramtable.DefaultEasyloggingYaml))
+	C.SegcoreInit(cEasyloggingYaml)
+	C.free(unsafe.Pointer(cEasyloggingYaml))
 
 	// override segcore chunk size
 	cChunkRows := C.int64_t(Params.QueryNodeCfg.ChunkRows)
 	C.SegcoreSetChunkRows(cChunkRows)
+
+	nlist := C.int64_t(Params.QueryNodeCfg.SmallIndexNlist)
+	C.SegcoreSetNlist(nlist)
+
+	nprobe := C.int64_t(Params.QueryNodeCfg.SmallIndexNProbe)
+	C.SegcoreSetNprobe(nprobe)
 
 	// override segcore SIMD type
 	cSimdType := C.CString(Params.CommonCfg.SimdType)
@@ -342,7 +350,7 @@ func (node *QueryNode) Init() error {
 		// 	qsOptWithSessionManager(node.sessionManager))
 
 		log.Debug("query node init successfully",
-			zap.Any("queryNodeID", Params.QueryNodeCfg.QueryNodeID),
+			zap.Any("queryNodeID", Params.QueryNodeCfg.GetNodeID()),
 			zap.Any("IP", Params.QueryNodeCfg.QueryNodeIP),
 			zap.Any("Port", Params.QueryNodeCfg.QueryNodePort),
 		)
@@ -378,7 +386,7 @@ func (node *QueryNode) Start() error {
 
 	node.UpdateStateCode(internalpb.StateCode_Healthy)
 	log.Debug("query node start successfully",
-		zap.Any("queryNodeID", Params.QueryNodeCfg.QueryNodeID),
+		zap.Any("queryNodeID", Params.QueryNodeCfg.GetNodeID()),
 		zap.Any("IP", Params.QueryNodeCfg.QueryNodeIP),
 		zap.Any("Port", Params.QueryNodeCfg.QueryNodePort),
 	)
@@ -452,12 +460,7 @@ func (node *QueryNode) watchChangeInfo() {
 						log.Warn("Unmarshal SealedSegmentsChangeInfo failed", zap.Any("error", err.Error()))
 						continue
 					}
-					go func() {
-						err = node.removeSegments(info)
-						if err != nil {
-							log.Warn("cleanup segments failed", zap.Any("error", err.Error()))
-						}
-					}()
+					go node.handleSealedSegmentsChangeInfo(info)
 				default:
 					// do nothing
 				}
@@ -466,58 +469,47 @@ func (node *QueryNode) watchChangeInfo() {
 	}
 }
 
-func (node *QueryNode) waitChangeInfo(segmentChangeInfos *querypb.SealedSegmentsChangeInfo) error {
-	fn := func() error {
-		/*
-			for _, info := range segmentChangeInfos.Infos {
-				canDoLoadBalance := true
-				// make sure all query channel already received segment location changes
-				// Check online segments:
-				for _, segmentInfo := range info.OnlineSegments {
-					if node.queryService.hasQueryCollection(segmentInfo.CollectionID) {
-						qc, err := node.queryService.getQueryCollection(segmentInfo.CollectionID)
-						if err != nil {
-							canDoLoadBalance = false
-							break
-						}
-						if info.OnlineNodeID == Params.QueryNodeCfg.QueryNodeID && !qc.globalSegmentManager.hasGlobalSealedSegment(segmentInfo.SegmentID) {
-							canDoLoadBalance = false
-							break
-						}
-					}
-				}
-				// Check offline segments:
-				for _, segmentInfo := range info.OfflineSegments {
-					if node.queryService.hasQueryCollection(segmentInfo.CollectionID) {
-						qc, err := node.queryService.getQueryCollection(segmentInfo.CollectionID)
-						if err != nil {
-							canDoLoadBalance = false
-							break
-						}
-						if info.OfflineNodeID == Params.QueryNodeCfg.QueryNodeID && qc.globalSegmentManager.hasGlobalSealedSegment(segmentInfo.SegmentID) {
-							canDoLoadBalance = false
-							break
-						}
-					}
-				}
-				if canDoLoadBalance {
-					return nil
-				}
-				return errors.New(fmt.Sprintln("waitChangeInfo failed, infoID = ", segmentChangeInfos.Base.GetMsgID()))
-			}
-		*/
-		return nil
+func (node *QueryNode) handleSealedSegmentsChangeInfo(info *querypb.SealedSegmentsChangeInfo) {
+	for _, line := range info.GetInfos() {
+		vchannel, err := validateChangeChannel(line)
+		if err != nil {
+			log.Warn("failed to validate vchannel for SegmentChangeInfo", zap.Error(err))
+			continue
+		}
+
+		node.ShardClusterService.HandoffVChannelSegments(vchannel, line)
+	}
+}
+
+func validateChangeChannel(info *querypb.SegmentChangeInfo) (string, error) {
+	if len(info.GetOnlineSegments()) == 0 && len(info.GetOfflineSegments()) == 0 {
+		return "", errors.New("SegmentChangeInfo with no segments info")
 	}
 
-	return retry.Do(node.queryNodeLoopCtx, fn, retry.Attempts(50))
+	var channelName string
+
+	for _, segment := range info.GetOnlineSegments() {
+		if channelName == "" {
+			channelName = segment.GetDmChannel()
+		}
+		if segment.GetDmChannel() != channelName {
+			return "", fmt.Errorf("found multilple channel name in one SegmentChangeInfo, channel1: %s, channel 2:%s", channelName, segment.GetDmChannel())
+		}
+	}
+	for _, segment := range info.GetOfflineSegments() {
+		if channelName == "" {
+			channelName = segment.GetDmChannel()
+		}
+		if segment.GetDmChannel() != channelName {
+			return "", fmt.Errorf("found multilple channel name in one SegmentChangeInfo, channel1: %s, channel 2:%s", channelName, segment.GetDmChannel())
+		}
+	}
+
+	return channelName, nil
 }
 
 // remove the segments since it's already compacted or balanced to other QueryNodes
 func (node *QueryNode) removeSegments(segmentChangeInfos *querypb.SealedSegmentsChangeInfo) error {
-	err := node.waitChangeInfo(segmentChangeInfos)
-	if err != nil {
-		return err
-	}
 
 	node.streaming.replica.queryLock()
 	node.historical.replica.queryLock()
@@ -544,7 +536,7 @@ func (node *QueryNode) removeSegments(segmentChangeInfos *querypb.SealedSegments
 		// For offline segments:
 		for _, segmentInfo := range info.OfflineSegments {
 			// load balance or compaction, remove old sealed segments.
-			if info.OfflineNodeID == Params.QueryNodeCfg.QueryNodeID {
+			if info.OfflineNodeID == Params.QueryNodeCfg.GetNodeID() {
 				err := node.historical.replica.removeSegment(segmentInfo.SegmentID)
 				if err != nil {
 					return err

@@ -118,6 +118,9 @@ func (s *Server) startHTTPServer(port int) {
 		gin.DefaultWriter = io.Discard
 		gin.DefaultErrorWriter = io.Discard
 	}
+	if !HTTPParams.DebugMode {
+		gin.SetMode(gin.ReleaseMode)
+	}
 	ginHandler := gin.Default()
 	apiv1 := ginHandler.Group("/api/v1")
 	httpserver.NewHandlers(s.proxy).RegisterRoutesTo(apiv1)
@@ -667,6 +670,10 @@ func (s *Server) Import(ctx context.Context, req *milvuspb.ImportRequest) (*milv
 
 func (s *Server) GetImportState(ctx context.Context, req *milvuspb.GetImportStateRequest) (*milvuspb.GetImportStateResponse, error) {
 	return s.proxy.GetImportState(ctx, req)
+}
+
+func (s *Server) ListImportTasks(ctx context.Context, req *milvuspb.ListImportTasksRequest) (*milvuspb.ListImportTasksResponse, error) {
+	return s.proxy.ListImportTasks(ctx, req)
 }
 
 func (s *Server) GetReplicas(ctx context.Context, req *milvuspb.GetReplicasRequest) (*milvuspb.GetReplicasResponse, error) {

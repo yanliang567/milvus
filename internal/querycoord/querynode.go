@@ -47,6 +47,7 @@ type Node interface {
 
 	watchDmChannels(ctx context.Context, in *querypb.WatchDmChannelsRequest) error
 	watchDeltaChannels(ctx context.Context, in *querypb.WatchDeltaChannelsRequest) error
+	syncReplicaSegments(ctx context.Context, in *querypb.SyncReplicaSegmentsRequest) error
 	//removeDmChannel(collectionID UniqueID, channels []string) error
 
 	hasWatchedDeltaChannel(collectionID UniqueID) bool
@@ -127,7 +128,7 @@ func (qn *queryNode) start() error {
 		qn.state = online
 	}
 	qn.stateLock.Unlock()
-	log.Debug("start: queryNode client start success", zap.Int64("nodeID", qn.id), zap.String("address", qn.address))
+	log.Info("start: queryNode client start success", zap.Int64("nodeID", qn.id), zap.String("address", qn.address))
 	return nil
 }
 
@@ -295,7 +296,7 @@ func (qn *queryNode) removeQueryChannel(ctx context.Context, in *querypb.RemoveQ
 
 func (qn *queryNode) releaseCollection(ctx context.Context, in *querypb.ReleaseCollectionRequest) error {
 	if !qn.isOnline() {
-		log.Debug("ReleaseCollection: the QueryNode has been offline, the release request is no longer needed", zap.Int64("nodeID", qn.id))
+		log.Warn("ReleaseCollection: the QueryNode has been offline, the release request is no longer needed", zap.Int64("nodeID", qn.id))
 		return nil
 	}
 
@@ -444,4 +445,20 @@ func (qn *queryNode) getNodeInfo() (Node, error) {
 		memUsageRate: qn.memUsageRate,
 		cpuUsage:     qn.cpuUsage,
 	}, nil
+}
+
+func (qn *queryNode) syncReplicaSegments(ctx context.Context, in *querypb.SyncReplicaSegmentsRequest) error {
+	if !qn.isOnline() {
+		return errors.New("ReleaseSegments: queryNode is offline")
+	}
+
+	status, err := qn.client.SyncReplicaSegments(ctx, in)
+	if err != nil {
+		return err
+	}
+	if status.ErrorCode != commonpb.ErrorCode_Success {
+		return errors.New(status.Reason)
+	}
+
+	return nil
 }

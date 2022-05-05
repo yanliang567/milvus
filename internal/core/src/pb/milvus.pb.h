@@ -53,7 +53,7 @@ struct TableStruct_milvus_2eproto {
     PROTOBUF_SECTION_VARIABLE(protodesc_cold);
   static const ::PROTOBUF_NAMESPACE_ID::internal::AuxillaryParseTableField aux[]
     PROTOBUF_SECTION_VARIABLE(protodesc_cold);
-  static const ::PROTOBUF_NAMESPACE_ID::internal::ParseTable schema[90]
+  static const ::PROTOBUF_NAMESPACE_ID::internal::ParseTable schema[92]
     PROTOBUF_SECTION_VARIABLE(protodesc_cold);
   static const ::PROTOBUF_NAMESPACE_ID::internal::FieldMetadata field_metadata[];
   static const ::PROTOBUF_NAMESPACE_ID::internal::SerializationTable serialization_table[];
@@ -243,6 +243,12 @@ extern ListCredUsersRequestDefaultTypeInternal _ListCredUsersRequest_default_ins
 class ListCredUsersResponse;
 class ListCredUsersResponseDefaultTypeInternal;
 extern ListCredUsersResponseDefaultTypeInternal _ListCredUsersResponse_default_instance_;
+class ListImportTasksRequest;
+class ListImportTasksRequestDefaultTypeInternal;
+extern ListImportTasksRequestDefaultTypeInternal _ListImportTasksRequest_default_instance_;
+class ListImportTasksResponse;
+class ListImportTasksResponseDefaultTypeInternal;
+extern ListImportTasksResponseDefaultTypeInternal _ListImportTasksResponse_default_instance_;
 class LoadBalanceRequest;
 class LoadBalanceRequestDefaultTypeInternal;
 extern LoadBalanceRequestDefaultTypeInternal _LoadBalanceRequest_default_instance_;
@@ -397,6 +403,8 @@ template<> ::milvus::proto::milvus::IndexDescription* Arena::CreateMaybeMessage<
 template<> ::milvus::proto::milvus::InsertRequest* Arena::CreateMaybeMessage<::milvus::proto::milvus::InsertRequest>(Arena*);
 template<> ::milvus::proto::milvus::ListCredUsersRequest* Arena::CreateMaybeMessage<::milvus::proto::milvus::ListCredUsersRequest>(Arena*);
 template<> ::milvus::proto::milvus::ListCredUsersResponse* Arena::CreateMaybeMessage<::milvus::proto::milvus::ListCredUsersResponse>(Arena*);
+template<> ::milvus::proto::milvus::ListImportTasksRequest* Arena::CreateMaybeMessage<::milvus::proto::milvus::ListImportTasksRequest>(Arena*);
+template<> ::milvus::proto::milvus::ListImportTasksResponse* Arena::CreateMaybeMessage<::milvus::proto::milvus::ListImportTasksResponse>(Arena*);
 template<> ::milvus::proto::milvus::LoadBalanceRequest* Arena::CreateMaybeMessage<::milvus::proto::milvus::LoadBalanceRequest>(Arena*);
 template<> ::milvus::proto::milvus::LoadCollectionRequest* Arena::CreateMaybeMessage<::milvus::proto::milvus::LoadCollectionRequest>(Arena*);
 template<> ::milvus::proto::milvus::LoadPartitionsRequest* Arena::CreateMaybeMessage<::milvus::proto::milvus::LoadPartitionsRequest>(Arena*);
@@ -13832,6 +13840,7 @@ class GetImportStateResponse :
     kInfosFieldNumber = 5,
     kStatusFieldNumber = 1,
     kRowCountFieldNumber = 3,
+    kIdFieldNumber = 6,
     kStateFieldNumber = 2,
   };
   // repeated int64 id_list = 4;
@@ -13869,6 +13878,11 @@ class GetImportStateResponse :
   ::PROTOBUF_NAMESPACE_ID::int64 row_count() const;
   void set_row_count(::PROTOBUF_NAMESPACE_ID::int64 value);
 
+  // int64 id = 6;
+  void clear_id();
+  ::PROTOBUF_NAMESPACE_ID::int64 id() const;
+  void set_id(::PROTOBUF_NAMESPACE_ID::int64 value);
+
   // .milvus.proto.common.ImportState state = 2;
   void clear_state();
   ::milvus::proto::common::ImportState state() const;
@@ -13884,7 +13898,277 @@ class GetImportStateResponse :
   ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField< ::milvus::proto::common::KeyValuePair > infos_;
   ::milvus::proto::common::Status* status_;
   ::PROTOBUF_NAMESPACE_ID::int64 row_count_;
+  ::PROTOBUF_NAMESPACE_ID::int64 id_;
   int state_;
+  mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
+  friend struct ::TableStruct_milvus_2eproto;
+};
+// -------------------------------------------------------------------
+
+class ListImportTasksRequest :
+    public ::PROTOBUF_NAMESPACE_ID::Message /* @@protoc_insertion_point(class_definition:milvus.proto.milvus.ListImportTasksRequest) */ {
+ public:
+  ListImportTasksRequest();
+  virtual ~ListImportTasksRequest();
+
+  ListImportTasksRequest(const ListImportTasksRequest& from);
+  ListImportTasksRequest(ListImportTasksRequest&& from) noexcept
+    : ListImportTasksRequest() {
+    *this = ::std::move(from);
+  }
+
+  inline ListImportTasksRequest& operator=(const ListImportTasksRequest& from) {
+    CopyFrom(from);
+    return *this;
+  }
+  inline ListImportTasksRequest& operator=(ListImportTasksRequest&& from) noexcept {
+    if (GetArenaNoVirtual() == from.GetArenaNoVirtual()) {
+      if (this != &from) InternalSwap(&from);
+    } else {
+      CopyFrom(from);
+    }
+    return *this;
+  }
+
+  static const ::PROTOBUF_NAMESPACE_ID::Descriptor* descriptor() {
+    return GetDescriptor();
+  }
+  static const ::PROTOBUF_NAMESPACE_ID::Descriptor* GetDescriptor() {
+    return GetMetadataStatic().descriptor;
+  }
+  static const ::PROTOBUF_NAMESPACE_ID::Reflection* GetReflection() {
+    return GetMetadataStatic().reflection;
+  }
+  static const ListImportTasksRequest& default_instance();
+
+  static void InitAsDefaultInstance();  // FOR INTERNAL USE ONLY
+  static inline const ListImportTasksRequest* internal_default_instance() {
+    return reinterpret_cast<const ListImportTasksRequest*>(
+               &_ListImportTasksRequest_default_instance_);
+  }
+  static constexpr int kIndexInFileMessages =
+    81;
+
+  friend void swap(ListImportTasksRequest& a, ListImportTasksRequest& b) {
+    a.Swap(&b);
+  }
+  inline void Swap(ListImportTasksRequest* other) {
+    if (other == this) return;
+    InternalSwap(other);
+  }
+
+  // implements Message ----------------------------------------------
+
+  inline ListImportTasksRequest* New() const final {
+    return CreateMaybeMessage<ListImportTasksRequest>(nullptr);
+  }
+
+  ListImportTasksRequest* New(::PROTOBUF_NAMESPACE_ID::Arena* arena) const final {
+    return CreateMaybeMessage<ListImportTasksRequest>(arena);
+  }
+  void CopyFrom(const ::PROTOBUF_NAMESPACE_ID::Message& from) final;
+  void MergeFrom(const ::PROTOBUF_NAMESPACE_ID::Message& from) final;
+  void CopyFrom(const ListImportTasksRequest& from);
+  void MergeFrom(const ListImportTasksRequest& from);
+  PROTOBUF_ATTRIBUTE_REINITIALIZES void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  #if GOOGLE_PROTOBUF_ENABLE_EXPERIMENTAL_PARSER
+  const char* _InternalParse(const char* ptr, ::PROTOBUF_NAMESPACE_ID::internal::ParseContext* ctx) final;
+  #else
+  bool MergePartialFromCodedStream(
+      ::PROTOBUF_NAMESPACE_ID::io::CodedInputStream* input) final;
+  #endif  // GOOGLE_PROTOBUF_ENABLE_EXPERIMENTAL_PARSER
+  void SerializeWithCachedSizes(
+      ::PROTOBUF_NAMESPACE_ID::io::CodedOutputStream* output) const final;
+  ::PROTOBUF_NAMESPACE_ID::uint8* InternalSerializeWithCachedSizesToArray(
+      ::PROTOBUF_NAMESPACE_ID::uint8* target) const final;
+  int GetCachedSize() const final { return _cached_size_.Get(); }
+
+  private:
+  inline void SharedCtor();
+  inline void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(ListImportTasksRequest* other);
+  friend class ::PROTOBUF_NAMESPACE_ID::internal::AnyMetadata;
+  static ::PROTOBUF_NAMESPACE_ID::StringPiece FullMessageName() {
+    return "milvus.proto.milvus.ListImportTasksRequest";
+  }
+  private:
+  inline ::PROTOBUF_NAMESPACE_ID::Arena* GetArenaNoVirtual() const {
+    return nullptr;
+  }
+  inline void* MaybeArenaPtr() const {
+    return nullptr;
+  }
+  public:
+
+  ::PROTOBUF_NAMESPACE_ID::Metadata GetMetadata() const final;
+  private:
+  static ::PROTOBUF_NAMESPACE_ID::Metadata GetMetadataStatic() {
+    ::PROTOBUF_NAMESPACE_ID::internal::AssignDescriptors(&::descriptor_table_milvus_2eproto);
+    return ::descriptor_table_milvus_2eproto.file_level_metadata[kIndexInFileMessages];
+  }
+
+  public:
+
+  // nested types ----------------------------------------------------
+
+  // accessors -------------------------------------------------------
+
+  // @@protoc_insertion_point(class_scope:milvus.proto.milvus.ListImportTasksRequest)
+ private:
+  class _Internal;
+
+  ::PROTOBUF_NAMESPACE_ID::internal::InternalMetadataWithArena _internal_metadata_;
+  mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
+  friend struct ::TableStruct_milvus_2eproto;
+};
+// -------------------------------------------------------------------
+
+class ListImportTasksResponse :
+    public ::PROTOBUF_NAMESPACE_ID::Message /* @@protoc_insertion_point(class_definition:milvus.proto.milvus.ListImportTasksResponse) */ {
+ public:
+  ListImportTasksResponse();
+  virtual ~ListImportTasksResponse();
+
+  ListImportTasksResponse(const ListImportTasksResponse& from);
+  ListImportTasksResponse(ListImportTasksResponse&& from) noexcept
+    : ListImportTasksResponse() {
+    *this = ::std::move(from);
+  }
+
+  inline ListImportTasksResponse& operator=(const ListImportTasksResponse& from) {
+    CopyFrom(from);
+    return *this;
+  }
+  inline ListImportTasksResponse& operator=(ListImportTasksResponse&& from) noexcept {
+    if (GetArenaNoVirtual() == from.GetArenaNoVirtual()) {
+      if (this != &from) InternalSwap(&from);
+    } else {
+      CopyFrom(from);
+    }
+    return *this;
+  }
+
+  static const ::PROTOBUF_NAMESPACE_ID::Descriptor* descriptor() {
+    return GetDescriptor();
+  }
+  static const ::PROTOBUF_NAMESPACE_ID::Descriptor* GetDescriptor() {
+    return GetMetadataStatic().descriptor;
+  }
+  static const ::PROTOBUF_NAMESPACE_ID::Reflection* GetReflection() {
+    return GetMetadataStatic().reflection;
+  }
+  static const ListImportTasksResponse& default_instance();
+
+  static void InitAsDefaultInstance();  // FOR INTERNAL USE ONLY
+  static inline const ListImportTasksResponse* internal_default_instance() {
+    return reinterpret_cast<const ListImportTasksResponse*>(
+               &_ListImportTasksResponse_default_instance_);
+  }
+  static constexpr int kIndexInFileMessages =
+    82;
+
+  friend void swap(ListImportTasksResponse& a, ListImportTasksResponse& b) {
+    a.Swap(&b);
+  }
+  inline void Swap(ListImportTasksResponse* other) {
+    if (other == this) return;
+    InternalSwap(other);
+  }
+
+  // implements Message ----------------------------------------------
+
+  inline ListImportTasksResponse* New() const final {
+    return CreateMaybeMessage<ListImportTasksResponse>(nullptr);
+  }
+
+  ListImportTasksResponse* New(::PROTOBUF_NAMESPACE_ID::Arena* arena) const final {
+    return CreateMaybeMessage<ListImportTasksResponse>(arena);
+  }
+  void CopyFrom(const ::PROTOBUF_NAMESPACE_ID::Message& from) final;
+  void MergeFrom(const ::PROTOBUF_NAMESPACE_ID::Message& from) final;
+  void CopyFrom(const ListImportTasksResponse& from);
+  void MergeFrom(const ListImportTasksResponse& from);
+  PROTOBUF_ATTRIBUTE_REINITIALIZES void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  #if GOOGLE_PROTOBUF_ENABLE_EXPERIMENTAL_PARSER
+  const char* _InternalParse(const char* ptr, ::PROTOBUF_NAMESPACE_ID::internal::ParseContext* ctx) final;
+  #else
+  bool MergePartialFromCodedStream(
+      ::PROTOBUF_NAMESPACE_ID::io::CodedInputStream* input) final;
+  #endif  // GOOGLE_PROTOBUF_ENABLE_EXPERIMENTAL_PARSER
+  void SerializeWithCachedSizes(
+      ::PROTOBUF_NAMESPACE_ID::io::CodedOutputStream* output) const final;
+  ::PROTOBUF_NAMESPACE_ID::uint8* InternalSerializeWithCachedSizesToArray(
+      ::PROTOBUF_NAMESPACE_ID::uint8* target) const final;
+  int GetCachedSize() const final { return _cached_size_.Get(); }
+
+  private:
+  inline void SharedCtor();
+  inline void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(ListImportTasksResponse* other);
+  friend class ::PROTOBUF_NAMESPACE_ID::internal::AnyMetadata;
+  static ::PROTOBUF_NAMESPACE_ID::StringPiece FullMessageName() {
+    return "milvus.proto.milvus.ListImportTasksResponse";
+  }
+  private:
+  inline ::PROTOBUF_NAMESPACE_ID::Arena* GetArenaNoVirtual() const {
+    return nullptr;
+  }
+  inline void* MaybeArenaPtr() const {
+    return nullptr;
+  }
+  public:
+
+  ::PROTOBUF_NAMESPACE_ID::Metadata GetMetadata() const final;
+  private:
+  static ::PROTOBUF_NAMESPACE_ID::Metadata GetMetadataStatic() {
+    ::PROTOBUF_NAMESPACE_ID::internal::AssignDescriptors(&::descriptor_table_milvus_2eproto);
+    return ::descriptor_table_milvus_2eproto.file_level_metadata[kIndexInFileMessages];
+  }
+
+  public:
+
+  // nested types ----------------------------------------------------
+
+  // accessors -------------------------------------------------------
+
+  enum : int {
+    kTasksFieldNumber = 2,
+    kStatusFieldNumber = 1,
+  };
+  // repeated .milvus.proto.milvus.GetImportStateResponse tasks = 2;
+  int tasks_size() const;
+  void clear_tasks();
+  ::milvus::proto::milvus::GetImportStateResponse* mutable_tasks(int index);
+  ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField< ::milvus::proto::milvus::GetImportStateResponse >*
+      mutable_tasks();
+  const ::milvus::proto::milvus::GetImportStateResponse& tasks(int index) const;
+  ::milvus::proto::milvus::GetImportStateResponse* add_tasks();
+  const ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField< ::milvus::proto::milvus::GetImportStateResponse >&
+      tasks() const;
+
+  // .milvus.proto.common.Status status = 1;
+  bool has_status() const;
+  void clear_status();
+  const ::milvus::proto::common::Status& status() const;
+  ::milvus::proto::common::Status* release_status();
+  ::milvus::proto::common::Status* mutable_status();
+  void set_allocated_status(::milvus::proto::common::Status* status);
+
+  // @@protoc_insertion_point(class_scope:milvus.proto.milvus.ListImportTasksResponse)
+ private:
+  class _Internal;
+
+  ::PROTOBUF_NAMESPACE_ID::internal::InternalMetadataWithArena _internal_metadata_;
+  ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField< ::milvus::proto::milvus::GetImportStateResponse > tasks_;
+  ::milvus::proto::common::Status* status_;
   mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   friend struct ::TableStruct_milvus_2eproto;
 };
@@ -13932,7 +14216,7 @@ class GetReplicasRequest :
                &_GetReplicasRequest_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    81;
+    83;
 
   friend void swap(GetReplicasRequest& a, GetReplicasRequest& b) {
     a.Swap(&b);
@@ -14080,7 +14364,7 @@ class GetReplicasResponse :
                &_GetReplicasResponse_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    82;
+    84;
 
   friend void swap(GetReplicasResponse& a, GetReplicasResponse& b) {
     a.Swap(&b);
@@ -14227,7 +14511,7 @@ class ReplicaInfo :
                &_ReplicaInfo_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    83;
+    85;
 
   friend void swap(ReplicaInfo& a, ReplicaInfo& b) {
     a.Swap(&b);
@@ -14406,7 +14690,7 @@ class ShardReplica :
                &_ShardReplica_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    84;
+    86;
 
   friend void swap(ShardReplica& a, ShardReplica& b) {
     a.Swap(&b);
@@ -14577,7 +14861,7 @@ class CreateCredentialRequest :
                &_CreateCredentialRequest_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    85;
+    87;
 
   friend void swap(CreateCredentialRequest& a, CreateCredentialRequest& b) {
     a.Swap(&b);
@@ -14751,7 +15035,7 @@ class UpdateCredentialRequest :
                &_UpdateCredentialRequest_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    86;
+    88;
 
   friend void swap(UpdateCredentialRequest& a, UpdateCredentialRequest& b) {
     a.Swap(&b);
@@ -14938,7 +15222,7 @@ class DeleteCredentialRequest :
                &_DeleteCredentialRequest_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    87;
+    89;
 
   friend void swap(DeleteCredentialRequest& a, DeleteCredentialRequest& b) {
     a.Swap(&b);
@@ -15085,7 +15369,7 @@ class ListCredUsersResponse :
                &_ListCredUsersResponse_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    88;
+    90;
 
   friend void swap(ListCredUsersResponse& a, ListCredUsersResponse& b) {
     a.Swap(&b);
@@ -15238,7 +15522,7 @@ class ListCredUsersRequest :
                &_ListCredUsersRequest_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    89;
+    91;
 
   friend void swap(ListCredUsersRequest& a, ListCredUsersRequest& b) {
     a.Swap(&b);
@@ -27410,6 +27694,103 @@ GetImportStateResponse::infos() const {
   return infos_;
 }
 
+// int64 id = 6;
+inline void GetImportStateResponse::clear_id() {
+  id_ = PROTOBUF_LONGLONG(0);
+}
+inline ::PROTOBUF_NAMESPACE_ID::int64 GetImportStateResponse::id() const {
+  // @@protoc_insertion_point(field_get:milvus.proto.milvus.GetImportStateResponse.id)
+  return id_;
+}
+inline void GetImportStateResponse::set_id(::PROTOBUF_NAMESPACE_ID::int64 value) {
+  
+  id_ = value;
+  // @@protoc_insertion_point(field_set:milvus.proto.milvus.GetImportStateResponse.id)
+}
+
+// -------------------------------------------------------------------
+
+// ListImportTasksRequest
+
+// -------------------------------------------------------------------
+
+// ListImportTasksResponse
+
+// .milvus.proto.common.Status status = 1;
+inline bool ListImportTasksResponse::has_status() const {
+  return this != internal_default_instance() && status_ != nullptr;
+}
+inline const ::milvus::proto::common::Status& ListImportTasksResponse::status() const {
+  const ::milvus::proto::common::Status* p = status_;
+  // @@protoc_insertion_point(field_get:milvus.proto.milvus.ListImportTasksResponse.status)
+  return p != nullptr ? *p : *reinterpret_cast<const ::milvus::proto::common::Status*>(
+      &::milvus::proto::common::_Status_default_instance_);
+}
+inline ::milvus::proto::common::Status* ListImportTasksResponse::release_status() {
+  // @@protoc_insertion_point(field_release:milvus.proto.milvus.ListImportTasksResponse.status)
+  
+  ::milvus::proto::common::Status* temp = status_;
+  status_ = nullptr;
+  return temp;
+}
+inline ::milvus::proto::common::Status* ListImportTasksResponse::mutable_status() {
+  
+  if (status_ == nullptr) {
+    auto* p = CreateMaybeMessage<::milvus::proto::common::Status>(GetArenaNoVirtual());
+    status_ = p;
+  }
+  // @@protoc_insertion_point(field_mutable:milvus.proto.milvus.ListImportTasksResponse.status)
+  return status_;
+}
+inline void ListImportTasksResponse::set_allocated_status(::milvus::proto::common::Status* status) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaNoVirtual();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(status_);
+  }
+  if (status) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena = nullptr;
+    if (message_arena != submessage_arena) {
+      status = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, status, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  status_ = status;
+  // @@protoc_insertion_point(field_set_allocated:milvus.proto.milvus.ListImportTasksResponse.status)
+}
+
+// repeated .milvus.proto.milvus.GetImportStateResponse tasks = 2;
+inline int ListImportTasksResponse::tasks_size() const {
+  return tasks_.size();
+}
+inline void ListImportTasksResponse::clear_tasks() {
+  tasks_.Clear();
+}
+inline ::milvus::proto::milvus::GetImportStateResponse* ListImportTasksResponse::mutable_tasks(int index) {
+  // @@protoc_insertion_point(field_mutable:milvus.proto.milvus.ListImportTasksResponse.tasks)
+  return tasks_.Mutable(index);
+}
+inline ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField< ::milvus::proto::milvus::GetImportStateResponse >*
+ListImportTasksResponse::mutable_tasks() {
+  // @@protoc_insertion_point(field_mutable_list:milvus.proto.milvus.ListImportTasksResponse.tasks)
+  return &tasks_;
+}
+inline const ::milvus::proto::milvus::GetImportStateResponse& ListImportTasksResponse::tasks(int index) const {
+  // @@protoc_insertion_point(field_get:milvus.proto.milvus.ListImportTasksResponse.tasks)
+  return tasks_.Get(index);
+}
+inline ::milvus::proto::milvus::GetImportStateResponse* ListImportTasksResponse::add_tasks() {
+  // @@protoc_insertion_point(field_add:milvus.proto.milvus.ListImportTasksResponse.tasks)
+  return tasks_.Add();
+}
+inline const ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField< ::milvus::proto::milvus::GetImportStateResponse >&
+ListImportTasksResponse::tasks() const {
+  // @@protoc_insertion_point(field_list:milvus.proto.milvus.ListImportTasksResponse.tasks)
+  return tasks_;
+}
+
 // -------------------------------------------------------------------
 
 // GetReplicasRequest
@@ -28513,6 +28894,10 @@ inline void ListCredUsersRequest::set_allocated_base(::milvus::proto::common::Ms
 #ifdef __GNUC__
   #pragma GCC diagnostic pop
 #endif  // __GNUC__
+// -------------------------------------------------------------------
+
+// -------------------------------------------------------------------
+
 // -------------------------------------------------------------------
 
 // -------------------------------------------------------------------

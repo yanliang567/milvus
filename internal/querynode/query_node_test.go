@@ -31,13 +31,12 @@ import (
 
 	"github.com/golang/protobuf/proto"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/server/v3/embed"
 
 	"github.com/milvus-io/milvus/internal/util/dependency"
 
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
-	"github.com/milvus-io/milvus/internal/proto/etcdpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/types"
@@ -58,115 +57,112 @@ func setup() {
 	Params.EtcdCfg.MetaRootPath = "/etcd/test/root/querynode"
 }
 
-func genTestCollectionSchema(collectionID UniqueID, isBinary bool, dim int) *schemapb.CollectionSchema {
-	var fieldVec schemapb.FieldSchema
-	if isBinary {
-		fieldVec = schemapb.FieldSchema{
-			FieldID:      UniqueID(100),
-			Name:         "vec",
-			IsPrimaryKey: false,
-			DataType:     schemapb.DataType_BinaryVector,
-			TypeParams: []*commonpb.KeyValuePair{
-				{
-					Key:   "dim",
-					Value: strconv.Itoa(dim * 8),
-				},
-			},
-			IndexParams: []*commonpb.KeyValuePair{
-				{
-					Key:   "metric_type",
-					Value: "JACCARD",
-				},
-			},
-		}
-	} else {
-		fieldVec = schemapb.FieldSchema{
-			FieldID:      UniqueID(100),
-			Name:         "vec",
-			IsPrimaryKey: false,
-			DataType:     schemapb.DataType_FloatVector,
-			TypeParams: []*commonpb.KeyValuePair{
-				{
-					Key:   "dim",
-					Value: strconv.Itoa(dim),
-				},
-			},
-			IndexParams: []*commonpb.KeyValuePair{
-				{
-					Key:   "metric_type",
-					Value: "L2",
-				},
-			},
-		}
-	}
-
-	fieldInt := schemapb.FieldSchema{
-		FieldID:      UniqueID(101),
-		Name:         "age",
-		IsPrimaryKey: false,
-		DataType:     schemapb.DataType_Int32,
-	}
-
-	schema := &schemapb.CollectionSchema{
-		AutoID: true,
-		Fields: []*schemapb.FieldSchema{
-			&fieldVec, &fieldInt,
-		},
-	}
-
-	return schema
-}
-
-func genTestCollectionMeta(collectionID UniqueID, isBinary bool) *etcdpb.CollectionInfo {
-	schema := genTestCollectionSchema(collectionID, isBinary, 16)
-
-	collectionMeta := etcdpb.CollectionInfo{
-		ID:           collectionID,
-		Schema:       schema,
-		CreateTime:   Timestamp(0),
-		PartitionIDs: []UniqueID{defaultPartitionID},
-	}
-
-	return &collectionMeta
-}
-
-func genTestCollectionMetaWithPK(collectionID UniqueID, isBinary bool) *etcdpb.CollectionInfo {
-	schema := genTestCollectionSchema(collectionID, isBinary, 16)
-	schema.Fields = append(schema.Fields, &schemapb.FieldSchema{
-		FieldID:      UniqueID(0),
-		Name:         "id",
-		IsPrimaryKey: true,
-		DataType:     schemapb.DataType_Int64,
-	})
-
-	collectionMeta := etcdpb.CollectionInfo{
-		ID:           collectionID,
-		Schema:       schema,
-		CreateTime:   Timestamp(0),
-		PartitionIDs: []UniqueID{defaultPartitionID},
-	}
-
-	return &collectionMeta
-}
+//func genTestCollectionSchema(collectionID UniqueID, isBinary bool, dim int) *schemapb.CollectionSchema {
+//	var fieldVec schemapb.FieldSchema
+//	if isBinary {
+//		fieldVec = schemapb.FieldSchema{
+//			FieldID:      UniqueID(100),
+//			Name:         "vec",
+//			IsPrimaryKey: false,
+//			DataType:     schemapb.DataType_BinaryVector,
+//			TypeParams: []*commonpb.KeyValuePair{
+//				{
+//					Key:   "dim",
+//					Value: strconv.Itoa(dim * 8),
+//				},
+//			},
+//			IndexParams: []*commonpb.KeyValuePair{
+//				{
+//					Key:   "metric_type",
+//					Value: "JACCARD",
+//				},
+//			},
+//		}
+//	} else {
+//		fieldVec = schemapb.FieldSchema{
+//			FieldID:      UniqueID(100),
+//			Name:         "vec",
+//			IsPrimaryKey: false,
+//			DataType:     schemapb.DataType_FloatVector,
+//			TypeParams: []*commonpb.KeyValuePair{
+//				{
+//					Key:   "dim",
+//					Value: strconv.Itoa(dim),
+//				},
+//			},
+//			IndexParams: []*commonpb.KeyValuePair{
+//				{
+//					Key:   "metric_type",
+//					Value: "L2",
+//				},
+//			},
+//		}
+//	}
+//
+//	fieldInt := schemapb.FieldSchema{
+//		FieldID:      UniqueID(101),
+//		Name:         "age",
+//		IsPrimaryKey: false,
+//		DataType:     schemapb.DataType_Int32,
+//	}
+//
+//	schema := &schemapb.CollectionSchema{
+//		AutoID: true,
+//		Fields: []*schemapb.FieldSchema{
+//			&fieldVec, &fieldInt,
+//		},
+//	}
+//
+//	return schema
+//}
+//
+//func genTestCollectionMeta(collectionID UniqueID, isBinary bool) *etcdpb.CollectionInfo {
+//	schema := genTestCollectionSchema(collectionID, isBinary, 16)
+//
+//	collectionMeta := etcdpb.CollectionInfo{
+//		ID:           collectionID,
+//		Schema:       schema,
+//		CreateTime:   Timestamp(0),
+//		PartitionIDs: []UniqueID{defaultPartitionID},
+//	}
+//
+//	return &collectionMeta
+//}
+//
+//func genTestCollectionMetaWithPK(collectionID UniqueID, isBinary bool) *etcdpb.CollectionInfo {
+//	schema := genTestCollectionSchema(collectionID, isBinary, 16)
+//	schema.Fields = append(schema.Fields, &schemapb.FieldSchema{
+//		FieldID:      UniqueID(0),
+//		Name:         "id",
+//		IsPrimaryKey: true,
+//		DataType:     schemapb.DataType_Int64,
+//	})
+//
+//	collectionMeta := etcdpb.CollectionInfo{
+//		ID:           collectionID,
+//		Schema:       schema,
+//		CreateTime:   Timestamp(0),
+//		PartitionIDs: []UniqueID{defaultPartitionID},
+//	}
+//
+//	return &collectionMeta
+//}
 
 func initTestMeta(t *testing.T, node *QueryNode, collectionID UniqueID, segmentID UniqueID, optional ...bool) {
-	isBinary := false
-	if len(optional) > 0 {
-		isBinary = optional[0]
-	}
-	collectionMeta := genTestCollectionMeta(collectionID, isBinary)
+	pkType := schemapb.DataType_Int64
+	schema := genTestCollectionSchema(pkType)
 
-	node.historical.replica.addCollection(collectionMeta.ID, collectionMeta.Schema)
+	node.historical.replica.addCollection(defaultCollectionID, schema)
 
 	collection, err := node.historical.replica.getCollectionByID(collectionID)
 	assert.NoError(t, err)
 	assert.Equal(t, collection.ID(), collectionID)
 	assert.Equal(t, node.historical.replica.getCollectionNum(), 1)
 
-	err = node.historical.replica.addPartition(collection.ID(), collectionMeta.PartitionIDs[0])
+	err = node.historical.replica.addPartition(collection.ID(), defaultPartitionID)
 	assert.NoError(t, err)
 
-	err = node.historical.replica.addSegment(segmentID, collectionMeta.PartitionIDs[0], collectionID, "", segmentTypeGrowing, true)
+	err = node.historical.replica.addSegment(segmentID, defaultPartitionID, collectionID, "", segmentTypeSealed, true)
 	assert.NoError(t, err)
 }
 
@@ -329,17 +325,6 @@ func genSimpleQueryNodeToTestWatchChangeInfo(ctx context.Context) (*QueryNode, e
 	return node, nil
 }
 
-func TestQueryNode_waitChangeInfo(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	node, err := genSimpleQueryNodeToTestWatchChangeInfo(ctx)
-	assert.NoError(t, err)
-
-	err = node.waitChangeInfo(genSimpleChangeInfo())
-	assert.NoError(t, err)
-}
-
 func TestQueryNode_adjustByChangeInfo(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -366,7 +351,7 @@ func TestQueryNode_adjustByChangeInfo(t *testing.T) {
 
 		segmentChangeInfos := genSimpleChangeInfo()
 		segmentChangeInfos.Infos[0].OnlineSegments = nil
-		segmentChangeInfos.Infos[0].OfflineNodeID = Params.QueryNodeCfg.QueryNodeID
+		segmentChangeInfos.Infos[0].OfflineNodeID = Params.QueryNodeCfg.GetNodeID()
 
 		/*
 			qc, err := node.queryService.getQueryCollection(defaultCollectionID)
@@ -439,7 +424,7 @@ func TestQueryNode_watchChangeInfo(t *testing.T) {
 
 		segmentChangeInfos := genSimpleChangeInfo()
 		segmentChangeInfos.Infos[0].OnlineSegments = nil
-		segmentChangeInfos.Infos[0].OfflineNodeID = Params.QueryNodeCfg.QueryNodeID
+		segmentChangeInfos.Infos[0].OfflineNodeID = Params.QueryNodeCfg.GetNodeID()
 
 		/*
 			qc, err := node.queryService.getQueryCollection(defaultCollectionID)
@@ -532,5 +517,141 @@ func TestQueryNode_watchService(t *testing.T) {
 		cancel()
 		<-sigDone
 		assert.True(t, flag)
+	})
+}
+
+func TestQueryNode_validateChangeChannel(t *testing.T) {
+
+	type testCase struct {
+		name                string
+		info                *querypb.SegmentChangeInfo
+		expectedError       bool
+		expectedChannelName string
+	}
+
+	cases := []testCase{
+		{
+			name:          "empty info",
+			info:          &querypb.SegmentChangeInfo{},
+			expectedError: true,
+		},
+		{
+			name: "normal segment change info",
+			info: &querypb.SegmentChangeInfo{
+				OnlineSegments: []*querypb.SegmentInfo{
+					{DmChannel: defaultDMLChannel},
+				},
+				OfflineSegments: []*querypb.SegmentInfo{
+					{DmChannel: defaultDMLChannel},
+				},
+			},
+			expectedError:       false,
+			expectedChannelName: defaultDMLChannel,
+		},
+		{
+			name: "empty offline change info",
+			info: &querypb.SegmentChangeInfo{
+				OnlineSegments: []*querypb.SegmentInfo{
+					{DmChannel: defaultDMLChannel},
+				},
+			},
+			expectedError:       false,
+			expectedChannelName: defaultDMLChannel,
+		},
+		{
+			name: "empty online change info",
+			info: &querypb.SegmentChangeInfo{
+				OfflineSegments: []*querypb.SegmentInfo{
+					{DmChannel: defaultDMLChannel},
+				},
+			},
+			expectedError:       false,
+			expectedChannelName: defaultDMLChannel,
+		},
+		{
+			name: "different channel in online",
+			info: &querypb.SegmentChangeInfo{
+				OnlineSegments: []*querypb.SegmentInfo{
+					{DmChannel: defaultDMLChannel},
+					{DmChannel: "other_channel"},
+				},
+			},
+			expectedError: true,
+		},
+		{
+			name: "different channel in offline",
+			info: &querypb.SegmentChangeInfo{
+				OnlineSegments: []*querypb.SegmentInfo{
+					{DmChannel: defaultDMLChannel},
+				},
+				OfflineSegments: []*querypb.SegmentInfo{
+					{DmChannel: "other_channel"},
+				},
+			},
+			expectedError: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			channelName, err := validateChangeChannel(tc.info)
+			if tc.expectedError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tc.expectedChannelName, channelName)
+			}
+		})
+	}
+}
+
+func TestQueryNode_handleSealedSegmentsChangeInfo(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	qn, err := genSimpleQueryNode(ctx)
+	require.NoError(t, err)
+
+	t.Run("empty info", func(t *testing.T) {
+		assert.NotPanics(t, func() {
+			qn.handleSealedSegmentsChangeInfo(&querypb.SealedSegmentsChangeInfo{})
+		})
+		assert.NotPanics(t, func() {
+			qn.handleSealedSegmentsChangeInfo(nil)
+		})
+	})
+
+	t.Run("normal segment change info", func(t *testing.T) {
+		assert.NotPanics(t, func() {
+			qn.handleSealedSegmentsChangeInfo(&querypb.SealedSegmentsChangeInfo{
+				Infos: []*querypb.SegmentChangeInfo{
+					{
+						OnlineSegments: []*querypb.SegmentInfo{
+							{DmChannel: defaultDMLChannel},
+						},
+						OfflineSegments: []*querypb.SegmentInfo{
+							{DmChannel: defaultDMLChannel},
+						},
+					},
+				},
+			})
+		})
+	})
+
+	t.Run("bad change info", func(t *testing.T) {
+		assert.NotPanics(t, func() {
+			qn.handleSealedSegmentsChangeInfo(&querypb.SealedSegmentsChangeInfo{
+				Infos: []*querypb.SegmentChangeInfo{
+					{
+						OnlineSegments: []*querypb.SegmentInfo{
+							{DmChannel: defaultDMLChannel},
+						},
+						OfflineSegments: []*querypb.SegmentInfo{
+							{DmChannel: "other_channel"},
+						},
+					},
+				},
+			})
+		})
+
 	})
 }

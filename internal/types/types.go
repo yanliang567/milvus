@@ -30,7 +30,6 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
-	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
 // TimeTickProvider is the interface all services implement
@@ -111,9 +110,6 @@ type DataNodeComponent interface {
 	// Return nil in status:
 	//     The dataCoord is not nil.
 	SetDataCoord(dataCoord DataCoord) error
-
-	// SetNodeID set node id for DataNode
-	SetNodeID(typeutil.UniqueID)
 }
 
 // DataCoord is the interface `datacoord` package implements
@@ -624,6 +620,16 @@ type RootCoord interface {
 	// error is always nil
 	GetImportState(ctx context.Context, req *milvuspb.GetImportStateRequest) (*milvuspb.GetImportStateResponse, error)
 
+	// List id array of all import tasks
+	//
+	// ctx is the context to control request deadline and cancellation
+	// req contains the request params
+	//
+	// The `Status` in response struct `ListImportTasksResponse` indicates if this operation is processed successfully or fail cause;
+	// the `Tasks` in `ListImportTasksResponse` return the id array of all import tasks.
+	// error is always nil
+	ListImportTasks(ctx context.Context, req *milvuspb.ListImportTasksRequest) (*milvuspb.ListImportTasksResponse, error)
+
 	// ReportImport reports import task state to rootCoord
 	//
 	// ctx is the context to control request deadline and cancellation
@@ -1132,6 +1138,16 @@ type ProxyComponent interface {
 	// error is always nil
 	GetImportState(ctx context.Context, req *milvuspb.GetImportStateRequest) (*milvuspb.GetImportStateResponse, error)
 
+	// List id array of all import tasks
+	//
+	// ctx is the context to control request deadline and cancellation
+	// req contains the request params
+	//
+	// The `Status` in response struct `ListImportTasksResponse` indicates if this operation is processed successfully or fail cause;
+	// the `Tasks` in `ListImportTasksResponse` return the id array of all import tasks.
+	// error is always nil
+	ListImportTasks(ctx context.Context, req *milvuspb.ListImportTasksRequest) (*milvuspb.ListImportTasksResponse, error)
+
 	GetReplicas(ctx context.Context, req *milvuspb.GetReplicasRequest) (*milvuspb.GetReplicasResponse, error)
 
 	// CreateCredential create new user and password
@@ -1177,6 +1193,7 @@ type QueryNode interface {
 
 	Search(ctx context.Context, req *querypb.SearchRequest) (*internalpb.SearchResults, error)
 	Query(ctx context.Context, req *querypb.QueryRequest) (*internalpb.RetrieveResults, error)
+	SyncReplicaSegments(ctx context.Context, req *querypb.SyncReplicaSegmentsRequest) (*commonpb.Status, error)
 
 	// GetMetrics gets the metrics about QueryNode.
 	GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error)
