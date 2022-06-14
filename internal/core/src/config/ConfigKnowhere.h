@@ -20,9 +20,12 @@
 namespace milvus::config {
 
 void
-KnowhereInitImpl();
+KnowhereInitImpl(const char*);
 
 std::string
 KnowhereSetSimdType(const char*);
+
+void
+KnowhereSetIndexSliceSize(const int64_t size);
 
 }  // namespace milvus::config

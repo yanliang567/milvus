@@ -20,6 +20,8 @@ import (
 	"context"
 	"fmt"
 
+	"google.golang.org/grpc"
+
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
@@ -28,7 +30,6 @@ import (
 	"github.com/milvus-io/milvus/internal/util/grpcclient"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	"google.golang.org/grpc"
 )
 
 var ClientParams paramtable.GrpcClientConfig
@@ -50,6 +51,9 @@ func NewClient(ctx context.Context, addr string) (*Client, error) {
 		grpcClient: &grpcclient.ClientBase{
 			ClientMaxRecvSize: ClientParams.ClientMaxRecvSize,
 			ClientMaxSendSize: ClientParams.ClientMaxSendSize,
+			DialTimeout:       ClientParams.DialTimeout,
+			KeepAliveTime:     ClientParams.KeepAliveTime,
+			KeepAliveTimeout:  ClientParams.KeepAliveTimeout,
 		},
 	}
 	client.grpcClient.SetRole(typeutil.QueryNodeRole)
@@ -127,34 +131,6 @@ func (c *Client) GetStatisticsChannel(ctx context.Context) (*milvuspb.StringResp
 		return nil, err
 	}
 	return ret.(*milvuspb.StringResponse), err
-}
-
-// AddQueryChannel adds query channel for QueryNode component.
-func (c *Client) AddQueryChannel(ctx context.Context, req *querypb.AddQueryChannelRequest) (*commonpb.Status, error) {
-	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
-		if !funcutil.CheckCtxValid(ctx) {
-			return nil, ctx.Err()
-		}
-		return client.(querypb.QueryNodeClient).AddQueryChannel(ctx, req)
-	})
-	if err != nil || ret == nil {
-		return nil, err
-	}
-	return ret.(*commonpb.Status), err
-}
-
-// RemoveQueryChannel removes the query channel for QueryNode component.
-func (c *Client) RemoveQueryChannel(ctx context.Context, req *querypb.RemoveQueryChannelRequest) (*commonpb.Status, error) {
-	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
-		if !funcutil.CheckCtxValid(ctx) {
-			return nil, ctx.Err()
-		}
-		return client.(querypb.QueryNodeClient).RemoveQueryChannel(ctx, req)
-	})
-	if err != nil || ret == nil {
-		return nil, err
-	}
-	return ret.(*commonpb.Status), err
 }
 
 // WatchDmChannels watches the channels about data manipulation.
@@ -241,6 +217,34 @@ func (c *Client) ReleaseSegments(ctx context.Context, req *querypb.ReleaseSegmen
 	return ret.(*commonpb.Status), err
 }
 
+// Search performs replica search tasks in QueryNode.
+func (c *Client) Search(ctx context.Context, req *querypb.SearchRequest) (*internalpb.SearchResults, error) {
+	ret, err := c.grpcClient.Call(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(querypb.QueryNodeClient).Search(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*internalpb.SearchResults), err
+}
+
+// Query performs replica query tasks in QueryNode.
+func (c *Client) Query(ctx context.Context, req *querypb.QueryRequest) (*internalpb.RetrieveResults, error) {
+	ret, err := c.grpcClient.Call(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(querypb.QueryNodeClient).Query(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*internalpb.RetrieveResults), err
+}
+
 // GetSegmentInfo gets the information of the specified segments in QueryNode.
 func (c *Client) GetSegmentInfo(ctx context.Context, req *querypb.GetSegmentInfoRequest) (*querypb.GetSegmentInfoResponse, error) {
 	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
@@ -253,6 +257,20 @@ func (c *Client) GetSegmentInfo(ctx context.Context, req *querypb.GetSegmentInfo
 		return nil, err
 	}
 	return ret.(*querypb.GetSegmentInfoResponse), err
+}
+
+// SyncReplicaSegments syncs replica node segments information to shard leaders.
+func (c *Client) SyncReplicaSegments(ctx context.Context, req *querypb.SyncReplicaSegmentsRequest) (*commonpb.Status, error) {
+	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(querypb.QueryNodeClient).SyncReplicaSegments(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*commonpb.Status), err
 }
 
 // GetMetrics gets the metrics information of QueryNode.

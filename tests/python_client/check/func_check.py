@@ -219,11 +219,14 @@ class ResponseChecker:
                 assert len(hits) == check_items["limit"]
                 assert len(hits.ids) == check_items["limit"]
             else:
-                ids_match = pc.list_contain_check(list(hits.ids),
-                                                  list(check_items["ids"]))
-                if not ids_match:
-                    log.error("search_results_check: ids searched not match")
-                    assert ids_match
+                if check_items.get("ids", None) is not None:
+                    ids_match = pc.list_contain_check(list(hits.ids),
+                                                      list(check_items["ids"]))
+                    if not ids_match:
+                        log.error("search_results_check: ids searched not match")
+                        assert ids_match
+                else:
+                    pass    # just check nq and topk, not specific ids need check
         log.info("search_results_check: limit (topK) and "
                  "ids searched for %d queries are correct" % len(search_res))
         return True
@@ -252,9 +255,10 @@ class ResponseChecker:
             raise Exception("No expect values found in the check task")
         exp_res = check_items.get("exp_res", None)
         with_vec = check_items.get("with_vec", False)
+        primary_field = check_items.get("primary_field", None)
         if exp_res is not None:
             if isinstance(query_res, list):
-                assert pc.equal_entities_list(exp=exp_res, actual=query_res, with_vec=with_vec)
+                assert pc.equal_entities_list(exp=exp_res, actual=query_res, primary_field=primary_field, with_vec=with_vec)
                 return True
             else:
                 log.error(f"Query result {query_res} is not list")
@@ -348,3 +352,4 @@ class ResponseChecker:
         assert len(compaction_plans.plans) == 1
         assert len(compaction_plans.plans[0].sources) == segment_num
         assert compaction_plans.plans[0].target not in compaction_plans.plans[0].sources
+

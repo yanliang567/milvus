@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 
 	"github.com/golang/protobuf/proto"
@@ -36,6 +37,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/trace"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
 )
@@ -50,6 +52,8 @@ type (
 
 type insertBufferNode struct {
 	BaseNode
+
+	ctx          context.Context
 	channelName  string
 	insertBuffer sync.Map // SegmentID to BufferData
 	replica      Replica
@@ -57,6 +61,7 @@ type insertBufferNode struct {
 
 	flushMap         sync.Map
 	flushChan        <-chan flushMsg
+	resendTTChan     <-chan resendTTMsg
 	flushingSegCache *Cache
 	flushManager     flushManager
 
@@ -161,8 +166,11 @@ func (ibNode *insertBufferNode) Operate(in []Msg) []Msg {
 
 	fgMsg, ok := in[0].(*flowGraphMsg)
 	if !ok {
-		log.Warn("type assertion failed for flowGraphMsg")
-		ibNode.Close()
+		if in[0] == nil {
+			log.Debug("type assertion failed for flowGraphMsg because it's nil")
+		} else {
+			log.Warn("type assertion failed for flowGraphMsg", zap.String("name", reflect.TypeOf(in[0]).Name()))
+		}
 		return []Msg{}
 	}
 
@@ -192,12 +200,11 @@ func (ibNode *insertBufferNode) Operate(in []Msg) []Msg {
 	}
 
 	if startPositions[0].Timestamp < ibNode.lastTimestamp {
-		log.Error("insert buffer node consumed old messages",
-			zap.String("channel", ibNode.channelName),
-			zap.Any("timestamp", startPositions[0].Timestamp),
-			zap.Any("lastTimestamp", ibNode.lastTimestamp),
-		)
-		return []Msg{}
+		// message stream should guarantee that this should not happen
+		err := fmt.Errorf("insert buffer node consumed old messages, channel = %s, timestamp = %d, lastTimestamp = %d",
+			ibNode.channelName, startPositions[0].Timestamp, ibNode.lastTimestamp)
+		log.Error(err.Error())
+		panic(err)
 	}
 
 	ibNode.lastTimestamp = endPositions[0].Timestamp
@@ -205,15 +212,20 @@ func (ibNode *insertBufferNode) Operate(in []Msg) []Msg {
 	// Updating segment statistics in replica
 	seg2Upload, err := ibNode.updateSegStatesInReplica(fgMsg.insertMessages, startPositions[0], endPositions[0])
 	if err != nil {
-		log.Warn("update segment states in Replica wrong", zap.Error(err))
-		return []Msg{}
+		// Occurs only if the collectionID is mismatch, should not happen
+		err = fmt.Errorf("update segment states in Replica wrong, err = %s", err)
+		log.Error(err.Error())
+		panic(err)
 	}
 
 	// insert messages -> buffer
 	for _, msg := range fgMsg.insertMessages {
 		err := ibNode.bufferInsertMsg(msg, endPositions[0])
 		if err != nil {
-			log.Warn("msg to buffer failed", zap.Error(err))
+			// error occurs when missing schema info or data is misaligned, should not happen
+			err = fmt.Errorf("insertBufferNode msg to buffer failed, err = %s", err)
+			log.Error(err.Error())
+			panic(err)
 		}
 	}
 
@@ -247,6 +259,7 @@ func (ibNode *insertBufferNode) Operate(in []Msg) []Msg {
 		segmentID UniqueID
 		flushed   bool
 		dropped   bool
+		auto      bool
 	}
 
 	var (
@@ -296,9 +309,9 @@ func (ibNode *insertBufferNode) Operate(in []Msg) []Msg {
 					segmentID: segToFlush,
 					flushed:   false,
 					dropped:   false,
+					auto:      true,
 				})
 
-				metrics.DataNodeAutoFlushSegmentCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.NodeID)).Inc()
 			}
 		}
 
@@ -306,10 +319,10 @@ func (ibNode *insertBufferNode) Operate(in []Msg) []Msg {
 		select {
 		case fmsg := <-ibNode.flushChan:
 
-			log.Info(". Receiving flush message",
+			log.Info("receiving flush message",
 				zap.Int64("segmentID", fmsg.segmentID),
 				zap.Int64("collectionID", fmsg.collectionID),
-				zap.String("vchannel name", ibNode.channelName),
+				zap.String("v-channel name", ibNode.channelName),
 			)
 			// merging auto&manual flush segment same segment id
 			dup := false
@@ -335,26 +348,44 @@ func (ibNode *insertBufferNode) Operate(in []Msg) []Msg {
 					dropped:   false,
 				})
 			}
+		case resendTTMsg := <-ibNode.resendTTChan:
+			log.Info("resend TT msg received in insertBufferNode",
+				zap.Int64s("segment IDs", resendTTMsg.segmentIDs))
+			ibNode.writeHardTimeTick(fgMsg.timeRange.timestampMax, resendTTMsg.segmentIDs)
 		default:
 		}
 	}
 
 	for _, task := range flushTaskList {
-		err := ibNode.flushManager.flushBufferData(task.buffer, task.segmentID, task.flushed, task.dropped, endPositions[0])
+		err = retry.Do(ibNode.ctx, func() error {
+			return ibNode.flushManager.flushBufferData(task.buffer,
+				task.segmentID,
+				task.flushed,
+				task.dropped,
+				endPositions[0])
+		}, flowGraphRetryOpt)
 		if err != nil {
-			log.Warn("failed to invoke flushBufferData", zap.Error(err))
-			metrics.DataNodeFlushSegmentCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.NodeID), metrics.FailLabel).Inc()
-		} else {
-			segmentsToFlush = append(segmentsToFlush, task.segmentID)
-			ibNode.insertBuffer.Delete(task.segmentID)
-			metrics.DataNodeFlushSegmentCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.NodeID), metrics.SuccessLabel).Inc()
+			metrics.DataNodeFlushBufferCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.FailLabel).Inc()
+			metrics.DataNodeFlushBufferCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.TotalLabel).Inc()
+			if task.auto {
+				metrics.DataNodeAutoFlushBufferCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.FailLabel).Inc()
+				metrics.DataNodeAutoFlushBufferCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.TotalLabel).Inc()
+			}
+			err = fmt.Errorf("insertBufferNode flushBufferData failed, err = %s", err)
+			log.Error(err.Error())
+			panic(err)
 		}
-		metrics.DataNodeFlushSegmentCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.NodeID), metrics.TotalLabel).Inc()
+		segmentsToFlush = append(segmentsToFlush, task.segmentID)
+		ibNode.insertBuffer.Delete(task.segmentID)
+		metrics.DataNodeFlushBufferCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.SuccessLabel).Inc()
+		metrics.DataNodeFlushBufferCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.TotalLabel).Inc()
+		if task.auto {
+			metrics.DataNodeAutoFlushBufferCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.TotalLabel).Inc()
+			metrics.DataNodeAutoFlushBufferCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.FailLabel).Inc()
+		}
 	}
 
-	if err := ibNode.writeHardTimeTick(fgMsg.timeRange.timestampMax, seg2Upload); err != nil {
-		log.Error("send hard time tick into pulsar channel failed", zap.Error(err))
-	}
+	ibNode.writeHardTimeTick(fgMsg.timeRange.timestampMax, seg2Upload)
 
 	res := flowGraphMsg{
 		deleteMessages:  fgMsg.deleteMessages,
@@ -473,7 +504,7 @@ func (ibNode *insertBufferNode) bufferInsertMsg(msg *msgstream.InsertMsg, endPos
 
 	// update buffer size
 	buffer.updateSize(int64(msg.NRows()))
-	metrics.DataNodeConsumeMsgRowsCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.NodeID), metrics.InsertLabel).Add(float64(len(msg.RowData)))
+	metrics.DataNodeConsumeMsgRowsCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.InsertLabel).Add(float64(len(msg.RowData)))
 
 	// store in buffer
 	ibNode.insertBuffer.Store(currentSegID, buffer)
@@ -485,17 +516,17 @@ func (ibNode *insertBufferNode) bufferInsertMsg(msg *msgstream.InsertMsg, endPos
 }
 
 // writeHardTimeTick writes timetick once insertBufferNode operates.
-func (ibNode *insertBufferNode) writeHardTimeTick(ts Timestamp, segmentIDs []int64) error {
+func (ibNode *insertBufferNode) writeHardTimeTick(ts Timestamp, segmentIDs []int64) {
 	ibNode.ttLogger.LogTs(ts)
 	ibNode.ttMerger.bufferTs(ts, segmentIDs)
-	return nil
 }
+
 func (ibNode *insertBufferNode) getCollectionandPartitionIDbySegID(segmentID UniqueID) (collID, partitionID UniqueID, err error) {
 	return ibNode.replica.getCollectionAndPartitionID(segmentID)
 }
 
-func newInsertBufferNode(ctx context.Context, collID UniqueID, flushCh <-chan flushMsg, fm flushManager,
-	flushingSegCache *Cache, config *nodeConfig) (*insertBufferNode, error) {
+func newInsertBufferNode(ctx context.Context, collID UniqueID, flushCh <-chan flushMsg, resendTTCh <-chan resendTTMsg,
+	fm flushManager, flushingSegCache *Cache, config *nodeConfig) (*insertBufferNode, error) {
 
 	baseNode := BaseNode{}
 	baseNode.SetMaxQueueLength(config.maxQueueLength)
@@ -507,7 +538,7 @@ func newInsertBufferNode(ctx context.Context, collID UniqueID, flushCh <-chan fl
 		return nil, err
 	}
 	wTt.AsProducer([]string{Params.CommonCfg.DataCoordTimeTick})
-	metrics.DataNodeNumProducers.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.NodeID)).Inc()
+	metrics.DataNodeNumProducers.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID())).Inc()
 	log.Debug("datanode AsProducer", zap.String("TimeTickChannelName", Params.CommonCfg.DataCoordTimeTick))
 	var wTtMsgStream msgstream.MsgStream = wTt
 	wTtMsgStream.Start()
@@ -521,7 +552,6 @@ func newInsertBufferNode(ctx context.Context, collID UniqueID, flushCh <-chan fl
 				continue
 			}
 			stats = append(stats, stat)
-			metrics.DataNodeSegmentRowsCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.NodeID)).Add(float64(stat.NumRows))
 		}
 		msgPack := msgstream.MsgPack{}
 		timeTickMsg := msgstream.DataNodeTtMsg{
@@ -544,17 +574,19 @@ func newInsertBufferNode(ctx context.Context, collID UniqueID, flushCh <-chan fl
 		msgPack.Msgs = append(msgPack.Msgs, &timeTickMsg)
 		pt, _ := tsoutil.ParseHybridTs(ts)
 		pChan := funcutil.ToPhysicalChannel(config.vChannelName)
-		metrics.DataNodeTimeSync.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.NodeID), pChan).Set(float64(pt))
+		metrics.DataNodeTimeSync.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), pChan).Set(float64(pt))
 		return wTtMsgStream.Produce(&msgPack)
 	})
 
 	return &insertBufferNode{
+		ctx:          ctx,
 		BaseNode:     baseNode,
 		insertBuffer: sync.Map{},
 
 		timeTickStream:   wTtMsgStream,
 		flushMap:         sync.Map{},
 		flushChan:        flushCh,
+		resendTTChan:     resendTTCh,
 		flushingSegCache: flushingSegCache,
 		flushManager:     fm,
 

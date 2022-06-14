@@ -13,34 +13,83 @@
 
 #include <memory>
 #include <vector>
+#include <unordered_map>
+#include <utility>
 
 #include "common/Schema.h"
 #include "segcore/AckResponder.h"
 #include "segcore/ConcurrentVector.h"
 #include "segcore/Record.h"
+#include "TimestampIndex.h"
 
 namespace milvus::segcore {
 
 struct InsertRecord {
+    ConcurrentVector<Timestamp> timestamps_;
+    ConcurrentVector<idx_t> row_ids_;
+
+    // used for preInsert of growing segment
     std::atomic<int64_t> reserved = 0;
     AckResponder ack_responder_;
-    ConcurrentVector<Timestamp> timestamps_;
-    ConcurrentVector<idx_t> uids_;
+
+    // used for timestamps index of sealed segment
+    TimestampIndex timestamp_index_;
+
+    // pks to row offset
+    Pk2OffsetType pk2offset_;
 
     explicit InsertRecord(const Schema& schema, int64_t size_per_chunk);
 
+    std::vector<SegOffset>
+    search_pk(const PkType pk, Timestamp timestamp) const {
+        std::vector<SegOffset> res_offsets;
+        auto [iter_b, iter_e] = pk2offset_.equal_range(pk);
+        for (auto iter = iter_b; iter != iter_e; ++iter) {
+            auto offset = SegOffset(iter->second);
+            if (timestamps_[offset.get()] <= timestamp) {
+                res_offsets.push_back(offset);
+            }
+        }
+
+        return res_offsets;
+    }
+
+    std::vector<SegOffset>
+    search_pk(const PkType pk, int64_t insert_barrier) const {
+        std::vector<SegOffset> res_offsets;
+        auto [iter_b, iter_e] = pk2offset_.equal_range(pk);
+        for (auto iter = iter_b; iter != iter_e; ++iter) {
+            auto offset = SegOffset(iter->second);
+            if (offset.get() < insert_barrier) {
+                res_offsets.push_back(offset);
+            }
+        }
+
+        return res_offsets;
+    }
+
+    void
+    insert_pk(const PkType pk, int64_t offset) {
+        pk2offset_.insert(std::make_pair(pk, offset));
+    }
+
+    bool
+    empty_pks() const {
+        return pk2offset_.empty();
+    }
+
     // get field data without knowing the type
     VectorBase*
-    get_field_data_base(FieldOffset field_offset) const {
-        auto ptr = fields_data_[field_offset.get()].get();
+    get_field_data_base(FieldId field_id) const {
+        auto ptr = fields_data_.at(field_id).get();
         return ptr;
     }
 
     // get field data in given type, const version
     template <typename Type>
     const ConcurrentVector<Type>*
-    get_field_data(FieldOffset field_offset) const {
-        auto base_ptr = get_field_data_base(field_offset);
+    get_field_data(FieldId field_id) const {
+        auto base_ptr = get_field_data_base(field_id);
         auto ptr = dynamic_cast<const ConcurrentVector<Type>*>(base_ptr);
         Assert(ptr);
         return ptr;
@@ -49,8 +98,8 @@ struct InsertRecord {
     // get field data in given type, non-const version
     template <typename Type>
     ConcurrentVector<Type>*
-    get_field_data(FieldOffset field_offset) {
-        auto base_ptr = get_field_data_base(field_offset);
+    get_field_data(FieldId field_id) {
+        auto base_ptr = get_field_data_base(field_id);
         auto ptr = dynamic_cast<ConcurrentVector<Type>*>(base_ptr);
         Assert(ptr);
         return ptr;
@@ -59,21 +108,27 @@ struct InsertRecord {
     // append a column of scalar type
     template <typename Type>
     void
-    append_field_data(int64_t size_per_chunk) {
-        static_assert(std::is_fundamental_v<Type>);
-        fields_data_.emplace_back(std::make_unique<ConcurrentVector<Type>>(size_per_chunk));
+    append_field_data(FieldId field_id, int64_t size_per_chunk) {
+        static_assert(IsScalar<Type>);
+        fields_data_.emplace(field_id, std::make_unique<ConcurrentVector<Type>>(size_per_chunk));
     }
 
     // append a column of vector type
     template <typename VectorType>
     void
-    append_field_data(int64_t dim, int64_t size_per_chunk) {
+    append_field_data(FieldId field_id, int64_t dim, int64_t size_per_chunk) {
         static_assert(std::is_base_of_v<VectorTrait, VectorType>);
-        fields_data_.emplace_back(std::make_unique<ConcurrentVector<VectorType>>(dim, size_per_chunk));
+        fields_data_.emplace(field_id, std::make_unique<ConcurrentVector<VectorType>>(dim, size_per_chunk));
+    }
+
+    void
+    drop_field_data(FieldId field_id) {
+        fields_data_.erase(field_id);
     }
 
  private:
-    std::vector<std::unique_ptr<VectorBase>> fields_data_;
+    //    std::vector<std::unique_ptr<VectorBase>> fields_data_;
+    std::unordered_map<FieldId, std::unique_ptr<VectorBase>> fields_data_;
 };
 
 }  // namespace milvus::segcore

@@ -24,7 +24,7 @@ import (
 	"github.com/google/btree"
 )
 
-// MemoryKV implements DataKV interface and relies on underling btree.BTree.
+// MemoryKV implements BaseKv interface and relies on underling btree.BTree.
 // As its name implies, all data is stored in memory.
 type MemoryKV struct {
 	sync.RWMutex
@@ -95,6 +95,17 @@ func (kv *MemoryKV) LoadBytes(key string) ([]byte, error) {
 		return []byte{}, fmt.Errorf("invalid key: %s", key)
 	}
 	return item.(memoryKVItem).value.ByteSlice(), nil
+}
+
+// Get return value if key exists, or return empty string
+func (kv *MemoryKV) Get(key string) string {
+	kv.RLock()
+	defer kv.RUnlock()
+	item := kv.tree.Get(memoryKVItem{key: key})
+	if item == nil {
+		return ""
+	}
+	return item.(memoryKVItem).value.String()
 }
 
 // LoadWithDefault loads an object with @key. If the object does not exist, @defaultValue will be returned.
@@ -368,28 +379,4 @@ func (kv *MemoryKV) RemoveWithPrefix(key string) error {
 		kv.tree.Delete(item)
 	}
 	return nil
-}
-
-// LoadPartial item already in memory, just slice the value.
-func (kv *MemoryKV) LoadPartial(key string, start, end int64) ([]byte, error) {
-	value, err := kv.Load(key)
-	if err != nil {
-		return nil, err
-	}
-	switch {
-	case 0 <= start && start < end && end <= int64(len(value)):
-		return []byte(value[start:end]), nil
-	default:
-		return nil, fmt.Errorf("invalid range specified: start=%d end=%d",
-			start, end)
-	}
-}
-
-func (kv *MemoryKV) GetSize(key string) (int64, error) {
-	value, err := kv.Load(key)
-	if err != nil {
-		return 0, err
-	}
-
-	return int64(len(value)), nil
 }

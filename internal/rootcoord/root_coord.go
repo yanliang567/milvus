@@ -19,6 +19,7 @@ package rootcoord
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -29,9 +30,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/milvus-io/milvus/internal/util/timerecord"
-
 	"github.com/golang/protobuf/proto"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.uber.org/zap"
+
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/kv"
@@ -51,16 +53,23 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/tso"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util"
+	"github.com/milvus-io/milvus/internal/util/crypto"
+	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
+	"github.com/milvus-io/milvus/internal/util/timerecord"
 	"github.com/milvus-io/milvus/internal/util/trace"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.uber.org/zap"
 )
+
+// UniqueID is an alias of typeutil.UniqueID.
+type UniqueID = typeutil.UniqueID
+
+const InvalidCollectionID = UniqueID(0)
 
 // ------------------ struct -----------------------
 
@@ -69,14 +78,6 @@ type DdOperation struct {
 	Body []byte `json:"body"`
 	Type string `json:"type"`
 }
-
-const (
-	// MetricRequestsTotal used to count the num of total requests
-	MetricRequestsTotal = "total"
-
-	// MetricRequestsSuccess used to count the num of successful requests
-	MetricRequestsSuccess = "success"
-)
 
 func metricProxy(v int64) string {
 	return fmt.Sprintf("client_%d", v)
@@ -127,14 +128,14 @@ type Core struct {
 	//setMsgStreams, send drop partition into dd channel
 	SendDdDropPartitionReq func(ctx context.Context, req *internalpb.DropPartitionRequest, channelNames []string) error
 
-	//get binlog file path from data service,
-	CallGetBinlogFilePathsService func(ctx context.Context, segID typeutil.UniqueID, fieldID typeutil.UniqueID) ([]string, error)
-	CallGetNumRowsService         func(ctx context.Context, segID typeutil.UniqueID, isFromFlushedChan bool) (int64, error)
+	//get segment info from data service
 	CallGetFlushedSegmentsService func(ctx context.Context, collID, partID typeutil.UniqueID) ([]typeutil.UniqueID, error)
+	CallGetRecoveryInfoService    func(ctx context.Context, collID, partID UniqueID) ([]*datapb.SegmentBinlogs, error)
 
-	//call index builder's client to build index, return build id
-	CallBuildIndexService func(ctx context.Context, binlog []string, field *schemapb.FieldSchema, idxInfo *etcdpb.IndexInfo, numRows int64) (typeutil.UniqueID, error)
-	CallDropIndexService  func(ctx context.Context, indexID typeutil.UniqueID) error
+	//call index builder's client to build index, return build id or get index state.
+	CallBuildIndexService     func(ctx context.Context, segID UniqueID, binlog []string, field *schemapb.FieldSchema, idxInfo *etcdpb.IndexInfo, numRows int64) (typeutil.UniqueID, error)
+	CallDropIndexService      func(ctx context.Context, indexID typeutil.UniqueID) error
+	CallGetIndexStatesService func(ctx context.Context, IndexBuildIDs []int64) ([]*indexpb.IndexInfo, error)
 
 	NewProxyClient func(sess *sessionutil.Session) (types.Proxy, error)
 
@@ -142,10 +143,16 @@ type Core struct {
 	CallReleaseCollectionService func(ctx context.Context, ts typeutil.Timestamp, dbID, collectionID typeutil.UniqueID) error
 	CallReleasePartitionService  func(ctx context.Context, ts typeutil.Timestamp, dbID, collectionID typeutil.UniqueID, partitionIDs []typeutil.UniqueID) error
 
+	// Communicates with queryCoord service for segments info.
+	CallGetSegmentInfoService func(ctx context.Context, collectionID int64, segIDs []int64) (*querypb.GetSegmentInfoResponse, error)
+
 	CallWatchChannels func(ctx context.Context, collectionID int64, channelNames []string) error
 
 	//assign import task to data service
-	CallImportService func(ctx context.Context, req *datapb.ImportTask) *datapb.ImportTaskResponse
+	CallImportService func(ctx context.Context, req *datapb.ImportTaskRequest) *datapb.ImportTaskResponse
+
+	// Seals segments in collection cID, so they can get flushed later.
+	CallFlushOnCollection func(ctx context.Context, cID int64, segIDs []int64) error
 
 	//Proxy manager
 	proxyManager *proxyManager
@@ -172,7 +179,7 @@ type Core struct {
 
 	session *sessionutil.Session
 
-	msFactory ms.Factory
+	factory dependency.Factory
 
 	//import manager
 	importManager *importManager
@@ -181,14 +188,14 @@ type Core struct {
 // --------------------- function --------------------------
 
 // NewCore creates a new rootcoord core
-func NewCore(c context.Context, factory ms.Factory) (*Core, error) {
+func NewCore(c context.Context, factory dependency.Factory) (*Core, error) {
 	ctx, cancel := context.WithCancel(c)
 	rand.Seed(time.Now().UnixNano())
 	core := &Core{
-		ctx:       ctx,
-		cancel:    cancel,
-		ddlLock:   sync.Mutex{},
-		msFactory: factory,
+		ctx:     ctx,
+		cancel:  cancel,
+		ddlLock: sync.Mutex{},
+		factory: factory,
 	}
 	core.UpdateStateCode(internalpb.StateCode_Abnormal)
 	return core, nil
@@ -256,20 +263,17 @@ func (c *Core) checkInit() error {
 	if c.SendDdDropPartitionReq == nil {
 		return fmt.Errorf("sendDdDropPartitionReq is nil")
 	}
-	if c.CallGetBinlogFilePathsService == nil {
-		return fmt.Errorf("callGetBinlogFilePathsService is nil")
+	if c.CallGetFlushedSegmentsService == nil {
+		return fmt.Errorf("callGetFlushedSegmentsService is nil")
 	}
-	if c.CallGetNumRowsService == nil {
-		return fmt.Errorf("callGetNumRowsService is nil")
+	if c.CallGetRecoveryInfoService == nil {
+		return fmt.Errorf("CallGetRecoveryInfoService is nil")
 	}
 	if c.CallBuildIndexService == nil {
 		return fmt.Errorf("callBuildIndexService is nil")
 	}
 	if c.CallDropIndexService == nil {
 		return fmt.Errorf("callDropIndexService is nil")
-	}
-	if c.CallGetFlushedSegmentsService == nil {
-		return fmt.Errorf("callGetFlushedSegmentsService is nil")
 	}
 	if c.CallWatchChannels == nil {
 		return fmt.Errorf("callWatchChannels is nil")
@@ -325,7 +329,7 @@ func (c *Core) tsLoop() {
 				continue
 			}
 			ts := c.TSOGetLastSavedTime()
-			metrics.RootCoordETCDTimestampAllocCounter.Set(float64(ts.Unix()))
+			metrics.RootCoordTimestampSaved.Set(float64(ts.Unix()))
 			if err := c.IDAllocatorUpdate(); err != nil {
 				log.Warn("failed to update id: ", zap.Error(err))
 				continue
@@ -361,69 +365,71 @@ func (c *Core) checkFlushedSegments(ctx context.Context) {
 		}
 		for _, partID := range collMeta.PartitionIDs {
 			ctx2, cancel2 := context.WithTimeout(ctx, 3*time.Minute)
-			segIDs, err := c.CallGetFlushedSegmentsService(ctx2, collMeta.ID, partID)
+			segBinlogs, err := c.CallGetRecoveryInfoService(ctx2, collMeta.ID, partID)
 			if err != nil {
-				log.Debug("failed to get flushed segments from data coord",
-					zap.Int64("collection id", collMeta.ID),
-					zap.Int64("partition id", partID),
+				log.Debug("failed to get flushed segments from dataCoord",
+					zap.Int64("collection ID", collMeta.GetID()),
+					zap.Int64("partition ID", partID),
 					zap.Error(err))
-			} else {
-				for _, segID := range segIDs {
-					indexInfos := []*etcdpb.FieldIndexInfo{}
-					indexMeta, ok := segID2IndexMeta[segID]
-					if !ok {
-						indexInfos = append(indexInfos, collMeta.FieldIndexes...)
-					} else {
-						for _, idx := range collMeta.FieldIndexes {
-							if _, ok := indexMeta[idx.IndexID]; !ok {
-								indexInfos = append(indexInfos, idx)
-							}
+				cancel2()
+				continue
+			}
+			for _, segBinlog := range segBinlogs {
+				segID := segBinlog.SegmentID
+				var indexInfos []*etcdpb.FieldIndexInfo
+				indexMeta, ok := segID2IndexMeta[segID]
+				if !ok {
+					indexInfos = append(indexInfos, collMeta.FieldIndexes...)
+				} else {
+					for _, idx := range collMeta.FieldIndexes {
+						if _, ok := indexMeta[idx.IndexID]; !ok {
+							indexInfos = append(indexInfos, idx)
 						}
 					}
-					for _, idxInfo := range indexInfos {
-						/* #nosec G601 */
-						field, err := GetFieldSchemaByID(&collMeta, idxInfo.FiledID)
-						if err != nil {
-							log.Debug("GetFieldSchemaByID",
-								zap.Any("collection_meta", collMeta),
-								zap.Int64("field id", idxInfo.FiledID))
-							continue
-						}
-						indexMeta, ok := indexID2Meta[idxInfo.IndexID]
-						if !ok {
-							log.Debug("index meta does not exist", zap.Int64("index_id", idxInfo.IndexID))
-							continue
-						}
-						info := etcdpb.SegmentIndexInfo{
-							CollectionID: collMeta.ID,
-							PartitionID:  partID,
-							SegmentID:    segID,
-							FieldID:      idxInfo.FiledID,
-							IndexID:      idxInfo.IndexID,
-							EnableIndex:  false,
-						}
-						log.Debug("building index by background checker",
+				}
+				for _, idxInfo := range indexInfos {
+					/* #nosec G601 */
+					field, err := GetFieldSchemaByID(&collMeta, idxInfo.FiledID)
+					if err != nil {
+						log.Debug("GetFieldSchemaByID",
+							zap.Any("collection_meta", collMeta),
+							zap.Int64("field id", idxInfo.FiledID))
+						continue
+					}
+					indexMeta, ok := indexID2Meta[idxInfo.IndexID]
+					if !ok {
+						log.Debug("index meta does not exist", zap.Int64("index_id", idxInfo.IndexID))
+						continue
+					}
+					info := etcdpb.SegmentIndexInfo{
+						CollectionID: collMeta.ID,
+						PartitionID:  partID,
+						SegmentID:    segID,
+						FieldID:      idxInfo.FiledID,
+						IndexID:      idxInfo.IndexID,
+						EnableIndex:  false,
+					}
+					log.Debug("building index by background checker",
+						zap.Int64("segment_id", segID),
+						zap.Int64("index_id", indexMeta.IndexID),
+						zap.Int64("collection_id", collMeta.ID))
+					info.BuildID, err = c.BuildIndex(ctx2, segID, segBinlog.GetNumOfRows(), segBinlog.GetFieldBinlogs(), field, &indexMeta, false)
+					if err != nil {
+						log.Debug("build index failed",
 							zap.Int64("segment_id", segID),
-							zap.Int64("index_id", indexMeta.IndexID),
-							zap.Int64("collection_id", collMeta.ID))
-						info.BuildID, err = c.BuildIndex(ctx2, segID, field, &indexMeta, false)
-						if err != nil {
-							log.Debug("build index failed",
-								zap.Int64("segment_id", segID),
-								zap.Int64("field_id", field.FieldID),
-								zap.Int64("index_id", indexMeta.IndexID))
-							continue
-						}
-						if info.BuildID != 0 {
-							info.EnableIndex = true
-						}
-						if err := c.MetaTable.AddIndex(&info); err != nil {
-							log.Debug("Add index into meta table failed",
-								zap.Int64("collection_id", collMeta.ID),
-								zap.Int64("index_id", info.IndexID),
-								zap.Int64("build_id", info.BuildID),
-								zap.Error(err))
-						}
+							zap.Int64("field_id", field.FieldID),
+							zap.Int64("index_id", indexMeta.IndexID))
+						continue
+					}
+					if info.BuildID != 0 {
+						info.EnableIndex = true
+					}
+					if err := c.MetaTable.AddIndex(&info); err != nil {
+						log.Debug("Add index into meta table failed",
+							zap.Int64("collection_id", collMeta.ID),
+							zap.Int64("index_id", info.IndexID),
+							zap.Int64("build_id", info.BuildID),
+							zap.Error(err))
 					}
 				}
 			}
@@ -432,68 +438,37 @@ func (c *Core) checkFlushedSegments(ctx context.Context) {
 	}
 }
 
-func (c *Core) getSegments(ctx context.Context, collID typeutil.UniqueID) (map[typeutil.UniqueID]typeutil.UniqueID, error) {
+func (c *Core) getSegments(ctx context.Context, collID typeutil.UniqueID) (map[UniqueID]UniqueID, map[UniqueID]*datapb.SegmentBinlogs, error) {
 	collMeta, err := c.MetaTable.GetCollectionByID(collID, 0)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	segID2PartID := map[typeutil.UniqueID]typeutil.UniqueID{}
+	segID2PartID := make(map[UniqueID]UniqueID)
+	segID2Binlog := make(map[UniqueID]*datapb.SegmentBinlogs)
 	for _, partID := range collMeta.PartitionIDs {
-		if seg, err := c.CallGetFlushedSegmentsService(ctx, collID, partID); err == nil {
-			for _, s := range seg {
-				segID2PartID[s] = partID
+		if segs, err := c.CallGetRecoveryInfoService(ctx, collID, partID); err == nil {
+			for _, s := range segs {
+				segID2PartID[s.SegmentID] = partID
+				segID2Binlog[s.SegmentID] = s
 			}
 		} else {
-			log.Debug("failed to get flushed segments from data coord", zap.Int64("collection_id", collID), zap.Int64("partition_id", partID), zap.Error(err))
-			return nil, err
+			log.Error("failed to get flushed segments info from dataCoord",
+				zap.Int64("collection ID", collID),
+				zap.Int64("partition ID", partID),
+				zap.Error(err))
+			return nil, nil, err
 		}
 	}
 
-	metrics.RootCoordNumOfSegments.WithLabelValues(strconv.FormatInt(collID, 10)).Set(float64(len(segID2PartID)))
-	return segID2PartID, nil
+	return segID2PartID, segID2Binlog, nil
 }
 
 func (c *Core) setMsgStreams() error {
-	if Params.PulsarCfg.Address == "" {
-		return fmt.Errorf("pulsar address is empty")
-	}
 	if Params.CommonCfg.RootCoordSubName == "" {
 		return fmt.Errorf("RootCoordSubName is empty")
 	}
 
-	// rootcoord time tick channel
-	if Params.CommonCfg.RootCoordTimeTick == "" {
-		return fmt.Errorf("timeTickChannel is empty")
-	}
-	timeTickStream, _ := c.msFactory.NewMsgStream(c.ctx)
-	metrics.RootCoordNumOfMsgStream.Inc()
-	timeTickStream.AsProducer([]string{Params.CommonCfg.RootCoordTimeTick})
-	log.Debug("RootCoord register timetick producer success", zap.String("channel name", Params.CommonCfg.RootCoordTimeTick))
-
 	c.SendTimeTick = func(t typeutil.Timestamp, reason string) error {
-		msgPack := ms.MsgPack{}
-		baseMsg := ms.BaseMsg{
-			BeginTimestamp: t,
-			EndTimestamp:   t,
-			HashValues:     []uint32{0},
-		}
-		timeTickResult := internalpb.TimeTickMsg{
-			Base: &commonpb.MsgBase{
-				MsgType:   commonpb.MsgType_TimeTick,
-				MsgID:     0,
-				Timestamp: t,
-				SourceID:  c.session.ServerID,
-			},
-		}
-		timeTickMsg := &ms.TimeTickMsg{
-			BaseMsg:     baseMsg,
-			TimeTickMsg: timeTickResult,
-		}
-		msgPack.Msgs = append(msgPack.Msgs, timeTickMsg)
-		if err := timeTickStream.Broadcast(&msgPack); err != nil {
-			return err
-		}
-
 		pc := c.chanTimeTick.listDmlChannels()
 		pt := make([]uint64, len(pc))
 		for i := 0; i < len(pt); i++ {
@@ -510,10 +485,6 @@ func (c *Core) setMsgStreams() error {
 			Timestamps:       pt,
 			DefaultTimestamp: t,
 		}
-		//log.Debug("update timetick",
-		//	zap.Any("DefaultTs", t),
-		//	zap.Any("sourceID", c.session.ServerID),
-		//	zap.Any("reason", reason))
 		return c.chanTimeTick.updateTimeTick(&ttMsg, reason)
 	}
 
@@ -593,7 +564,7 @@ func (c *Core) SetNewProxyClient(f func(sess *sessionutil.Session) (types.Proxy,
 	}
 }
 
-// SetDataCoord set datacoord
+// SetDataCoord set dataCoord.
 func (c *Core) SetDataCoord(ctx context.Context, s types.DataCoord) error {
 	initCh := make(chan struct{})
 	go func() {
@@ -608,80 +579,6 @@ func (c *Core) SetDataCoord(ctx context.Context, s types.DataCoord) error {
 			log.Debug("Retrying RootCoord connection to DataCoord")
 		}
 	}()
-	c.CallGetBinlogFilePathsService = func(ctx context.Context, segID typeutil.UniqueID, fieldID typeutil.UniqueID) (retFiles []string, retErr error) {
-		defer func() {
-			if err := recover(); err != nil {
-				retErr = fmt.Errorf("get bin log file paths panic, msg = %v", err)
-			}
-		}()
-		<-initCh //wait connect to DataCoord
-		ts, err := c.TSOAllocator(1)
-		if err != nil {
-			return nil, err
-		}
-		binlog, err := s.GetInsertBinlogPaths(ctx, &datapb.GetInsertBinlogPathsRequest{
-			Base: &commonpb.MsgBase{
-				MsgType:   0, //TODO, msg type
-				MsgID:     0,
-				Timestamp: ts,
-				SourceID:  c.session.ServerID,
-			},
-			SegmentID: segID,
-		})
-		if err != nil {
-			return nil, err
-		}
-		if binlog.Status.ErrorCode != commonpb.ErrorCode_Success {
-			return nil, fmt.Errorf("getInsertBinlogPaths from data service failed, error = %s", binlog.Status.Reason)
-		}
-		binlogPaths := make([]string, 0)
-		for i := range binlog.FieldIDs {
-			if binlog.FieldIDs[i] == fieldID {
-				binlogPaths = append(binlogPaths, binlog.Paths[i].Values...)
-			}
-		}
-		if len(binlogPaths) == 0 {
-			return nil, fmt.Errorf("binlog file does not exist, segment id = %d, field id = %d", segID, fieldID)
-		}
-		return binlogPaths, nil
-	}
-
-	c.CallGetNumRowsService = func(ctx context.Context, segID typeutil.UniqueID, isFromFlushedChan bool) (retRows int64, retErr error) {
-		defer func() {
-			if err := recover(); err != nil {
-				retErr = fmt.Errorf("get num rows panic, msg = %v", err)
-			}
-		}()
-		<-initCh
-		ts, err := c.TSOAllocator(1)
-		if err != nil {
-			return retRows, err
-		}
-		segInfo, err := s.GetSegmentInfo(ctx, &datapb.GetSegmentInfoRequest{
-			Base: &commonpb.MsgBase{
-				MsgType:   0, //TODO, msg type
-				MsgID:     0,
-				Timestamp: ts,
-				SourceID:  c.session.ServerID,
-			},
-			SegmentIDs: []typeutil.UniqueID{segID},
-		})
-		if err != nil {
-			return retRows, err
-		}
-		if segInfo.Status.ErrorCode != commonpb.ErrorCode_Success {
-			return retRows, fmt.Errorf("getSegmentInfo from data service failed, error = %s", segInfo.Status.Reason)
-		}
-		if len(segInfo.Infos) != 1 {
-			log.Debug("get segment info empty")
-			return retRows, nil
-		}
-		if !isFromFlushedChan && segInfo.Infos[0].State != commonpb.SegmentState_Flushed {
-			log.Debug("segment id not flushed", zap.Int64("segment id", segID))
-			return retRows, nil
-		}
-		return segInfo.Infos[0].NumOfRows, nil
-	}
 
 	c.CallGetFlushedSegmentsService = func(ctx context.Context, collID, partID typeutil.UniqueID) (retSegIDs []typeutil.UniqueID, retErr error) {
 		defer func() {
@@ -710,6 +607,27 @@ func (c *Core) SetDataCoord(ctx context.Context, s types.DataCoord) error {
 		return rsp.Segments, nil
 	}
 
+	c.CallGetRecoveryInfoService = func(ctx context.Context, collID, partID typeutil.UniqueID) ([]*datapb.SegmentBinlogs, error) {
+		getSegmentInfoReq := &datapb.GetRecoveryInfoRequest{
+			Base: &commonpb.MsgBase{
+				MsgType:   0, //TODO, msg type
+				MsgID:     0,
+				Timestamp: 0,
+				SourceID:  c.session.ServerID,
+			},
+			CollectionID: collID,
+			PartitionID:  partID,
+		}
+		resp, err := s.GetRecoveryInfo(ctx, getSegmentInfoReq)
+		if err != nil {
+			return nil, err
+		}
+		if resp.Status.ErrorCode != commonpb.ErrorCode_Success {
+			return nil, errors.New(resp.Status.Reason)
+		}
+		return resp.Binlogs, nil
+	}
+
 	c.CallWatchChannels = func(ctx context.Context, collectionID int64, channelNames []string) (retErr error) {
 		defer func() {
 			if err := recover(); err != nil {
@@ -730,26 +648,41 @@ func (c *Core) SetDataCoord(ctx context.Context, s types.DataCoord) error {
 		}
 		return nil
 	}
-	c.CallImportService = func(ctx context.Context, req *datapb.ImportTask) *datapb.ImportTaskResponse {
+
+	c.CallImportService = func(ctx context.Context, req *datapb.ImportTaskRequest) *datapb.ImportTaskResponse {
 		resp := &datapb.ImportTaskResponse{
 			Status: &commonpb.Status{
 				ErrorCode: commonpb.ErrorCode_Success,
 			},
 		}
-
 		defer func() {
 			if err := recover(); err != nil {
 				resp.Status.ErrorCode = commonpb.ErrorCode_UnexpectedError
 				resp.Status.Reason = "assign import task to data coord panic"
 			}
 		}()
-
 		resp, _ = s.Import(ctx, req)
-		if resp.Status.ErrorCode != commonpb.ErrorCode_Success {
-			return resp
-		}
-
 		return resp
+	}
+
+	c.CallFlushOnCollection = func(ctx context.Context, cID int64, segIDs []int64) error {
+		resp, err := s.Flush(ctx, &datapb.FlushRequest{
+			Base: &commonpb.MsgBase{
+				MsgType:  commonpb.MsgType_Flush,
+				SourceID: c.session.ServerID,
+			},
+			DbID:         0,
+			SegmentIDs:   segIDs,
+			CollectionID: cID,
+		})
+		if err != nil {
+			return errors.New("failed to call flush to data coordinator: " + err.Error())
+		}
+		if resp.Status.ErrorCode != commonpb.ErrorCode_Success {
+			return errors.New(resp.Status.Reason)
+		}
+		log.Info("flush on collection succeed", zap.Int64("collection ID", cID))
+		return nil
 	}
 
 	return nil
@@ -771,7 +704,7 @@ func (c *Core) SetIndexCoord(s types.IndexCoord) error {
 		}
 	}()
 
-	c.CallBuildIndexService = func(ctx context.Context, binlog []string, field *schemapb.FieldSchema, idxInfo *etcdpb.IndexInfo, numRows int64) (retID typeutil.UniqueID, retErr error) {
+	c.CallBuildIndexService = func(ctx context.Context, segID UniqueID, binlog []string, field *schemapb.FieldSchema, idxInfo *etcdpb.IndexInfo, numRows int64) (retID typeutil.UniqueID, retErr error) {
 		defer func() {
 			if err := recover(); err != nil {
 				retErr = fmt.Errorf("build index panic, msg = %v", err)
@@ -786,6 +719,7 @@ func (c *Core) SetIndexCoord(s types.IndexCoord) error {
 			IndexName:   idxInfo.IndexName,
 			NumRows:     numRows,
 			FieldSchema: field,
+			SegmentID:   segID,
 		})
 		if err != nil {
 			return retID, err
@@ -815,10 +749,33 @@ func (c *Core) SetIndexCoord(s types.IndexCoord) error {
 		return nil
 	}
 
+	c.CallGetIndexStatesService = func(ctx context.Context, IndexBuildIDs []int64) (idxInfo []*indexpb.IndexInfo, retErr error) {
+		defer func() {
+			if err := recover(); err != nil {
+				retErr = fmt.Errorf("get index state from index service panic, msg = %v", err)
+			}
+		}()
+		<-initCh
+		res, err := s.GetIndexStates(ctx, &indexpb.GetIndexStatesRequest{
+			IndexBuildIDs: IndexBuildIDs,
+		})
+		if err != nil {
+			log.Error("RootCoord failed to get index states from IndexCoord.", zap.Error(err))
+			return nil, err
+		}
+		log.Debug("got index states", zap.String("get index state result", res.String()))
+		if res.GetStatus().GetErrorCode() != commonpb.ErrorCode_Success {
+			log.Error("Get index states failed.",
+				zap.String("error_code", res.GetStatus().GetErrorCode().String()),
+				zap.String("reason", res.GetStatus().GetReason()))
+			return nil, fmt.Errorf(res.GetStatus().GetErrorCode().String())
+		}
+		return res.GetStates(), nil
+	}
 	return nil
 }
 
-// SetQueryCoord set querycoord
+// SetQueryCoord sets up queryCoord and queryCoord related function calls.
 func (c *Core) SetQueryCoord(s types.QueryCoord) error {
 	initCh := make(chan struct{})
 	go func() {
@@ -886,39 +843,54 @@ func (c *Core) SetQueryCoord(s types.QueryCoord) error {
 		}
 		return nil
 	}
+	c.CallGetSegmentInfoService = func(ctx context.Context, collectionID int64, segIDs []int64) (retResp *querypb.GetSegmentInfoResponse, retErr error) {
+		defer func() {
+			if err := recover(); err != nil {
+				retErr = fmt.Errorf("call segment info service panic, msg = %v", err)
+			}
+		}()
+		<-initCh
+		resp, err := s.GetSegmentInfo(ctx, &querypb.GetSegmentInfoRequest{
+			Base: &commonpb.MsgBase{
+				MsgType:  commonpb.MsgType_GetSegmentState,
+				SourceID: c.session.ServerID,
+			},
+			CollectionID: collectionID,
+			SegmentIDs:   segIDs,
+		})
+		return resp, err
+	}
 	return nil
 }
 
 // BuildIndex will check row num and call build index service
-func (c *Core) BuildIndex(ctx context.Context, segID typeutil.UniqueID, field *schemapb.FieldSchema, idxInfo *etcdpb.IndexInfo, isFlush bool) (typeutil.UniqueID, error) {
+func (c *Core) BuildIndex(ctx context.Context, segID UniqueID, numRows int64, binlogs []*datapb.FieldBinlog, field *schemapb.FieldSchema, idxInfo *etcdpb.IndexInfo, isFlush bool) (typeutil.UniqueID, error) {
 	log.Debug("start build index", zap.String("index name", idxInfo.IndexName),
 		zap.String("field name", field.Name), zap.Int64("segment id", segID))
 	sp, ctx := trace.StartSpanFromContext(ctx)
 	defer sp.Finish()
 	if c.MetaTable.IsSegmentIndexed(segID, field, idxInfo.IndexParams) {
-		return 0, nil
+		info, err := c.MetaTable.GetSegmentIndexInfoByID(segID, field.FieldID, idxInfo.GetIndexName())
+		return info.BuildID, err
 	}
-	rows, err := c.CallGetNumRowsService(ctx, segID, isFlush)
-	if err != nil {
-		return 0, err
-	}
-	var bldID typeutil.UniqueID
-	if rows < Params.RootCoordCfg.MinSegmentSizeToEnableIndex {
-		log.Debug("num of rows is less than MinSegmentSizeToEnableIndex", zap.Int64("num rows", rows))
+	var bldID UniqueID
+	var err error
+	if numRows < Params.RootCoordCfg.MinSegmentSizeToEnableIndex {
+		log.Debug("num of rows is less than MinSegmentSizeToEnableIndex", zap.Int64("num rows", numRows))
 	} else {
-		binlogs, err := c.CallGetBinlogFilePathsService(ctx, segID, field.FieldID)
-		if err != nil {
-			return 0, err
+		binLogs := make([]string, 0)
+		for _, fieldBinLog := range binlogs {
+			if fieldBinLog.GetFieldID() == field.GetFieldID() {
+				for _, binLog := range fieldBinLog.GetBinlogs() {
+					binLogs = append(binLogs, binLog.LogPath)
+				}
+				break
+			}
 		}
-		bldID, err = c.CallBuildIndexService(ctx, binlogs, field, idxInfo, rows)
-		if err != nil {
-			return 0, err
-		}
-
-		log.Debug("CallBuildIndex finished", zap.String("index name", idxInfo.IndexName),
-			zap.String("field name", field.Name), zap.Int64("segment id", segID), zap.Int64("num rows", rows))
+		bldID, err = c.CallBuildIndexService(ctx, segID, binLogs, field, idxInfo, numRows)
 	}
-	return bldID, nil
+
+	return bldID, err
 }
 
 // RemoveIndex will call drop index service
@@ -939,7 +911,20 @@ func (c *Core) RemoveIndex(ctx context.Context, collName string, indexName strin
 }
 
 // ExpireMetaCache will call invalidate collection meta cache
-func (c *Core) ExpireMetaCache(ctx context.Context, collNames []string, ts typeutil.Timestamp) {
+func (c *Core) ExpireMetaCache(ctx context.Context, collNames []string, collectionID UniqueID, ts typeutil.Timestamp) error {
+	// if collectionID is specified, invalidate all the collection meta cache with the specified collectionID and return
+	if collectionID != InvalidCollectionID {
+		req := proxypb.InvalidateCollMetaCacheRequest{
+			Base: &commonpb.MsgBase{
+				Timestamp: ts,
+				SourceID:  c.session.ServerID,
+			},
+			CollectionID: collectionID,
+		}
+		return c.proxyClientManager.InvalidateCollectionMetaCache(ctx, &req)
+	}
+
+	// if only collNames are specified, invalidate the collection meta cache with the specified collectionName
 	for _, collName := range collNames {
 		req := proxypb.InvalidateCollMetaCacheRequest{
 			Base: &commonpb.MsgBase{
@@ -950,8 +935,13 @@ func (c *Core) ExpireMetaCache(ctx context.Context, collNames []string, ts typeu
 			},
 			CollectionName: collName,
 		}
-		c.proxyClientManager.InvalidateCollectionMetaCache(ctx, &req)
+		err := c.proxyClientManager.InvalidateCollectionMetaCache(ctx, &req)
+		if err != nil {
+			// TODO: try to expire all or directly return err?
+			return err
+		}
 	}
+	return nil
 }
 
 // Register register rootcoord at etcd
@@ -1037,7 +1027,7 @@ func (c *Core) Init() error {
 			return nil
 		}
 		log.Debug("RootCoord, Connecting to Etcd", zap.String("kv root", Params.EtcdCfg.KvRootPath), zap.String("meta root", Params.EtcdCfg.MetaRootPath))
-		err := retry.Do(c.ctx, connectEtcdFn, retry.Attempts(300))
+		err := retry.Do(c.ctx, connectEtcdFn, retry.Attempts(100))
 		if err != nil {
 			return
 		}
@@ -1070,12 +1060,10 @@ func (c *Core) Init() error {
 			return tsoAllocator.GetLastSavedTime()
 		}
 
-		if initError = c.msFactory.Init(&Params); initError != nil {
-			return
-		}
+		c.factory.Init(&Params)
 
 		chanMap := c.MetaTable.ListCollectionPhysicalChannels()
-		c.chanTimeTick = newTimeTickSync(c.ctx, c.session.ServerID, c.msFactory, chanMap)
+		c.chanTimeTick = newTimeTickSync(c.ctx, c.session.ServerID, c.factory, chanMap)
 		c.chanTimeTick.addSession(c.session)
 		c.proxyClientManager = newProxyClientManager(c)
 
@@ -1099,15 +1087,33 @@ func (c *Core) Init() error {
 		c.importManager = newImportManager(
 			c.ctx,
 			c.impTaskKv,
+			c.IDAllocator,
 			c.CallImportService,
 		)
-		c.importManager.init()
+		c.importManager.init(c.ctx)
+
+		// init data
+		initError = c.initData()
+		if initError != nil {
+			return
+		}
 	})
 	if initError != nil {
 		log.Debug("RootCoord init error", zap.Error(initError))
 	}
 	log.Debug("RootCoord init done")
 	return initError
+}
+
+func (c *Core) initData() error {
+	credInfo, _ := c.MetaTable.getCredential(util.UserRoot)
+	if credInfo == nil {
+		log.Debug("RootCoord init user root")
+		encryptedRootPassword, _ := crypto.PasswordEncrypt(util.DefaultRootPassword)
+		err := c.MetaTable.AddCredential(&internalpb.CredentialInfo{Username: util.UserRoot, EncryptedPassword: encryptedRootPassword})
+		return err
+	}
+	return nil
 }
 
 func (c *Core) reSendDdMsg(ctx context.Context, force bool) error {
@@ -1145,6 +1151,7 @@ func (c *Core) reSendDdMsg(ctx context.Context, force bool) error {
 	invalidateCache := false
 	var ts typeutil.Timestamp
 	var collName string
+	var collectionID UniqueID
 
 	switch ddOp.Type {
 	// TODO remove create collection resend
@@ -1174,6 +1181,7 @@ func (c *Core) reSendDdMsg(ctx context.Context, force bool) error {
 				return err
 			}
 			invalidateCache = true
+			collectionID = ddReq.CollectionID
 		} else {
 			log.Debug("collection has been removed, skip re-send DropCollection",
 				zap.String("collection name", collName))
@@ -1194,6 +1202,7 @@ func (c *Core) reSendDdMsg(ctx context.Context, force bool) error {
 				return err
 			}
 			invalidateCache = true
+			collectionID = ddReq.CollectionID
 		} else {
 			log.Debug("partition has been created, skip re-send CreatePartition",
 				zap.String("collection name", collName), zap.String("partition name", ddReq.PartitionName))
@@ -1214,6 +1223,7 @@ func (c *Core) reSendDdMsg(ctx context.Context, force bool) error {
 				return err
 			}
 			invalidateCache = true
+			collectionID = ddReq.CollectionID
 		} else {
 			log.Debug("partition has been removed, skip re-send DropPartition",
 				zap.String("collection name", collName), zap.String("partition name", ddReq.PartitionName))
@@ -1223,14 +1233,16 @@ func (c *Core) reSendDdMsg(ctx context.Context, force bool) error {
 	}
 
 	if invalidateCache {
-		c.ExpireMetaCache(ctx, []string{collName}, ts)
+		if err = c.ExpireMetaCache(ctx, nil, collectionID, ts); err != nil {
+			return err
+		}
 	}
 
 	// Update DDOperation in etcd
 	return c.MetaTable.txn.Save(DDMsgSendPrefix, strconv.FormatBool(true))
 }
 
-// Start start rootcoord
+// Start starts RootCoord.
 func (c *Core) Start() error {
 	if err := c.checkInit(); err != nil {
 		log.Debug("RootCoord Start checkInit failed", zap.Error(err))
@@ -1238,7 +1250,6 @@ func (c *Core) Start() error {
 	}
 
 	log.Debug(typeutil.RootCoordRole, zap.Int64("node id", c.session.ServerID))
-	log.Debug(typeutil.RootCoordRole, zap.String("time tick channel name", Params.CommonCfg.RootCoordTimeTick))
 
 	c.startOnce.Do(func() {
 		if err := c.proxyManager.WatchProxy(); err != nil {
@@ -1250,11 +1261,13 @@ func (c *Core) Start() error {
 			log.Fatal("RootCoord Start reSendDdMsg failed", zap.Error(err))
 			panic(err)
 		}
-		c.wg.Add(4)
+		c.wg.Add(6)
 		go c.startTimeTickLoop()
 		go c.tsLoop()
 		go c.chanTimeTick.startWatch(&c.wg)
 		go c.checkFlushedSegmentsLoop()
+		go c.importManager.expireOldTasksLoop(&c.wg)
+		go c.importManager.sendOutTasksLoop(&c.wg)
 		Params.RootCoordCfg.CreatedTime = time.Now()
 		Params.RootCoordCfg.UpdatedTime = time.Now()
 	})
@@ -1262,7 +1275,7 @@ func (c *Core) Start() error {
 	return nil
 }
 
-// Stop stop rootcoord
+// Stop stops rootCoord.
 func (c *Core) Stop() error {
 	c.UpdateStateCode(internalpb.StateCode_Abnormal)
 
@@ -1330,7 +1343,7 @@ func (c *Core) GetStatisticsChannel(ctx context.Context) (*milvuspb.StringRespon
 
 // CreateCollection create collection
 func (c *Core) CreateCollection(ctx context.Context, in *milvuspb.CreateCollectionRequest) (*commonpb.Status, error) {
-	metrics.RootCoordCreateCollectionCounter.WithLabelValues(metrics.TotalLabel).Inc()
+	metrics.RootCoordDDLReqCounter.WithLabelValues("CreateCollection", metrics.TotalLabel).Inc()
 	if code, ok := c.checkHealthy(); !ok {
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]), nil
 	}
@@ -1350,20 +1363,21 @@ func (c *Core) CreateCollection(ctx context.Context, in *milvuspb.CreateCollecti
 	if err != nil {
 		log.Error("CreateCollection failed", zap.String("role", typeutil.RootCoordRole),
 			zap.String("collection name", in.CollectionName), zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues("CreateCollection", metrics.FailLabel).Inc()
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "CreateCollection failed: "+err.Error()), nil
 	}
 	log.Debug("CreateCollection success", zap.String("role", typeutil.RootCoordRole),
 		zap.String("collection name", in.CollectionName), zap.Int64("msgID", in.Base.MsgID))
 
-	metrics.RootCoordCreateCollectionCounter.WithLabelValues(metrics.SuccessLabel).Inc()
-	metrics.RootCoordDDLWriteTypeLatency.WithLabelValues("CreateCollection").Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.RootCoordDDLReqCounter.WithLabelValues("CreateCollection", metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues("CreateCollection").Observe(float64(tr.ElapseSpan().Milliseconds()))
 	metrics.RootCoordNumOfCollections.Inc()
 	return succStatus(), nil
 }
 
 // DropCollection drop collection
 func (c *Core) DropCollection(ctx context.Context, in *milvuspb.DropCollectionRequest) (*commonpb.Status, error) {
-	metrics.RootCoordDropCollectionCounter.WithLabelValues(metrics.TotalLabel).Inc()
+	metrics.RootCoordDDLReqCounter.WithLabelValues("DropCollection", metrics.TotalLabel).Inc()
 	if code, ok := c.checkHealthy(); !ok {
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]), nil
 	}
@@ -1381,20 +1395,21 @@ func (c *Core) DropCollection(ctx context.Context, in *milvuspb.DropCollectionRe
 	if err != nil {
 		log.Error("DropCollection failed", zap.String("role", typeutil.RootCoordRole),
 			zap.String("collection name", in.CollectionName), zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues("DropCollection", metrics.FailLabel).Inc()
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "DropCollection failed: "+err.Error()), nil
 	}
 	log.Debug("DropCollection success", zap.String("role", typeutil.RootCoordRole),
 		zap.String("collection name", in.CollectionName), zap.Int64("msgID", in.Base.MsgID))
 
-	metrics.RootCoordDropCollectionCounter.WithLabelValues(metrics.SuccessLabel).Inc()
-	metrics.RootCoordDDLWriteTypeLatency.WithLabelValues("DropCollection").Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.RootCoordDDLReqCounter.WithLabelValues("DropCollection", metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues("DropCollection").Observe(float64(tr.ElapseSpan().Milliseconds()))
 	metrics.RootCoordNumOfCollections.Dec()
 	return succStatus(), nil
 }
 
 // HasCollection check collection existence
 func (c *Core) HasCollection(ctx context.Context, in *milvuspb.HasCollectionRequest) (*milvuspb.BoolResponse, error) {
-	metrics.RootCoordHasCollectionCounter.WithLabelValues(metrics.TotalLabel).Inc()
+	metrics.RootCoordDDLReqCounter.WithLabelValues("HasCollection", metrics.TotalLabel).Inc()
 	if code, ok := c.checkHealthy(); !ok {
 		return &milvuspb.BoolResponse{
 			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]),
@@ -1417,16 +1432,17 @@ func (c *Core) HasCollection(ctx context.Context, in *milvuspb.HasCollectionRequ
 	if err != nil {
 		log.Error("HasCollection failed", zap.String("role", typeutil.RootCoordRole),
 			zap.String("collection name", in.CollectionName), zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues("HasCollection", metrics.FailLabel).Inc()
 		return &milvuspb.BoolResponse{
 			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "HasCollection failed: "+err.Error()),
 			Value:  false,
 		}, nil
 	}
 	log.Debug("HasCollection success", zap.String("role", typeutil.RootCoordRole),
-		zap.String("collection name", in.CollectionName), zap.Int64("msgID", in.Base.MsgID))
+		zap.String("collection name", in.CollectionName), zap.Int64("msgID", in.Base.MsgID), zap.Bool("hasCollection", t.HasCollection))
 
-	metrics.RootCoordHasCollectionCounter.WithLabelValues(metrics.SuccessLabel).Inc()
-	metrics.RootCoordDDLReadTypeLatency.WithLabelValues("HasCollection").Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.RootCoordDDLReqCounter.WithLabelValues("HasCollection", metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues("HasCollection").Observe(float64(tr.ElapseSpan().Milliseconds()))
 	return &milvuspb.BoolResponse{
 		Status: succStatus(),
 		Value:  t.HasCollection,
@@ -1435,7 +1451,7 @@ func (c *Core) HasCollection(ctx context.Context, in *milvuspb.HasCollectionRequ
 
 // DescribeCollection return collection info
 func (c *Core) DescribeCollection(ctx context.Context, in *milvuspb.DescribeCollectionRequest) (*milvuspb.DescribeCollectionResponse, error) {
-	metrics.RootCoordDescribeCollectionCounter.WithLabelValues(metrics.TotalLabel).Inc()
+	metrics.RootCoordDDLReqCounter.WithLabelValues("DescribeCollection", metrics.TotalLabel).Inc()
 	if code, ok := c.checkHealthy(); !ok {
 		return &milvuspb.DescribeCollectionResponse{
 			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode"+internalpb.StateCode_name[int32(code)]),
@@ -1444,7 +1460,7 @@ func (c *Core) DescribeCollection(ctx context.Context, in *milvuspb.DescribeColl
 	tr := timerecord.NewTimeRecorder("DescribeCollection")
 
 	log.Debug("DescribeCollection", zap.String("role", typeutil.RootCoordRole),
-		zap.String("collection name", in.CollectionName), zap.Int64("msgID", in.Base.MsgID))
+		zap.String("collection name", in.CollectionName), zap.Int64("id", in.CollectionID), zap.Int64("msgID", in.Base.MsgID))
 	t := &DescribeCollectionReqTask{
 		baseReqTask: baseReqTask{
 			ctx:  ctx,
@@ -1456,23 +1472,24 @@ func (c *Core) DescribeCollection(ctx context.Context, in *milvuspb.DescribeColl
 	err := executeTask(t)
 	if err != nil {
 		log.Error("DescribeCollection failed", zap.String("role", typeutil.RootCoordRole),
-			zap.String("collection name", in.CollectionName), zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
+			zap.String("collection name", in.CollectionName), zap.Int64("id", in.CollectionID), zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues("DescribeCollection", metrics.FailLabel).Inc()
 		return &milvuspb.DescribeCollectionResponse{
 			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "DescribeCollection failed: "+err.Error()),
 		}, nil
 	}
 	log.Debug("DescribeCollection success", zap.String("role", typeutil.RootCoordRole),
-		zap.String("collection name", in.CollectionName), zap.Int64("msgID", in.Base.MsgID))
+		zap.String("collection name", in.CollectionName), zap.Int64("id", in.CollectionID), zap.Int64("msgID", in.Base.MsgID))
 
-	metrics.RootCoordDescribeCollectionCounter.WithLabelValues(metrics.SuccessLabel).Inc()
-	metrics.RootCoordDDLReadTypeLatency.WithLabelValues("DescribeCollection").Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.RootCoordDDLReqCounter.WithLabelValues("DescribeCollection", metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues("DescribeCollection").Observe(float64(tr.ElapseSpan().Milliseconds()))
 	t.Rsp.Status = succStatus()
 	return t.Rsp, nil
 }
 
 // ShowCollections list all collection names
 func (c *Core) ShowCollections(ctx context.Context, in *milvuspb.ShowCollectionsRequest) (*milvuspb.ShowCollectionsResponse, error) {
-	metrics.RootCoordShowCollectionsCounter.WithLabelValues(MetricRequestsTotal).Inc()
+	metrics.RootCoordDDLReqCounter.WithLabelValues("ShowCollections", metrics.TotalLabel).Inc()
 	if code, ok := c.checkHealthy(); !ok {
 		return &milvuspb.ShowCollectionsResponse{
 			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]),
@@ -1494,6 +1511,7 @@ func (c *Core) ShowCollections(ctx context.Context, in *milvuspb.ShowCollections
 	if err != nil {
 		log.Error("ShowCollections failed", zap.String("role", typeutil.RootCoordRole),
 			zap.String("dbname", in.DbName), zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues("ShowCollections", metrics.FailLabel).Inc()
 		return &milvuspb.ShowCollectionsResponse{
 			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "ShowCollections failed: "+err.Error()),
 		}, nil
@@ -1502,15 +1520,15 @@ func (c *Core) ShowCollections(ctx context.Context, in *milvuspb.ShowCollections
 		zap.String("dbname", in.DbName), zap.Int("num of collections", len(t.Rsp.CollectionNames)),
 		zap.Int64("msgID", in.Base.MsgID))
 
-	metrics.RootCoordShowCollectionsCounter.WithLabelValues(MetricRequestsSuccess).Inc()
+	metrics.RootCoordDDLReqCounter.WithLabelValues("ShowCollections", metrics.SuccessLabel).Inc()
 	t.Rsp.Status = succStatus()
-	metrics.RootCoordDDLReadTypeLatency.WithLabelValues("ShowCollections").Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.RootCoordDDLReqLatency.WithLabelValues("ShowCollections").Observe(float64(tr.ElapseSpan().Milliseconds()))
 	return t.Rsp, nil
 }
 
 // CreatePartition create partition
 func (c *Core) CreatePartition(ctx context.Context, in *milvuspb.CreatePartitionRequest) (*commonpb.Status, error) {
-	metrics.RootCoordCreatePartitionCounter.WithLabelValues(metrics.TotalLabel).Inc()
+	metrics.RootCoordDDLReqCounter.WithLabelValues("CreatePartition", metrics.TotalLabel).Inc()
 	if code, ok := c.checkHealthy(); !ok {
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]), nil
 	}
@@ -1530,21 +1548,22 @@ func (c *Core) CreatePartition(ctx context.Context, in *milvuspb.CreatePartition
 		log.Error("CreatePartition failed", zap.String("role", typeutil.RootCoordRole),
 			zap.String("collection name", in.CollectionName), zap.String("partition name", in.PartitionName),
 			zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues("CreatePartition", metrics.FailLabel).Inc()
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "CreatePartition failed: "+err.Error()), nil
 	}
 	log.Debug("CreatePartition success", zap.String("role", typeutil.RootCoordRole),
 		zap.String("collection name", in.CollectionName), zap.String("partition name", in.PartitionName),
 		zap.Int64("msgID", in.Base.MsgID))
 
-	metrics.RootCoordCreatePartitionCounter.WithLabelValues(metrics.SuccessLabel).Inc()
-	metrics.RootCoordDDLWriteTypeLatency.WithLabelValues("CreatePartition").Observe(float64(tr.ElapseSpan().Milliseconds()))
-	metrics.RootCoordNumOfPartitions.WithLabelValues(in.CollectionName).Inc()
+	metrics.RootCoordDDLReqCounter.WithLabelValues("CreatePartition", metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues("CreatePartition").Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.RootCoordNumOfPartitions.WithLabelValues().Inc()
 	return succStatus(), nil
 }
 
 // DropPartition drop partition
 func (c *Core) DropPartition(ctx context.Context, in *milvuspb.DropPartitionRequest) (*commonpb.Status, error) {
-	metrics.RootCoordDropPartitionCounter.WithLabelValues(metrics.TotalLabel).Inc()
+	metrics.RootCoordDDLReqCounter.WithLabelValues("DropPartition", metrics.TotalLabel).Inc()
 	if code, ok := c.checkHealthy(); !ok {
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]), nil
 	}
@@ -1564,21 +1583,22 @@ func (c *Core) DropPartition(ctx context.Context, in *milvuspb.DropPartitionRequ
 		log.Error("DropPartition failed", zap.String("role", typeutil.RootCoordRole),
 			zap.String("collection name", in.CollectionName), zap.String("partition name", in.PartitionName),
 			zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues("DropPartition", metrics.FailLabel).Inc()
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "DropPartition failed: "+err.Error()), nil
 	}
 	log.Debug("DropPartition success", zap.String("role", typeutil.RootCoordRole),
 		zap.String("collection name", in.CollectionName), zap.String("partition name", in.PartitionName),
 		zap.Int64("msgID", in.Base.MsgID))
 
-	metrics.RootCoordDropPartitionCounter.WithLabelValues(metrics.SuccessLabel).Inc()
-	metrics.RootCoordDDLWriteTypeLatency.WithLabelValues("DropPartition").Observe(float64(tr.ElapseSpan().Milliseconds()))
-	metrics.RootCoordNumOfPartitions.WithLabelValues(in.CollectionName).Dec()
+	metrics.RootCoordDDLReqCounter.WithLabelValues("DropPartition", metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues("DropPartition").Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.RootCoordNumOfPartitions.WithLabelValues().Dec()
 	return succStatus(), nil
 }
 
 // HasPartition check partition existence
 func (c *Core) HasPartition(ctx context.Context, in *milvuspb.HasPartitionRequest) (*milvuspb.BoolResponse, error) {
-	metrics.RootCoordHasPartitionCounter.WithLabelValues(metrics.TotalLabel).Inc()
+	metrics.RootCoordDDLReqCounter.WithLabelValues("HasPartition", metrics.TotalLabel).Inc()
 	if code, ok := c.checkHealthy(); !ok {
 		return &milvuspb.BoolResponse{
 			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]),
@@ -1603,6 +1623,7 @@ func (c *Core) HasPartition(ctx context.Context, in *milvuspb.HasPartitionReques
 		log.Error("HasPartition failed", zap.String("role", typeutil.RootCoordRole),
 			zap.String("collection name", in.CollectionName), zap.String("partition name", in.PartitionName),
 			zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues("HasPartition", metrics.FailLabel).Inc()
 		return &milvuspb.BoolResponse{
 			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "HasPartition failed: "+err.Error()),
 			Value:  false,
@@ -1612,8 +1633,8 @@ func (c *Core) HasPartition(ctx context.Context, in *milvuspb.HasPartitionReques
 		zap.String("collection name", in.CollectionName), zap.String("partition name", in.PartitionName),
 		zap.Int64("msgID", in.Base.MsgID))
 
-	metrics.RootCoordHasPartitionCounter.WithLabelValues(metrics.SuccessLabel).Inc()
-	metrics.RootCoordDDLReadTypeLatency.WithLabelValues("HasPartition").Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.RootCoordDDLReqCounter.WithLabelValues("HasPartition", metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues("HasPartition").Observe(float64(tr.ElapseSpan().Milliseconds()))
 	return &milvuspb.BoolResponse{
 		Status: succStatus(),
 		Value:  t.HasPartition,
@@ -1622,7 +1643,7 @@ func (c *Core) HasPartition(ctx context.Context, in *milvuspb.HasPartitionReques
 
 // ShowPartitions list all partition names
 func (c *Core) ShowPartitions(ctx context.Context, in *milvuspb.ShowPartitionsRequest) (*milvuspb.ShowPartitionsResponse, error) {
-	metrics.RootCoordShowPartitionsCounter.WithLabelValues(metrics.TotalLabel).Inc()
+	metrics.RootCoordDDLReqCounter.WithLabelValues("ShowPartitions", metrics.TotalLabel).Inc()
 	if code, ok := c.checkHealthy(); !ok {
 		return &milvuspb.ShowPartitionsResponse{
 			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]),
@@ -1644,6 +1665,7 @@ func (c *Core) ShowPartitions(ctx context.Context, in *milvuspb.ShowPartitionsRe
 	if err != nil {
 		log.Error("ShowPartitions failed", zap.String("role", typeutil.RootCoordRole),
 			zap.String("collection name", in.CollectionName), zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues("ShowPartitions", metrics.FailLabel).Inc()
 		return &milvuspb.ShowPartitionsResponse{
 			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "ShowPartitions failed: "+err.Error()),
 		}, nil
@@ -1652,15 +1674,15 @@ func (c *Core) ShowPartitions(ctx context.Context, in *milvuspb.ShowPartitionsRe
 		zap.String("collection name", in.CollectionName), zap.Int("num of partitions", len(t.Rsp.PartitionNames)),
 		zap.Int64("msgID", t.Req.Base.MsgID))
 
-	metrics.RootCoordShowPartitionsCounter.WithLabelValues(metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqCounter.WithLabelValues("ShowPartitions", metrics.SuccessLabel).Inc()
 	t.Rsp.Status = succStatus()
-	metrics.RootCoordDDLReadTypeLatency.WithLabelValues("ShowPartitions").Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.RootCoordDDLReqLatency.WithLabelValues("ShowPartitions").Observe(float64(tr.ElapseSpan().Milliseconds()))
 	return t.Rsp, nil
 }
 
 // CreateIndex create index
 func (c *Core) CreateIndex(ctx context.Context, in *milvuspb.CreateIndexRequest) (*commonpb.Status, error) {
-	metrics.RootCoordCreateIndexCounter.WithLabelValues(metrics.TotalLabel).Inc()
+	metrics.RootCoordDDLReqCounter.WithLabelValues("CreateIndex", metrics.TotalLabel).Inc()
 	if code, ok := c.checkHealthy(); !ok {
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]), nil
 	}
@@ -1680,20 +1702,21 @@ func (c *Core) CreateIndex(ctx context.Context, in *milvuspb.CreateIndexRequest)
 		log.Error("CreateIndex failed", zap.String("role", typeutil.RootCoordRole),
 			zap.String("collection name", in.CollectionName), zap.String("field name", in.FieldName),
 			zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues("CreateIndex", metrics.FailLabel).Inc()
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "CreateIndex failed: "+err.Error()), nil
 	}
 	log.Debug("CreateIndex success", zap.String("role", typeutil.RootCoordRole),
 		zap.String("collection name", in.CollectionName), zap.String("field name", in.FieldName),
 		zap.Int64("msgID", in.Base.MsgID))
 
-	metrics.RootCoordCreateIndexCounter.WithLabelValues(metrics.SuccessLabel).Inc()
-	metrics.RootCoordDDLWriteTypeLatency.WithLabelValues("CreateIndex").Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.RootCoordDDLReqCounter.WithLabelValues("CreateIndex", metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues("CreateIndex").Observe(float64(tr.ElapseSpan().Milliseconds()))
 	return succStatus(), nil
 }
 
 // DescribeIndex return index info
 func (c *Core) DescribeIndex(ctx context.Context, in *milvuspb.DescribeIndexRequest) (*milvuspb.DescribeIndexResponse, error) {
-	metrics.RootCoordDescribeIndexCounter.WithLabelValues(metrics.TotalLabel).Inc()
+	metrics.RootCoordDDLReqCounter.WithLabelValues("DescribeIndex", metrics.TotalLabel).Inc()
 	if code, ok := c.checkHealthy(); !ok {
 		return &milvuspb.DescribeIndexResponse{
 			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]),
@@ -1716,6 +1739,7 @@ func (c *Core) DescribeIndex(ctx context.Context, in *milvuspb.DescribeIndexRequ
 		log.Error("DescribeIndex failed", zap.String("role", typeutil.RootCoordRole),
 			zap.String("collection name", in.CollectionName), zap.String("field name", in.FieldName),
 			zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues("DescribeIndex", metrics.FailLabel).Inc()
 		return &milvuspb.DescribeIndexResponse{
 			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "DescribeIndex failed: "+err.Error()),
 		}, nil
@@ -1728,19 +1752,19 @@ func (c *Core) DescribeIndex(ctx context.Context, in *milvuspb.DescribeIndexRequ
 		zap.String("collection name", in.CollectionName), zap.String("field name", in.FieldName),
 		zap.Strings("index names", idxNames), zap.Int64("msgID", in.Base.MsgID))
 
-	metrics.RootCoordDescribeIndexCounter.WithLabelValues(metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqCounter.WithLabelValues("DescribeIndex", metrics.SuccessLabel).Inc()
 	if len(t.Rsp.IndexDescriptions) == 0 {
 		t.Rsp.Status = failStatus(commonpb.ErrorCode_IndexNotExist, "index not exist")
 	} else {
 		t.Rsp.Status = succStatus()
 	}
-	metrics.RootCoordDDLWriteTypeLatency.WithLabelValues("DescribeIndex").Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.RootCoordDDLReqLatency.WithLabelValues("DescribeIndex").Observe(float64(tr.ElapseSpan().Milliseconds()))
 	return t.Rsp, nil
 }
 
 // DropIndex drop index
 func (c *Core) DropIndex(ctx context.Context, in *milvuspb.DropIndexRequest) (*commonpb.Status, error) {
-	metrics.RootCoordDropIndexCounter.WithLabelValues(metrics.TotalLabel).Inc()
+	metrics.RootCoordDDLReqCounter.WithLabelValues("DropIndex", metrics.TotalLabel).Inc()
 	if code, ok := c.checkHealthy(); !ok {
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]), nil
 	}
@@ -1760,20 +1784,21 @@ func (c *Core) DropIndex(ctx context.Context, in *milvuspb.DropIndexRequest) (*c
 		log.Error("DropIndex failed", zap.String("role", typeutil.RootCoordRole),
 			zap.String("collection name", in.CollectionName), zap.String("field name", in.FieldName),
 			zap.String("index name", in.IndexName), zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues("DropIndex", metrics.FailLabel).Inc()
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "DropIndex failed: "+err.Error()), nil
 	}
 	log.Debug("DropIndex success", zap.String("role", typeutil.RootCoordRole),
 		zap.String("collection name", in.CollectionName), zap.String("field name", in.FieldName),
 		zap.String("index name", in.IndexName), zap.Int64("msgID", in.Base.MsgID))
 
-	metrics.RootCoordDropIndexCounter.WithLabelValues(metrics.SuccessLabel).Inc()
-	metrics.RootCoordDDLWriteTypeLatency.WithLabelValues("DropIndex").Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.RootCoordDDLReqCounter.WithLabelValues("DropIndex", metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues("DropIndex").Observe(float64(tr.ElapseSpan().Milliseconds()))
 	return succStatus(), nil
 }
 
 // DescribeSegment return segment info
 func (c *Core) DescribeSegment(ctx context.Context, in *milvuspb.DescribeSegmentRequest) (*milvuspb.DescribeSegmentResponse, error) {
-	metrics.RootCoordDescribeSegmentCounter.WithLabelValues(metrics.TotalLabel).Inc()
+	metrics.RootCoordDDLReqCounter.WithLabelValues("DescribeSegment", metrics.TotalLabel).Inc()
 	if code, ok := c.checkHealthy(); !ok {
 		return &milvuspb.DescribeSegmentResponse{
 			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]),
@@ -1796,6 +1821,7 @@ func (c *Core) DescribeSegment(ctx context.Context, in *milvuspb.DescribeSegment
 		log.Error("DescribeSegment failed", zap.String("role", typeutil.RootCoordRole),
 			zap.Int64("collection id", in.CollectionID), zap.Int64("segment id", in.SegmentID),
 			zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues("DescribeSegment", metrics.FailLabel).Inc()
 		return &milvuspb.DescribeSegmentResponse{
 			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "DescribeSegment failed: "+err.Error()),
 		}, nil
@@ -1804,15 +1830,73 @@ func (c *Core) DescribeSegment(ctx context.Context, in *milvuspb.DescribeSegment
 		zap.Int64("collection id", in.CollectionID), zap.Int64("segment id", in.SegmentID),
 		zap.Int64("msgID", in.Base.MsgID))
 
-	metrics.RootCoordDescribeSegmentCounter.WithLabelValues(metrics.SuccessLabel).Inc()
-	metrics.RootCoordDDLReadTypeLatency.WithLabelValues("DescribeSegment").Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.RootCoordDDLReqCounter.WithLabelValues("DescribeSegment", metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues("DescribeSegment").Observe(float64(tr.ElapseSpan().Milliseconds()))
+	t.Rsp.Status = succStatus()
+	return t.Rsp, nil
+}
+
+func (c *Core) DescribeSegments(ctx context.Context, in *rootcoordpb.DescribeSegmentsRequest) (*rootcoordpb.DescribeSegmentsResponse, error) {
+	metrics.RootCoordDDLReqCounter.WithLabelValues("DescribeSegments", metrics.TotalLabel).Inc()
+	if code, ok := c.checkHealthy(); !ok {
+		log.Error("failed to describe segments, rootcoord not healthy",
+			zap.String("role", typeutil.RootCoordRole),
+			zap.Int64("msgID", in.GetBase().GetMsgID()),
+			zap.Int64("collection", in.GetCollectionID()),
+			zap.Int64s("segments", in.GetSegmentIDs()))
+
+		return &rootcoordpb.DescribeSegmentsResponse{
+			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]),
+		}, nil
+	}
+
+	tr := timerecord.NewTimeRecorder("DescribeSegments")
+
+	log.Debug("received request to describe segments",
+		zap.String("role", typeutil.RootCoordRole),
+		zap.Int64("msgID", in.GetBase().GetMsgID()),
+		zap.Int64("collection", in.GetCollectionID()),
+		zap.Int64s("segments", in.GetSegmentIDs()))
+
+	t := &DescribeSegmentsReqTask{
+		baseReqTask: baseReqTask{
+			ctx:  ctx,
+			core: c,
+		},
+		Req: in,
+		Rsp: &rootcoordpb.DescribeSegmentsResponse{},
+	}
+
+	if err := executeTask(t); err != nil {
+		log.Error("failed to describe segments",
+			zap.Error(err),
+			zap.String("role", typeutil.RootCoordRole),
+			zap.Int64("msgID", in.GetBase().GetMsgID()),
+			zap.Int64("collection", in.GetCollectionID()),
+			zap.Int64s("segments", in.GetSegmentIDs()))
+
+		metrics.RootCoordDDLReqCounter.WithLabelValues("DescribeSegments", metrics.FailLabel).Inc()
+		return &rootcoordpb.DescribeSegmentsResponse{
+			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "DescribeSegments failed: "+err.Error()),
+		}, nil
+	}
+
+	log.Debug("succeed to describe segments",
+		zap.String("role", typeutil.RootCoordRole),
+		zap.Int64("msgID", in.GetBase().GetMsgID()),
+		zap.Int64("collection", in.GetCollectionID()),
+		zap.Int64s("segments", in.GetSegmentIDs()))
+
+	metrics.RootCoordDDLReqCounter.WithLabelValues("DescribeSegments", metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues("DescribeSegments").Observe(float64(tr.ElapseSpan().Milliseconds()))
+
 	t.Rsp.Status = succStatus()
 	return t.Rsp, nil
 }
 
 // ShowSegments list all segments
 func (c *Core) ShowSegments(ctx context.Context, in *milvuspb.ShowSegmentsRequest) (*milvuspb.ShowSegmentsResponse, error) {
-	metrics.RootCoordShowSegmentsCounter.WithLabelValues(metrics.TotalLabel).Inc()
+	metrics.RootCoordDDLReqCounter.WithLabelValues("ShowSegments", metrics.TotalLabel).Inc()
 	if code, ok := c.checkHealthy(); !ok {
 		return &milvuspb.ShowSegmentsResponse{
 			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]),
@@ -1836,6 +1920,7 @@ func (c *Core) ShowSegments(ctx context.Context, in *milvuspb.ShowSegmentsReques
 		log.Debug("ShowSegments failed", zap.String("role", typeutil.RootCoordRole),
 			zap.Int64("collection id", in.CollectionID), zap.Int64("partition id", in.PartitionID),
 			zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues("ShowSegments", metrics.FailLabel).Inc()
 		return &milvuspb.ShowSegmentsResponse{
 			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "ShowSegments failed: "+err.Error()),
 		}, nil
@@ -1845,8 +1930,8 @@ func (c *Core) ShowSegments(ctx context.Context, in *milvuspb.ShowSegmentsReques
 		zap.Int64s("segments ids", t.Rsp.SegmentIDs),
 		zap.Int64("msgID", in.Base.MsgID))
 
-	metrics.RootCoordShowSegmentsCounter.WithLabelValues(metrics.SuccessLabel).Inc()
-	metrics.RootCoordDDLReadTypeLatency.WithLabelValues("ShowSegments").Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.RootCoordDDLReqCounter.WithLabelValues("ShowSegments", metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues("ShowSegments").Observe(float64(tr.ElapseSpan().Milliseconds()))
 	t.Rsp.Status = succStatus()
 	return t.Rsp, nil
 }
@@ -1869,7 +1954,7 @@ func (c *Core) AllocTimestamp(ctx context.Context, in *rootcoordpb.AllocTimestam
 
 	//return first available  time stamp
 	ts = ts - uint64(in.Count) + 1
-	metrics.RootCoordTimestampAllocCounter.Set(float64(ts))
+	metrics.RootCoordTimestamp.Set(float64(ts))
 	return &rootcoordpb.AllocTimestampResponse{
 		Status:    succStatus(),
 		Timestamp: ts,
@@ -1926,7 +2011,23 @@ func (c *Core) ReleaseDQLMessageStream(ctx context.Context, in *proxypb.ReleaseD
 	if code, ok := c.checkHealthy(); !ok {
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]), nil
 	}
-	return c.proxyClientManager.ReleaseDQLMessageStream(ctx, in)
+	err := c.proxyClientManager.ReleaseDQLMessageStream(ctx, in)
+	if err != nil {
+		return failStatus(commonpb.ErrorCode_UnexpectedError, err.Error()), nil
+	}
+	return succStatus(), nil
+}
+
+// InvalidateCollectionMetaCache notifies RootCoord to release the collection cache in Proxies.
+func (c *Core) InvalidateCollectionMetaCache(ctx context.Context, in *proxypb.InvalidateCollMetaCacheRequest) (*commonpb.Status, error) {
+	if code, ok := c.checkHealthy(); !ok {
+		return failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]), nil
+	}
+	err := c.proxyClientManager.InvalidateCollectionMetaCache(ctx, in)
+	if err != nil {
+		return failStatus(commonpb.ErrorCode_UnexpectedError, err.Error()), nil
+	}
+	return succStatus(), nil
 }
 
 // SegmentFlushCompleted check whether segment flush has completed
@@ -1979,7 +2080,7 @@ func (c *Core) SegmentFlushCompleted(ctx context.Context, in *datapb.SegmentFlus
 			IndexID:      idxInfo.IndexID,
 			EnableIndex:  false,
 		}
-		info.BuildID, err = c.BuildIndex(ctx, segID, fieldSch, idxInfo, true)
+		info.BuildID, err = c.BuildIndex(ctx, segID, in.Segment.GetNumOfRows(), in.Segment.GetBinlogs(), fieldSch, idxInfo, true)
 		if err == nil && info.BuildID != 0 {
 			info.EnableIndex = true
 		} else {
@@ -2057,6 +2158,7 @@ func (c *Core) GetMetrics(ctx context.Context, in *milvuspb.GetMetricsRequest) (
 
 // CreateAlias create collection alias
 func (c *Core) CreateAlias(ctx context.Context, in *milvuspb.CreateAliasRequest) (*commonpb.Status, error) {
+	metrics.RootCoordDDLReqCounter.WithLabelValues("CreateAlias", metrics.TotalLabel).Inc()
 	if code, ok := c.checkHealthy(); !ok {
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]), nil
 	}
@@ -2076,18 +2178,21 @@ func (c *Core) CreateAlias(ctx context.Context, in *milvuspb.CreateAliasRequest)
 		log.Error("CreateAlias failed", zap.String("role", typeutil.RootCoordRole),
 			zap.String("alias", in.Alias), zap.String("collection name", in.CollectionName),
 			zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues("CreateAlias", metrics.FailLabel).Inc()
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "CreateAlias failed: "+err.Error()), nil
 	}
 	log.Debug("CreateAlias success", zap.String("role", typeutil.RootCoordRole),
 		zap.String("alias", in.Alias), zap.String("collection name", in.CollectionName),
 		zap.Int64("msgID", in.Base.MsgID))
 
-	metrics.RootCoordDDLWriteTypeLatency.WithLabelValues("CreateAlias").Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.RootCoordDDLReqCounter.WithLabelValues("CreateAlias", metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues("CreateAlias").Observe(float64(tr.ElapseSpan().Milliseconds()))
 	return succStatus(), nil
 }
 
 // DropAlias drop collection alias
 func (c *Core) DropAlias(ctx context.Context, in *milvuspb.DropAliasRequest) (*commonpb.Status, error) {
+	metrics.RootCoordDDLReqCounter.WithLabelValues("DropAlias", metrics.TotalLabel).Inc()
 	if code, ok := c.checkHealthy(); !ok {
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]), nil
 	}
@@ -2105,17 +2210,20 @@ func (c *Core) DropAlias(ctx context.Context, in *milvuspb.DropAliasRequest) (*c
 	if err != nil {
 		log.Error("DropAlias failed", zap.String("role", typeutil.RootCoordRole),
 			zap.String("alias", in.Alias), zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues("DropAlias", metrics.FailLabel).Inc()
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "DropAlias failed: "+err.Error()), nil
 	}
 	log.Debug("DropAlias success", zap.String("role", typeutil.RootCoordRole),
 		zap.String("alias", in.Alias), zap.Int64("msgID", in.Base.MsgID))
 
-	metrics.RootCoordDDLWriteTypeLatency.WithLabelValues("DropAlias").Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.RootCoordDDLReqCounter.WithLabelValues("DropAlias", metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues("DropAlias").Observe(float64(tr.ElapseSpan().Milliseconds()))
 	return succStatus(), nil
 }
 
 // AlterAlias alter collection alias
 func (c *Core) AlterAlias(ctx context.Context, in *milvuspb.AlterAliasRequest) (*commonpb.Status, error) {
+	metrics.RootCoordDDLReqCounter.WithLabelValues("DropAlias", metrics.TotalLabel).Inc()
 	if code, ok := c.checkHealthy(); !ok {
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]), nil
 	}
@@ -2135,17 +2243,19 @@ func (c *Core) AlterAlias(ctx context.Context, in *milvuspb.AlterAliasRequest) (
 		log.Error("AlterAlias failed", zap.String("role", typeutil.RootCoordRole),
 			zap.String("alias", in.Alias), zap.String("collection name", in.CollectionName),
 			zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues("AlterAlias", metrics.FailLabel).Inc()
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "AlterAlias failed: "+err.Error()), nil
 	}
 	log.Debug("AlterAlias success", zap.String("role", typeutil.RootCoordRole),
 		zap.String("alias", in.Alias), zap.String("collection name", in.CollectionName),
 		zap.Int64("msgID", in.Base.MsgID))
 
-	metrics.RootCoordDDLWriteTypeLatency.WithLabelValues("AlterAlias").Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.RootCoordDDLReqCounter.WithLabelValues("AlterAlias", metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues("AlterAlias").Observe(float64(tr.ElapseSpan().Milliseconds()))
 	return succStatus(), nil
 }
 
-// Import data files(json, numpy, etc.) on MinIO/S3 storage, read and parse them into sealed segments
+// Import imports large files (json, numpy, etc.) on MinIO/S3 storage into Milvus storage.
 func (c *Core) Import(ctx context.Context, req *milvuspb.ImportRequest) (*milvuspb.ImportResponse, error) {
 	if code, ok := c.checkHealthy(); !ok {
 		return &milvuspb.ImportResponse{
@@ -2153,46 +2263,499 @@ func (c *Core) Import(ctx context.Context, req *milvuspb.ImportRequest) (*milvus
 		}, nil
 	}
 
-	log.Info("receive import request")
-	resp := c.importManager.importJob(req)
+	// Get collection/partition ID from collection/partition name.
+	var cID UniqueID
+	var err error
+	if cID, err = c.MetaTable.GetCollectionIDByName(req.GetCollectionName()); err != nil {
+		log.Error("failed to find collection ID from its name",
+			zap.String("collection name", req.GetCollectionName()),
+			zap.Error(err))
+		return nil, err
+	}
+	var pID UniqueID
+	if pID, err = c.MetaTable.getPartitionByName(cID, req.GetPartitionName(), 0); err != nil {
+		log.Error("failed to get partition ID from its name",
+			zap.String("partition name", req.GetPartitionName()),
+			zap.Error(err))
+		return nil, err
+	}
+	log.Info("RootCoord receive import request",
+		zap.String("collection name", req.GetCollectionName()),
+		zap.Int64("collection ID", cID),
+		zap.String("partition name", req.GetPartitionName()),
+		zap.Int64("partition ID", pID),
+		zap.Int("# of files = ", len(req.GetFiles())),
+		zap.Bool("row-based", req.GetRowBased()),
+	)
+	resp := c.importManager.importJob(ctx, req, cID, pID)
 	return resp, nil
 }
 
-// Check import task state from datanode
+// GetImportState returns the current state of an import task.
 func (c *Core) GetImportState(ctx context.Context, req *milvuspb.GetImportStateRequest) (*milvuspb.GetImportStateResponse, error) {
 	if code, ok := c.checkHealthy(); !ok {
 		return &milvuspb.GetImportStateResponse{
 			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]),
 		}, nil
 	}
+	return c.importManager.getTaskState(req.GetTask()), nil
+}
 
-	log.Info("receive get import state request")
-	resp := &milvuspb.GetImportStateResponse{
+// ListImportTasks returns id array of all import tasks.
+func (c *Core) ListImportTasks(ctx context.Context, req *milvuspb.ListImportTasksRequest) (*milvuspb.ListImportTasksResponse, error) {
+	if code, ok := c.checkHealthy(); !ok {
+		return &milvuspb.ListImportTasksResponse{
+			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]),
+		}, nil
+	}
+
+	resp := &milvuspb.ListImportTasksResponse{
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_Success,
 		},
+		Tasks: c.importManager.listAllTasks(),
 	}
-
 	return resp, nil
 }
 
-// Report impot task state to rootcoord
-func (c *Core) ReportImport(ctx context.Context, req *rootcoordpb.ImportResult) (*commonpb.Status, error) {
+// ReportImport reports import task state to RootCoord.
+func (c *Core) ReportImport(ctx context.Context, ir *rootcoordpb.ImportResult) (*commonpb.Status, error) {
+	log.Info("RootCoord receive import state report",
+		zap.Int64("task ID", ir.GetTaskId()),
+		zap.Any("import state", ir.GetState()))
 	if code, ok := c.checkHealthy(); !ok {
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]), nil
 	}
-
-	log.Info("receive import state report")
-
-	err := c.importManager.updateTaskState(req)
+	// Upon receiving ReportImport request, update the related task's state in task store.
+	ti, err := c.importManager.updateTaskState(ir)
 	if err != nil {
 		return &commonpb.Status{
-			ErrorCode: commonpb.ErrorCode_UnexpectedError,
+			ErrorCode: commonpb.ErrorCode_UpdateImportTaskFailure,
 			Reason:    err.Error(),
 		}, nil
 	}
 
+	// This method update a busy node to idle node, and send import task to idle node
+	resendTaskFunc := func() {
+		func() {
+			c.importManager.busyNodesLock.Lock()
+			defer c.importManager.busyNodesLock.Unlock()
+			delete(c.importManager.busyNodes, ir.GetDatanodeId())
+			log.Info("DataNode is no longer busy",
+				zap.Int64("dataNode ID", ir.GetDatanodeId()),
+				zap.Int64("task ID", ir.GetTaskId()))
+
+		}()
+		c.importManager.sendOutTasks(c.importManager.ctx)
+	}
+
+	// If task failed, send task to idle datanode
+	if ir.GetState() == commonpb.ImportState_ImportFailed {
+		resendTaskFunc()
+	}
+
+	// So much for reporting, unless the task just reached `ImportPersisted` state.
+	if ir.GetState() != commonpb.ImportState_ImportPersisted {
+		log.Debug("non import-persisted state received, return immediately",
+			zap.Any("task ID", ir.GetTaskId()),
+			zap.Any("import state", ir.GetState()))
+		return &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+		}, nil
+	}
+
+	// Look up collection name on collection ID.
+	var colName string
+	var colMeta *etcdpb.CollectionInfo
+	if colMeta, err = c.MetaTable.GetCollectionByID(ti.GetCollectionId(), 0); err != nil {
+		log.Error("failed to get collection name",
+			zap.Int64("collection ID", ti.GetCollectionId()),
+			zap.Error(err))
+		return &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_CollectionNameNotFound,
+			Reason:    "failed to get collection name for collection ID" + strconv.FormatInt(ti.GetCollectionId(), 10),
+		}, nil
+	}
+	colName = colMeta.GetSchema().GetName()
+
+	// When DataNode has done its thing, remove it from the busy node list. And send import task again
+	resendTaskFunc()
+
+	// Flush all import data segments.
+	c.CallFlushOnCollection(ctx, ti.GetCollectionId(), ir.GetSegments())
+	// Check if data are "queryable" and if indices are built on all segments.
+	go c.postImportPersistLoop(c.ctx, ir.GetTaskId(), ti.GetCollectionId(), colName, ir.GetSegments())
+
 	return &commonpb.Status{
 		ErrorCode: commonpb.ErrorCode_Success,
 	}, nil
+}
+
+// CountCompleteIndex checks indexing status of the given segments, and returns the # of segments that has complete index.
+func (c *Core) CountCompleteIndex(ctx context.Context, collectionName string, collectionID UniqueID,
+	allSegmentIDs []UniqueID) (int, error) {
+	// Note: Index name is always Params.CommonCfg.DefaultIndexName in current Milvus design as of today.
+	indexName := Params.CommonCfg.DefaultIndexName
+
+	// Retrieve index status and detailed index information.
+	describeIndexReq := &milvuspb.DescribeIndexRequest{
+		Base: &commonpb.MsgBase{
+			MsgType: commonpb.MsgType_DescribeIndex,
+		},
+		CollectionName: collectionName,
+		IndexName:      indexName,
+	}
+	indexDescriptionResp, err := c.DescribeIndex(ctx, describeIndexReq)
+	if err != nil {
+		return 0, err
+	}
+	log.Debug("got index description", zap.String("index_description", indexDescriptionResp.String()))
+
+	// Check if the target index name exists.
+	matchIndexID := int64(-1)
+	foundIndexID := false
+	for _, desc := range indexDescriptionResp.IndexDescriptions {
+		if desc.IndexName == indexName {
+			matchIndexID = desc.IndexID
+			foundIndexID = true
+			break
+		}
+	}
+	if !foundIndexID {
+		return 0, fmt.Errorf("no index is created")
+	}
+	log.Debug("found match index ID", zap.Int64("match index ID", matchIndexID))
+
+	getIndexStatesRequest := &indexpb.GetIndexStatesRequest{
+		IndexBuildIDs: make([]UniqueID, 0),
+	}
+
+	// Fetch index build IDs from segments.
+	for _, segmentID := range allSegmentIDs {
+		describeSegmentRequest := &milvuspb.DescribeSegmentRequest{
+			Base: &commonpb.MsgBase{
+				MsgType: commonpb.MsgType_DescribeSegment,
+			},
+			CollectionID: collectionID,
+			SegmentID:    segmentID,
+		}
+		segmentDesc, err := c.DescribeSegment(ctx, describeSegmentRequest)
+		if err != nil {
+			log.Error("Failed to describe segment",
+				zap.Int64("collection ID", collectionID),
+				zap.Int64("segment ID", segmentID))
+			return 0, err
+		}
+		if segmentDesc.IndexID == matchIndexID {
+			if segmentDesc.EnableIndex {
+				getIndexStatesRequest.IndexBuildIDs = append(getIndexStatesRequest.IndexBuildIDs, segmentDesc.BuildID)
+			}
+		}
+	}
+	log.Debug("proxy GetIndexState", zap.Int("# of IndexBuildIDs", len(getIndexStatesRequest.IndexBuildIDs)), zap.Error(err))
+
+	if len(getIndexStatesRequest.IndexBuildIDs) == 0 {
+		log.Info("empty index build IDs returned",
+			zap.String("collection name", collectionName),
+			zap.Int64("collection ID", collectionID))
+		return 0, nil
+	}
+	states, err := c.CallGetIndexStatesService(ctx, getIndexStatesRequest.GetIndexBuildIDs())
+	if err != nil {
+		log.Error("failed to get index state in checkSegmentIndexStates", zap.Error(err))
+		return 0, err
+	}
+
+	// Count the # of segments with finished index.
+	ct := 0
+	for _, s := range states {
+		if s.State == commonpb.IndexState_Finished {
+			ct++
+		}
+	}
+	log.Info("segment indexing state checked",
+		zap.Int("# of checked segment", len(states)),
+		zap.Int("# of segments with complete index", ct),
+		zap.String("collection name", collectionName),
+		zap.Int64("collection ID", collectionID),
+	)
+	return ct, nil
+}
+
+func (c *Core) postImportPersistLoop(ctx context.Context, taskID int64, colID int64, colName string, segIDs []UniqueID) {
+	// Loop and check if segments are loaded in queryNodes.
+	c.wg.Add(1)
+	c.checkSegmentLoadedLoop(ctx, taskID, colID, segIDs)
+	// Check if collection has any indexed fields. If so, start a loop to check segments' index states.
+	if colMeta, err := c.MetaTable.GetCollectionByID(colID, 0); err != nil {
+		log.Error("failed to find meta for collection",
+			zap.Int64("collection ID", colID))
+	} else if len(colMeta.GetFieldIndexes()) != 0 {
+		c.wg.Add(1)
+		c.checkCompleteIndexLoop(ctx, taskID, colID, colName, segIDs)
+	}
+}
+
+// checkSegmentLoadedLoop loops and checks if all segments in `segIDs` are loaded in queryNodes.
+func (c *Core) checkSegmentLoadedLoop(ctx context.Context, taskID int64, colID int64, segIDs []UniqueID) {
+	defer c.wg.Done()
+	ticker := time.NewTicker(time.Duration(Params.RootCoordCfg.ImportSegmentStateCheckInterval*1000) * time.Millisecond)
+	defer ticker.Stop()
+	expireTicker := time.NewTicker(time.Duration(Params.RootCoordCfg.ImportSegmentStateWaitLimit*1000) * time.Millisecond)
+	defer expireTicker.Stop()
+	for {
+		select {
+		case <-c.ctx.Done():
+			log.Info("(in check segment loaded loop) context done, exiting checkSegmentLoadedLoop")
+			return
+		case <-ticker.C:
+			resp, err := c.CallGetSegmentInfoService(ctx, colID, segIDs)
+			if err != nil {
+				log.Warn("(in check segment loaded loop) failed to call get segment info on queryCoord",
+					zap.Int64("task ID", taskID),
+					zap.Int64("collection ID", colID),
+					zap.Int64s("segment IDs", segIDs))
+			} else if heuristicSegmentsReady(len(resp.GetInfos()), len(segIDs)) {
+				// Check if all segment info are loaded in queryNodes.
+				log.Info("(in check segment loaded loop) all import data segments loaded in queryNodes",
+					zap.Int64("task ID", taskID),
+					zap.Int64("collection ID", colID),
+					zap.Int64s("segment IDs", segIDs))
+				c.importManager.setTaskDataQueryable(taskID)
+				return
+			}
+		case <-expireTicker.C:
+			log.Warn("(in check segment loaded loop) segments still not loaded after max wait time",
+				zap.Int64("task ID", taskID),
+				zap.Int64("collection ID", colID),
+				zap.Int64s("segment IDs", segIDs))
+			return
+		}
+	}
+}
+
+// checkCompleteIndexLoop loops and checks if all indices are built for an import task's segments.
+func (c *Core) checkCompleteIndexLoop(ctx context.Context, taskID int64, colID int64, colName string, segIDs []UniqueID) {
+	defer c.wg.Done()
+	ticker := time.NewTicker(time.Duration(Params.RootCoordCfg.ImportIndexCheckInterval*1000) * time.Millisecond)
+	defer ticker.Stop()
+	expireTicker := time.NewTicker(time.Duration(Params.RootCoordCfg.ImportIndexWaitLimit*1000) * time.Millisecond)
+	defer expireTicker.Stop()
+	for {
+		select {
+		case <-c.ctx.Done():
+			log.Info("(in check complete index loop) context done, exiting checkCompleteIndexLoop")
+			return
+		case <-ticker.C:
+			if ct, err := c.CountCompleteIndex(ctx, colName, colID, segIDs); err == nil && heuristicSegmentsReady(ct, len(segIDs)) {
+				log.Info("(in check complete index loop) all segment indices are ready!",
+					zap.Int64("task ID", taskID))
+				c.importManager.setTaskDataIndexed(taskID)
+				return
+			}
+		case <-expireTicker.C:
+			log.Warn("(in check complete index loop) indexing is taken too long",
+				zap.Int64("task ID", taskID),
+				zap.Int64("collection ID", colID),
+				zap.Int64s("segment IDs", segIDs))
+			return
+		}
+	}
+}
+
+// ExpireCredCache will call invalidate credential cache
+func (c *Core) ExpireCredCache(ctx context.Context, username string) error {
+	req := proxypb.InvalidateCredCacheRequest{
+		Base: &commonpb.MsgBase{
+			MsgType:  0, //TODO, msg type
+			MsgID:    0, //TODO, msg id
+			SourceID: c.session.ServerID,
+		},
+		Username: username,
+	}
+	return c.proxyClientManager.InvalidateCredentialCache(ctx, &req)
+}
+
+// UpdateCredCache will call update credential cache
+func (c *Core) UpdateCredCache(ctx context.Context, credInfo *internalpb.CredentialInfo) error {
+	req := proxypb.UpdateCredCacheRequest{
+		Base: &commonpb.MsgBase{
+			MsgType:  0, //TODO, msg type
+			MsgID:    0, //TODO, msg id
+			SourceID: c.session.ServerID,
+		},
+		Username: credInfo.Username,
+		Password: credInfo.EncryptedPassword,
+	}
+	return c.proxyClientManager.UpdateCredentialCache(ctx, &req)
+}
+
+// ClearCredUsersCache will call clear credential usernames cache
+func (c *Core) ClearCredUsersCache(ctx context.Context) error {
+	req := internalpb.ClearCredUsersCacheRequest{}
+	return c.proxyClientManager.ClearCredUsersCache(ctx, &req)
+}
+
+// CreateCredential create new user and password
+// 	1. decode ciphertext password to raw password
+// 	2. encrypt raw password
+// 	3. save in to etcd
+func (c *Core) CreateCredential(ctx context.Context, credInfo *internalpb.CredentialInfo) (*commonpb.Status, error) {
+	method := "CreateCredential"
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.TotalLabel).Inc()
+	tr := timerecord.NewTimeRecorder(method)
+	log.Debug("CreateCredential", zap.String("role", typeutil.RootCoordRole),
+		zap.String("username", credInfo.Username))
+
+	if cred, _ := c.MetaTable.getCredential(credInfo.Username); cred != nil {
+		return failStatus(commonpb.ErrorCode_CreateCredentialFailure, "user already exists:"+credInfo.Username), nil
+	}
+	// update proxy's local cache
+	err := c.ClearCredUsersCache(ctx)
+	if err != nil {
+		log.Error("CreateCredential clear credential username list cache failed", zap.String("role", typeutil.RootCoordRole),
+			zap.String("username", credInfo.Username), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.FailLabel).Inc()
+		return failStatus(commonpb.ErrorCode_CreateCredentialFailure, "CreateCredential failed: "+err.Error()), nil
+	}
+	// insert to db
+	err = c.MetaTable.AddCredential(credInfo)
+	if err != nil {
+		log.Error("CreateCredential save credential failed", zap.String("role", typeutil.RootCoordRole),
+			zap.String("username", credInfo.Username), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.FailLabel).Inc()
+		return failStatus(commonpb.ErrorCode_CreateCredentialFailure, "CreateCredential failed: "+err.Error()), nil
+	}
+	log.Debug("CreateCredential success", zap.String("role", typeutil.RootCoordRole),
+		zap.String("username", credInfo.Username))
+
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues(method).Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.RootCoordNumOfCredentials.Inc()
+	return succStatus(), nil
+}
+
+// GetCredential get credential by username
+func (c *Core) GetCredential(ctx context.Context, in *rootcoordpb.GetCredentialRequest) (*rootcoordpb.GetCredentialResponse, error) {
+	method := "GetCredential"
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.TotalLabel).Inc()
+	tr := timerecord.NewTimeRecorder(method)
+	log.Debug("GetCredential", zap.String("role", typeutil.RootCoordRole),
+		zap.String("username", in.Username))
+
+	credInfo, err := c.MetaTable.getCredential(in.Username)
+	if err != nil {
+		log.Error("GetCredential query credential failed", zap.String("role", typeutil.RootCoordRole),
+			zap.String("username", in.Username), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.FailLabel).Inc()
+		return &rootcoordpb.GetCredentialResponse{
+			Status: failStatus(commonpb.ErrorCode_GetCredentialFailure, "GetCredential failed: "+err.Error()),
+		}, err
+	}
+	log.Debug("GetCredential success", zap.String("role", typeutil.RootCoordRole),
+		zap.String("username", in.Username))
+
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues(method).Observe(float64(tr.ElapseSpan().Milliseconds()))
+	return &rootcoordpb.GetCredentialResponse{
+		Status:   succStatus(),
+		Username: credInfo.Username,
+		Password: credInfo.EncryptedPassword,
+	}, nil
+}
+
+// UpdateCredential update password for a user
+func (c *Core) UpdateCredential(ctx context.Context, credInfo *internalpb.CredentialInfo) (*commonpb.Status, error) {
+	method := "UpdateCredential"
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.TotalLabel).Inc()
+	tr := timerecord.NewTimeRecorder(method)
+	log.Debug("UpdateCredential", zap.String("role", typeutil.RootCoordRole),
+		zap.String("username", credInfo.Username))
+	// update proxy's local cache
+	err := c.UpdateCredCache(ctx, credInfo)
+	if err != nil {
+		log.Error("UpdateCredential update credential cache failed", zap.String("role", typeutil.RootCoordRole),
+			zap.String("username", credInfo.Username), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.FailLabel).Inc()
+		return failStatus(commonpb.ErrorCode_UpdateCredentialFailure, "UpdateCredential failed: "+err.Error()), nil
+	}
+	// update data on storage
+	err = c.MetaTable.AddCredential(credInfo)
+	if err != nil {
+		log.Error("UpdateCredential save credential failed", zap.String("role", typeutil.RootCoordRole),
+			zap.String("username", credInfo.Username), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.FailLabel).Inc()
+		return failStatus(commonpb.ErrorCode_UpdateCredentialFailure, "UpdateCredential failed: "+err.Error()), nil
+	}
+	log.Debug("UpdateCredential success", zap.String("role", typeutil.RootCoordRole),
+		zap.String("username", credInfo.Username))
+
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues(method).Observe(float64(tr.ElapseSpan().Milliseconds()))
+	return succStatus(), nil
+}
+
+// DeleteCredential delete a user
+func (c *Core) DeleteCredential(ctx context.Context, in *milvuspb.DeleteCredentialRequest) (*commonpb.Status, error) {
+	method := "DeleteCredential"
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.TotalLabel).Inc()
+	tr := timerecord.NewTimeRecorder(method)
+
+	log.Debug("DeleteCredential", zap.String("role", typeutil.RootCoordRole),
+		zap.String("username", in.Username))
+	// invalidate proxy's local cache
+	err := c.ExpireCredCache(ctx, in.Username)
+	if err != nil {
+		log.Error("DeleteCredential expire credential cache failed", zap.String("role", typeutil.RootCoordRole),
+			zap.String("username", in.Username), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.FailLabel).Inc()
+		return failStatus(commonpb.ErrorCode_DeleteCredentialFailure, "DeleteCredential failed: "+err.Error()), nil
+	}
+	// delete data on storage
+	err = c.MetaTable.DeleteCredential(in.Username)
+	if err != nil {
+		log.Error("DeleteCredential remove credential failed", zap.String("role", typeutil.RootCoordRole),
+			zap.String("username", in.Username), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.FailLabel).Inc()
+		return failStatus(commonpb.ErrorCode_DeleteCredentialFailure, "DeleteCredential failed: "+err.Error()), err
+	}
+	log.Debug("DeleteCredential success", zap.String("role", typeutil.RootCoordRole),
+		zap.String("username", in.Username))
+
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues(method).Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.RootCoordNumOfCredentials.Dec()
+	return succStatus(), nil
+}
+
+// ListCredUsers list all usernames
+func (c *Core) ListCredUsers(ctx context.Context, in *milvuspb.ListCredUsersRequest) (*milvuspb.ListCredUsersResponse, error) {
+	method := "ListCredUsers"
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.TotalLabel).Inc()
+	tr := timerecord.NewTimeRecorder(method)
+
+	credInfo, err := c.MetaTable.ListCredentialUsernames()
+	if err != nil {
+		log.Error("ListCredUsers query usernames failed", zap.String("role", typeutil.RootCoordRole),
+			zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.FailLabel).Inc()
+		return &milvuspb.ListCredUsersResponse{
+			Status: failStatus(commonpb.ErrorCode_ListCredUsersFailure, "ListCredUsers failed: "+err.Error()),
+		}, err
+	}
+	log.Debug("ListCredUsers success", zap.String("role", typeutil.RootCoordRole))
+
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues(method).Observe(float64(tr.ElapseSpan().Milliseconds()))
+	return &milvuspb.ListCredUsersResponse{
+		Status:    succStatus(),
+		Usernames: credInfo.Usernames,
+	}, nil
+}
+
+// heuristicSegmentsReady checks and returns if segments are ready based on count in a heuristic way.
+// We do this to avoid accidentally compacted segments.
+// This is just a temporary solution.
+func heuristicSegmentsReady(currCount int, expectedCount int) bool {
+	return currCount >= expectedCount-2 || float64(currCount)/float64(expectedCount) >= 0.8
 }

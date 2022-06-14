@@ -113,10 +113,62 @@ func TestAllocSegment(t *testing.T) {
 		assert.NotEqualValues(t, 0, allocations[0].ExpireTime)
 	})
 
-	t.Run("allocation fails", func(t *testing.T) {
-		failsAllocator := &FailsAllocator{}
+	t.Run("allocation fails 1", func(t *testing.T) {
+		failsAllocator := &FailsAllocator{
+			allocTsSucceed: true,
+		}
+		segmentManager := newSegmentManager(meta, failsAllocator)
+		_, err := segmentManager.AllocSegment(ctx, collID, 100, "c2", 100)
+		assert.NotNil(t, err)
+	})
+
+	t.Run("allocation fails 2", func(t *testing.T) {
+		failsAllocator := &FailsAllocator{
+			allocIDSucceed: true,
+		}
 		segmentManager := newSegmentManager(meta, failsAllocator)
 		_, err := segmentManager.AllocSegment(ctx, collID, 100, "c1", 100)
+		assert.NotNil(t, err)
+	})
+}
+
+func TestAllocSegmentForImport(t *testing.T) {
+	ctx := context.Background()
+	Params.Init()
+	mockAllocator := newMockAllocator()
+	meta, err := newMemoryMeta(mockAllocator)
+	assert.Nil(t, err)
+	segmentManager := newSegmentManager(meta, mockAllocator)
+
+	schema := newTestSchema()
+	collID, err := mockAllocator.allocID(ctx)
+	assert.Nil(t, err)
+	meta.AddCollection(&datapb.CollectionInfo{ID: collID, Schema: schema})
+
+	t.Run("normal allocation", func(t *testing.T) {
+		allocation, err := segmentManager.AllocSegmentForImport(ctx, collID, 100, "c1", 100)
+		assert.Nil(t, err)
+		assert.NotNil(t, allocation)
+		assert.EqualValues(t, 100, allocation.NumOfRows)
+		assert.NotEqualValues(t, 0, allocation.SegmentID)
+		assert.NotEqualValues(t, 0, allocation.ExpireTime)
+	})
+
+	t.Run("allocation fails 1", func(t *testing.T) {
+		failsAllocator := &FailsAllocator{
+			allocTsSucceed: true,
+		}
+		segmentManager := newSegmentManager(meta, failsAllocator)
+		_, err := segmentManager.AllocSegmentForImport(ctx, collID, 100, "c1", 100)
+		assert.NotNil(t, err)
+	})
+
+	t.Run("allocation fails 2", func(t *testing.T) {
+		failsAllocator := &FailsAllocator{
+			allocIDSucceed: true,
+		}
+		segmentManager := newSegmentManager(meta, failsAllocator)
+		_, err := segmentManager.AllocSegmentForImport(ctx, collID, 100, "c1", 100)
 		assert.NotNil(t, err)
 	})
 }
@@ -186,7 +238,29 @@ func TestSaveSegmentsToMeta(t *testing.T) {
 	allocations, err := segmentManager.AllocSegment(context.Background(), collID, 0, "c1", 1000)
 	assert.Nil(t, err)
 	assert.EqualValues(t, 1, len(allocations))
-	_, err = segmentManager.SealAllSegments(context.Background(), collID)
+	_, err = segmentManager.SealAllSegments(context.Background(), collID, nil)
+	assert.Nil(t, err)
+	segment := meta.GetSegment(allocations[0].SegmentID)
+	assert.NotNil(t, segment)
+	assert.EqualValues(t, segment.LastExpireTime, allocations[0].ExpireTime)
+	assert.EqualValues(t, commonpb.SegmentState_Sealed, segment.State)
+}
+
+func TestSaveSegmentsToMetaWithSpecificSegments(t *testing.T) {
+	Params.Init()
+	mockAllocator := newMockAllocator()
+	meta, err := newMemoryMeta(mockAllocator)
+	assert.Nil(t, err)
+
+	schema := newTestSchema()
+	collID, err := mockAllocator.allocID(context.Background())
+	assert.Nil(t, err)
+	meta.AddCollection(&datapb.CollectionInfo{ID: collID, Schema: schema})
+	segmentManager := newSegmentManager(meta, mockAllocator)
+	allocations, err := segmentManager.AllocSegment(context.Background(), collID, 0, "c1", 1000)
+	assert.Nil(t, err)
+	assert.EqualValues(t, 1, len(allocations))
+	_, err = segmentManager.SealAllSegments(context.Background(), collID, []int64{allocations[0].SegmentID})
 	assert.Nil(t, err)
 	segment := meta.GetSegment(allocations[0].SegmentID)
 	assert.NotNil(t, segment)
@@ -297,7 +371,7 @@ func TestGetFlushableSegments(t *testing.T) {
 		assert.Nil(t, err)
 		assert.EqualValues(t, 1, len(allocations))
 
-		ids, err := segmentManager.SealAllSegments(context.TODO(), collID)
+		ids, err := segmentManager.SealAllSegments(context.TODO(), collID, nil)
 		assert.Nil(t, err)
 		assert.EqualValues(t, 1, len(ids))
 		assert.EqualValues(t, allocations[0].SegmentID, ids[0])

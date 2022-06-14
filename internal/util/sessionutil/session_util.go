@@ -92,7 +92,7 @@ func NewSession(ctx context.Context, metaRoot string, client *clientv3.Client) *
 		session.etcdCli = client
 		return nil
 	}
-	err := retry.Do(ctx, connectEtcdFn, retry.Attempts(300))
+	err := retry.Do(ctx, connectEtcdFn, retry.Attempts(100))
 	if err != nil {
 		log.Warn("failed to initialize session",
 			zap.Error(err))
@@ -115,6 +115,11 @@ func (s *Session) Init(serverName, address string, exclusive bool, triggerKill b
 		panic(err)
 	}
 	s.ServerID = serverID
+}
+
+// String makes Session struct able to be logged by zap
+func (s *Session) String() string {
+	return fmt.Sprintf("Session:<ServerID: %d, ServerName: %s>", s.ServerID, s.ServerName)
 }
 
 // Register will process keepAliveResponse to keep alive with etcd.
@@ -192,7 +197,7 @@ func (s *Session) getServerIDWithKey(key string) (int64, error) {
 // it is false. Otherwise, set it to true.
 func (s *Session) registerService() (<-chan *clientv3.LeaseKeepAliveResponse, error) {
 	var ch <-chan *clientv3.LeaseKeepAliveResponse
-	log.Debug("Session Register Begin", zap.String("ServerName", s.ServerName))
+	log.Debug("service begin to register to etcd", zap.String("serverName", s.ServerName), zap.Int64("ServerID", s.ServerID))
 	registerFn := func() error {
 		resp, err := s.etcdCli.Grant(s.ctx, DefaultTTL)
 		if err != nil {
@@ -208,7 +213,7 @@ func (s *Session) registerService() (<-chan *clientv3.LeaseKeepAliveResponse, er
 
 		key := s.ServerName
 		if !s.Exclusive {
-			key = key + "-" + strconv.FormatInt(s.ServerID, 10)
+			key = fmt.Sprintf("%s-%d", key, s.ServerID)
 		}
 		txnResp, err := s.etcdCli.Txn(s.ctx).If(
 			clientv3.Compare(
@@ -218,7 +223,7 @@ func (s *Session) registerService() (<-chan *clientv3.LeaseKeepAliveResponse, er
 			Then(clientv3.OpPut(path.Join(s.metaRoot, DefaultServiceRoot, key), string(sessionJSON), clientv3.WithLease(resp.ID))).Commit()
 
 		if err != nil {
-			log.Warn("compare and swap error, maybe the key has ben registered", zap.Error(err))
+			log.Warn("compare and swap error, maybe the key has already been registered", zap.Error(err))
 			return err
 		}
 
@@ -230,13 +235,13 @@ func (s *Session) registerService() (<-chan *clientv3.LeaseKeepAliveResponse, er
 		s.keepAliveCancel = keepAliveCancel
 		ch, err = s.etcdCli.KeepAlive(keepAliveCtx, resp.ID)
 		if err != nil {
-			fmt.Printf("keep alive error %s\n", err)
+			fmt.Printf("got error during keeping alive with etcd, err: %s\n", err)
 			return err
 		}
-		log.Debug("Session register successfully", zap.Int64("ServerID", s.ServerID))
+		log.Info("Service registered successfully", zap.String("ServerName", s.ServerName), zap.Int64("serverID", s.ServerID))
 		return nil
 	}
-	err := retry.Do(s.ctx, registerFn, retry.Attempts(DefaultRetryTimes), retry.Sleep(500*time.Millisecond))
+	err := retry.Do(s.ctx, registerFn, retry.Attempts(DefaultRetryTimes))
 	if err != nil {
 		return nil, err
 	}
@@ -324,15 +329,10 @@ func (w *sessionWatcher) start() {
 				return
 			case wresp, ok := <-w.rch:
 				if !ok {
+					log.Warn("session watch channel closed")
 					return
 				}
-
-				err := w.handleWatchResponse(wresp)
-				// internal error not handled,goroutine quit
-				if err != nil {
-					log.Warn("watch goroutine found error", zap.Error(err))
-					return
-				}
+				w.handleWatchResponse(wresp)
 			}
 		}
 	}()
@@ -358,9 +358,14 @@ func (s *Session) WatchServices(prefix string, revision int64, rewatch Rewatch) 
 	return w.eventCh
 }
 
-func (w *sessionWatcher) handleWatchResponse(wresp clientv3.WatchResponse) error {
+func (w *sessionWatcher) handleWatchResponse(wresp clientv3.WatchResponse) {
 	if wresp.Err() != nil {
-		return w.handleWatchErr(wresp.Err())
+		err := w.handleWatchErr(wresp.Err())
+		if err != nil {
+			log.Error("failed to handle watch session response", zap.Error(err))
+			panic(err)
+		}
+		return
 	}
 	for _, ev := range wresp.Events {
 		session := &Session{}
@@ -391,7 +396,6 @@ func (w *sessionWatcher) handleWatchResponse(wresp clientv3.WatchResponse) error
 			Session:   session,
 		}
 	}
-	return nil
 }
 
 func (w *sessionWatcher) handleWatchErr(err error) error {

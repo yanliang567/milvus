@@ -20,12 +20,13 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/milvus-io/milvus/internal/proto/schemapb"
 )
 
-func TestPayload_ReaderandWriter(t *testing.T) {
+func TestPayload_ReaderAndWriter(t *testing.T) {
 
 	t.Run("TestBool", func(t *testing.T) {
 		w, err := NewPayloadWriter(schemapb.DataType_Bool)
@@ -285,7 +286,7 @@ func TestPayload_ReaderandWriter(t *testing.T) {
 		defer r.ReleasePayloadReader()
 	})
 
-	t.Run("TestAddOneString", func(t *testing.T) {
+	t.Run("TestAddString", func(t *testing.T) {
 		w, err := NewPayloadWriter(schemapb.DataType_String)
 		require.Nil(t, err)
 		require.NotNil(t, w)
@@ -311,39 +312,22 @@ func TestPayload_ReaderandWriter(t *testing.T) {
 		length, err = r.GetPayloadLengthFromReader()
 		assert.Nil(t, err)
 		assert.Equal(t, length, 4)
-		str0, err := r.GetOneStringFromPayload(0)
-		assert.Nil(t, err)
-		assert.Equal(t, str0, "hello0")
-		str1, err := r.GetOneStringFromPayload(1)
-		assert.Nil(t, err)
-		assert.Equal(t, str1, "hello1")
-		str2, err := r.GetOneStringFromPayload(2)
-		assert.Nil(t, err)
-		assert.Equal(t, str2, "hello2")
-		str3, err := r.GetOneStringFromPayload(3)
-		assert.Nil(t, err)
-		assert.Equal(t, str3, "hello3")
 
-		istr0, _, err := r.GetDataFromPayload(0)
-		str0 = istr0.(string)
+		str, err := r.GetStringFromPayload()
 		assert.Nil(t, err)
-		assert.Equal(t, str0, "hello0")
 
-		istr1, _, err := r.GetDataFromPayload(1)
-		str1 = istr1.(string)
+		assert.Equal(t, str[0], "hello0")
+		assert.Equal(t, str[1], "hello1")
+		assert.Equal(t, str[2], "hello2")
+		assert.Equal(t, str[3], "hello3")
+
+		istr, _, err := r.GetDataFromPayload()
+		strArray := istr.([]string)
 		assert.Nil(t, err)
-		assert.Equal(t, str1, "hello1")
-
-		istr2, _, err := r.GetDataFromPayload(2)
-		str2 = istr2.(string)
-		assert.Nil(t, err)
-		assert.Equal(t, str2, "hello2")
-
-		istr3, _, err := r.GetDataFromPayload(3)
-		str3 = istr3.(string)
-		assert.Nil(t, err)
-		assert.Equal(t, str3, "hello3")
-
+		assert.Equal(t, strArray[0], "hello0")
+		assert.Equal(t, strArray[1], "hello1")
+		assert.Equal(t, strArray[2], "hello2")
+		assert.Equal(t, strArray[3], "hello3")
 		r.ReleasePayloadReader()
 		w.ReleasePayloadWriter()
 	})
@@ -647,12 +631,6 @@ func TestPayload_ReaderandWriter(t *testing.T) {
 
 		_, _, err := r.GetDataFromPayload()
 		assert.NotNil(t, err)
-
-		_, _, err = r.GetDataFromPayload(1)
-		assert.NotNil(t, err)
-
-		_, _, err = r.GetDataFromPayload(1, 1)
-		assert.NotNil(t, err)
 	})
 	t.Run("TestGetBoolError", func(t *testing.T) {
 		w, err := NewPayloadWriter(schemapb.DataType_Int8)
@@ -675,6 +653,27 @@ func TestPayload_ReaderandWriter(t *testing.T) {
 		assert.NotNil(t, err)
 
 		r.colType = 999
+		_, err = r.GetBoolFromPayload()
+		assert.NotNil(t, err)
+	})
+	t.Run("TestGetBoolError2", func(t *testing.T) {
+		w, err := NewPayloadWriter(schemapb.DataType_Bool)
+		require.Nil(t, err)
+		require.NotNil(t, w)
+
+		err = w.AddBoolToPayload([]bool{true, false, true})
+		assert.Nil(t, err)
+
+		err = w.FinishPayloadWriter()
+		assert.Nil(t, err)
+
+		buffer, err := w.GetPayloadBufferFromWriter()
+		assert.Nil(t, err)
+
+		r, err := NewPayloadReader(schemapb.DataType_Bool, buffer)
+		assert.Nil(t, err)
+
+		r.numRows = 99
 		_, err = r.GetBoolFromPayload()
 		assert.NotNil(t, err)
 	})
@@ -702,6 +701,27 @@ func TestPayload_ReaderandWriter(t *testing.T) {
 		_, err = r.GetInt8FromPayload()
 		assert.NotNil(t, err)
 	})
+	t.Run("TestGetInt8Error2", func(t *testing.T) {
+		w, err := NewPayloadWriter(schemapb.DataType_Int8)
+		require.Nil(t, err)
+		require.NotNil(t, w)
+
+		err = w.AddInt8ToPayload([]int8{1, 2, 3})
+		assert.Nil(t, err)
+
+		err = w.FinishPayloadWriter()
+		assert.Nil(t, err)
+
+		buffer, err := w.GetPayloadBufferFromWriter()
+		assert.Nil(t, err)
+
+		r, err := NewPayloadReader(schemapb.DataType_Int8, buffer)
+		assert.Nil(t, err)
+
+		r.numRows = 99
+		_, err = r.GetInt8FromPayload()
+		assert.NotNil(t, err)
+	})
 	t.Run("TestGetInt16Error", func(t *testing.T) {
 		w, err := NewPayloadWriter(schemapb.DataType_Bool)
 		require.Nil(t, err)
@@ -723,6 +743,27 @@ func TestPayload_ReaderandWriter(t *testing.T) {
 		assert.NotNil(t, err)
 
 		r.colType = 999
+		_, err = r.GetInt16FromPayload()
+		assert.NotNil(t, err)
+	})
+	t.Run("TestGetInt16Error2", func(t *testing.T) {
+		w, err := NewPayloadWriter(schemapb.DataType_Int16)
+		require.Nil(t, err)
+		require.NotNil(t, w)
+
+		err = w.AddInt16ToPayload([]int16{1, 2, 3})
+		assert.Nil(t, err)
+
+		err = w.FinishPayloadWriter()
+		assert.Nil(t, err)
+
+		buffer, err := w.GetPayloadBufferFromWriter()
+		assert.Nil(t, err)
+
+		r, err := NewPayloadReader(schemapb.DataType_Int16, buffer)
+		assert.Nil(t, err)
+
+		r.numRows = 99
 		_, err = r.GetInt16FromPayload()
 		assert.NotNil(t, err)
 	})
@@ -750,6 +791,27 @@ func TestPayload_ReaderandWriter(t *testing.T) {
 		_, err = r.GetInt32FromPayload()
 		assert.NotNil(t, err)
 	})
+	t.Run("TestGetInt32Error2", func(t *testing.T) {
+		w, err := NewPayloadWriter(schemapb.DataType_Int32)
+		require.Nil(t, err)
+		require.NotNil(t, w)
+
+		err = w.AddInt32ToPayload([]int32{1, 2, 3})
+		assert.Nil(t, err)
+
+		err = w.FinishPayloadWriter()
+		assert.Nil(t, err)
+
+		buffer, err := w.GetPayloadBufferFromWriter()
+		assert.Nil(t, err)
+
+		r, err := NewPayloadReader(schemapb.DataType_Int32, buffer)
+		assert.Nil(t, err)
+
+		r.numRows = 99
+		_, err = r.GetInt32FromPayload()
+		assert.NotNil(t, err)
+	})
 	t.Run("TestGetInt64Error", func(t *testing.T) {
 		w, err := NewPayloadWriter(schemapb.DataType_Bool)
 		require.Nil(t, err)
@@ -771,6 +833,27 @@ func TestPayload_ReaderandWriter(t *testing.T) {
 		assert.NotNil(t, err)
 
 		r.colType = 999
+		_, err = r.GetInt64FromPayload()
+		assert.NotNil(t, err)
+	})
+	t.Run("TestGetInt64Error2", func(t *testing.T) {
+		w, err := NewPayloadWriter(schemapb.DataType_Int64)
+		require.Nil(t, err)
+		require.NotNil(t, w)
+
+		err = w.AddInt64ToPayload([]int64{1, 2, 3})
+		assert.Nil(t, err)
+
+		err = w.FinishPayloadWriter()
+		assert.Nil(t, err)
+
+		buffer, err := w.GetPayloadBufferFromWriter()
+		assert.Nil(t, err)
+
+		r, err := NewPayloadReader(schemapb.DataType_Int64, buffer)
+		assert.Nil(t, err)
+
+		r.numRows = 99
 		_, err = r.GetInt64FromPayload()
 		assert.NotNil(t, err)
 	})
@@ -798,6 +881,27 @@ func TestPayload_ReaderandWriter(t *testing.T) {
 		_, err = r.GetFloatFromPayload()
 		assert.NotNil(t, err)
 	})
+	t.Run("TestGetFloatError2", func(t *testing.T) {
+		w, err := NewPayloadWriter(schemapb.DataType_Float)
+		require.Nil(t, err)
+		require.NotNil(t, w)
+
+		err = w.AddFloatToPayload([]float32{1, 2, 3})
+		assert.Nil(t, err)
+
+		err = w.FinishPayloadWriter()
+		assert.Nil(t, err)
+
+		buffer, err := w.GetPayloadBufferFromWriter()
+		assert.Nil(t, err)
+
+		r, err := NewPayloadReader(schemapb.DataType_Float, buffer)
+		assert.Nil(t, err)
+
+		r.numRows = 99
+		_, err = r.GetFloatFromPayload()
+		assert.NotNil(t, err)
+	})
 	t.Run("TestGetDoubleError", func(t *testing.T) {
 		w, err := NewPayloadWriter(schemapb.DataType_Bool)
 		require.Nil(t, err)
@@ -822,7 +926,28 @@ func TestPayload_ReaderandWriter(t *testing.T) {
 		_, err = r.GetDoubleFromPayload()
 		assert.NotNil(t, err)
 	})
-	t.Run("TestGetOneStringError", func(t *testing.T) {
+	t.Run("TestGetDoubleError2", func(t *testing.T) {
+		w, err := NewPayloadWriter(schemapb.DataType_Double)
+		require.Nil(t, err)
+		require.NotNil(t, w)
+
+		err = w.AddDoubleToPayload([]float64{1, 2, 3})
+		assert.Nil(t, err)
+
+		err = w.FinishPayloadWriter()
+		assert.Nil(t, err)
+
+		buffer, err := w.GetPayloadBufferFromWriter()
+		assert.Nil(t, err)
+
+		r, err := NewPayloadReader(schemapb.DataType_Double, buffer)
+		assert.Nil(t, err)
+
+		r.numRows = 99
+		_, err = r.GetDoubleFromPayload()
+		assert.NotNil(t, err)
+	})
+	t.Run("TestGetStringError", func(t *testing.T) {
 		w, err := NewPayloadWriter(schemapb.DataType_Bool)
 		require.Nil(t, err)
 		require.NotNil(t, w)
@@ -839,11 +964,36 @@ func TestPayload_ReaderandWriter(t *testing.T) {
 		r, err := NewPayloadReader(schemapb.DataType_String, buffer)
 		assert.Nil(t, err)
 
-		_, err = r.GetOneStringFromPayload(0)
+		_, err = r.GetStringFromPayload()
 		assert.NotNil(t, err)
 
 		r.colType = 999
-		_, err = r.GetOneStringFromPayload(0)
+		_, err = r.GetStringFromPayload()
+		assert.NotNil(t, err)
+	})
+	t.Run("TestGetStringError2", func(t *testing.T) {
+		w, err := NewPayloadWriter(schemapb.DataType_String)
+		require.Nil(t, err)
+		require.NotNil(t, w)
+
+		err = w.AddOneStringToPayload("hello0")
+		assert.Nil(t, err)
+		err = w.AddOneStringToPayload("hello1")
+		assert.Nil(t, err)
+		err = w.AddOneStringToPayload("hello2")
+		assert.Nil(t, err)
+
+		err = w.FinishPayloadWriter()
+		assert.Nil(t, err)
+
+		buffer, err := w.GetPayloadBufferFromWriter()
+		assert.Nil(t, err)
+
+		r, err := NewPayloadReader(schemapb.DataType_String, buffer)
+		assert.Nil(t, err)
+
+		r.numRows = 99
+		_, err = r.GetStringFromPayload()
 		assert.NotNil(t, err)
 	})
 	t.Run("TestGetBinaryVectorError", func(t *testing.T) {
@@ -870,6 +1020,27 @@ func TestPayload_ReaderandWriter(t *testing.T) {
 		_, _, err = r.GetBinaryVectorFromPayload()
 		assert.NotNil(t, err)
 	})
+	t.Run("TestGetBinaryVectorError2", func(t *testing.T) {
+		w, err := NewPayloadWriter(schemapb.DataType_BinaryVector)
+		require.Nil(t, err)
+		require.NotNil(t, w)
+
+		err = w.AddBinaryVectorToPayload([]byte{1, 0, 0, 0, 0, 0, 0, 0}, 8)
+		assert.Nil(t, err)
+
+		err = w.FinishPayloadWriter()
+		assert.Nil(t, err)
+
+		buffer, err := w.GetPayloadBufferFromWriter()
+		assert.Nil(t, err)
+
+		r, err := NewPayloadReader(schemapb.DataType_BinaryVector, buffer)
+		assert.Nil(t, err)
+
+		r.numRows = 99
+		_, _, err = r.GetBinaryVectorFromPayload()
+		assert.NotNil(t, err)
+	})
 	t.Run("TestGetFloatVectorError", func(t *testing.T) {
 		w, err := NewPayloadWriter(schemapb.DataType_Bool)
 		require.Nil(t, err)
@@ -891,6 +1062,27 @@ func TestPayload_ReaderandWriter(t *testing.T) {
 		assert.NotNil(t, err)
 
 		r.colType = 999
+		_, _, err = r.GetFloatVectorFromPayload()
+		assert.NotNil(t, err)
+	})
+	t.Run("TestGetFloatVectorError2", func(t *testing.T) {
+		w, err := NewPayloadWriter(schemapb.DataType_FloatVector)
+		require.Nil(t, err)
+		require.NotNil(t, w)
+
+		err = w.AddFloatVectorToPayload([]float32{1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}, 8)
+		assert.Nil(t, err)
+
+		err = w.FinishPayloadWriter()
+		assert.Nil(t, err)
+
+		buffer, err := w.GetPayloadBufferFromWriter()
+		assert.Nil(t, err)
+
+		r, err := NewPayloadReader(schemapb.DataType_FloatVector, buffer)
+		assert.Nil(t, err)
+
+		r.numRows = 99
 		_, _, err = r.GetFloatVectorFromPayload()
 		assert.NotNil(t, err)
 	})

@@ -26,24 +26,25 @@ import (
 	"time"
 
 	ot "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
+
 	"github.com/milvus-io/milvus/internal/datacoord"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/etcd"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/logutil"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/trace"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/keepalive"
 )
 
 // Params is the parameters for DataCoord grpc server
@@ -65,7 +66,7 @@ type Server struct {
 }
 
 // NewServer new data service grpc server
-func NewServer(ctx context.Context, factory msgstream.Factory, opts ...datacoord.Option) *Server {
+func NewServer(ctx context.Context, factory dependency.Factory, opts ...datacoord.Option) *Server {
 	ctx1, cancel := context.WithCancel(ctx)
 
 	s := &Server{
@@ -325,7 +326,31 @@ func (s *Server) DropVirtualChannel(ctx context.Context, req *datapb.DropVirtual
 	return s.dataCoord.DropVirtualChannel(ctx, req)
 }
 
+// SetSegmentState sets the state of a segment.
+func (s *Server) SetSegmentState(ctx context.Context, req *datapb.SetSegmentStateRequest) (*datapb.SetSegmentStateResponse, error) {
+	return s.dataCoord.SetSegmentState(ctx, req)
+}
+
 // Import data files(json, numpy, etc.) on MinIO/S3 storage, read and parse them into sealed segments
-func (s *Server) Import(ctx context.Context, req *datapb.ImportTask) (*datapb.ImportTaskResponse, error) {
+func (s *Server) Import(ctx context.Context, req *datapb.ImportTaskRequest) (*datapb.ImportTaskResponse, error) {
 	return s.dataCoord.Import(ctx, req)
+}
+
+// UpdateSegmentStatistics is the dataCoord service caller of UpdateSegmentStatistics.
+func (s *Server) UpdateSegmentStatistics(ctx context.Context, req *datapb.UpdateSegmentStatisticsRequest) (*commonpb.Status, error) {
+	return s.dataCoord.UpdateSegmentStatistics(ctx, req)
+}
+
+// AcquireSegmentLock acquire the reference lock of the segments.
+func (s *Server) AcquireSegmentLock(ctx context.Context, req *datapb.AcquireSegmentLockRequest) (*commonpb.Status, error) {
+	return s.dataCoord.AcquireSegmentLock(ctx, req)
+}
+
+// ReleaseSegmentLock release the reference lock of the segments.
+func (s *Server) ReleaseSegmentLock(ctx context.Context, req *datapb.ReleaseSegmentLockRequest) (*commonpb.Status, error) {
+	return s.dataCoord.ReleaseSegmentLock(ctx, req)
+}
+
+func (s *Server) AddSegment(ctx context.Context, request *datapb.AddSegmentRequest) (*commonpb.Status, error) {
+	return s.dataCoord.AddSegment(ctx, request)
 }

@@ -16,6 +16,8 @@
 #include <vector>
 #include <string>
 #include "knowhere/common/Log.h"
+#include "Meta.h"
+#include "common/Utils.h"
 
 namespace milvus::scalar {
 
@@ -30,7 +32,7 @@ inline ScalarIndexSort<T>::ScalarIndexSort(const size_t n, const T* values) : is
 
 template <typename T>
 inline void
-ScalarIndexSort<T>::Build(const DatasetPtr& dataset) {
+ScalarIndexSort<T>::BuildWithDataset(const DatasetPtr& dataset) {
     auto size = dataset->Get<int64_t>(knowhere::meta::ROWS);
     auto data = dataset->Get<const void*>(knowhere::meta::TENSOR);
     Build(size, reinterpret_cast<const T*>(data));
@@ -40,6 +42,7 @@ template <typename T>
 inline void
 ScalarIndexSort<T>::Build(const size_t n, const T* values) {
     data_.reserve(n);
+    idx_to_offsets_.resize(n);
     T* p = const_cast<T*>(values);
     for (size_t i = 0; i < n; ++i) {
         data_.emplace_back(IndexStructure(*p++, i));
@@ -57,15 +60,16 @@ ScalarIndexSort<T>::build() {
         throw std::invalid_argument("ScalarIndexSort cannot build null values!");
     }
     std::sort(data_.begin(), data_.end());
+    for (size_t i = 0; i < data_.size(); ++i) {
+        idx_to_offsets_[data_[i].idx_] = i;
+    }
     is_built_ = true;
 }
 
 template <typename T>
 inline BinarySet
 ScalarIndexSort<T>::Serialize(const Config& config) {
-    if (!is_built_) {
-        build();
-    }
+    AssertInfo(is_built_, "index has not been built");
 
     auto index_data_size = data_.size() * sizeof(IndexStructure<T>);
     std::shared_ptr<uint8_t[]> index_data(new uint8_t[index_data_size]);
@@ -90,16 +94,18 @@ ScalarIndexSort<T>::Load(const BinarySet& index_binary) {
 
     auto index_data = index_binary.GetByName("index_data");
     data_.resize(index_size);
+    idx_to_offsets_.resize(index_size);
     memcpy(data_.data(), index_data->data.get(), (size_t)index_data->size);
+    for (size_t i = 0; i < data_.size(); ++i) {
+        idx_to_offsets_[data_[i].idx_] = i;
+    }
     is_built_ = true;
 }
 
 template <typename T>
 inline const TargetBitmapPtr
 ScalarIndexSort<T>::In(const size_t n, const T* values) {
-    if (!is_built_) {
-        build();
-    }
+    AssertInfo(is_built_, "index has not been built");
     TargetBitmapPtr bitset = std::make_unique<TargetBitmap>(data_.size());
     for (size_t i = 0; i < n; ++i) {
         auto lb = std::lower_bound(data_.begin(), data_.end(), IndexStructure<T>(*(values + i)));
@@ -118,9 +124,7 @@ ScalarIndexSort<T>::In(const size_t n, const T* values) {
 template <typename T>
 inline const TargetBitmapPtr
 ScalarIndexSort<T>::NotIn(const size_t n, const T* values) {
-    if (!is_built_) {
-        build();
-    }
+    AssertInfo(is_built_, "index has not been built");
     TargetBitmapPtr bitset = std::make_unique<TargetBitmap>(data_.size());
     bitset->set();
     for (size_t i = 0; i < n; ++i) {
@@ -139,24 +143,22 @@ ScalarIndexSort<T>::NotIn(const size_t n, const T* values) {
 
 template <typename T>
 inline const TargetBitmapPtr
-ScalarIndexSort<T>::Range(const T value, const OperatorType op) {
-    if (!is_built_) {
-        build();
-    }
+ScalarIndexSort<T>::Range(const T value, const OpType op) {
+    AssertInfo(is_built_, "index has not been built");
     TargetBitmapPtr bitset = std::make_unique<TargetBitmap>(data_.size());
     auto lb = data_.begin();
     auto ub = data_.end();
     switch (op) {
-        case OperatorType::LT:
+        case OpType::LessThan:
             ub = std::lower_bound(data_.begin(), data_.end(), IndexStructure<T>(value));
             break;
-        case OperatorType::LE:
+        case OpType::LessEqual:
             ub = std::upper_bound(data_.begin(), data_.end(), IndexStructure<T>(value));
             break;
-        case OperatorType::GT:
+        case OpType::GreaterThan:
             lb = std::upper_bound(data_.begin(), data_.end(), IndexStructure<T>(value));
             break;
-        case OperatorType::GE:
+        case OpType::GreaterEqual:
             lb = std::lower_bound(data_.begin(), data_.end(), IndexStructure<T>(value));
             break;
         default:
@@ -171,13 +173,11 @@ ScalarIndexSort<T>::Range(const T value, const OperatorType op) {
 template <typename T>
 inline const TargetBitmapPtr
 ScalarIndexSort<T>::Range(T lower_bound_value, bool lb_inclusive, T upper_bound_value, bool ub_inclusive) {
-    if (!is_built_) {
-        build();
-    }
+    AssertInfo(is_built_, "index has not been built");
     TargetBitmapPtr bitset = std::make_unique<TargetBitmap>(data_.size());
-    if (lower_bound_value > upper_bound_value) {
-        std::swap(lower_bound_value, upper_bound_value);
-        std::swap(lb_inclusive, ub_inclusive);
+    if (lower_bound_value > upper_bound_value ||
+        (lower_bound_value == upper_bound_value && !(lb_inclusive && ub_inclusive))) {
+        return bitset;
     }
     auto lb = data_.begin();
     auto ub = data_.end();
@@ -197,44 +197,14 @@ ScalarIndexSort<T>::Range(T lower_bound_value, bool lb_inclusive, T upper_bound_
     return bitset;
 }
 
-template <>
-inline void
-ScalarIndexSort<std::string>::Build(const milvus::scalar::DatasetPtr& dataset) {
-    auto size = dataset->Get<int64_t>(knowhere::meta::ROWS);
-    auto data = dataset->Get<const void*>(knowhere::meta::TENSOR);
-    proto::schema::StringArray arr;
-    arr.ParseFromArray(data, size);
-    // TODO: optimize here. avoid memory copy.
-    std::vector<std::string> vecs{arr.data().begin(), arr.data().end()};
-    Build(arr.data().size(), vecs.data());
-}
+template <typename T>
+inline T
+ScalarIndexSort<T>::Reverse_Lookup(size_t idx) const {
+    AssertInfo(idx < idx_to_offsets_.size(), "out of range of total count");
+    AssertInfo(is_built_, "index has not been built");
 
-template <>
-inline BinarySet
-ScalarIndexSort<std::string>::Serialize(const Config& config) {
-    BinarySet res_set;
-    auto data = this->GetData();
-    for (const auto& record : data) {
-        auto idx = record.idx_;
-        auto str = record.a_;
-        std::shared_ptr<uint8_t[]> content(new uint8_t[str.length()]);
-        memcpy(content.get(), str.c_str(), str.length());
-        res_set.Append(std::to_string(idx), content, str.length());
-    }
-    return res_set;
-}
-
-template <>
-inline void
-ScalarIndexSort<std::string>::Load(const BinarySet& index_binary) {
-    std::vector<std::string> vecs;
-
-    for (const auto& [k, v] : index_binary.binary_map_) {
-        std::string str(reinterpret_cast<const char*>(v->data.get()), v->size);
-        vecs.emplace_back(str);
-    }
-
-    Build(vecs.size(), vecs.data());
+    auto offset = idx_to_offsets_[idx];
+    return data_[offset].a_;
 }
 
 }  // namespace milvus::scalar

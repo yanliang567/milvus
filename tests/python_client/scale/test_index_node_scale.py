@@ -1,8 +1,7 @@
 import datetime
-import time
 
 import pytest
-from pymilvus import connections
+from pymilvus import connections, MilvusException
 
 from base.collection_wrapper import ApiCollectionWrapper
 from common.common_type import CaseLabel
@@ -47,12 +46,13 @@ class TestIndexNodeScale:
         }
         mic = MilvusOperator()
         mic.install(data_config)
-        if mic.wait_for_healthy(release_name, constants.NAMESPACE, timeout=1200):
+        if mic.wait_for_healthy(release_name, constants.NAMESPACE, timeout=1800):
             host = mic.endpoint(release_name, constants.NAMESPACE).split(':')[0]
         else:
+            # If deploy failed and want to uninsatll mic
             # log.warning(f'Deploy {release_name} timeout and ready to uninstall')
             # mic.uninstall(release_name, namespace=constants.NAMESPACE)
-            raise BaseException(f'Milvus healthy timeout 1200s')
+            raise MilvusException(message=f'Milvus healthy timeout 1800s')
 
         try:
             # connect
@@ -139,12 +139,10 @@ class TestIndexNodeScale:
         }
         mic = MilvusOperator()
         mic.install(data_config)
-        if mic.wait_for_healthy(release_name, constants.NAMESPACE, timeout=1200):
+        if mic.wait_for_healthy(release_name, constants.NAMESPACE, timeout=1800):
             host = mic.endpoint(release_name, constants.NAMESPACE).split(':')[0]
         else:
-            # log.warning(f'Deploy {release_name} timeout and ready to uninstall')
-            # mic.uninstall(release_name, namespace=constants.NAMESPACE)
-            raise BaseException(f'Milvus healthy timeout 1200s')
+            raise MilvusException(message=f'Milvus healthy timeout 1800s')
 
         try:
             # connect
@@ -175,13 +173,13 @@ class TestIndexNodeScale:
             collection_w.drop_index()
             assert not collection_w.has_index()[0]
 
-            # expand indexNode from 2 to 1
+            # shrink indexNode from 2 to 1
             mic.upgrade(release_name, {'spec.components.indexNode.replicas': 1}, constants.NAMESPACE)
             mic.wait_for_healthy(release_name, constants.NAMESPACE)
             wait_pods_ready(constants.NAMESPACE, f"app.kubernetes.io/instance={release_name}")
 
             start = datetime.datetime.now()
-            collection_w.create_index(ct.default_float_vec_field_name, default_index_params)
+            collection_w.create_index(ct.default_float_vec_field_name, default_index_params, timeout=60)
             assert collection_w.has_index()[0]
             t1 = datetime.datetime.now() - start
             log.info(f'Create index on 1 indexNode cost t1: {t1}')

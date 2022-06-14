@@ -133,15 +133,15 @@ func (t *compactionTask) getChannelName() string {
 	return t.plan.GetChannel()
 }
 
-func (t *compactionTask) mergeDeltalogs(dBlobs map[UniqueID][]*Blob, timetravelTs Timestamp) (map[UniqueID]Timestamp, *DelDataBuf, error) {
+func (t *compactionTask) mergeDeltalogs(dBlobs map[UniqueID][]*Blob, timetravelTs Timestamp) (map[primaryKey]Timestamp, *DelDataBuf, error) {
 	mergeStart := time.Now()
 	dCodec := storage.NewDeleteCodec()
 
 	var (
-		pk2ts = make(map[UniqueID]Timestamp)
+		pk2ts = make(map[primaryKey]Timestamp)
 		dbuff = &DelDataBuf{
 			delData: &DeleteData{
-				Pks: make([]UniqueID, 0),
+				Pks: make([]primaryKey, 0),
 				Tss: make([]Timestamp, 0)},
 			Binlog: datapb.Binlog{
 				TimestampFrom: math.MaxUint64,
@@ -191,7 +191,7 @@ func nano2Milli(nano time.Duration) float64 {
 	return float64(nano) / float64(time.Millisecond)
 }
 
-func (t *compactionTask) merge(mergeItr iterator, delta map[UniqueID]Timestamp, schema *schemapb.CollectionSchema, currentTs Timestamp) ([]*InsertData, int64, error) {
+func (t *compactionTask) merge(mergeItr iterator, delta map[primaryKey]Timestamp, schema *schemapb.CollectionSchema, currentTs Timestamp) ([]*InsertData, int64, error) {
 	mergeStart := time.Now()
 
 	var (
@@ -205,6 +205,16 @@ func (t *compactionTask) merge(mergeItr iterator, delta map[UniqueID]Timestamp, 
 		fID2Type    = make(map[UniqueID]schemapb.DataType)
 		fID2Content = make(map[UniqueID][]interface{})
 	)
+
+	isDeletedValue := func(v *storage.Value) bool {
+		for pk, ts := range delta {
+			if pk.EQ(v.PK) && uint64(v.Timestamp) <= ts {
+				return true
+			}
+		}
+
+		return false
+	}
 
 	// get dim
 	for _, fs := range schema.GetFields() {
@@ -234,7 +244,7 @@ func (t *compactionTask) merge(mergeItr iterator, delta map[UniqueID]Timestamp, 
 			return nil, 0, errors.New("unexpected error")
 		}
 
-		if _, ok := delta[v.PK]; ok {
+		if isDeletedValue(v) {
 			continue
 		}
 
@@ -372,12 +382,14 @@ func (t *compactionTask) compact() error {
 		dmu    sync.Mutex
 
 		PKfieldID UniqueID
+		PkType    schemapb.DataType
 	)
 
 	// Get PK fieldID
 	for _, fs := range meta.GetSchema().GetFields() {
-		if fs.GetFieldID() >= 100 && fs.GetDataType() == schemapb.DataType_Int64 && fs.GetIsPrimaryKey() {
+		if fs.GetFieldID() >= 100 && typeutil.IsPrimaryFieldType(fs.GetDataType()) && fs.GetIsPrimaryKey() {
 			PKfieldID = fs.GetFieldID()
+			PkType = fs.GetDataType()
 			break
 		}
 	}
@@ -413,7 +425,7 @@ func (t *compactionTask) compact() error {
 					return err
 				}
 
-				itr, err := storage.NewInsertBinlogIterator(bs, PKfieldID)
+				itr, err := storage.NewInsertBinlogIterator(bs, PKfieldID, PkType)
 				if err != nil {
 					log.Warn("new insert binlogs Itr wrong")
 					return err
@@ -549,7 +561,7 @@ func (t *compactionTask) compact() error {
 	)
 
 	log.Info("overall elapse in ms", zap.Int64("planID", t.plan.GetPlanID()), zap.Any("elapse", nano2Milli(time.Since(compactStart))))
-	metrics.DataNodeCompactionLatency.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.NodeID)).Observe(float64(t.tr.ElapseSpan().Milliseconds()))
+	metrics.DataNodeCompactionLatency.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID())).Observe(float64(t.tr.ElapseSpan().Milliseconds()))
 
 	return nil
 }
@@ -749,20 +761,13 @@ func (t *compactionTask) GetCurrentTime() typeutil.Timestamp {
 }
 
 func (t *compactionTask) isExpiredEntity(ts, now Timestamp) bool {
-	const MaxEntityExpiration = 9223372036 // the value was setup by math.MaxInt64 / time.Second
-	// Check calculable range of milvus config value
-	if Params.DataCoordCfg.CompactionEntityExpiration > MaxEntityExpiration {
-		return false
-	}
-
-	duration := time.Duration(Params.DataCoordCfg.CompactionEntityExpiration) * time.Second
-	// Prevent from duration overflow value
-	if duration < 0 {
+	// entity expire is not enabled if duration <= 0
+	if Params.CommonCfg.EntityExpirationTTL <= 0 {
 		return false
 	}
 
 	pts, _ := tsoutil.ParseTS(ts)
 	pnow, _ := tsoutil.ParseTS(now)
-	expireTime := pts.Add(duration)
+	expireTime := pts.Add(Params.CommonCfg.EntityExpirationTTL)
 	return expireTime.Before(pnow)
 }

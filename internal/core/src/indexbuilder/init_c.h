@@ -16,11 +16,14 @@ extern "C" {
 #endif
 
 void
-IndexBuilderInit();
+IndexBuilderInit(const char*);
 
 // return value must be freed by the caller
 char*
 IndexBuilderSetSimdType(const char*);
+
+void
+IndexBuilderSetIndexSliceSize(const int64_t);
 
 #ifdef __cplusplus
 };

@@ -13,6 +13,22 @@ from utils.util_log import test_log as log
 
 """" Methods of processing data """
 
+class ParamInfo:
+    def __init__(self):
+        self.param_host = ""
+        self.param_port = ""
+        self.param_handler = ""
+        self.param_replica_num = ct.default_replica_num
+
+    def prepare_param_info(self, host, port, handler, replica_num):
+        self.param_host = host
+        self.param_port = port
+        self.param_handler = handler
+        self.param_replica_num = replica_num
+
+
+param_info = ParamInfo()
+
 
 def gen_unique_str(str_value=None):
     prefix = "".join(random.choice(string.ascii_letters + string.digits) for _ in range(8))
@@ -32,6 +48,10 @@ def gen_bool_field(name=ct.default_bool_field_name, description=ct.default_desc,
                                                               is_primary=is_primary, **kwargs)
     return bool_field
 
+def gen_string_field(name=ct.default_string_field_name, description=ct.default_desc, is_primary=False, max_length=ct.default_length, **kwargs):
+    string_field, _ = ApiFieldSchemaWrapper().init_field_schema(name=name, dtype=DataType.VARCHAR, description=description, max_length=max_length, 
+                                                              is_primary=is_primary, **kwargs)
+    return string_field
 
 def gen_int8_field(name=ct.default_int8_field_name, description=ct.default_desc, is_primary=False, **kwargs):
     int8_field, _ = ApiFieldSchemaWrapper().init_field_schema(name=name, dtype=DataType.INT8, description=description,
@@ -87,7 +107,16 @@ def gen_binary_vec_field(name=ct.default_binary_vec_field_name, is_primary=False
 
 def gen_default_collection_schema(description=ct.default_desc, primary_field=ct.default_int64_field_name,
                                   auto_id=False, dim=ct.default_dim):
-    fields = [gen_int64_field(), gen_float_field(), gen_float_vec_field(dim=dim)]
+    fields = [gen_int64_field(), gen_float_field(), gen_string_field(), gen_float_vec_field(dim=dim)]
+    schema, _ = ApiCollectionSchemaWrapper().init_collection_schema(fields=fields, description=description,
+                                                                    primary_field=primary_field, auto_id=auto_id)
+    return schema
+
+
+
+def gen_string_pk_default_collection_schema(description=ct.default_desc, primary_field=ct.default_string_field_name,
+                                  auto_id=False, dim=ct.default_dim):
+    fields = [gen_int64_field(), gen_float_field(), gen_string_field(), gen_float_vec_field(dim=dim)]
     schema, _ = ApiCollectionSchemaWrapper().init_collection_schema(fields=fields, description=description,
                                                                     primary_field=primary_field, auto_id=auto_id)
     return schema
@@ -97,7 +126,7 @@ def gen_collection_schema_all_datatype(description=ct.default_desc,
                                        primary_field=ct.default_int64_field_name,
                                        auto_id=False, dim=ct.default_dim):
     fields = [gen_int64_field(), gen_int32_field(), gen_int16_field(), gen_int8_field(),
-              gen_bool_field(), gen_float_field(), gen_double_field(), gen_float_vec_field(dim=dim)]
+              gen_bool_field(), gen_float_field(), gen_double_field(), gen_string_field(), gen_float_vec_field(dim=dim)]
     schema, _ = ApiCollectionSchemaWrapper().init_collection_schema(fields=fields, description=description,
                                                                     primary_field=primary_field, auto_id=auto_id)
     return schema
@@ -111,7 +140,7 @@ def gen_collection_schema(fields, primary_field=None, description=ct.default_des
 
 def gen_default_binary_collection_schema(description=ct.default_desc, primary_field=ct.default_int64_field_name,
                                          auto_id=False, dim=ct.default_dim):
-    fields = [gen_int64_field(), gen_float_field(), gen_binary_vec_field(dim=dim)]
+    fields = [gen_int64_field(), gen_float_field(), gen_string_field(), gen_binary_vec_field(dim=dim)]
     binary_schema, _ = ApiCollectionSchemaWrapper().init_collection_schema(fields=fields, description=description,
                                                                            primary_field=primary_field,
                                                                            auto_id=auto_id)
@@ -119,12 +148,21 @@ def gen_default_binary_collection_schema(description=ct.default_desc, primary_fi
 
 
 def gen_schema_multi_vector_fields(vec_fields):
-    fields = [gen_int64_field(), gen_float_field(), gen_float_vec_field()]
+    fields = [gen_int64_field(), gen_float_field(),gen_string_field(), gen_float_vec_field()]
     fields.extend(vec_fields)
     primary_field = ct.default_int64_field_name
     schema, _ = ApiCollectionSchemaWrapper().init_collection_schema(fields=fields, description=ct.default_desc,
                                                                     primary_field=primary_field, auto_id=False)
     return schema
+
+def gen_schema_multi_string_fields(string_fields):
+    fields =[gen_int64_field(), gen_float_field(),gen_string_field(),gen_float_vec_field()]
+    fields.extend(string_fields)
+    primary_field = ct.default_int64_field_name
+    schema, _ = ApiCollectionSchemaWrapper().init_collection_schema(fields=fields, description=ct.default_desc,
+                                                                    primary_field=primary_field, auto_id=False)
+    return schema
+
 
 
 def gen_vectors(nb, dim):
@@ -132,6 +170,10 @@ def gen_vectors(nb, dim):
     vectors = preprocessing.normalize(vectors, axis=1, norm='l2')
     return vectors.tolist()
 
+def gen_string(nb):
+    string_values = [str(random.random()) for _ in range(nb)]
+    return string_values
+    
 
 def gen_binary_vectors(num, dim):
     raw_vectors = []
@@ -146,11 +188,13 @@ def gen_binary_vectors(num, dim):
 
 def gen_default_dataframe_data(nb=ct.default_nb, dim=ct.default_dim, start=0):
     int_values = pd.Series(data=[i for i in range(start, start + nb)])
-    float_values = pd.Series(data=[float(i) for i in range(start, start + nb)], dtype="float32")
+    float_values = pd.Series(data=[np.float32(i) for i in range(start, start + nb)], dtype="float32")
+    string_values = pd.Series(data=[str(i) for i in range(start, start + nb)], dtype="string")
     float_vec_values = gen_vectors(nb, dim)
     df = pd.DataFrame({
         ct.default_int64_field_name: int_values,
         ct.default_float_field_name: float_values,
+        ct.default_string_field_name: string_values,
         ct.default_float_vec_field_name: float_vec_values
     })
     return df
@@ -165,9 +209,11 @@ def gen_dataframe_multi_vec_fields(vec_fields, nb=ct.default_nb):
     """
     int_values = pd.Series(data=[i for i in range(0, nb)])
     float_values = pd.Series(data=[float(i) for i in range(nb)], dtype="float32")
+    string_values = pd.Series(data=[str(i) for i in range(nb)], dtype="string")
     df = pd.DataFrame({
         ct.default_int64_field_name: int_values,
         ct.default_float_field_name: float_values,
+        ct.default_string_field_name: string_values,
         ct.default_float_vec_field_name: gen_vectors(nb, ct.default_dim)
     })
     for field in vec_fields:
@@ -179,6 +225,28 @@ def gen_dataframe_multi_vec_fields(vec_fields, nb=ct.default_nb):
         df[field.name] = vec_values
     return df
 
+def gen_dataframe_multi_string_fields(string_fields, nb=ct.default_nb):
+    """
+    gen dataframe data for fields: int64, float, float_vec and vec_fields
+    :param nb: num of entities, default default_nb
+    :param vec_fields: list of FieldSchema
+    :return: dataframe
+    """
+    int_values = pd.Series(data=[i for i in range(0, nb)])
+    float_values = pd.Series(data=[float(i) for i in range(nb)], dtype="float32")
+    string_values = pd.Series(data=[str(i) for i in range(nb)], dtype="string")
+    df = pd.DataFrame({
+        ct.default_int64_field_name: int_values,
+        ct.default_float_field_name: float_values,
+        ct.default_string_field_name: string_values,
+        ct.default_float_vec_field_name: gen_vectors(nb, ct.default_dim)
+    })
+    for field in string_fields:
+        if field.dtype == DataType.VARCHAR:
+            string_values = gen_string(nb)
+        df[field.name] = string_values
+    return df
+
 
 def gen_dataframe_all_data_type(nb=ct.default_nb, dim=ct.default_dim, start=0):
     int64_values = pd.Series(data=[i for i in range(start, start + nb)])
@@ -186,9 +254,9 @@ def gen_dataframe_all_data_type(nb=ct.default_nb, dim=ct.default_dim, start=0):
     int16_values = pd.Series(data=[np.int16(i) for i in range(start, start + nb)], dtype="int16")
     int8_values = pd.Series(data=[np.int8(i) for i in range(start, start + nb)], dtype="int8")
     bool_values = pd.Series(data=[np.bool(i) for i in range(start, start + nb)], dtype="bool")
-    float_values = pd.Series(data=[float(i) for i in range(start, start + nb)], dtype="float32")
+    float_values = pd.Series(data=[np.float32(i) for i in range(start, start + nb)], dtype="float32")
     double_values = pd.Series(data=[np.double(i) for i in range(start, start + nb)], dtype="double")
-    # string_values = pd.Series(data=[str(i) for i in range(start, start + nb)], dtype="string")
+    string_values = pd.Series(data=[str(i) for i in range(start, start + nb)], dtype="string")
     float_vec_values = gen_vectors(nb, dim)
     df = pd.DataFrame({
         ct.default_int64_field_name: int64_values,
@@ -197,8 +265,8 @@ def gen_dataframe_all_data_type(nb=ct.default_nb, dim=ct.default_dim, start=0):
         ct.default_int8_field_name: int8_values,
         ct.default_bool_field_name: bool_values,
         ct.default_float_field_name: float_values,
-        # ct.default_string_field_name: string_values,
         ct.default_double_field_name: double_values,
+        ct.default_string_field_name: string_values,
         ct.default_float_vec_field_name: float_vec_values
     })
     return df
@@ -206,11 +274,13 @@ def gen_dataframe_all_data_type(nb=ct.default_nb, dim=ct.default_dim, start=0):
 
 def gen_default_binary_dataframe_data(nb=ct.default_nb, dim=ct.default_dim, start=0):
     int_values = pd.Series(data=[i for i in range(start, start + nb)])
-    float_values = pd.Series(data=[float(i) for i in range(start, start + nb)], dtype="float32")
+    float_values = pd.Series(data=[np.float32(i) for i in range(start, start + nb)], dtype="float32")
+    string_values = pd.Series(data=[str(i) for i in range(start, start + nb)], dtype="string")
     binary_raw_values, binary_vec_values = gen_binary_vectors(nb, dim)
     df = pd.DataFrame({
         ct.default_int64_field_name: int_values,
         ct.default_float_field_name: float_values,
+        ct.default_string_field_name: string_values,
         ct.default_binary_vec_field_name: binary_vec_values
     })
     return df, binary_raw_values
@@ -219,32 +289,45 @@ def gen_default_binary_dataframe_data(nb=ct.default_nb, dim=ct.default_dim, star
 def gen_default_list_data(nb=ct.default_nb, dim=ct.default_dim):
     int_values = [i for i in range(nb)]
     float_values = [np.float32(i) for i in range(nb)]
+    string_values = [str(i) for i in range(nb)]
     float_vec_values = gen_vectors(nb, dim)
-    data = [int_values, float_values, float_vec_values]
+    data = [int_values, float_values, string_values, float_vec_values]
+    return data
+
+
+def gen_default_list_data_for_bulk_load(nb=ct.default_nb, dim=ct.default_dim):
+    int_values = [i for i in range(nb)]
+    float_values = [float(i) for i in range(nb)]
+    string_values = [str(i) for i in range(nb)]
+    float_vec_values = gen_vectors(nb, dim)
+    data = [int_values, float_values, string_values, float_vec_values]
     return data
 
 
 def gen_default_tuple_data(nb=ct.default_nb, dim=ct.default_dim):
     int_values = [i for i in range(nb)]
-    float_values = [float(i) for i in range(nb)]
+    float_values = [np.float32(i) for i in range(nb)]
+    string_values = [str(i) for i in range(nb)]
     float_vec_values = gen_vectors(nb, dim)
-    data = (int_values, float_values, float_vec_values)
+    data = (int_values, float_values, string_values, float_vec_values)
     return data
 
 
 def gen_numpy_data(nb=ct.default_nb, dim=ct.default_dim):
     int_values = np.arange(nb, dtype='int64')
     float_values = np.arange(nb, dtype='float32')
+    string_values = [np.str(i) for i in range(nb)]
     float_vec_values = gen_vectors(nb, dim)
-    data = [int_values, float_values, float_vec_values]
+    data = [int_values, float_values, string_values, float_vec_values]
     return data
 
 
 def gen_default_binary_list_data(nb=ct.default_nb, dim=ct.default_dim):
     int_values = [i for i in range(nb)]
     float_values = [np.float32(i) for i in range(nb)]
+    string_values = [str(i) for i in range(nb)]
     binary_raw_values, binary_vec_values = gen_binary_vectors(nb, dim)
-    data = [int_values, float_values, binary_vec_values]
+    data = [int_values, float_values, string_values, binary_vec_values]
     return data, binary_raw_values
 
 
@@ -349,6 +432,27 @@ def gen_normal_expressions():
     ]
     return expressions
 
+
+def gen_normal_string_expressions(field):
+    expressions = [
+        f"\"0\"< {field} < \"3\"",
+        f"{field} >= \"0\"",
+        f"({field} > \"0\" && {field} < \"100\") or ({field} > \"200\" && {field} < \"300\")",
+        f"\"0\" <= {field} <= \"100\"",
+        f"{field} == \"0\"|| {field} == \"1\"|| {field} ==\"2\"",
+        f"{field} != \"0\"",
+        f"{field} not in [\"0\", \"1\", \"2\"]",
+        f"{field} in [\"0\", \"1\", \"2\"]"    
+    ]
+    return expressions
+
+def gen_invaild_string_expressions():
+    expressions = [
+        "varchar in [0,  \"1\"]",
+        "varchar not in [\"0\", 1, 2]"    
+    ]
+    return expressions
+    
 
 def gen_normal_expressions_field(field):
     expressions = [
@@ -537,14 +641,31 @@ def get_segment_distribution(res):
     from collections import defaultdict
     segment_distribution = defaultdict(lambda: {"growing": [], "sealed": []})
     for r in res:
-        if r.nodeID not in segment_distribution:
-            segment_distribution[r.nodeID] = {
-                "growing": [],
-                "sealed": []
-            }
-        if r.state == 3:
-            segment_distribution[r.nodeID]["sealed"].append(r.segmentID)
-        if r.state == 2:
-            segment_distribution[r.nodeID]["growing"].append(r.segmentID)
+        for node_id in r.nodeIds:
+            if node_id not in segment_distribution:
+                segment_distribution[node_id] = {
+                    "growing": [],
+                    "sealed": []
+                }
+            if r.state == 3:
+                segment_distribution[node_id]["sealed"].append(r.segmentID)
+            if r.state == 2:
+                segment_distribution[node_id]["growing"].append(r.segmentID)
 
     return segment_distribution
+
+def percent_to_int(string):
+    """
+    transform percent(0%--100%) to int
+    """
+
+    new_int = -1
+    if not isinstance(string, str):
+        log.error("%s is not a string" % string)
+        return new_int
+    if "%" not in string:
+        log.error("%s is not a percent" % string)
+    else:
+        new_int = int(string.strip("%"))
+
+    return new_int

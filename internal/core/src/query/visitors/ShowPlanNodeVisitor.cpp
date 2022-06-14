@@ -49,13 +49,13 @@ get_indent(int indent) {
 
 void
 ShowPlanNodeVisitor::visit(FloatVectorANNS& node) {
-    // std::vector<float> data(node.data_.get(), node.data_.get() + node.num_queries_  * node.dim_);
+    // std::vector<float> data(node.data_.get(), node.data_.get() + node.total_nq_  * node.dim_);
     assert(!ret_);
     auto& info = node.search_info_;
     Json json_body{
         {"node_type", "FloatVectorANNS"},                      //
         {"metric_type", MetricTypeToName(info.metric_type_)},  //
-        {"field_offset_", info.field_offset_.get()},           //
+        {"field_id_", info.field_id_.get()},                   //
         {"topk", info.topk_},                                  //
         {"search_params", info.search_params_},                //
         {"placeholder_tag", node.placeholder_tag_},            //
@@ -77,7 +77,7 @@ ShowPlanNodeVisitor::visit(BinaryVectorANNS& node) {
     Json json_body{
         {"node_type", "BinaryVectorANNS"},                     //
         {"metric_type", MetricTypeToName(info.metric_type_)},  //
-        {"field_offset_", info.field_offset_.get()},           //
+        {"field_id_", info.field_id_.get()},                   //
         {"topk", info.topk_},                                  //
         {"search_params", info.search_params_},                //
         {"placeholder_tag", node.placeholder_tag_},            //

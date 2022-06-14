@@ -18,56 +18,73 @@ package grpcproxy
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"strconv"
 	"sync"
 	"time"
 
+	"google.golang.org/grpc/credentials"
+
+	grpc_auth "github.com/grpc-ecosystem/go-grpc-middleware/auth"
+
+	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/gin-gonic/gin"
 	ot "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
-	dcc "github.com/milvus-io/milvus/internal/distributed/datacoord/client"
-	icc "github.com/milvus-io/milvus/internal/distributed/indexcoord/client"
-	"github.com/milvus-io/milvus/internal/distributed/proxy/httpserver"
-	qcc "github.com/milvus-io/milvus/internal/distributed/querycoord/client"
-	rcc "github.com/milvus-io/milvus/internal/distributed/rootcoord/client"
-	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/mq/msgstream"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
-	"github.com/milvus-io/milvus/internal/proto/milvuspb"
-	"github.com/milvus-io/milvus/internal/proto/proxypb"
-	"github.com/milvus-io/milvus/internal/proxy"
-	"github.com/milvus-io/milvus/internal/types"
-	"github.com/milvus-io/milvus/internal/util/etcd"
-	"github.com/milvus-io/milvus/internal/util/funcutil"
-	"github.com/milvus-io/milvus/internal/util/paramtable"
-	"github.com/milvus-io/milvus/internal/util/trace"
-	"github.com/milvus-io/milvus/internal/util/typeutil"
 	"github.com/opentracing/opentracing-go"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/keepalive"
+
+	dcc "github.com/milvus-io/milvus/internal/distributed/datacoord/client"
+	icc "github.com/milvus-io/milvus/internal/distributed/indexcoord/client"
+	"github.com/milvus-io/milvus/internal/distributed/proxy/httpserver"
+	qcc "github.com/milvus-io/milvus/internal/distributed/querycoord/client"
+	rcc "github.com/milvus-io/milvus/internal/distributed/rootcoord/client"
+	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/proto/commonpb"
+	"github.com/milvus-io/milvus/internal/proto/internalpb"
+	"github.com/milvus-io/milvus/internal/proto/milvuspb"
+	"github.com/milvus-io/milvus/internal/proto/proxypb"
+	"github.com/milvus-io/milvus/internal/proxy"
+	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/dependency"
+	"github.com/milvus-io/milvus/internal/util/etcd"
+	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
+	"github.com/milvus-io/milvus/internal/util/trace"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
 var Params paramtable.GrpcServerConfig
 var HTTPParams paramtable.HTTPConfig
 
+var (
+	errMissingMetadata = status.Errorf(codes.InvalidArgument, "missing metadata")
+	errInvalidToken    = status.Errorf(codes.Unauthenticated, "invalid token")
+)
+
 // Server is the Proxy Server
 type Server struct {
-	ctx        context.Context
-	wg         sync.WaitGroup
-	proxy      types.ProxyComponent
-	grpcServer *grpc.Server
-	httpServer *http.Server
+	ctx                context.Context
+	wg                 sync.WaitGroup
+	proxy              types.ProxyComponent
+	grpcInternalServer *grpc.Server
+	grpcExternalServer *grpc.Server
+	httpServer         *http.Server
 	// avoid race
 	httpServerMtx sync.Mutex
-
-	grpcErrChan chan error
 
 	etcdCli          *clientv3.Client
 	rootCoordClient  types.RootCoord
@@ -80,12 +97,11 @@ type Server struct {
 }
 
 // NewServer create a Proxy server.
-func NewServer(ctx context.Context, factory msgstream.Factory) (*Server, error) {
+func NewServer(ctx context.Context, factory dependency.Factory) (*Server, error) {
 
 	var err error
 	server := &Server{
-		ctx:         ctx,
-		grpcErrChan: make(chan error),
+		ctx: ctx,
 	}
 
 	server.proxy, err = proxy.NewProxy(server.ctx, factory)
@@ -105,6 +121,9 @@ func (s *Server) startHTTPServer(port int) {
 		gin.DefaultWriter = io.Discard
 		gin.DefaultErrorWriter = io.Discard
 	}
+	if !HTTPParams.DebugMode {
+		gin.SetMode(gin.ReleaseMode)
+	}
 	ginHandler := gin.Default()
 	apiv1 := ginHandler.Group("/api/v1")
 	httpserver.NewHandlers(s.proxy).RegisterRoutesTo(apiv1)
@@ -123,9 +142,18 @@ func (s *Server) startHTTPServer(port int) {
 	}
 }
 
-func (s *Server) startGrpcLoop(grpcPort int) {
-	defer s.wg.Done()
+func (s *Server) startInternalRPCServer(grpcInternalPort int, errChan chan error) {
+	s.wg.Add(1)
+	go s.startInternalGrpc(grpcInternalPort, errChan)
+}
 
+func (s *Server) startExternalRPCServer(grpcExternalPort int, errChan chan error) {
+	s.wg.Add(1)
+	go s.startExternalGrpc(grpcExternalPort, errChan)
+}
+
+func (s *Server) startExternalGrpc(grpcPort int, errChan chan error) {
+	defer s.wg.Done()
 	var kaep = keepalive.EnforcementPolicy{
 		MinTime:             5 * time.Second, // If a client pings more than once every 5 seconds, terminate the connection
 		PermitWithoutStream: true,            // Allow pings even when there are no active streams
@@ -140,36 +168,129 @@ func (s *Server) startGrpcLoop(grpcPort int) {
 	lis, err := net.Listen("tcp", ":"+strconv.Itoa(grpcPort))
 	if err != nil {
 		log.Warn("Proxy server failed to listen on", zap.Error(err), zap.Int("port", grpcPort))
-		s.grpcErrChan <- err
+		errChan <- err
 		return
 	}
 	log.Debug("Proxy server already listen on tcp", zap.Int("port", grpcPort))
 
-	ctx, cancel := context.WithCancel(s.ctx)
-	defer cancel()
-
 	opts := trace.GetInterceptorOpts()
-	s.grpcServer = grpc.NewServer(
+	grpcOpts := []grpc.ServerOption{
 		grpc.KeepaliveEnforcementPolicy(kaep),
 		grpc.KeepaliveParams(kasp),
 		grpc.MaxRecvMsgSize(Params.ServerMaxRecvSize),
 		grpc.MaxSendMsgSize(Params.ServerMaxSendSize),
-		grpc.UnaryInterceptor(ot.UnaryServerInterceptor(opts...)),
-		grpc.StreamInterceptor(ot.StreamServerInterceptor(opts...)))
-	proxypb.RegisterProxyServer(s.grpcServer, s)
-	milvuspb.RegisterMilvusServiceServer(s.grpcServer, s)
-	grpc_health_v1.RegisterHealthServer(s.grpcServer, s)
+		grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
+			ot.UnaryServerInterceptor(opts...),
+			grpc_auth.UnaryServerInterceptor(proxy.AuthenticationInterceptor),
+		)),
+		grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(
+			ot.StreamServerInterceptor(opts...),
+			grpc_auth.StreamServerInterceptor(proxy.AuthenticationInterceptor))),
+	}
+
+	if Params.TLSMode == 1 {
+		creds, err := credentials.NewServerTLSFromFile(Params.ServerPemPath, Params.ServerKeyPath)
+		if err != nil {
+			log.Warn("proxy can't create creds", zap.Error(err))
+			errChan <- err
+			return
+		}
+		grpcOpts = append(grpcOpts, grpc.Creds(creds))
+	} else if Params.TLSMode == 2 {
+		cert, err := tls.LoadX509KeyPair(Params.ServerPemPath, Params.ServerKeyPath)
+		if err != nil {
+			log.Warn("proxy cant load x509 key pair", zap.Error(err))
+			errChan <- err
+			return
+		}
+
+		certPool := x509.NewCertPool()
+		rootBuf, err := ioutil.ReadFile(Params.CaPemPath)
+		if err != nil {
+			log.Warn("failed read ca pem", zap.Error(err))
+			errChan <- err
+			return
+		}
+		if !certPool.AppendCertsFromPEM(rootBuf) {
+			log.Warn("fail to append ca to cert")
+			errChan <- fmt.Errorf("fail to append ca to cert")
+			return
+		}
+
+		tlsConf := &tls.Config{
+			ClientAuth:   tls.RequireAndVerifyClientCert,
+			Certificates: []tls.Certificate{cert},
+			ClientCAs:    certPool,
+			MinVersion:   tls.VersionTLS13,
+		}
+		grpcOpts = append(grpcOpts, grpc.Creds(credentials.NewTLS(tlsConf)))
+	}
+	s.grpcExternalServer = grpc.NewServer(grpcOpts...)
+	proxypb.RegisterProxyServer(s.grpcExternalServer, s)
+	milvuspb.RegisterMilvusServiceServer(s.grpcExternalServer, s)
+	grpc_health_v1.RegisterHealthServer(s.grpcExternalServer, s)
+	errChan <- nil
+
 	log.Debug("create Proxy grpc server",
 		zap.Any("enforcement policy", kaep),
 		zap.Any("server parameters", kasp))
 
-	log.Debug("waiting for Proxy grpc server to be ready")
-	go funcutil.CheckGrpcReady(ctx, s.grpcErrChan)
+	if err := s.grpcExternalServer.Serve(lis); err != nil {
+		log.Error("failed to serve on Proxy's listener", zap.Error(err))
+		errChan <- err
+		return
+	}
+}
 
-	log.Debug("Proxy grpc server has been ready, serve grpc requests on listen")
-	if err := s.grpcServer.Serve(lis); err != nil {
-		log.Warn("failed to serve on Proxy's listener", zap.Error(err))
-		s.grpcErrChan <- err
+func (s *Server) startInternalGrpc(grpcPort int, errChan chan error) {
+	defer s.wg.Done()
+	var kaep = keepalive.EnforcementPolicy{
+		MinTime:             5 * time.Second, // If a client pings more than once every 5 seconds, terminate the connection
+		PermitWithoutStream: true,            // Allow pings even when there are no active streams
+	}
+
+	var kasp = keepalive.ServerParameters{
+		Time:    60 * time.Second, // Ping the client if it is idle for 60 seconds to ensure the connection is still active
+		Timeout: 10 * time.Second, // Wait 10 second for the ping ack before assuming the connection is dead
+	}
+
+	log.Debug("Proxy internal server listen on tcp", zap.Int("port", grpcPort))
+	lis, err := net.Listen("tcp", ":"+strconv.Itoa(grpcPort))
+	if err != nil {
+		log.Warn("Proxy internal server failed to listen on", zap.Error(err), zap.Int("port", grpcPort))
+		errChan <- err
+		return
+	}
+	log.Debug("Proxy internal server already listen on tcp", zap.Int("port", grpcPort))
+
+	opts := trace.GetInterceptorOpts()
+	s.grpcInternalServer = grpc.NewServer(
+		grpc.KeepaliveEnforcementPolicy(kaep),
+		grpc.KeepaliveParams(kasp),
+		grpc.MaxRecvMsgSize(Params.ServerMaxRecvSize),
+		grpc.MaxSendMsgSize(Params.ServerMaxSendSize),
+		grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
+			ot.UnaryServerInterceptor(opts...),
+			grpc_auth.UnaryServerInterceptor(proxy.AuthenticationInterceptor),
+		)),
+		grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(
+			ot.StreamServerInterceptor(opts...),
+			grpc_auth.StreamServerInterceptor(proxy.AuthenticationInterceptor),
+		)),
+	)
+	proxypb.RegisterProxyServer(s.grpcInternalServer, s)
+	milvuspb.RegisterMilvusServiceServer(s.grpcInternalServer, s)
+	grpc_health_v1.RegisterHealthServer(s.grpcInternalServer, s)
+	errChan <- nil
+
+	log.Debug("create Proxy internal grpc server",
+		zap.Any("enforcement policy", kaep),
+		zap.Any("server parameters", kasp))
+
+	if err := s.grpcInternalServer.Serve(lis); err != nil {
+		log.Error("failed to internal serve on Proxy's listener", zap.Error(err))
+		errChan <- err
+		return
 	}
 }
 
@@ -204,8 +325,8 @@ func (s *Server) init() error {
 	}
 
 	proxy.Params.InitOnce()
-	proxy.Params.ProxyCfg.NetworkAddress = Params.GetAddress()
-	log.Debug("init Proxy's parameter table done", zap.String("address", Params.GetAddress()))
+	proxy.Params.ProxyCfg.NetworkAddress = Params.GetInternalAddress()
+	log.Debug("init Proxy's parameter table done", zap.String("internal address", Params.GetInternalAddress()), zap.String("external address", Params.GetAddress()))
 
 	serviceName := fmt.Sprintf("Proxy ip: %s, port: %d", Params.IP, Params.Port)
 	closer := trace.InitTracing(serviceName)
@@ -219,14 +340,23 @@ func (s *Server) init() error {
 	}
 	s.etcdCli = etcdCli
 	s.proxy.SetEtcdClient(s.etcdCli)
-	s.wg.Add(1)
-	go s.startGrpcLoop(Params.Port)
-	log.Debug("waiting for grpc server of Proxy to be started")
-	if err := <-s.grpcErrChan; err != nil {
-		log.Warn("failed to start Proxy's grpc server", zap.Error(err))
-		return err
+
+	errChan := make(chan error, 1)
+	{
+		s.startInternalRPCServer(Params.InternalPort, errChan)
+		if err := <-errChan; err != nil {
+			log.Error("failed to create internal rpc server", zap.Error(err))
+			return err
+		}
 	}
-	log.Debug("grpc server of proxy has been started")
+	{
+		s.startExternalRPCServer(Params.Port, errChan)
+		if err := <-errChan; err != nil {
+			log.Error("failed to create external rpc server", zap.Error(err))
+			return err
+		}
+	}
+
 	if HTTPParams.Enabled {
 		log.Info("start http server of proxy", zap.Int("port", HTTPParams.Port))
 		s.wg.Add(1)
@@ -358,6 +488,8 @@ func (s *Server) init() error {
 		return err
 	}
 	log.Debug("init Proxy done")
+	// Intentionally print to stdout, which is usually a sign that Milvus is ready to serve.
+	fmt.Println("---Milvus Proxy successfully initialized and ready to serve!---")
 
 	return nil
 }
@@ -378,7 +510,7 @@ func (s *Server) start() error {
 
 // Stop stop the Proxy Server
 func (s *Server) Stop() error {
-	log.Debug("Proxy stop", zap.String("Address", Params.GetAddress()))
+	log.Debug("Proxy stop", zap.String("internal address", Params.GetInternalAddress()), zap.String("external address", Params.GetInternalAddress()))
 	var err error
 	if s.closer != nil {
 		if err = s.closer.Close(); err != nil {
@@ -401,22 +533,27 @@ func (s *Server) Stop() error {
 			s.httpServer.Shutdown(context.TODO())
 		}
 	}()
+
 	gracefulWg.Add(1)
 	go func() {
 		defer gracefulWg.Done()
-		if s.grpcServer != nil {
-			log.Debug("Graceful stop grpc server...")
-			s.grpcServer.GracefulStop()
+		if s.grpcInternalServer != nil {
+			log.Debug("Graceful stop grpc internal server...")
+			s.grpcInternalServer.GracefulStop()
+		}
+		if s.grpcExternalServer != nil {
+			log.Debug("Graceful stop grpc external server...")
+			s.grpcExternalServer.GracefulStop()
 		}
 	}()
 	gracefulWg.Wait()
+
+	s.wg.Wait()
 
 	err = s.proxy.Stop()
 	if err != nil {
 		return err
 	}
-
-	s.wg.Wait()
 
 	return nil
 }
@@ -647,6 +784,14 @@ func (s *Server) GetImportState(ctx context.Context, req *milvuspb.GetImportStat
 	return s.proxy.GetImportState(ctx, req)
 }
 
+func (s *Server) ListImportTasks(ctx context.Context, req *milvuspb.ListImportTasksRequest) (*milvuspb.ListImportTasksResponse, error) {
+	return s.proxy.ListImportTasks(ctx, req)
+}
+
+func (s *Server) GetReplicas(ctx context.Context, req *milvuspb.GetReplicasRequest) (*milvuspb.GetReplicasResponse, error) {
+	return s.proxy.GetReplicas(ctx, req)
+}
+
 // Check is required by gRPC healthy checking
 func (s *Server) Check(ctx context.Context, req *grpc_health_v1.HealthCheckRequest) (*grpc_health_v1.HealthCheckResponse, error) {
 	ret := &grpc_health_v1.HealthCheckResponse{
@@ -683,4 +828,77 @@ func (s *Server) Watch(req *grpc_health_v1.HealthCheckRequest, server grpc_healt
 	}
 	ret.Status = grpc_health_v1.HealthCheckResponse_SERVING
 	return server.Send(ret)
+}
+
+func (s *Server) InvalidateCredentialCache(ctx context.Context, request *proxypb.InvalidateCredCacheRequest) (*commonpb.Status, error) {
+	return s.proxy.InvalidateCredentialCache(ctx, request)
+}
+
+func (s *Server) UpdateCredentialCache(ctx context.Context, request *proxypb.UpdateCredCacheRequest) (*commonpb.Status, error) {
+	return s.proxy.UpdateCredentialCache(ctx, request)
+}
+
+func (s *Server) ClearCredUsersCache(ctx context.Context, request *internalpb.ClearCredUsersCacheRequest) (*commonpb.Status, error) {
+	return s.proxy.ClearCredUsersCache(ctx, request)
+}
+
+func (s *Server) CreateCredential(ctx context.Context, req *milvuspb.CreateCredentialRequest) (*commonpb.Status, error) {
+	return s.proxy.CreateCredential(ctx, req)
+}
+
+func (s *Server) UpdateCredential(ctx context.Context, req *milvuspb.UpdateCredentialRequest) (*commonpb.Status, error) {
+	return s.proxy.UpdateCredential(ctx, req)
+}
+
+func (s *Server) DeleteCredential(ctx context.Context, req *milvuspb.DeleteCredentialRequest) (*commonpb.Status, error) {
+	return s.proxy.DeleteCredential(ctx, req)
+}
+
+func (s *Server) ListCredUsers(ctx context.Context, req *milvuspb.ListCredUsersRequest) (*milvuspb.ListCredUsersResponse, error) {
+	return s.proxy.ListCredUsers(ctx, req)
+}
+
+func (s *Server) CreateRole(ctx context.Context, request *milvuspb.CreateRoleRequest) (*commonpb.Status, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (s *Server) DropRole(ctx context.Context, request *milvuspb.DropRoleRequest) (*commonpb.Status, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (s *Server) OperateUserRole(ctx context.Context, request *milvuspb.OperateUserRoleRequest) (*commonpb.Status, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (s *Server) SelectRole(ctx context.Context, request *milvuspb.SelectRoleRequest) (*milvuspb.SelectRoleResponse, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (s *Server) SelectUser(ctx context.Context, request *milvuspb.SelectUserRequest) (*milvuspb.SelectUserResponse, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (s *Server) SelectResource(ctx context.Context, request *milvuspb.SelectResourceRequest) (*milvuspb.SelectResourceResponse, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (s *Server) OperatePrivilege(ctx context.Context, request *milvuspb.OperatePrivilegeRequest) (*commonpb.Status, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (s *Server) SelectGrant(ctx context.Context, request *milvuspb.SelectGrantRequest) (*milvuspb.SelectGrantResponse, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (s *Server) RefreshPolicyInfoCache(ctx context.Context, request *proxypb.RefreshPolicyInfoCacheRequest) (*commonpb.Status, error) {
+	//TODO implement me
+	panic("implement me")
 }

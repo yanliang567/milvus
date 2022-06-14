@@ -19,9 +19,14 @@ package datanode
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 
+	"github.com/opentracing/opentracing-go"
+	"go.uber.org/zap"
+
+	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
@@ -30,9 +35,8 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/trace"
-	"github.com/opentracing/opentracing-go"
-	"go.uber.org/zap"
 )
 
 // make sure ddNode implements flowgraph.Node
@@ -55,6 +59,7 @@ var _ flowgraph.Node = (*ddNode)(nil)
 type ddNode struct {
 	BaseNode
 
+	ctx          context.Context
 	collectionID UniqueID
 
 	segID2SegInfo   sync.Map // segment ID to *SegmentInfo
@@ -81,7 +86,11 @@ func (ddn *ddNode) Operate(in []Msg) []Msg {
 
 	msMsg, ok := in[0].(*MsgStreamMsg)
 	if !ok {
-		log.Warn("Type assertion failed for MsgStreamMsg")
+		if in[0] == nil {
+			log.Debug("type assertion failed for MsgStreamMsg because it's nil")
+		} else {
+			log.Warn("type assertion failed for MsgStreamMsg", zap.String("name", reflect.TypeOf(in[0]).Name()))
+		}
 		return []Msg{}
 	}
 
@@ -148,9 +157,9 @@ func (ddn *ddNode) Operate(in []Msg) []Msg {
 		case commonpb.MsgType_Delete:
 			dmsg := msg.(*msgstream.DeleteMsg)
 			log.Debug("DDNode receive delete messages",
-				zap.Int("num", len(dmsg.GetPrimaryKeys())),
+				zap.Int64("num", dmsg.NumRows),
 				zap.String("vChannelName", ddn.vchannelName))
-			for i := 0; i < len(dmsg.PrimaryKeys); i++ {
+			for i := int64(0); i < dmsg.NumRows; i++ {
 				dmsg.HashValues = append(dmsg.HashValues, uint32(0))
 			}
 			forwardMsgs = append(forwardMsgs, dmsg)
@@ -163,12 +172,15 @@ func (ddn *ddNode) Operate(in []Msg) []Msg {
 			fgMsg.deleteMessages = append(fgMsg.deleteMessages, dmsg)
 		}
 	}
-	err := ddn.forwardDeleteMsg(forwardMsgs, msMsg.TimestampMin(), msMsg.TimestampMax())
+	err := retry.Do(ddn.ctx, func() error {
+		return ddn.forwardDeleteMsg(forwardMsgs, msMsg.TimestampMin(), msMsg.TimestampMax())
+	}, flowGraphRetryOpt)
 	if err != nil {
-		// TODO: proper deal with error
-		log.Warn("DDNode forward delete msg failed",
-			zap.String("vChannelName", ddn.vchannelName),
-			zap.Error(err))
+		err = fmt.Errorf("DDNode forward delete msg failed, vChannel = %s, err = %s", ddn.vchannelName, err)
+		log.Error(err.Error())
+		if !common.IsIgnorableError(err) {
+			panic(err)
+		}
 	}
 
 	fgMsg.startPositions = append(fgMsg.startPositions, msMsg.StartPositions()...)
@@ -243,7 +255,7 @@ func (ddn *ddNode) sendDeltaTimeTick(ts Timestamp) error {
 			MsgType:   commonpb.MsgType_TimeTick,
 			MsgID:     0,
 			Timestamp: ts,
-			SourceID:  Params.DataNodeCfg.NodeID,
+			SourceID:  Params.DataNodeCfg.GetNodeID(),
 		},
 	}
 	timeTickMsg := &msgstream.TimeTickMsg{
@@ -283,6 +295,10 @@ func newDDNode(ctx context.Context, collID UniqueID, vchanInfo *datapb.VchannelI
 		return nil
 	}
 	pChannelName := funcutil.ToPhysicalChannel(vchanInfo.ChannelName)
+	log.Info("ddNode add flushed segment",
+		zap.String("channelName", vchanInfo.ChannelName),
+		zap.String("pChannelName", pChannelName),
+	)
 	deltaChannelName, err := funcutil.ConvertChannelName(pChannelName, Params.CommonCfg.RootCoordDml, Params.CommonCfg.RootCoordDelta)
 	if err != nil {
 		log.Error(err.Error())
@@ -291,12 +307,13 @@ func newDDNode(ctx context.Context, collID UniqueID, vchanInfo *datapb.VchannelI
 
 	deltaStream.SetRepackFunc(msgstream.DefaultRepackFunc)
 	deltaStream.AsProducer([]string{deltaChannelName})
-	metrics.DataNodeNumProducers.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.NodeID)).Inc()
+	metrics.DataNodeNumProducers.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID())).Inc()
 	log.Debug("datanode AsProducer", zap.String("DeltaChannelName", deltaChannelName))
 	var deltaMsgStream msgstream.MsgStream = deltaStream
 	deltaMsgStream.Start()
 
 	dd := &ddNode{
+		ctx:                ctx,
 		BaseNode:           baseNode,
 		collectionID:       collID,
 		flushedSegments:    fs,

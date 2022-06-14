@@ -71,3 +71,15 @@ func msgProxyIsUnhealthy(id UniqueID) string {
 func errProxyIsUnhealthy(id UniqueID) error {
 	return errors.New(msgProxyIsUnhealthy(id))
 }
+
+func ErrMissingMetadata() error {
+	return fmt.Errorf("invalid argument: missing metadata")
+}
+
+func ErrUnauthenticated() error {
+	return fmt.Errorf("unauthenticated: invalid credential")
+}
+
+func ErrProxyNotReady() error {
+	return fmt.Errorf("internal: Milvus Proxy is not ready yet. please wait")
+}

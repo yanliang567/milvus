@@ -20,14 +20,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
 	"runtime/debug"
 	"time"
 
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
@@ -36,8 +34,7 @@ import (
 )
 
 type task interface {
-	ID() UniqueID       // return ReqID
-	SetID(uid UniqueID) // set ReqID
+	ID() UniqueID // return ReqID
 	Timestamp() Timestamp
 	PreExecute(ctx context.Context) error
 	Execute(ctx context.Context) error
@@ -51,12 +48,40 @@ type baseTask struct {
 	done chan error
 	ctx  context.Context
 	id   UniqueID
+	ts   Timestamp
 }
 
-type addQueryChannelTask struct {
-	baseTask
-	req  *queryPb.AddQueryChannelRequest
-	node *QueryNode
+func (b *baseTask) Ctx() context.Context {
+	return b.ctx
+}
+
+func (b *baseTask) OnEnqueue() error {
+	return nil
+}
+
+func (b *baseTask) ID() UniqueID {
+	return b.id
+}
+
+func (b *baseTask) Timestamp() Timestamp {
+	return b.ts
+}
+
+func (b *baseTask) PreExecute(ctx context.Context) error {
+	return nil
+}
+
+func (b *baseTask) PostExecute(ctx context.Context) error {
+	return nil
+}
+
+func (b *baseTask) WaitToFinish() error {
+	err := <-b.done
+	return err
+}
+
+func (b *baseTask) Notify(err error) {
+	b.done <- err
 }
 
 type watchDmChannelsTask struct {
@@ -89,139 +114,8 @@ type releasePartitionsTask struct {
 	node *QueryNode
 }
 
-func (b *baseTask) ID() UniqueID {
-	return b.id
-}
-
-func (b *baseTask) SetID(uid UniqueID) {
-	b.id = uid
-}
-
-func (b *baseTask) WaitToFinish() error {
-	err := <-b.done
-	return err
-}
-
-func (b *baseTask) Notify(err error) {
-	b.done <- err
-}
-
-// addQueryChannel
-func (r *addQueryChannelTask) Timestamp() Timestamp {
-	if r.req.Base == nil {
-		log.Warn("nil base req in addQueryChannelTask", zap.Any("collectionID", r.req.CollectionID))
-		return 0
-	}
-	return r.req.Base.Timestamp
-}
-
-func (r *addQueryChannelTask) OnEnqueue() error {
-	if r.req == nil || r.req.Base == nil {
-		r.SetID(rand.Int63n(100000000000))
-	} else {
-		r.SetID(r.req.Base.MsgID)
-	}
-	return nil
-}
-
-func (r *addQueryChannelTask) PreExecute(ctx context.Context) error {
-	return nil
-}
-
-func (r *addQueryChannelTask) Execute(ctx context.Context) error {
-	log.Debug("Execute addQueryChannelTask",
-		zap.Any("collectionID", r.req.CollectionID))
-
-	collectionID := r.req.CollectionID
-	if r.node.queryService == nil {
-		errMsg := "null query service, collectionID = " + fmt.Sprintln(collectionID)
-		return errors.New(errMsg)
-	}
-
-	if r.node.queryService.hasQueryCollection(collectionID) {
-		log.Debug("queryCollection has been existed when addQueryChannel",
-			zap.Any("collectionID", collectionID),
-		)
-		return nil
-	}
-
-	// add search collection
-	err := r.node.queryService.addQueryCollection(collectionID)
-	if err != nil {
-		return err
-	}
-	log.Debug("add query collection", zap.Any("collectionID", collectionID))
-
-	// add request channel
-	sc, err := r.node.queryService.getQueryCollection(collectionID)
-	if err != nil {
-		return err
-	}
-	consumeChannels := []string{r.req.QueryChannel}
-	consumeSubName := funcutil.GenChannelSubName(Params.CommonCfg.QueryNodeSubName, collectionID, Params.QueryNodeCfg.QueryNodeID)
-
-	sc.queryMsgStream.AsConsumer(consumeChannels, consumeSubName)
-	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Inc()
-	if r.req.SeekPosition == nil || len(r.req.SeekPosition.MsgID) == 0 {
-		// as consumer
-		log.Debug("QueryNode AsConsumer", zap.Strings("channels", consumeChannels), zap.String("sub name", consumeSubName))
-	} else {
-		// seek query channel
-		err = sc.queryMsgStream.Seek([]*internalpb.MsgPosition{r.req.SeekPosition})
-		if err != nil {
-			return err
-		}
-		log.Debug("querynode seek query channel: ", zap.Any("consumeChannels", consumeChannels),
-			zap.String("seek position", string(r.req.SeekPosition.MsgID)))
-	}
-
-	// add result channel
-	// producerChannels := []string{r.req.QueryResultChannel}
-	// sc.queryResultMsgStream.AsProducer(producerChannels)
-	// log.Debug("QueryNode AsProducer", zap.Strings("channels", producerChannels))
-
-	// init global sealed segments
-	for _, segment := range r.req.GlobalSealedSegments {
-		sc.globalSegmentManager.addGlobalSegmentInfo(segment)
-	}
-
-	// start queryCollection, message stream need to asConsumer before start
-	sc.start()
-	log.Debug("start query collection", zap.Any("collectionID", collectionID))
-
-	log.Debug("addQueryChannelTask done",
-		zap.Any("collectionID", r.req.CollectionID),
-	)
-	return nil
-}
-
-func (r *addQueryChannelTask) PostExecute(ctx context.Context) error {
-	return nil
-}
-
 // watchDmChannelsTask
-func (w *watchDmChannelsTask) Timestamp() Timestamp {
-	if w.req.Base == nil {
-		log.Warn("nil base req in watchDmChannelsTask", zap.Any("collectionID", w.req.CollectionID))
-		return 0
-	}
-	return w.req.Base.Timestamp
-}
-
-func (w *watchDmChannelsTask) OnEnqueue() error {
-	if w.req == nil || w.req.Base == nil {
-		w.SetID(rand.Int63n(100000000000))
-	} else {
-		w.SetID(w.req.Base.MsgID)
-	}
-	return nil
-}
-
-func (w *watchDmChannelsTask) PreExecute(ctx context.Context) error {
-	return nil
-}
-
-func (w *watchDmChannelsTask) Execute(ctx context.Context) error {
+func (w *watchDmChannelsTask) Execute(ctx context.Context) (err error) {
 	collectionID := w.req.CollectionID
 	partitionIDs := w.req.GetPartitionIDs()
 
@@ -236,8 +130,7 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) error {
 	}
 
 	// get all vChannels
-	vChannels := make([]Channel, 0)
-	pChannels := make([]Channel, 0)
+	var vChannels, pChannels []Channel
 	VPChannels := make(map[string]string) // map[vChannel]pChannel
 	for _, info := range w.req.Infos {
 		v := info.ChannelName
@@ -251,17 +144,30 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) error {
 		return errors.New("get physical channels failed, illegal channel length, collectionID = " + fmt.Sprintln(collectionID))
 	}
 
-	log.Debug("Starting WatchDmChannels ...",
+	log.Info("Starting WatchDmChannels ...",
 		zap.String("collectionName", w.req.Schema.Name),
 		zap.Int64("collectionID", collectionID),
+		zap.Int64("replicaID", w.req.GetReplicaID()),
 		zap.Any("load type", lType),
 		zap.Strings("vChannels", vChannels),
 		zap.Strings("pChannels", pChannels),
 	)
 
 	// init collection meta
-	sCol := w.node.streaming.replica.addCollection(collectionID, w.req.Schema)
-	hCol := w.node.historical.replica.addCollection(collectionID, w.req.Schema)
+	coll := w.node.metaReplica.addCollection(collectionID, w.req.Schema)
+
+	//add shard cluster
+	for _, vchannel := range vChannels {
+		w.node.ShardClusterService.addShardCluster(w.req.GetCollectionID(), w.req.GetReplicaID(), vchannel)
+	}
+
+	defer func() {
+		if err != nil {
+			for _, vchannel := range vChannels {
+				w.node.ShardClusterService.releaseShardCluster(vchannel)
+			}
+		}
+	}()
 
 	// load growing segments
 	unFlushedSegments := make([]*queryPb.SegmentLoadInfo, 0)
@@ -296,23 +202,28 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) error {
 
 	// update partition info from unFlushedSegments and loadMeta
 	for _, info := range req.Infos {
-		w.node.streaming.replica.addPartition(collectionID, info.PartitionID)
-		w.node.historical.replica.addPartition(collectionID, info.PartitionID)
+		err = w.node.metaReplica.addPartition(collectionID, info.PartitionID)
+		if err != nil {
+			return err
+		}
 	}
 	for _, partitionID := range req.GetLoadMeta().GetPartitionIDs() {
-		w.node.historical.replica.addPartition(collectionID, partitionID)
-		w.node.streaming.replica.addPartition(collectionID, partitionID)
+		err = w.node.metaReplica.addPartition(collectionID, partitionID)
+		if err != nil {
+			return err
+		}
 	}
 
-	log.Debug("loading growing segments in WatchDmChannels...",
+	log.Info("loading growing segments in WatchDmChannels...",
 		zap.Int64("collectionID", collectionID),
 		zap.Int64s("unFlushedSegmentIDs", unFlushedSegmentIDs),
 	)
-	err := w.node.loader.loadSegment(req, segmentTypeGrowing)
+	err = w.node.loader.LoadSegment(req, segmentTypeGrowing)
 	if err != nil {
+		log.Warn(err.Error())
 		return err
 	}
-	log.Debug("successfully load growing segments done in WatchDmChannels",
+	log.Info("successfully load growing segments done in WatchDmChannels",
 		zap.Int64("collectionID", collectionID),
 		zap.Int64s("unFlushedSegmentIDs", unFlushedSegmentIDs),
 	)
@@ -320,13 +231,18 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) error {
 	// remove growing segment if watch dmChannels failed
 	defer func() {
 		if err != nil {
-			for _, segmentID := range unFlushedSegmentIDs {
-				w.node.streaming.replica.removeSegment(segmentID)
+			collection, err2 := w.node.metaReplica.getCollectionByID(collectionID)
+			if err2 == nil {
+				collection.Lock()
+				defer collection.Unlock()
+				for _, segmentID := range unFlushedSegmentIDs {
+					w.node.metaReplica.removeSegment(segmentID, segmentTypeGrowing)
+				}
 			}
 		}
 	}()
 
-	consumeSubName := funcutil.GenChannelSubName(Params.CommonCfg.QueryNodeSubName, collectionID, Params.QueryNodeCfg.QueryNodeID)
+	consumeSubName := funcutil.GenChannelSubName(Params.CommonCfg.QueryNodeSubName, collectionID, Params.QueryNodeCfg.GetNodeID())
 
 	// group channels by to seeking or consuming
 	channel2SeekPosition := make(map[string]*internalpb.MsgPosition)
@@ -339,7 +255,7 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) error {
 		info.SeekPosition.MsgGroup = consumeSubName
 		channel2SeekPosition[info.ChannelName] = info.SeekPosition
 	}
-	log.Debug("watchDMChannel, group channels done", zap.Int64("collectionID", collectionID))
+	log.Info("watchDMChannel, group channels done", zap.Int64("collectionID", collectionID))
 
 	// add excluded segments for unFlushed segments,
 	// unFlushed segments before check point should be filtered out.
@@ -347,10 +263,14 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) error {
 	for _, info := range w.req.Infos {
 		unFlushedCheckPointInfos = append(unFlushedCheckPointInfos, info.UnflushedSegments...)
 	}
-	w.node.streaming.replica.addExcludedSegments(collectionID, unFlushedCheckPointInfos)
-	log.Debug("watchDMChannel, add check points info for unFlushed segments done",
+	w.node.metaReplica.addExcludedSegments(collectionID, unFlushedCheckPointInfos)
+	unflushedSegmentIDs := make([]UniqueID, 0)
+	for i := 0; i < len(unFlushedCheckPointInfos); i++ {
+		unflushedSegmentIDs = append(unflushedSegmentIDs, unFlushedCheckPointInfos[i].GetID())
+	}
+	log.Info("watchDMChannel, add check points info for unFlushed segments done",
 		zap.Int64("collectionID", collectionID),
-		zap.Any("unFlushedCheckPointInfos", unFlushedCheckPointInfos),
+		zap.Any("unflushedSegmentIDs", unflushedSegmentIDs),
 	)
 
 	// add excluded segments for flushed segments,
@@ -367,8 +287,8 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) error {
 			}
 		}
 	}
-	w.node.streaming.replica.addExcludedSegments(collectionID, flushedCheckPointInfos)
-	log.Debug("watchDMChannel, add check points info for flushed segments done",
+	w.node.metaReplica.addExcludedSegments(collectionID, flushedCheckPointInfos)
+	log.Info("watchDMChannel, add check points info for flushed segments done",
 		zap.Int64("collectionID", collectionID),
 		zap.Any("flushedCheckPointInfos", flushedCheckPointInfos),
 	)
@@ -387,8 +307,8 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) error {
 			}
 		}
 	}
-	w.node.streaming.replica.addExcludedSegments(collectionID, droppedCheckPointInfos)
-	log.Debug("watchDMChannel, add check points info for dropped segments done",
+	w.node.metaReplica.addExcludedSegments(collectionID, droppedCheckPointInfos)
+	log.Info("watchDMChannel, add check points info for dropped segments done",
 		zap.Int64("collectionID", collectionID),
 		zap.Any("droppedCheckPointInfos", droppedCheckPointInfos),
 	)
@@ -399,7 +319,7 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) error {
 		log.Warn("watchDMChannel, add flowGraph for dmChannels failed", zap.Int64("collectionID", collectionID), zap.Strings("vChannels", vChannels), zap.Error(err))
 		return err
 	}
-	log.Debug("Query node add DML flow graphs", zap.Int64("collectionID", collectionID), zap.Any("channels", vChannels))
+	log.Info("Query node add DML flow graphs", zap.Int64("collectionID", collectionID), zap.Any("channels", vChannels))
 
 	// channels as consumer
 	for channel, fg := range channel2FlowGraph {
@@ -437,31 +357,23 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) error {
 		return err
 	}
 
-	log.Debug("watchDMChannel, add flowGraph for dmChannels success", zap.Int64("collectionID", collectionID), zap.Strings("vChannels", vChannels))
+	log.Info("watchDMChannel, add flowGraph for dmChannels success", zap.Int64("collectionID", collectionID), zap.Strings("vChannels", vChannels))
 
-	sCol.addVChannels(vChannels)
-	sCol.addPChannels(pChannels)
-	sCol.setLoadType(lType)
+	coll.addVChannels(vChannels)
+	coll.addPChannels(pChannels)
+	coll.setLoadType(lType)
 
-	hCol.addVChannels(vChannels)
-	hCol.addPChannels(pChannels)
-	hCol.setLoadType(lType)
-	log.Debug("watchDMChannel, init replica done", zap.Int64("collectionID", collectionID), zap.Strings("vChannels", vChannels))
+	log.Info("watchDMChannel, init replica done", zap.Int64("collectionID", collectionID), zap.Strings("vChannels", vChannels))
 
 	// create tSafe
 	for _, channel := range vChannels {
 		w.node.tSafeReplica.addTSafe(channel)
 	}
 
-	// add tSafe watcher if queryCollection exists
-	qc, err := w.node.queryService.getQueryCollection(collectionID)
-	if err == nil {
-		for _, channel := range vChannels {
-			err = qc.addTSafeWatcher(channel)
-			if err != nil {
-				// tSafe have been exist, not error
-				log.Warn(err.Error())
-			}
+	// add tsafe watch in query shard if exists
+	for _, dmlChannel := range vChannels {
+		if !w.node.queryShardService.hasQueryShard(dmlChannel) {
+			w.node.queryShardService.addQueryShard(collectionID, dmlChannel, w.req.GetReplicaID())
 		}
 	}
 
@@ -470,36 +382,11 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) error {
 		fg.flowGraph.Start()
 	}
 
-	log.Debug("WatchDmChannels done", zap.Int64("collectionID", collectionID), zap.Strings("vChannels", vChannels))
-	return nil
-}
-
-func (w *watchDmChannelsTask) PostExecute(ctx context.Context) error {
+	log.Info("WatchDmChannels done", zap.Int64("collectionID", collectionID), zap.Strings("vChannels", vChannels))
 	return nil
 }
 
 // watchDeltaChannelsTask
-func (w *watchDeltaChannelsTask) Timestamp() Timestamp {
-	if w.req.Base == nil {
-		log.Warn("nil base req in watchDeltaChannelsTask", zap.Any("collectionID", w.req.CollectionID))
-		return 0
-	}
-	return w.req.Base.Timestamp
-}
-
-func (w *watchDeltaChannelsTask) OnEnqueue() error {
-	if w.req == nil || w.req.Base == nil {
-		w.SetID(rand.Int63n(100000000000))
-	} else {
-		w.SetID(w.req.Base.MsgID)
-	}
-	return nil
-}
-
-func (w *watchDeltaChannelsTask) PreExecute(ctx context.Context) error {
-	return nil
-}
-
 func (w *watchDeltaChannelsTask) Execute(ctx context.Context) error {
 	collectionID := w.req.CollectionID
 
@@ -516,7 +403,7 @@ func (w *watchDeltaChannelsTask) Execute(ctx context.Context) error {
 		VPDeltaChannels[v] = p
 		vChannel2SeekPosition[v] = info.SeekPosition
 	}
-	log.Debug("Starting WatchDeltaChannels ...",
+	log.Info("Starting WatchDeltaChannels ...",
 		zap.Any("collectionID", collectionID),
 		zap.Any("vDeltaChannels", vDeltaChannels),
 		zap.Any("pChannels", pDeltaChannels),
@@ -524,22 +411,14 @@ func (w *watchDeltaChannelsTask) Execute(ctx context.Context) error {
 	if len(VPDeltaChannels) != len(vDeltaChannels) {
 		return errors.New("get physical channels failed, illegal channel length, collectionID = " + fmt.Sprintln(collectionID))
 	}
-	log.Debug("Get physical channels done",
+	log.Info("Get physical channels done",
 		zap.Any("collectionID", collectionID),
 	)
 
-	if hasCollectionInHistorical := w.node.historical.replica.hasCollection(collectionID); !hasCollectionInHistorical {
+	if hasColl := w.node.metaReplica.hasCollection(collectionID); !hasColl {
 		return fmt.Errorf("cannot find collection with collectionID, %d", collectionID)
 	}
-	hCol, err := w.node.historical.replica.getCollectionByID(collectionID)
-	if err != nil {
-		return err
-	}
-
-	if hasCollectionInStreaming := w.node.streaming.replica.hasCollection(collectionID); !hasCollectionInStreaming {
-		return fmt.Errorf("cannot find collection with collectionID, %d", collectionID)
-	}
-	sCol, err := w.node.streaming.replica.getCollectionByID(collectionID)
+	coll, err := w.node.metaReplica.getCollectionByID(collectionID)
 	if err != nil {
 		return err
 	}
@@ -549,7 +428,7 @@ func (w *watchDeltaChannelsTask) Execute(ctx context.Context) error {
 		log.Warn("watchDeltaChannel, add flowGraph for deltaChannel failed", zap.Int64("collectionID", collectionID), zap.Strings("vDeltaChannels", vDeltaChannels), zap.Error(err))
 		return err
 	}
-	consumeSubName := funcutil.GenChannelSubName(Params.CommonCfg.QueryNodeSubName, collectionID, Params.QueryNodeCfg.QueryNodeID)
+	consumeSubName := funcutil.GenChannelSubName(Params.CommonCfg.QueryNodeSubName, collectionID, Params.QueryNodeCfg.GetNodeID())
 	// channels as consumer
 	for channel, fg := range channel2FlowGraph {
 		// use pChannel to consume
@@ -577,29 +456,26 @@ func (w *watchDeltaChannelsTask) Execute(ctx context.Context) error {
 		return err
 	}
 
-	log.Debug("watchDeltaChannel, add flowGraph for deltaChannel success", zap.Int64("collectionID", collectionID), zap.Strings("vDeltaChannels", vDeltaChannels))
+	log.Info("watchDeltaChannel, add flowGraph for deltaChannel success", zap.Int64("collectionID", collectionID), zap.Strings("vDeltaChannels", vDeltaChannels))
 
 	//set collection replica
-	hCol.addVDeltaChannels(vDeltaChannels)
-	hCol.addPDeltaChannels(pDeltaChannels)
-
-	sCol.addVDeltaChannels(vDeltaChannels)
-	sCol.addPDeltaChannels(pDeltaChannels)
+	coll.addVDeltaChannels(vDeltaChannels)
+	coll.addPDeltaChannels(pDeltaChannels)
 
 	// create tSafe
 	for _, channel := range vDeltaChannels {
 		w.node.tSafeReplica.addTSafe(channel)
 	}
 
-	// add tSafe watcher if queryCollection exists
-	qc, err := w.node.queryService.getQueryCollection(collectionID)
-	if err == nil {
-		for _, channel := range vDeltaChannels {
-			err = qc.addTSafeWatcher(channel)
-			if err != nil {
-				// tSafe have been existed, not error
-				log.Warn(err.Error())
-			}
+	// add tsafe watch in query shard if exists
+	for _, channel := range vDeltaChannels {
+		dmlChannel, err := funcutil.ConvertChannelName(channel, Params.CommonCfg.RootCoordDelta, Params.CommonCfg.RootCoordDml)
+		if err != nil {
+			log.Warn("failed to convert delta channel to dml", zap.String("channel", channel), zap.Error(err))
+			continue
+		}
+		if !w.node.queryShardService.hasQueryShard(dmlChannel) {
+			w.node.queryShardService.addQueryShard(collectionID, dmlChannel, w.req.GetReplicaId())
 		}
 	}
 
@@ -608,89 +484,65 @@ func (w *watchDeltaChannelsTask) Execute(ctx context.Context) error {
 		fg.flowGraph.Start()
 	}
 
-	log.Debug("WatchDeltaChannels done", zap.Int64("collectionID", collectionID), zap.String("ChannelIDs", fmt.Sprintln(vDeltaChannels)))
-	return nil
-}
-
-func (w *watchDeltaChannelsTask) PostExecute(ctx context.Context) error {
+	log.Info("WatchDeltaChannels done", zap.Int64("collectionID", collectionID), zap.String("ChannelIDs", fmt.Sprintln(vDeltaChannels)))
 	return nil
 }
 
 // loadSegmentsTask
-func (l *loadSegmentsTask) Timestamp() Timestamp {
-	if l.req.Base == nil {
-		log.Warn("nil base req in loadSegmentsTask")
-		return 0
-	}
-	return l.req.Base.Timestamp
-}
-
-func (l *loadSegmentsTask) OnEnqueue() error {
-	if l.req == nil || l.req.Base == nil {
-		l.SetID(rand.Int63n(100000000000))
-	} else {
-		l.SetID(l.req.Base.MsgID)
-	}
-	return nil
-}
 
 func (l *loadSegmentsTask) PreExecute(ctx context.Context) error {
+	log.Info("LoadSegmentTask PreExecute start", zap.Int64("msgID", l.req.Base.MsgID))
+	var err error
+	// init meta
+	collectionID := l.req.GetCollectionID()
+	l.node.metaReplica.addCollection(collectionID, l.req.GetSchema())
+	for _, partitionID := range l.req.GetLoadMeta().GetPartitionIDs() {
+		err = l.node.metaReplica.addPartition(collectionID, partitionID)
+		if err != nil {
+			return err
+		}
+	}
+
+	// filter segments that are already loaded in this querynode
+	var filteredInfos []*queryPb.SegmentLoadInfo
+	for _, info := range l.req.Infos {
+		has, err := l.node.metaReplica.hasSegment(info.SegmentID, segmentTypeSealed)
+		if err != nil {
+			return err
+		}
+		if !has {
+			filteredInfos = append(filteredInfos, info)
+		} else {
+			log.Debug("ignore segment that is already loaded", zap.Int64("segmentID", info.SegmentID))
+		}
+	}
+	l.req.Infos = filteredInfos
+	log.Info("LoadSegmentTask PreExecute done", zap.Int64("msgID", l.req.Base.MsgID))
 	return nil
 }
 
 func (l *loadSegmentsTask) Execute(ctx context.Context) error {
 	// TODO: support db
-	log.Debug("Query node load segment", zap.String("loadSegmentRequest", fmt.Sprintln(l.req)))
-	var err error
-
-	// init meta
-	collectionID := l.req.GetCollectionID()
-	l.node.historical.replica.addCollection(collectionID, l.req.GetSchema())
-	l.node.streaming.replica.addCollection(collectionID, l.req.GetSchema())
-	for _, partitionID := range l.req.GetLoadMeta().GetPartitionIDs() {
-		err = l.node.historical.replica.addPartition(collectionID, partitionID)
-		if err != nil {
-			return err
-		}
-		err = l.node.streaming.replica.addPartition(collectionID, partitionID)
-		if err != nil {
-			return err
-		}
-	}
-
-	err = l.node.loader.loadSegment(l.req, segmentTypeSealed)
+	log.Info("LoadSegmentTask Execute start", zap.Int64("msgID", l.req.Base.MsgID))
+	err := l.node.loader.LoadSegment(l.req, segmentTypeSealed)
 	if err != nil {
 		log.Warn(err.Error())
 		return err
 	}
 
-	log.Debug("LoadSegments done", zap.String("SegmentLoadInfos", fmt.Sprintln(l.req.Infos)))
-	return nil
-}
-
-func (l *loadSegmentsTask) PostExecute(ctx context.Context) error {
-	return nil
-}
-
-// releaseCollectionTask
-func (r *releaseCollectionTask) Timestamp() Timestamp {
-	if r.req.Base == nil {
-		log.Warn("nil base req in releaseCollectionTask", zap.Any("collectionID", r.req.CollectionID))
-		return 0
+	// reload delete log from cp to latest position
+	for _, deltaPosition := range l.req.DeltaPositions {
+		err = l.node.loader.FromDmlCPLoadDelete(ctx, l.req.CollectionID, deltaPosition)
+		if err != nil {
+			for _, segment := range l.req.Infos {
+				l.node.metaReplica.removeSegment(segment.SegmentID, segmentTypeSealed)
+			}
+			log.Warn("LoadSegmentTask from delta check point load delete failed", zap.Int64("msgID", l.req.Base.MsgID), zap.Error(err))
+			return err
+		}
 	}
-	return r.req.Base.Timestamp
-}
 
-func (r *releaseCollectionTask) OnEnqueue() error {
-	if r.req == nil || r.req.Base == nil {
-		r.SetID(rand.Int63n(100000000000))
-	} else {
-		r.SetID(r.req.Base.MsgID)
-	}
-	return nil
-}
-
-func (r *releaseCollectionTask) PreExecute(ctx context.Context) error {
+	log.Info("LoadSegmentTask Execute done", zap.Int64("msgID", l.req.Base.MsgID))
 	return nil
 }
 
@@ -703,104 +555,56 @@ const (
 )
 
 func (r *releaseCollectionTask) Execute(ctx context.Context) error {
-	log.Debug("Execute release collection task", zap.Any("collectionID", r.req.CollectionID))
-	log.Debug("release streaming", zap.Any("collectionID", r.req.CollectionID))
+	log.Info("Execute release collection task", zap.Any("collectionID", r.req.CollectionID))
 	// sleep to wait for query tasks done
 	const gracefulReleaseTime = 1
 	time.Sleep(gracefulReleaseTime * time.Second)
-	log.Debug("Starting release collection...",
+	log.Info("Starting release collection...",
 		zap.Any("collectionID", r.req.CollectionID),
 	)
 
-	// remove query collection
-	// queryCollection and Collection would be deleted in releaseCollection,
-	// so we don't need to remove the tSafeWatcher or channel manually.
-	r.node.queryService.stopQueryCollection(r.req.CollectionID)
-
-	err := r.releaseReplica(r.node.streaming.replica, replicaStreaming)
-	if err != nil {
-		return fmt.Errorf("release collection failed, collectionID = %d, err = %s", r.req.CollectionID, err)
-	}
-
-	// remove collection metas in streaming and historical
-	log.Debug("release historical", zap.Any("collectionID", r.req.CollectionID))
-	err = r.releaseReplica(r.node.historical.replica, replicaHistorical)
-	if err != nil {
-		return fmt.Errorf("release collection failed, collectionID = %d, err = %s", r.req.CollectionID, err)
-	}
-
-	debug.FreeOSMemory()
-
-	log.Debug("ReleaseCollection done", zap.Int64("collectionID", r.req.CollectionID))
-	return nil
-}
-
-func (r *releaseCollectionTask) releaseReplica(replica ReplicaInterface, replicaType ReplicaType) error {
-	collection, err := replica.getCollectionByID(r.req.CollectionID)
+	collection, err := r.node.metaReplica.getCollectionByID(r.req.CollectionID)
 	if err != nil {
 		return err
 	}
 	// set release time
-	log.Debug("set release time", zap.Any("collectionID", r.req.CollectionID))
-	collection.setReleaseTime(r.req.Base.Timestamp)
+	log.Info("set release time", zap.Any("collectionID", r.req.CollectionID))
+	collection.setReleaseTime(r.req.Base.Timestamp, true)
 
 	// remove all flow graphs of the target collection
-	var channels []Channel
-	if replicaType == replicaStreaming {
-		channels = collection.getVChannels()
-		r.node.dataSyncService.removeFlowGraphsByDMLChannels(channels)
-	} else {
-		// remove all tSafes and flow graphs of the target collection
-		channels = collection.getVDeltaChannels()
-		r.node.dataSyncService.removeFlowGraphsByDeltaChannels(channels)
-	}
+	vChannels := collection.getVChannels()
+	vDeltaChannels := collection.getVDeltaChannels()
+	r.node.dataSyncService.removeFlowGraphsByDMLChannels(vChannels)
+	r.node.dataSyncService.removeFlowGraphsByDeltaChannels(vDeltaChannels)
 
 	// remove all tSafes of the target collection
-	for _, channel := range channels {
-		log.Debug("Releasing tSafe in releaseCollectionTask...",
-			zap.Any("collectionID", r.req.CollectionID),
-			zap.Any("vDeltaChannel", channel),
-		)
+	for _, channel := range vChannels {
 		r.node.tSafeReplica.removeTSafe(channel)
 	}
+	for _, channel := range vDeltaChannels {
+		r.node.tSafeReplica.removeTSafe(channel)
+	}
+	log.Info("Release tSafe in releaseCollectionTask",
+		zap.Int64("collectionID", r.req.CollectionID),
+		zap.Strings("vChannels", vChannels),
+		zap.Strings("vDeltaChannels", vDeltaChannels),
+	)
 
-	// remove excludedSegments record
-	replica.removeExcludedSegments(r.req.CollectionID)
-	err = replica.removeCollection(r.req.CollectionID)
+	r.node.metaReplica.removeExcludedSegments(r.req.CollectionID)
+	r.node.queryShardService.releaseCollection(r.req.CollectionID)
+	err = r.node.metaReplica.removeCollection(r.req.CollectionID)
 	if err != nil {
 		return err
 	}
-	return nil
-}
 
-func (r *releaseCollectionTask) PostExecute(ctx context.Context) error {
+	debug.FreeOSMemory()
+	log.Info("ReleaseCollection done", zap.Int64("collectionID", r.req.CollectionID))
 	return nil
 }
 
 // releasePartitionsTask
-func (r *releasePartitionsTask) Timestamp() Timestamp {
-	if r.req.Base == nil {
-		log.Warn("nil base req in releasePartitionsTask", zap.Any("collectionID", r.req.CollectionID))
-		return 0
-	}
-	return r.req.Base.Timestamp
-}
-
-func (r *releasePartitionsTask) OnEnqueue() error {
-	if r.req == nil || r.req.Base == nil {
-		r.SetID(rand.Int63n(100000000000))
-	} else {
-		r.SetID(r.req.Base.MsgID)
-	}
-	return nil
-}
-
-func (r *releasePartitionsTask) PreExecute(ctx context.Context) error {
-	return nil
-}
-
 func (r *releasePartitionsTask) Execute(ctx context.Context) error {
-	log.Debug("Execute release partition task",
+	log.Info("Execute release partition task",
 		zap.Any("collectionID", r.req.CollectionID),
 		zap.Any("partitionIDs", r.req.PartitionIDs))
 
@@ -808,30 +612,17 @@ func (r *releasePartitionsTask) Execute(ctx context.Context) error {
 	const gracefulReleaseTime = 1
 	time.Sleep(gracefulReleaseTime * time.Second)
 
-	// get collection from streaming and historical
-	_, err := r.node.historical.replica.getCollectionByID(r.req.CollectionID)
+	_, err := r.node.metaReplica.getCollectionByID(r.req.CollectionID)
 	if err != nil {
 		return fmt.Errorf("release partitions failed, collectionID = %d, err = %s", r.req.CollectionID, err)
 	}
-	_, err = r.node.streaming.replica.getCollectionByID(r.req.CollectionID)
-	if err != nil {
-		return fmt.Errorf("release partitions failed, collectionID = %d, err = %s", r.req.CollectionID, err)
-	}
-	log.Debug("start release partition", zap.Any("collectionID", r.req.CollectionID))
+	log.Info("start release partition", zap.Any("collectionID", r.req.CollectionID))
 
 	for _, id := range r.req.PartitionIDs {
 		// remove partition from streaming and historical
-		hasPartitionInHistorical := r.node.historical.replica.hasPartition(id)
-		if hasPartitionInHistorical {
-			err := r.node.historical.replica.removePartition(id)
-			if err != nil {
-				// not return, try to release all partitions
-				log.Warn(err.Error())
-			}
-		}
-		hasPartitionInStreaming := r.node.streaming.replica.hasPartition(id)
-		if hasPartitionInStreaming {
-			err := r.node.streaming.replica.removePartition(id)
+		hasPartition := r.node.metaReplica.hasPartition(id)
+		if hasPartition {
+			err := r.node.metaReplica.removePartition(id)
 			if err != nil {
 				// not return, try to release all partitions
 				log.Warn(err.Error())
@@ -839,12 +630,8 @@ func (r *releasePartitionsTask) Execute(ctx context.Context) error {
 		}
 	}
 
-	log.Debug("Release partition task done",
+	log.Info("Release partition task done",
 		zap.Any("collectionID", r.req.CollectionID),
 		zap.Any("partitionIDs", r.req.PartitionIDs))
-	return nil
-}
-
-func (r *releasePartitionsTask) PostExecute(ctx context.Context) error {
 	return nil
 }

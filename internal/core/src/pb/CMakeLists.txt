@@ -13,12 +13,12 @@ set( proto_file_names
     segcore.proto
     index_cgo_msg.proto
     plan.proto
-    milvus.proto
     schema.proto
     common.proto
     )
 
-set( PROTO_PATH  "${MILVUS_SOURCE_DIR}/../proto/" )
+set( PROTO_PATH  "${MILVUS_SOURCE_DIR}/../proto/")
+set( PROTO_GOOGLE_PATH  "${MILVUS_SOURCE_DIR}/../../cmake_build/thirdparty/protobuf/protobuf-src/src/" )
 
 FOREACH(proto_file ${proto_file_names})
     STRING( REGEX REPLACE "[^/]proto" "" proto_src_file_name ${proto_file} )
@@ -28,6 +28,7 @@ FOREACH(proto_file ${proto_file_names})
         OUTPUT  "${CMAKE_CURRENT_SOURCE_DIR}/${proto_src_file_name}.pb.h"
                 "${CMAKE_CURRENT_SOURCE_DIR}/${proto_src_file_name}.pb.cc"
         COMMAND protobuf::protoc --proto_path=${PROTO_PATH}/
+                --proto_path=${PROTO_GOOGLE_PATH}/
                 --cpp_out=${CMAKE_CURRENT_SOURCE_DIR}/
                 ${proto_file}
         DEPENDS ${PROTO_PATH}/${proto_file} )

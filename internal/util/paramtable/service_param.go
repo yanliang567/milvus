@@ -36,17 +36,21 @@ const (
 type ServiceParam struct {
 	BaseTable
 
-	EtcdCfg    EtcdConfig
-	PulsarCfg  PulsarConfig
-	RocksmqCfg RocksmqConfig
-	MinioCfg   MinioConfig
+	LocalStorageCfg LocalStorageConfig
+	EtcdCfg         EtcdConfig
+	PulsarCfg       PulsarConfig
+	KafkaCfg        KafkaConfig
+	RocksmqCfg      RocksmqConfig
+	MinioCfg        MinioConfig
 }
 
 func (p *ServiceParam) Init() {
 	p.BaseTable.Init()
 
+	p.LocalStorageCfg.init(&p.BaseTable)
 	p.EtcdCfg.init(&p.BaseTable)
 	p.PulsarCfg.init(&p.BaseTable)
+	p.KafkaCfg.init(&p.BaseTable)
 	p.RocksmqCfg.init(&p.BaseTable)
 	p.MinioCfg.init(&p.BaseTable)
 }
@@ -57,11 +61,16 @@ type EtcdConfig struct {
 	Base *BaseTable
 
 	// --- ETCD ---
-	Endpoints    []string
-	MetaRootPath string
-	KvRootPath   string
-	EtcdLogLevel string
-	EtcdLogPath  string
+	Endpoints         []string
+	MetaRootPath      string
+	KvRootPath        string
+	EtcdLogLevel      string
+	EtcdLogPath       string
+	EtcdUseSSL        bool
+	EtcdTLSCert       string
+	EtcdTLSKey        string
+	EtcdTLSCACert     string
+	EtcdTLSMinVersion string
 
 	// --- Embed ETCD ---
 	UseEmbedEtcd bool
@@ -86,6 +95,11 @@ func (p *EtcdConfig) LoadCfgToMemory() {
 	p.initKvRootPath()
 	p.initEtcdLogLevel()
 	p.initEtcdLogPath()
+	p.initEtcdUseSSL()
+	p.initEtcdTLSCert()
+	p.initEtcdTLSKey()
+	p.initEtcdTLSCACert()
+	p.initEtcdTLSMinVersion()
 }
 
 func (p *EtcdConfig) initUseEmbedEtcd() {
@@ -145,6 +159,41 @@ func (p *EtcdConfig) initEtcdLogPath() {
 	p.EtcdLogPath = p.Base.LoadWithDefault("etcd.log.path", defaultEtcdLogPath)
 }
 
+func (p *EtcdConfig) initEtcdUseSSL() {
+	p.EtcdUseSSL = p.Base.ParseBool("etcd.ssl.enabled", false)
+}
+
+func (p *EtcdConfig) initEtcdTLSCert() {
+	p.EtcdTLSCert = p.Base.LoadWithDefault("etcd.ssl.tlsCert", "")
+}
+
+func (p *EtcdConfig) initEtcdTLSKey() {
+	p.EtcdTLSKey = p.Base.LoadWithDefault("etcd.ssl.tlsKey", "")
+}
+
+func (p *EtcdConfig) initEtcdTLSCACert() {
+	p.EtcdTLSCACert = p.Base.LoadWithDefault("etcd.ssl.tlsCACert", "")
+}
+
+func (p *EtcdConfig) initEtcdTLSMinVersion() {
+	p.EtcdTLSMinVersion = p.Base.LoadWithDefault("etcd.ssl.tlsMinVersion", "1.3")
+}
+
+type LocalStorageConfig struct {
+	Base *BaseTable
+
+	Path string
+}
+
+func (p *LocalStorageConfig) init(base *BaseTable) {
+	p.Base = base
+	p.initPath()
+}
+
+func (p *LocalStorageConfig) initPath() {
+	p.Path = p.Base.LoadWithDefault("localStorage.path", "/var/lib/milvus/data")
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // --- pulsar ---
 type PulsarConfig struct {
@@ -183,6 +232,37 @@ func (p *PulsarConfig) initMaxMessageSize() {
 	}
 }
 
+// --- kafka ---
+type KafkaConfig struct {
+	Base         *BaseTable
+	Address      string
+	SaslUsername string
+	SaslPassword string
+}
+
+func (k *KafkaConfig) init(base *BaseTable) {
+	k.Base = base
+	k.initAddress()
+	k.initSaslUsername()
+	k.initSaslPassword()
+}
+
+func (k *KafkaConfig) initAddress() {
+	addr, err := k.Base.Load("_KafkaBrokerList")
+	if err != nil {
+		panic(err)
+	}
+	k.Address = addr
+}
+
+func (k *KafkaConfig) initSaslUsername() {
+	k.SaslUsername = k.Base.LoadWithDefault("kafka.saslUsername", "")
+}
+
+func (k *KafkaConfig) initSaslPassword() {
+	k.SaslPassword = k.Base.LoadWithDefault("kafka.saslPassword", "")
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // --- rocksmq ---
 type RocksmqConfig struct {
@@ -216,6 +296,8 @@ type MinioConfig struct {
 	UseSSL          bool
 	BucketName      string
 	RootPath        string
+	UseIAM          bool
+	IAMEndpoint     string
 }
 
 func (p *MinioConfig) init(base *BaseTable) {
@@ -227,6 +309,8 @@ func (p *MinioConfig) init(base *BaseTable) {
 	p.initUseSSL()
 	p.initBucketName()
 	p.initRootPath()
+	p.initUseIAM()
+	p.initIAMEndpoint()
 }
 
 func (p *MinioConfig) initAddress() {
@@ -275,4 +359,14 @@ func (p *MinioConfig) initRootPath() {
 		panic(err)
 	}
 	p.RootPath = rootPath
+}
+
+func (p *MinioConfig) initUseIAM() {
+	useIAM := p.Base.LoadWithDefault("minio.useIAM", DefaultMinioUseIAM)
+	p.UseIAM, _ = strconv.ParseBool(useIAM)
+}
+
+func (p *MinioConfig) initIAMEndpoint() {
+	iamEndpoint := p.Base.LoadWithDefault("minio.iamEndpoint", DefaultMinioIAMEndpoint)
+	p.IAMEndpoint = iamEndpoint
 }

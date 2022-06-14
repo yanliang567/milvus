@@ -20,24 +20,30 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	grpcindexcoord "github.com/milvus-io/milvus/internal/distributed/indexcoord"
 	"github.com/milvus-io/milvus/internal/indexcoord"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
+	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/etcd"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestIndexCoordClient(t *testing.T) {
 	ClientParams.InitOnce(typeutil.IndexCoordRole)
 	ctx := context.Background()
-	server, err := grpcindexcoord.NewServer(ctx)
+	factory := dependency.NewDefaultFactory(true)
+	server, err := grpcindexcoord.NewServer(ctx, factory)
 	assert.Nil(t, err)
 	icm := &indexcoord.Mock{}
 	err = server.SetClient(icm)
+	assert.Nil(t, err)
+	dcm := &indexcoord.DataCoordMock{}
+	err = server.SetDataCoord(dcm)
 	assert.Nil(t, err)
 
 	err = server.Run()

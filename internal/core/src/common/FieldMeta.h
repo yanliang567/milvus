@@ -73,6 +73,8 @@ datatype_name(DataType data_type) {
             return "float";
         case DataType::DOUBLE:
             return "double";
+        case DataType::VARCHAR:
+            return "varChar";
         case DataType::VECTOR_FLOAT:
             return "vector_float";
         case DataType::VECTOR_BINARY: {
@@ -88,6 +90,17 @@ datatype_name(DataType data_type) {
 inline bool
 datatype_is_vector(DataType datatype) {
     return datatype == DataType::VECTOR_BINARY || datatype == DataType::VECTOR_FLOAT;
+}
+
+inline bool
+datatype_is_string(DataType datatype) {
+    switch (datatype) {
+        case DataType::VARCHAR:
+        case DataType::STRING:
+            return true;
+        default:
+            return false;
+    }
 }
 
 inline bool
@@ -117,7 +130,7 @@ datatype_is_floating(DataType datatype) {
 class FieldMeta {
  public:
     static const FieldMeta RowIdMeta;
-    FieldMeta(const FieldMeta&) = delete;
+    FieldMeta(const FieldMeta&) = default;
     FieldMeta(FieldMeta&&) = default;
     FieldMeta&
     operator=(const FieldMeta&) = delete;
@@ -126,6 +139,11 @@ class FieldMeta {
 
     FieldMeta(const FieldName& name, FieldId id, DataType type) : name_(name), id_(id), type_(type) {
         Assert(!is_vector());
+    }
+
+    FieldMeta(const FieldName& name, FieldId id, DataType type, int64_t max_length)
+        : name_(name), id_(id), type_(type), string_info_(StringInfo{max_length}) {
+        Assert(is_string());
     }
 
     FieldMeta(const FieldName& name, FieldId id, DataType type, int64_t dim, std::optional<MetricType> metric_type)
@@ -139,11 +157,24 @@ class FieldMeta {
         return type_ == DataType::VECTOR_BINARY || type_ == DataType::VECTOR_FLOAT;
     }
 
+    bool
+    is_string() const {
+        Assert(type_ != DataType::NONE);
+        return type_ == DataType::VARCHAR || type_ == DataType::STRING;
+    }
+
     int64_t
     get_dim() const {
         Assert(is_vector());
         Assert(vector_info_.has_value());
         return vector_info_->dim_;
+    }
+
+    int64_t
+    get_max_len() const {
+        Assert(is_string());
+        Assert(string_info_.has_value());
+        return string_info_->max_length;
     }
 
     std::optional<MetricType>
@@ -168,10 +199,12 @@ class FieldMeta {
         return type_;
     }
 
-    int
+    int64_t
     get_sizeof() const {
         if (is_vector()) {
             return datatype_sizeof(type_, get_dim());
+        } else if (is_string()) {
+            return string_info_->max_length;
         } else {
             return datatype_sizeof(type_);
         }
@@ -182,10 +215,14 @@ class FieldMeta {
         int64_t dim_;
         std::optional<MetricType> metric_type_;
     };
+    struct StringInfo {
+        int64_t max_length;
+    };
     FieldName name_;
     FieldId id_;
     DataType type_ = DataType::NONE;
     std::optional<VectorInfo> vector_info_;
+    std::optional<StringInfo> string_info_;
 };
 
 }  // namespace milvus

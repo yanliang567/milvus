@@ -35,13 +35,13 @@ func GetMaxLengthOfVarLengthField(fieldSchema *schemapb.FieldSchema) (int, error
 		paramsMap[p.Key] = p.Value
 	}
 
-	maxLengthPerRowKey := "max_length_per_row"
+	maxLengthPerRowKey := "max_length"
 
 	switch fieldSchema.DataType {
 	case schemapb.DataType_VarChar:
 		maxLengthPerRowValue, ok := paramsMap[maxLengthPerRowKey]
 		if !ok {
-			return 0, fmt.Errorf("the max_length_per_row was not specified, field type is %s", fieldSchema.DataType.String())
+			return 0, fmt.Errorf("the max_length was not specified, field type is %s", fieldSchema.DataType.String())
 		}
 		maxLength, err = strconv.Atoi(maxLengthPerRowValue)
 		if err != nil {
@@ -143,10 +143,10 @@ func CreateSchemaHelper(schema *schemapb.CollectionSchema) (*SchemaHelper, error
 	schemaHelper := SchemaHelper{schema: schema, nameOffset: make(map[string]int), idOffset: make(map[int64]int), primaryKeyOffset: -1}
 	for offset, field := range schema.Fields {
 		if _, ok := schemaHelper.nameOffset[field.Name]; ok {
-			return nil, errors.New("duplicated fieldName: " + field.Name)
+			return nil, fmt.Errorf("duplicated fieldName: %s", field.Name)
 		}
 		if _, ok := schemaHelper.idOffset[field.FieldID]; ok {
-			return nil, errors.New("duplicated fieldID: " + strconv.FormatInt(field.FieldID, 10))
+			return nil, fmt.Errorf("duplicated fieldID: %d", field.FieldID)
 		}
 		schemaHelper.nameOffset[field.Name] = offset
 		schemaHelper.idOffset[field.FieldID] = offset
@@ -238,10 +238,25 @@ func IsFloatingType(dataType schemapb.DataType) bool {
 	}
 }
 
+// IsArithmetic returns true if input is of arithmetic type, otherwise false.
+func IsArithmetic(dataType schemapb.DataType) bool {
+	return IsIntegerType(dataType) || IsFloatingType(dataType)
+}
+
 // IsBoolType returns true if input is a bool type, otherwise false
 func IsBoolType(dataType schemapb.DataType) bool {
 	switch dataType {
 	case schemapb.DataType_Bool:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsStringType returns true if input is a varChar type, otherwise false
+func IsStringType(dataType schemapb.DataType) bool {
+	switch dataType {
+	case schemapb.DataType_String, schemapb.DataType_VarChar:
 		return true
 	default:
 		return false
@@ -374,6 +389,136 @@ func AppendFieldData(dst []*schemapb.FieldData, src []*schemapb.FieldData, idx i
 	}
 }
 
+// MergeFieldData appends fields data to dst
+func MergeFieldData(dst []*schemapb.FieldData, src []*schemapb.FieldData) {
+	fieldID2Data := make(map[int64]*schemapb.FieldData)
+	for _, data := range dst {
+		fieldID2Data[data.FieldId] = data
+	}
+	for _, srcFieldData := range src {
+		switch fieldType := srcFieldData.Field.(type) {
+		case *schemapb.FieldData_Scalars:
+			if _, ok := fieldID2Data[srcFieldData.FieldId]; !ok {
+				scalarFieldData := &schemapb.FieldData{
+					Type:      srcFieldData.Type,
+					FieldName: srcFieldData.FieldName,
+					FieldId:   srcFieldData.FieldId,
+					Field: &schemapb.FieldData_Scalars{
+						Scalars: &schemapb.ScalarField{},
+					},
+				}
+				dst = append(dst, scalarFieldData)
+				fieldID2Data[srcFieldData.FieldId] = scalarFieldData
+			}
+			dstScalar := fieldID2Data[srcFieldData.FieldId].GetScalars()
+			switch srcScalar := fieldType.Scalars.Data.(type) {
+			case *schemapb.ScalarField_BoolData:
+				if dstScalar.GetBoolData() == nil {
+					dstScalar.Data = &schemapb.ScalarField_BoolData{
+						BoolData: &schemapb.BoolArray{
+							Data: srcScalar.BoolData.Data,
+						},
+					}
+				} else {
+					dstScalar.GetBoolData().Data = append(dstScalar.GetBoolData().Data, srcScalar.BoolData.Data...)
+				}
+			case *schemapb.ScalarField_IntData:
+				if dstScalar.GetIntData() == nil {
+					dstScalar.Data = &schemapb.ScalarField_IntData{
+						IntData: &schemapb.IntArray{
+							Data: srcScalar.IntData.Data,
+						},
+					}
+				} else {
+					dstScalar.GetIntData().Data = append(dstScalar.GetIntData().Data, srcScalar.IntData.Data...)
+				}
+			case *schemapb.ScalarField_LongData:
+				if dstScalar.GetLongData() == nil {
+					dstScalar.Data = &schemapb.ScalarField_LongData{
+						LongData: &schemapb.LongArray{
+							Data: srcScalar.LongData.Data,
+						},
+					}
+				} else {
+					dstScalar.GetLongData().Data = append(dstScalar.GetLongData().Data, srcScalar.LongData.Data...)
+				}
+			case *schemapb.ScalarField_FloatData:
+				if dstScalar.GetFloatData() == nil {
+					dstScalar.Data = &schemapb.ScalarField_FloatData{
+						FloatData: &schemapb.FloatArray{
+							Data: srcScalar.FloatData.Data,
+						},
+					}
+				} else {
+					dstScalar.GetFloatData().Data = append(dstScalar.GetFloatData().Data, srcScalar.FloatData.Data...)
+				}
+			case *schemapb.ScalarField_DoubleData:
+				if dstScalar.GetDoubleData() == nil {
+					dstScalar.Data = &schemapb.ScalarField_DoubleData{
+						DoubleData: &schemapb.DoubleArray{
+							Data: srcScalar.DoubleData.Data,
+						},
+					}
+				} else {
+					dstScalar.GetDoubleData().Data = append(dstScalar.GetDoubleData().Data, srcScalar.DoubleData.Data...)
+				}
+			case *schemapb.ScalarField_StringData:
+				if dstScalar.GetStringData() == nil {
+					dstScalar.Data = &schemapb.ScalarField_StringData{
+						StringData: &schemapb.StringArray{
+							Data: srcScalar.StringData.Data,
+						},
+					}
+				} else {
+					dstScalar.GetStringData().Data = append(dstScalar.GetStringData().Data, srcScalar.StringData.Data...)
+				}
+			default:
+				log.Error("Not supported field type", zap.String("field type", srcFieldData.Type.String()))
+			}
+		case *schemapb.FieldData_Vectors:
+			dim := fieldType.Vectors.Dim
+			if _, ok := fieldID2Data[srcFieldData.FieldId]; !ok {
+				vectorFieldData := &schemapb.FieldData{
+					Type:      srcFieldData.Type,
+					FieldName: srcFieldData.FieldName,
+					FieldId:   srcFieldData.FieldId,
+					Field: &schemapb.FieldData_Vectors{
+						Vectors: &schemapb.VectorField{
+							Dim: dim,
+						},
+					},
+				}
+				dst = append(dst, vectorFieldData)
+				fieldID2Data[srcFieldData.FieldId] = vectorFieldData
+			}
+			dstVector := fieldID2Data[srcFieldData.FieldId].GetVectors()
+			switch srcVector := fieldType.Vectors.Data.(type) {
+			case *schemapb.VectorField_BinaryVector:
+				if dstVector.GetBinaryVector() == nil {
+					dstVector.Data = &schemapb.VectorField_BinaryVector{
+						BinaryVector: srcVector.BinaryVector,
+					}
+				} else {
+					dstBinaryVector := dstVector.Data.(*schemapb.VectorField_BinaryVector)
+					dstBinaryVector.BinaryVector = append(dstBinaryVector.BinaryVector, srcVector.BinaryVector...)
+				}
+			case *schemapb.VectorField_FloatVector:
+				if dstVector.GetFloatVector() == nil {
+					dstVector.Data = &schemapb.VectorField_FloatVector{
+						FloatVector: &schemapb.FloatArray{
+							Data: srcVector.FloatVector.Data,
+						},
+					}
+				} else {
+					dstVector.GetFloatVector().Data = append(dstVector.GetFloatVector().Data, srcVector.FloatVector.Data...)
+				}
+			default:
+				log.Error("Not supported field type", zap.String("field type", srcFieldData.Type.String()))
+			}
+		}
+	}
+}
+
 // GetPrimaryFieldSchema get primary field schema from collection schema
 func GetPrimaryFieldSchema(schema *schemapb.CollectionSchema) (*schemapb.FieldSchema, error) {
 	for _, fieldSchema := range schema.Fields {
@@ -383,4 +528,115 @@ func GetPrimaryFieldSchema(schema *schemapb.CollectionSchema) (*schemapb.FieldSc
 	}
 
 	return nil, errors.New("primary field is not found")
+}
+
+// GetPrimaryFieldData get primary field data from all field data inserted from sdk
+func GetPrimaryFieldData(datas []*schemapb.FieldData, primaryFieldSchema *schemapb.FieldSchema) (*schemapb.FieldData, error) {
+	primaryFieldID := primaryFieldSchema.FieldID
+	primaryFieldName := primaryFieldSchema.Name
+
+	var primaryFieldData *schemapb.FieldData
+	for _, field := range datas {
+		if field.FieldId == primaryFieldID || field.FieldName == primaryFieldName {
+			primaryFieldData = field
+			break
+		}
+	}
+
+	if primaryFieldData == nil {
+		return nil, fmt.Errorf("can't find data for primary field %v", primaryFieldName)
+	}
+
+	return primaryFieldData, nil
+}
+
+func AppendIDs(dst *schemapb.IDs, src *schemapb.IDs, idx int) {
+	switch src.IdField.(type) {
+	case *schemapb.IDs_IntId:
+		if dst.GetIdField() == nil {
+			dst.IdField = &schemapb.IDs_IntId{
+				IntId: &schemapb.LongArray{
+					Data: []int64{src.GetIntId().Data[idx]},
+				},
+			}
+		} else {
+			dst.GetIntId().Data = append(dst.GetIntId().Data, src.GetIntId().Data[idx])
+		}
+	case *schemapb.IDs_StrId:
+		if dst.GetIdField() == nil {
+			dst.IdField = &schemapb.IDs_StrId{
+				StrId: &schemapb.StringArray{
+					Data: []string{src.GetStrId().Data[idx]},
+				},
+			}
+		} else {
+			dst.GetStrId().Data = append(dst.GetStrId().Data, src.GetStrId().Data[idx])
+		}
+	default:
+		//TODO
+	}
+}
+
+func GetSizeOfIDs(data *schemapb.IDs) int {
+	result := 0
+	if data.IdField == nil {
+		return result
+	}
+
+	switch data.GetIdField().(type) {
+	case *schemapb.IDs_IntId:
+		result = len(data.GetIntId().GetData())
+	case *schemapb.IDs_StrId:
+		result = len(data.GetStrId().GetData())
+	default:
+		//TODO::
+	}
+
+	return result
+}
+
+func IsPrimaryFieldType(dataType schemapb.DataType) bool {
+	if dataType == schemapb.DataType_Int64 || dataType == schemapb.DataType_VarChar {
+		return true
+	}
+
+	return false
+}
+
+func GetPK(data *schemapb.IDs, idx int64) interface{} {
+	if int64(GetSizeOfIDs(data)) <= idx {
+		return nil
+	}
+	switch data.GetIdField().(type) {
+	case *schemapb.IDs_IntId:
+		return data.GetIntId().GetData()[idx]
+	case *schemapb.IDs_StrId:
+		return data.GetStrId().GetData()[idx]
+	}
+	return nil
+}
+
+func AppendPKs(pks *schemapb.IDs, pk interface{}) {
+	switch realPK := pk.(type) {
+	case int64:
+		if pks.GetIntId() == nil {
+			pks.IdField = &schemapb.IDs_IntId{
+				IntId: &schemapb.LongArray{
+					Data: make([]int64, 0),
+				},
+			}
+		}
+		pks.GetIntId().Data = append(pks.GetIntId().GetData(), realPK)
+	case string:
+		if pks.GetStrId() == nil {
+			pks.IdField = &schemapb.IDs_StrId{
+				StrId: &schemapb.StringArray{
+					Data: make([]string, 0),
+				},
+			}
+		}
+		pks.GetStrId().Data = append(pks.GetStrId().GetData(), realPK)
+	default:
+		log.Warn("got unexpected data type of pk when append pks", zap.Any("pk", pk))
+	}
 }

@@ -23,18 +23,6 @@
 
 namespace milvus::segcore {
 
-using SearchResult = milvus::SearchResult;
-struct RowBasedRawData {
-    void* raw_data;      // schema
-    int sizeof_per_row;  // alignment
-    int64_t count;
-};
-
-struct ColumnBasedRawData {
-    std::vector<aligned_vector<uint8_t>> columns_;
-    int64_t count;
-};
-
 class SegmentGrowing : public SegmentInternalInterface {
  public:
     virtual void
@@ -43,19 +31,12 @@ class SegmentGrowing : public SegmentInternalInterface {
     virtual int64_t
     PreInsert(int64_t size) = 0;
 
-    virtual Status
-    Insert(int64_t reserved_offset,
-           int64_t size,
-           const int64_t* row_ids,
-           const Timestamp* timestamps,
-           const RowBasedRawData& values) = 0;
-
     virtual void
     Insert(int64_t reserved_offset,
            int64_t size,
            const int64_t* row_ids,
            const Timestamp* timestamps,
-           const ColumnBasedRawData& values) = 0;
+           const InsertData* insert_data) = 0;
 
     // virtual int64_t
     // PreDelete(int64_t size) = 0;

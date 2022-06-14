@@ -282,10 +282,11 @@ func TestDeleteMsg(t *testing.T) {
 				SourceID:  3,
 			},
 
-			CollectionName: "test_collection",
-			ShardName:      "test-channel",
-			Timestamps:     []uint64{2, 1, 3},
-			PrimaryKeys:    []int64{1, 2, 3},
+			CollectionName:   "test_collection",
+			ShardName:        "test-channel",
+			Timestamps:       []uint64{2, 1, 3},
+			Int64PrimaryKeys: []int64{1, 2, 3},
+			NumRows:          3,
 		},
 	}
 
@@ -329,7 +330,6 @@ func TestSearchMsg(t *testing.T) {
 				Timestamp: 2,
 				SourceID:  3,
 			},
-			ResultChannelID:    "test-channel",
 			DbID:               4,
 			CollectionID:       5,
 			PartitionIDs:       []int64{},
@@ -389,7 +389,6 @@ func TestSearchResultMsg(t *testing.T) {
 				Timestamp: 2,
 				SourceID:  3,
 			},
-			ResultChannelID:          "test-channel",
 			MetricType:               "l2",
 			NumQueries:               5,
 			TopK:                     6,
@@ -439,7 +438,6 @@ func TestRetrieveMsg(t *testing.T) {
 				Timestamp: 2,
 				SourceID:  3,
 			},
-			ResultChannelID:    "test-channel",
 			DbID:               5,
 			CollectionID:       6,
 			PartitionIDs:       []int64{7, 8},
@@ -496,7 +494,6 @@ func TestRetrieveResultMsg(t *testing.T) {
 				Timestamp: 2,
 				SourceID:  3,
 			},
-			ResultChannelID: "test-channel",
 			Ids: &schemapb.IDs{
 				IdField: &schemapb.IDs_IntId{
 					IntId: &schemapb.LongArray{

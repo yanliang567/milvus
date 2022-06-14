@@ -26,24 +26,25 @@ import (
 	"time"
 
 	ot "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
+
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	qn "github.com/milvus-io/milvus/internal/querynode"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/etcd"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/trace"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/keepalive"
 )
 
 var Params paramtable.GrpcServerConfig
@@ -67,7 +68,7 @@ type Server struct {
 }
 
 // NewServer create a new QueryNode grpc server.
-func NewServer(ctx context.Context, factory msgstream.Factory) (*Server, error) {
+func NewServer(ctx context.Context, factory dependency.Factory) (*Server, error) {
 	ctx1, cancel := context.WithCancel(ctx)
 
 	s := &Server{
@@ -251,18 +252,6 @@ func (s *Server) GetComponentStates(ctx context.Context, req *internalpb.GetComp
 	return s.querynode.GetComponentStates(ctx)
 }
 
-// AddQueryChannel adds query channel for QueryNode component.
-func (s *Server) AddQueryChannel(ctx context.Context, req *querypb.AddQueryChannelRequest) (*commonpb.Status, error) {
-	// ignore ctx
-	return s.querynode.AddQueryChannel(ctx, req)
-}
-
-// RemoveQueryChannel removes the query channel for QueryNode component.
-func (s *Server) RemoveQueryChannel(ctx context.Context, req *querypb.RemoveQueryChannelRequest) (*commonpb.Status, error) {
-	// ignore ctx
-	return s.querynode.RemoveQueryChannel(ctx, req)
-}
-
 // WatchDmChannels watches the channels about data manipulation.
 func (s *Server) WatchDmChannels(ctx context.Context, req *querypb.WatchDmChannelsRequest) (*commonpb.Status, error) {
 	// ignore ctx
@@ -302,6 +291,21 @@ func (s *Server) ReleaseSegments(ctx context.Context, req *querypb.ReleaseSegmen
 // GetSegmentInfo gets the information of the specified segments in QueryNode.
 func (s *Server) GetSegmentInfo(ctx context.Context, req *querypb.GetSegmentInfoRequest) (*querypb.GetSegmentInfoResponse, error) {
 	return s.querynode.GetSegmentInfo(ctx, req)
+}
+
+// Search performs search of streaming/historical replica on QueryNode.
+func (s *Server) Search(ctx context.Context, req *querypb.SearchRequest) (*internalpb.SearchResults, error) {
+	return s.querynode.Search(ctx, req)
+}
+
+// Query performs query of streaming/historical replica on QueryNode.
+func (s *Server) Query(ctx context.Context, req *querypb.QueryRequest) (*internalpb.RetrieveResults, error) {
+	return s.querynode.Query(ctx, req)
+}
+
+// SyncReplicaSegments syncs replica segment information to shard leader
+func (s *Server) SyncReplicaSegments(ctx context.Context, req *querypb.SyncReplicaSegmentsRequest) (*commonpb.Status, error) {
+	return s.querynode.SyncReplicaSegments(ctx, req)
 }
 
 // GetMetrics gets the metrics information of QueryNode.

@@ -25,7 +25,6 @@ import (
 
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
-	"github.com/milvus-io/milvus/internal/rootcoord"
 )
 
 func TestStatsWriter_Int64PrimaryKey(t *testing.T) {
@@ -58,11 +57,11 @@ func TestStatsWriter_Int64PrimaryKey(t *testing.T) {
 	msgs := &Int64FieldData{
 		Data: []int64{},
 	}
-	err = sw.generatePrimaryKeyStats(rootcoord.RowIDField, schemapb.DataType_Int64, msgs)
+	err = sw.generatePrimaryKeyStats(common.RowIDField, schemapb.DataType_Int64, msgs)
 	assert.Nil(t, err)
 }
 
-func TestStatsWriter_StringPrimaryKey(t *testing.T) {
+func TestStatsWriter_VarCharPrimaryKey(t *testing.T) {
 	data := &StringFieldData{
 		Data: []string{"bc", "ac", "abd", "cd", "milvus"},
 	}
@@ -75,12 +74,8 @@ func TestStatsWriter_StringPrimaryKey(t *testing.T) {
 	sr.SetBuffer(b)
 	stats, err := sr.GetPrimaryKeyStats()
 	assert.Nil(t, err)
-	maxPk := &StringPrimaryKey{
-		Value: "milvus",
-	}
-	minPk := &StringPrimaryKey{
-		Value: "abd",
-	}
+	maxPk := NewVarCharPrimaryKey("milvus")
+	minPk := NewVarCharPrimaryKey("abd")
 	assert.Equal(t, true, stats.MaxPk.EQ(maxPk))
 	assert.Equal(t, true, stats.MinPk.EQ(minPk))
 	for _, id := range data.Data {
@@ -90,7 +85,7 @@ func TestStatsWriter_StringPrimaryKey(t *testing.T) {
 	msgs := &Int64FieldData{
 		Data: []int64{},
 	}
-	err = sw.generatePrimaryKeyStats(rootcoord.RowIDField, schemapb.DataType_Int64, msgs)
+	err = sw.generatePrimaryKeyStats(common.RowIDField, schemapb.DataType_Int64, msgs)
 	assert.Nil(t, err)
 }
 

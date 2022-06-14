@@ -17,9 +17,13 @@
 package querycoord
 
 import (
+	"context"
+
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
+	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
 func getCompareMapFromSlice(sliceData []int64) map[int64]struct{} {
@@ -34,7 +38,7 @@ func getCompareMapFromSlice(sliceData []int64) map[int64]struct{} {
 func estimateSegmentSize(segmentLoadInfo *querypb.SegmentLoadInfo) int64 {
 	segmentSize := int64(0)
 
-	vecFieldID2IndexInfo := make(map[int64]*querypb.VecFieldIndexInfo)
+	vecFieldID2IndexInfo := make(map[int64]*querypb.FieldIndexInfo)
 	for _, fieldIndexInfo := range segmentLoadInfo.IndexInfos {
 		if fieldIndexInfo.EnableIndex {
 			fieldID := fieldIndexInfo.FieldID
@@ -86,9 +90,6 @@ func getDstNodeIDByTask(t task) int64 {
 	case commonpb.MsgType_WatchDeltaChannels:
 		watchDeltaChannel := t.(*watchDeltaChannelTask)
 		nodeID = watchDeltaChannel.NodeID
-	case commonpb.MsgType_WatchQueryChannels:
-		watchQueryChannel := t.(*watchQueryChannelTask)
-		nodeID = watchQueryChannel.NodeID
 	case commonpb.MsgType_ReleaseCollection:
 		releaseCollection := t.(*releaseCollectionTask)
 		nodeID = releaseCollection.NodeID
@@ -104,3 +105,128 @@ func getDstNodeIDByTask(t task) int64 {
 
 	return nodeID
 }
+
+func syncReplicaSegments(ctx context.Context, cluster Cluster, childTasks []task) error {
+	type SegmentIndex struct {
+		NodeID      UniqueID
+		PartitionID UniqueID
+		ReplicaID   UniqueID
+	}
+
+	type ShardLeader struct {
+		ReplicaID UniqueID
+		LeaderID  UniqueID
+	}
+
+	shardSegments := make(map[string]map[SegmentIndex]typeutil.UniqueSet) // DMC -> set[Segment]
+	shardLeaders := make(map[string][]*ShardLeader)                       // DMC -> leader
+	for _, childTask := range childTasks {
+		switch task := childTask.(type) {
+		case *loadSegmentTask:
+			nodeID := getDstNodeIDByTask(task)
+			for _, segment := range task.Infos {
+				segments, ok := shardSegments[segment.InsertChannel]
+				if !ok {
+					segments = make(map[SegmentIndex]typeutil.UniqueSet)
+				}
+
+				index := SegmentIndex{
+					NodeID:      nodeID,
+					PartitionID: segment.PartitionID,
+					ReplicaID:   task.ReplicaID,
+				}
+
+				_, ok = segments[index]
+				if !ok {
+					segments[index] = make(typeutil.UniqueSet)
+				}
+				segments[index].Insert(segment.SegmentID)
+
+				shardSegments[segment.InsertChannel] = segments
+			}
+
+		case *watchDmChannelTask:
+			leaderID := getDstNodeIDByTask(task)
+			leader := &ShardLeader{
+				ReplicaID: task.ReplicaID,
+				LeaderID:  leaderID,
+			}
+
+			for _, dmc := range task.Infos {
+				leaders, ok := shardLeaders[dmc.ChannelName]
+				if !ok {
+					leaders = make([]*ShardLeader, 0)
+				}
+
+				leaders = append(leaders, leader)
+
+				shardLeaders[dmc.ChannelName] = leaders
+			}
+		}
+	}
+
+	for dmc, leaders := range shardLeaders {
+		segments, ok := shardSegments[dmc]
+		if !ok {
+			continue
+		}
+
+		for _, leader := range leaders {
+			req := querypb.SyncReplicaSegmentsRequest{
+				VchannelName:    dmc,
+				ReplicaSegments: make([]*querypb.ReplicaSegmentsInfo, 0, len(segments)),
+			}
+
+			for index, segmentSet := range segments {
+				if index.ReplicaID == leader.ReplicaID {
+					req.ReplicaSegments = append(req.ReplicaSegments,
+						&querypb.ReplicaSegmentsInfo{
+							NodeId:      index.NodeID,
+							PartitionId: index.PartitionID,
+							SegmentIds:  segmentSet.Collect(),
+						})
+				}
+			}
+
+			err := cluster.SyncReplicaSegments(ctx, leader.LeaderID, &req)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func removeFromSlice(origin []UniqueID, del ...UniqueID) []UniqueID {
+	set := make(typeutil.UniqueSet, len(origin))
+	set.Insert(origin...)
+	set.Remove(del...)
+
+	return set.Collect()
+}
+
+func getReplicaAvailableMemory(cluster Cluster, replica *milvuspb.ReplicaInfo) uint64 {
+	availableMemory := uint64(0)
+	nodes := getNodeInfos(cluster, replica.NodeIds)
+	for _, node := range nodes {
+		availableMemory += node.totalMem - node.memUsage
+	}
+
+	return availableMemory
+}
+
+// func getShardLeaderByNodeID(meta Meta, replicaID UniqueID, dmChannel string) (UniqueID, error) {
+// 	replica, err := meta.getReplicaByID(replicaID)
+// 	if err != nil {
+// 		return 0, err
+// 	}
+
+// 	for _, shard := range replica.ShardReplicas {
+// 		if shard.DmChannelName == dmChannel {
+// 			return shard.LeaderID, nil
+// 		}
+// 	}
+
+// 	return 0, fmt.Errorf("shard leader not found in replica %v and dm channel %s", replicaID, dmChannel)
+// }

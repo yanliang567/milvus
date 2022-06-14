@@ -11,11 +11,11 @@
 
 #include <string>
 #include <thread>
+#include "index/ScalarIndexSort.h"
+#include "index/StringIndexSort.h"
 
 #include "common/SystemProperty.h"
-#if defined(__linux__) || defined(__MINGW64__)
 #include "knowhere/index/vector_index/IndexIVF.h"
-#endif
 #include "knowhere/index/vector_index/adapter/VectorAdapter.h"
 #include "segcore/FieldIndexing.h"
 
@@ -23,7 +23,6 @@ namespace milvus::segcore {
 
 void
 VectorFieldIndexing::BuildIndexRange(int64_t ack_beg, int64_t ack_end, const VectorBase* vec_base) {
-#if defined(__linux__) || defined(__MINGW64__)
     AssertInfo(field_meta_.get_data_type() == DataType::VECTOR_FLOAT, "Data type of vector field is not VECTOR_FLOAT");
     auto dim = field_meta_.get_dim();
 
@@ -42,9 +41,6 @@ VectorFieldIndexing::BuildIndexRange(int64_t ack_beg, int64_t ack_end, const Vec
         indexing->AddWithoutIds(dataset, conf);
         data_[chunk_id] = std::move(indexing);
     }
-#else
-    throw std::runtime_error("Unsupported BuildIndexRange on current platform!");
-#endif
 }
 
 knowhere::Config
@@ -116,9 +112,15 @@ ScalarFieldIndexing<T>::BuildIndexRange(int64_t ack_beg, int64_t ack_end, const 
         const auto& chunk = source->get_chunk(chunk_id);
         // build index for chunk
         // TODO
-        auto indexing = std::make_unique<knowhere::scalar::StructuredIndexSort<T>>();
-        indexing->Build(vec_base->get_size_per_chunk(), chunk.data());
-        data_[chunk_id] = std::move(indexing);
+        if constexpr (std::is_same_v<T, std::string>) {
+            auto indexing = scalar::CreateStringIndexSort();
+            indexing->Build(vec_base->get_size_per_chunk(), chunk.data());
+            data_[chunk_id] = std::move(indexing);
+        } else {
+            auto indexing = scalar::CreateScalarIndexSort<T>();
+            indexing->Build(vec_base->get_size_per_chunk(), chunk.data());
+            data_[chunk_id] = std::move(indexing);
+        }
     }
 }
 
@@ -147,6 +149,8 @@ CreateIndex(const FieldMeta& field_meta, const SegcoreConfig& segcore_config) {
             return std::make_unique<ScalarFieldIndexing<float>>(field_meta, segcore_config);
         case DataType::DOUBLE:
             return std::make_unique<ScalarFieldIndexing<double>>(field_meta, segcore_config);
+        case DataType::VARCHAR:
+            return std::make_unique<ScalarFieldIndexing<std::string>>(field_meta, segcore_config);
         default:
             PanicInfo("unsupported");
     }

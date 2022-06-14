@@ -22,6 +22,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/util"
+
+	"github.com/milvus-io/milvus/internal/util/crypto"
+
 	grpcopentracing "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
@@ -30,12 +34,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/keepalive"
-)
-
-const (
-	dialTimeout      = 5 * time.Second
-	keepAliveTime    = 10 * time.Second
-	keepAliveTimeout = 3 * time.Second
 )
 
 // GrpcClient abstracts client of grpc
@@ -61,6 +59,10 @@ type ClientBase struct {
 	role              string
 	ClientMaxSendSize int
 	ClientMaxRecvSize int
+
+	DialTimeout      time.Duration
+	KeepAliveTime    time.Duration
+	KeepAliveTimeout time.Duration
 }
 
 // SetRole sets role of client
@@ -133,7 +135,7 @@ func (c *ClientBase) connect(ctx context.Context) error {
 	}
 
 	opts := trace.GetInterceptorOpts()
-	dialContext, cancel := context.WithTimeout(ctx, dialTimeout)
+	dialContext, cancel := context.WithTimeout(ctx, c.DialTimeout)
 
 	// refer to https://github.com/grpc/grpc-proto/blob/master/grpc/service_config/service_config.proto
 	retryPolicy := `{
@@ -162,8 +164,8 @@ func (c *ClientBase) connect(ctx context.Context) error {
 		grpc.WithStreamInterceptor(grpcopentracing.StreamClientInterceptor(opts...)),
 		grpc.WithDefaultServiceConfig(retryPolicy),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                keepAliveTime,
-			Timeout:             keepAliveTimeout,
+			Time:                c.KeepAliveTime,
+			Timeout:             c.KeepAliveTimeout,
 			PermitWithoutStream: true,
 		}),
 		grpc.WithConnectParams(grpc.ConnectParams{
@@ -173,12 +175,13 @@ func (c *ClientBase) connect(ctx context.Context) error {
 				Jitter:     0.2,
 				MaxDelay:   3 * time.Second,
 			},
-			MinConnectTimeout: dialTimeout,
+			MinConnectTimeout: c.DialTimeout,
 		}),
+		grpc.WithPerRPCCredentials(&Token{Value: crypto.Base64Encode(util.MemberCredID)}),
 	)
 	cancel()
 	if err != nil {
-		return err
+		return wrapErrConnect(addr, err)
 	}
 	if c.conn != nil {
 		_ = c.conn.Close()
@@ -200,17 +203,14 @@ func (c *ClientBase) callOnce(ctx context.Context, caller func(client interface{
 		return ret, nil
 	}
 
-	// status.Error(codes.Canceled, context.Canceled.Error()
-	// if err2 == context.Canceled || err2 == context.DeadlineExceeded {
-	// 	return nil, err2
-	// }
-
 	if !funcutil.CheckCtxValid(ctx) {
 		return nil, err2
 	}
-
+	if !funcutil.IsGrpcErr(err2) {
+		log.Debug("ClientBase:isNotGrpcErr", zap.Error(err2))
+		return nil, err2
+	}
 	log.Debug(c.GetRole()+" ClientBase grpc error, start to reset connection", zap.Error(err2))
-
 	c.resetConnection(client)
 	return ret, err2
 }
@@ -223,8 +223,8 @@ func (c *ClientBase) Call(ctx context.Context, caller func(client interface{}) (
 
 	ret, err := c.callOnce(ctx, caller)
 	if err != nil {
-		traceErr := fmt.Errorf("err: %s\n, %s", err.Error(), trace.StackTrace())
-		log.Error(c.GetRole()+" ClientBase Call grpc first call get error ", zap.Error(traceErr))
+		traceErr := fmt.Errorf("err: %w\n, %s", err, trace.StackTrace())
+		log.Error("ClientBase Call grpc first call get error", zap.String("role", c.GetRole()), zap.Error(traceErr))
 		return nil, traceErr
 	}
 	return ret, err
@@ -241,7 +241,7 @@ func (c *ClientBase) ReCall(ctx context.Context, caller func(client interface{})
 		return ret, nil
 	}
 
-	traceErr := fmt.Errorf("err: %s\n, %s", err.Error(), trace.StackTrace())
+	traceErr := fmt.Errorf("err: %w\n, %s", err, trace.StackTrace())
 	log.Warn(c.GetRole()+" ClientBase ReCall grpc first call get error ", zap.Error(traceErr))
 
 	if !funcutil.CheckCtxValid(ctx) {
@@ -250,8 +250,8 @@ func (c *ClientBase) ReCall(ctx context.Context, caller func(client interface{})
 
 	ret, err = c.callOnce(ctx, caller)
 	if err != nil {
-		traceErr = fmt.Errorf("err: %s\n, %s", err.Error(), trace.StackTrace())
-		log.Error(c.GetRole()+" ClientBase ReCall grpc second call get error ", zap.Error(traceErr))
+		traceErr = fmt.Errorf("err: %w\n, %s", err, trace.StackTrace())
+		log.Error("ClientBase ReCall grpc second call get error", zap.String("role", c.GetRole()), zap.Error(traceErr))
 		return nil, traceErr
 	}
 	return ret, err

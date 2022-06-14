@@ -57,6 +57,7 @@ type mqMsgStream struct {
 	consumerLock *sync.Mutex
 	readerLock   *sync.Mutex
 	closed       int32
+	onceChan     sync.Once
 }
 
 // NewMqMsgStream is used to generate a new mqMsgStream object
@@ -103,7 +104,7 @@ func (ms *mqMsgStream) AsProducer(channels []string) {
 			break
 		}
 		fn := func() error {
-			pp, err := ms.client.CreateProducer(mqwrapper.ProducerOptions{Topic: channel})
+			pp, err := ms.client.CreateProducer(mqwrapper.ProducerOptions{Topic: channel, EnableCompression: true})
 			if err != nil {
 				return err
 			}
@@ -117,7 +118,7 @@ func (ms *mqMsgStream) AsProducer(channels []string) {
 			ms.producerChannels = append(ms.producerChannels, channel)
 			return nil
 		}
-		err := retry.Do(context.TODO(), fn, retry.Attempts(20), retry.Sleep(time.Millisecond*200))
+		err := retry.Do(context.TODO(), fn, retry.Attempts(20), retry.Sleep(time.Millisecond*200), retry.MaxSleepTime(5*time.Second))
 		if err != nil {
 			errMsg := "Failed to create producer " + channel + ", error = " + err.Error()
 			panic(errMsg)
@@ -166,11 +167,13 @@ func (ms *mqMsgStream) AsConsumerWithPosition(channels []string, subName string,
 			ms.consumerChannels = append(ms.consumerChannels, channel)
 			return nil
 		}
-		err := retry.Do(context.TODO(), fn, retry.Attempts(20), retry.Sleep(time.Millisecond*200))
+		// TODO if know the former subscribe is invalid, should we use pulsarctl to accelerate recovery speed
+		err := retry.Do(context.TODO(), fn, retry.Attempts(50), retry.Sleep(time.Millisecond*200), retry.MaxSleepTime(5*time.Second))
 		if err != nil {
 			errMsg := "Failed to create consumer " + channel + ", error = " + err.Error()
 			panic(errMsg)
 		}
+		log.Info("Successfully create consumer", zap.String("channel", channel), zap.String("subname", subName))
 	}
 }
 
@@ -179,15 +182,14 @@ func (ms *mqMsgStream) SetRepackFunc(repackFunc RepackFunc) {
 }
 
 func (ms *mqMsgStream) Start() {
-	for _, c := range ms.consumers {
-		ms.wait.Add(1)
-		go ms.receiveMsg(c)
-	}
 }
 
 func (ms *mqMsgStream) Close() {
+
 	ms.streamCancel()
+	ms.readerLock.Lock()
 	ms.wait.Wait()
+	ms.readerLock.Unlock()
 
 	for _, producer := range ms.producers {
 		if producer != nil {
@@ -521,6 +523,15 @@ func (ms *mqMsgStream) receiveMsg(consumer mqwrapper.Consumer) {
 }
 
 func (ms *mqMsgStream) Chan() <-chan *MsgPack {
+	ms.onceChan.Do(func() {
+		for _, c := range ms.consumers {
+			ms.readerLock.Lock()
+			ms.wait.Add(1)
+			ms.readerLock.Unlock()
+			go ms.receiveMsg(c)
+		}
+	})
+
 	return ms.receiveBuf
 }
 
@@ -639,7 +650,7 @@ func (ms *MqTtMsgStream) AsConsumerWithPosition(channels []string, subName strin
 			ms.addConsumer(pc, channel)
 			return nil
 		}
-		err := retry.Do(context.TODO(), fn, retry.Attempts(20), retry.Sleep(time.Millisecond*200))
+		err := retry.Do(context.TODO(), fn, retry.Attempts(20), retry.Sleep(time.Millisecond*200), retry.MaxSleepTime(5*time.Second))
 		if err != nil {
 			errMsg := "Failed to create consumer " + channel + ", error = " + err.Error()
 			panic(errMsg)
@@ -648,12 +659,7 @@ func (ms *MqTtMsgStream) AsConsumerWithPosition(channels []string, subName strin
 }
 
 // Start will start a goroutine which keep carrying msg from pulsar/rocksmq to golang chan
-func (ms *MqTtMsgStream) Start() {
-	if ms.consumers != nil {
-		ms.wait.Add(1)
-		go ms.bufMsgPackToChannel()
-	}
-}
+func (ms *MqTtMsgStream) Start() {}
 
 // Close will stop goroutine and free internal producers and consumers
 func (ms *MqTtMsgStream) Close() {
@@ -869,7 +875,8 @@ func (ms *MqTtMsgStream) Seek(msgPositions []*internalpb.MsgPosition) error {
 		if len(mp.MsgID) == 0 {
 			return fmt.Errorf("when msgID's length equal to 0, please use AsConsumer interface")
 		}
-		if err = retry.Do(context.TODO(), fn, retry.Attempts(20), retry.Sleep(time.Millisecond*200)); err != nil {
+		err = retry.Do(context.TODO(), fn, retry.Attempts(20), retry.Sleep(time.Millisecond*200), retry.MaxSleepTime(5*time.Second))
+		if err != nil {
 			return fmt.Errorf("failed to seek, error %s", err.Error())
 		}
 		ms.addConsumer(consumer, mp.ChannelName)
@@ -910,4 +917,17 @@ func (ms *MqTtMsgStream) Seek(msgPositions []*internalpb.MsgPosition) error {
 		}
 	}
 	return nil
+}
+
+func (ms *MqTtMsgStream) Chan() <-chan *MsgPack {
+	ms.onceChan.Do(func() {
+		if ms.consumers != nil {
+			ms.readerLock.Lock()
+			ms.wait.Add(1)
+			ms.readerLock.Unlock()
+			go ms.bufMsgPackToChannel()
+		}
+	})
+
+	return ms.receiveBuf
 }

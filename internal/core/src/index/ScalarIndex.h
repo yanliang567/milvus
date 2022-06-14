@@ -16,11 +16,9 @@
 #include <string>
 #include <boost/dynamic_bitset.hpp>
 #include "index/Index.h"
+#include "common/Types.h"
 
 namespace milvus::scalar {
-
-using TargetBitmap = boost::dynamic_bitset<>;
-using TargetBitmapPtr = std::unique_ptr<TargetBitmap>;
 
 template <typename T>
 class ScalarIndex : public IndexBase {
@@ -35,13 +33,21 @@ class ScalarIndex : public IndexBase {
     NotIn(size_t n, const T* values) = 0;
 
     virtual const TargetBitmapPtr
-    Range(T value, OperatorType op) = 0;
+    Range(T value, OpType op) = 0;
 
     virtual const TargetBitmapPtr
     Range(T lower_bound_value, bool lb_inclusive, T upper_bound_value, bool ub_inclusive) = 0;
+
+    virtual T
+    Reverse_Lookup(size_t offset) const = 0;
+
+    const TargetBitmapPtr
+    Query(const DatasetPtr& dataset) override;
 };
 
 template <typename T>
 using ScalarIndexPtr = std::unique_ptr<ScalarIndex<T>>;
 
 }  // namespace milvus::scalar
+
+#include "index/ScalarIndex-inl.h"

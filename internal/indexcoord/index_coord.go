@@ -21,6 +21,7 @@ import (
 	"errors"
 	"math/rand"
 	"os"
+	"path"
 	"sort"
 	"strconv"
 	"sync"
@@ -28,23 +29,25 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/milvus-io/milvus/internal/metrics"
-	"github.com/milvus-io/milvus/internal/storage"
-
+	"github.com/golang/protobuf/proto"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 
-	"github.com/golang/protobuf/proto"
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/common"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
+	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
+	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/tso"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/retry"
@@ -52,15 +55,10 @@ import (
 	"github.com/milvus-io/milvus/internal/util/trace"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 // make sure IndexCoord implements types.IndexCoord
 var _ types.IndexCoord = (*IndexCoord)(nil)
-
-const (
-	indexSizeFactor = 6
-)
 
 var Params paramtable.ComponentParam
 
@@ -82,6 +80,7 @@ type IndexCoord struct {
 
 	idAllocator *allocator.GlobalIDAllocator
 
+	factory      dependency.Factory
 	etcdCli      *clientv3.Client
 	chunkManager storage.ChunkManager
 
@@ -100,6 +99,8 @@ type IndexCoord struct {
 	assignTaskInterval time.Duration
 	taskLimit          int
 
+	dataCoordClient types.DataCoord
+
 	// Add callback functions at different stages
 	startCallbacks []func()
 	closeCallbacks []func()
@@ -109,7 +110,7 @@ type IndexCoord struct {
 type UniqueID = typeutil.UniqueID
 
 // NewIndexCoord creates a new IndexCoord component.
-func NewIndexCoord(ctx context.Context) (*IndexCoord, error) {
+func NewIndexCoord(ctx context.Context, factory dependency.Factory) (*IndexCoord, error) {
 	rand.Seed(time.Now().UnixNano())
 	ctx1, cancel := context.WithCancel(ctx)
 	i := &IndexCoord{
@@ -119,6 +120,7 @@ func NewIndexCoord(ctx context.Context) (*IndexCoord, error) {
 		durationInterval:   time.Second * 10,
 		assignTaskInterval: time.Second * 3,
 		taskLimit:          20,
+		factory:            factory,
 	}
 	i.UpdateStateCode(internalpb.StateCode_Abnormal)
 	return i, nil
@@ -160,6 +162,8 @@ func (i *IndexCoord) Init() error {
 		i.UpdateStateCode(internalpb.StateCode_Initializing)
 		log.Debug("IndexCoord init", zap.Any("stateCode", i.stateCode.Load().(internalpb.StateCode)))
 
+		i.factory.Init(&Params)
+
 		err := i.initSession()
 		if err != nil {
 			log.Error(err.Error())
@@ -177,7 +181,7 @@ func (i *IndexCoord) Init() error {
 			return err
 		}
 		log.Debug("IndexCoord try to connect etcd")
-		err = retry.Do(i.loopCtx, connectEtcdFn, retry.Attempts(300))
+		err = retry.Do(i.loopCtx, connectEtcdFn, retry.Attempts(100))
 		if err != nil {
 			log.Error("IndexCoord try to connect etcd failed", zap.Error(err))
 			initErr = err
@@ -221,13 +225,7 @@ func (i *IndexCoord) Init() error {
 			return
 		}
 
-		chunkManager, err := storage.NewMinioChunkManager(i.loopCtx,
-			storage.Address(Params.MinioCfg.Address),
-			storage.AccessKeyID(Params.MinioCfg.AccessKeyID),
-			storage.SecretAccessKeyID(Params.MinioCfg.SecretAccessKey),
-			storage.UseSSL(Params.MinioCfg.UseSSL),
-			storage.BucketName(Params.MinioCfg.BucketName),
-			storage.CreateBucket(true))
+		chunkManager, err := i.factory.NewVectorStorageChunkManager(i.loopCtx)
 
 		if err != nil {
 			log.Error("IndexCoord new minio chunkManager failed", zap.Error(err))
@@ -319,6 +317,16 @@ func (i *IndexCoord) SetEtcdClient(etcdClient *clientv3.Client) {
 	i.etcdCli = etcdClient
 }
 
+// SetDataCoord sets data coordinator's client
+func (i *IndexCoord) SetDataCoord(dataCoord types.DataCoord) error {
+	if dataCoord == nil {
+		return errors.New("null DataCoord interface")
+	}
+
+	i.dataCoordClient = dataCoord
+	return nil
+}
+
 // UpdateStateCode updates the component state of IndexCoord.
 func (i *IndexCoord) UpdateStateCode(code internalpb.StateCode) {
 	i.stateCode.Store(code)
@@ -395,21 +403,26 @@ func (i *IndexCoord) BuildIndex(ctx context.Context, req *indexpb.BuildIndexRequ
 			},
 		}, err
 	}
-	metrics.IndexCoordIndexRequestCounter.WithLabelValues(metrics.TotalLabel).Inc()
-	log.Debug("IndexCoord building index ...",
-		zap.Int64("IndexBuildID", req.IndexBuildID),
-		zap.String("IndexName = ", req.IndexName),
-		zap.Int64("IndexID = ", req.IndexID),
-		zap.Strings("DataPath = ", req.DataPaths),
-		zap.Any("TypeParams", req.TypeParams),
-		zap.Any("IndexParams", req.IndexParams),
-		zap.Int64("numRow", req.NumRows),
+	log.Debug("IndexCoord building index ...", zap.Int64("segmentID", req.SegmentID),
+		zap.String("IndexName", req.IndexName), zap.Int64("IndexID", req.IndexID),
+		zap.Strings("DataPath", req.DataPaths), zap.Any("TypeParams", req.TypeParams),
+		zap.Any("IndexParams", req.IndexParams), zap.Int64("numRows", req.NumRows),
 		zap.Any("field type", req.FieldSchema.DataType))
+
+	ret := &indexpb.BuildIndexResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_UnexpectedError,
+		},
+		IndexBuildID: 0,
+	}
+
+	metrics.IndexCoordIndexRequestCounter.WithLabelValues(metrics.TotalLabel).Inc()
+
 	sp, ctx := trace.StartSpanFromContextWithOperationName(ctx, "IndexCoord-BuildIndex")
 	defer sp.Finish()
 	hasIndex, indexBuildID := i.metaTable.HasSameReq(req)
 	if hasIndex {
-		log.Debug("IndexCoord", zap.Int64("hasIndex true", indexBuildID), zap.Strings("data paths", req.DataPaths))
+		log.Debug("IndexCoord has same index", zap.Int64("buildID", indexBuildID), zap.Int64("segmentID", req.SegmentID))
 		return &indexpb.BuildIndexResponse{
 			Status: &commonpb.Status{
 				ErrorCode: commonpb.ErrorCode_Success,
@@ -418,11 +431,7 @@ func (i *IndexCoord) BuildIndex(ctx context.Context, req *indexpb.BuildIndexRequ
 			IndexBuildID: indexBuildID,
 		}, nil
 	}
-	ret := &indexpb.BuildIndexResponse{
-		Status: &commonpb.Status{
-			ErrorCode: commonpb.ErrorCode_UnexpectedError,
-		},
-	}
+
 	t := &IndexAddTask{
 		BaseTask: BaseTask{
 			ctx:   ctx,
@@ -560,7 +569,7 @@ func (i *IndexCoord) DropIndex(ctx context.Context, req *indexpb.DropIndexReques
 
 // GetIndexFilePaths gets the index file paths from IndexCoord.
 func (i *IndexCoord) GetIndexFilePaths(ctx context.Context, req *indexpb.GetIndexFilePathsRequest) (*indexpb.GetIndexFilePathsResponse, error) {
-	log.Debug("IndexCoord GetIndexFilePaths", zap.Int64s("IndexBuildIds", req.IndexBuildIDs))
+	log.Debug("IndexCoord GetIndexFilePaths", zap.Int("number of IndexBuildIds", len(req.IndexBuildIDs)))
 	if !i.isHealthy() {
 		errMsg := "IndexCoord is not healthy"
 		log.Warn(errMsg)
@@ -576,9 +585,10 @@ func (i *IndexCoord) GetIndexFilePaths(ctx context.Context, req *indexpb.GetInde
 	defer sp.Finish()
 	var indexPaths []*indexpb.IndexFilePathInfo
 
-	for _, indexID := range req.IndexBuildIDs {
-		indexPathInfo, err := i.metaTable.GetIndexFilePathInfo(indexID)
+	for _, buildID := range req.IndexBuildIDs {
+		indexPathInfo, err := i.metaTable.GetIndexFilePathInfo(buildID)
 		if err != nil {
+			log.Warn("IndexCoord GetIndexFilePaths failed", zap.Int64("indexBuildID", buildID), zap.Error(err))
 			return &indexpb.GetIndexFilePathsResponse{
 				Status: &commonpb.Status{
 					ErrorCode: commonpb.ErrorCode_UnexpectedError,
@@ -588,7 +598,6 @@ func (i *IndexCoord) GetIndexFilePaths(ctx context.Context, req *indexpb.GetInde
 		}
 		indexPaths = append(indexPaths, indexPathInfo)
 	}
-	log.Debug("IndexCoord GetIndexFilePaths success")
 
 	ret := &indexpb.GetIndexFilePathsResponse{
 		Status: &commonpb.Status{
@@ -596,7 +605,7 @@ func (i *IndexCoord) GetIndexFilePaths(ctx context.Context, req *indexpb.GetInde
 		},
 		FilePaths: indexPaths,
 	}
-	log.Debug("IndexCoord GetIndexFilePaths ", zap.Any("FilePaths", ret.FilePaths))
+	log.Debug("IndexCoord GetIndexFilePaths ", zap.Int("indexBuildIDs num", len(req.IndexBuildIDs)), zap.Int("file path num", len(ret.FilePaths)))
 
 	return ret, nil
 }
@@ -729,7 +738,8 @@ func (i *IndexCoord) recycleUnusedIndexFiles() {
 						zap.Int64("Recycle the index files successfully for deleted index with indexBuildID", meta.indexMeta.IndexBuildID))
 				} else {
 					log.Debug("IndexCoord recycleUnusedIndexFiles",
-						zap.Int64("Recycle the low version index files of the index with indexBuildID", meta.indexMeta.IndexBuildID))
+						zap.Int64("Recycle the low version index files of the index with indexBuildID", meta.indexMeta.IndexBuildID),
+						zap.Int64("indexMeta version", meta.indexMeta.Version))
 					for j := 1; j < int(meta.indexMeta.Version); j++ {
 						unusedIndexFilePathPrefix := Params.IndexCoordCfg.IndexStorageRootPath + "/" + strconv.Itoa(int(meta.indexMeta.IndexBuildID)) + "/" + strconv.Itoa(j)
 						if err := i.chunkManager.RemoveWithPrefix(unusedIndexFilePathPrefix); err != nil {
@@ -809,21 +819,32 @@ func (i *IndexCoord) watchMetaLoop() {
 	defer i.loopWg.Done()
 	log.Debug("IndexCoord watchMetaLoop start")
 
-	watchChan := i.metaTable.client.WatchWithPrefix("indexes")
+	watchChan := i.metaTable.client.WatchWithPrefix(indexFilePrefix)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case resp := <-watchChan:
-			log.Debug("IndexCoord watchMetaLoop find meta updated.")
+		case resp, ok := <-watchChan:
+			if !ok {
+				log.Warn("index coord watch meta loop failed because watch channel closed")
+				return
+			}
+			if err := resp.Err(); err != nil {
+				log.Error("received error event from etcd watcher", zap.String("path", indexFilePrefix), zap.Error(err))
+				panic("failed to handle etcd request, exit..")
+			}
 			for _, event := range resp.Events {
 				eventRevision := event.Kv.Version
 				indexMeta := &indexpb.IndexMeta{}
 				err := proto.Unmarshal(event.Kv.Value, indexMeta)
 				indexBuildID := indexMeta.IndexBuildID
-				log.Debug("IndexCoord watchMetaLoop", zap.Any("event.Key", event.Kv.Key),
-					zap.Any("event.V", indexMeta), zap.Int64("IndexBuildID", indexBuildID), zap.Error(err))
+				log.Info("IndexCoord watchMetaLoop", zap.Int64("IndexBuildID", indexBuildID))
+				if err != nil {
+					log.Warn("IndexCoord unmarshal indexMeta failed", zap.Int64("IndexBuildID", indexBuildID),
+						zap.Error(err))
+					continue
+				}
 				switch event.Type {
 				case mvccpb.PUT:
 					reload := i.metaTable.LoadMetaFromETCD(indexBuildID, eventRevision)
@@ -832,6 +853,9 @@ func (i *IndexCoord) watchMetaLoop() {
 						log.Debug("This task has finished", zap.Int64("indexBuildID", indexBuildID),
 							zap.Int64("Finish by IndexNode", indexMeta.NodeID),
 							zap.Int64("The version of the task", indexMeta.Version))
+						if err = i.tryReleaseSegmentReferLock(ctx, []UniqueID{indexMeta.Req.SegmentID}); err != nil {
+							panic(err)
+						}
 						i.nodeManager.pq.IncPriority(indexMeta.NodeID, -1)
 						metrics.IndexCoordIndexTaskCounter.WithLabelValues(metrics.InProgressIndexTaskLabel).Dec()
 						if indexMeta.State == commonpb.IndexState_Finished {
@@ -847,6 +871,47 @@ func (i *IndexCoord) watchMetaLoop() {
 			}
 		}
 	}
+}
+
+func (i *IndexCoord) tryAcquireSegmentReferLock(ctx context.Context, segIDs []UniqueID) error {
+	status, err := i.dataCoordClient.AcquireSegmentLock(ctx, &datapb.AcquireSegmentLockRequest{
+		NodeID:     i.session.ServerID,
+		SegmentIDs: segIDs,
+	})
+	if err != nil {
+		log.Error("IndexCoord try to acquire segment reference lock failed", zap.Int64s("segIDs", segIDs),
+			zap.Error(err))
+		return err
+	}
+	if status.ErrorCode != commonpb.ErrorCode_Success {
+		log.Error("IndexCoord try to acquire segment reference lock failed", zap.Int64s("segIDs", segIDs),
+			zap.Error(errors.New(status.Reason)))
+		return errors.New(status.Reason)
+	}
+	return nil
+}
+
+func (i *IndexCoord) tryReleaseSegmentReferLock(ctx context.Context, segIDs []UniqueID) error {
+	releaseLock := func() error {
+		status, err := i.dataCoordClient.ReleaseSegmentLock(ctx, &datapb.ReleaseSegmentLockRequest{
+			NodeID:     i.session.ServerID,
+			SegmentIDs: segIDs,
+		})
+		if err != nil {
+			return err
+		}
+		if status.ErrorCode != commonpb.ErrorCode_Success {
+			return errors.New(status.Reason)
+		}
+		return nil
+	}
+	err := retry.Do(ctx, releaseLock, retry.Attempts(100))
+	if err != nil {
+		log.Error("IndexCoord try to release segment reference lock failed", zap.Int64s("segIDs", segIDs),
+			zap.Error(err))
+		return err
+	}
+	return nil
 }
 
 // assignTask sends the index task to the IndexNode, it has a timeout interval, if the IndexNode doesn't respond within
@@ -884,6 +949,10 @@ func (i *IndexCoord) assignTaskLoop() {
 			return
 		case <-timeTicker.C:
 			serverIDs := i.nodeManager.ListNode()
+			if len(serverIDs) == 0 {
+				log.Warn("there is no indexnode online")
+				continue
+			}
 			metas := i.metaTable.GetUnassignedTasks(serverIDs)
 			sort.Slice(metas, func(i, j int) bool {
 				return metas[i].indexMeta.Version <= metas[j].indexMeta.Version
@@ -894,6 +963,12 @@ func (i *IndexCoord) assignTaskLoop() {
 			}
 			for index, meta := range metas {
 				indexBuildID := meta.indexMeta.IndexBuildID
+				segID := meta.indexMeta.Req.SegmentID
+				if err := i.tryAcquireSegmentReferLock(ctx, []UniqueID{segID}); err != nil {
+					log.Warn("IndexCoord try to acquire segment reference lock failed, maybe this segment has been compacted",
+						zap.Int64("segID", segID), zap.Int64("buildID", indexBuildID), zap.Error(err))
+					continue
+				}
 				if err := i.metaTable.UpdateVersion(indexBuildID); err != nil {
 					log.Warn("IndexCoord assignmentTasksLoop metaTable.UpdateVersion failed", zap.Error(err))
 					continue
@@ -901,9 +976,13 @@ func (i *IndexCoord) assignTaskLoop() {
 				log.Debug("The version of the task has been updated", zap.Int64("indexBuildID", indexBuildID))
 
 				nodeID, builderClient := i.nodeManager.PeekClient(meta)
-				if builderClient == nil {
-					log.Warn("IndexCoord assignmentTasksLoop can not find available IndexNode")
+				if builderClient == nil && nodeID == -1 {
+					log.Warn("there is no indexnode online")
 					break
+				}
+				if builderClient == nil && nodeID == 0 {
+					log.Warn("The memory of all indexnodes does not meet the requirements")
+					continue
 				}
 				log.Debug("IndexCoord PeekClient success", zap.Int64("nodeID", nodeID))
 				req := &indexpb.CreateIndexRequest{
@@ -911,7 +990,7 @@ func (i *IndexCoord) assignTaskLoop() {
 					IndexName:    meta.indexMeta.Req.IndexName,
 					IndexID:      meta.indexMeta.Req.IndexID,
 					Version:      meta.indexMeta.Version + 1,
-					MetaPath:     "/indexes/" + strconv.FormatInt(indexBuildID, 10),
+					MetaPath:     path.Join(indexFilePrefix, strconv.FormatInt(indexBuildID, 10)),
 					DataPaths:    meta.indexMeta.Req.DataPaths,
 					TypeParams:   meta.indexMeta.Req.TypeParams,
 					IndexParams:  meta.indexMeta.Req.IndexParams,

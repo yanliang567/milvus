@@ -6,6 +6,10 @@ import (
 	"fmt"
 	"path"
 
+	"github.com/milvus-io/milvus/internal/util/retry"
+
+	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
+
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/log"
@@ -45,26 +49,28 @@ func newGlobalMetaBroker(ctx context.Context, rootCoord types.RootCoord, dataCoo
 	return parser, nil
 }
 
-func (broker *globalMetaBroker) releaseDQLMessageStream(ctx context.Context, collectionID UniqueID) error {
-	ctx2, cancel2 := context.WithTimeout(ctx, timeoutForRPC)
-	defer cancel2()
-	releaseDQLMessageStreamReq := &proxypb.ReleaseDQLMessageStreamRequest{
+// invalidateCollectionMetaCache notifies RootCoord to remove all the collection meta cache with the specified collectionID in Proxies
+func (broker *globalMetaBroker) invalidateCollectionMetaCache(ctx context.Context, collectionID UniqueID) error {
+	ctx1, cancel1 := context.WithTimeout(ctx, timeoutForRPC)
+	defer cancel1()
+	req := &proxypb.InvalidateCollMetaCacheRequest{
 		Base: &commonpb.MsgBase{
-			MsgType: commonpb.MsgType_RemoveQueryChannels,
+			MsgType: 0, // TODO: msg type?
 		},
 		CollectionID: collectionID,
 	}
-	res, err := broker.rootCoord.ReleaseDQLMessageStream(ctx2, releaseDQLMessageStreamReq)
+
+	res, err := broker.rootCoord.InvalidateCollectionMetaCache(ctx1, req)
 	if err != nil {
-		log.Error("releaseDQLMessageStream occur error", zap.Int64("collectionID", collectionID), zap.Error(err))
+		log.Error("InvalidateCollMetaCacheRequest failed", zap.Int64("collectionID", collectionID), zap.Error(err))
 		return err
 	}
 	if res.ErrorCode != commonpb.ErrorCode_Success {
 		err = errors.New(res.Reason)
-		log.Error("releaseDQLMessageStream occur error", zap.Int64("collectionID", collectionID), zap.Error(err))
+		log.Error("InvalidateCollMetaCacheRequest failed", zap.Int64("collectionID", collectionID), zap.Error(err))
 		return err
 	}
-	log.Debug("releaseDQLMessageStream successfully", zap.Int64("collectionID", collectionID))
+	log.Info("InvalidateCollMetaCacheRequest successfully", zap.Int64("collectionID", collectionID))
 
 	return nil
 }
@@ -89,7 +95,7 @@ func (broker *globalMetaBroker) showPartitionIDs(ctx context.Context, collection
 		log.Error("showPartition failed", zap.Int64("collectionID", collectionID), zap.Error(err))
 		return nil, err
 	}
-	log.Debug("show partition successfully", zap.Int64("collectionID", collectionID), zap.Int64s("partitionIDs", showPartitionResponse.PartitionIDs))
+	log.Info("show partition successfully", zap.Int64("collectionID", collectionID), zap.Int64s("partitionIDs", showPartitionResponse.PartitionIDs))
 
 	return showPartitionResponse.PartitionIDs, nil
 }
@@ -115,7 +121,7 @@ func (broker *globalMetaBroker) getRecoveryInfo(ctx context.Context, collectionI
 		log.Error("get recovery info failed", zap.Int64("collectionID", collectionID), zap.Int64("partitionID", partitionID), zap.Error(err))
 		return nil, nil, err
 	}
-	log.Debug("get recovery info successfully",
+	log.Info("get recovery info successfully",
 		zap.Int64("collectionID", collectionID),
 		zap.Int64("partitionID", partitionID),
 		zap.Int("num channels", len(recoveryInfo.Channels)),
@@ -152,14 +158,14 @@ func (broker *globalMetaBroker) getIndexBuildID(ctx context.Context, collectionI
 	}
 
 	if !response.EnableIndex {
-		log.Debug("describe segment from rootCoord successfully",
+		log.Info("describe segment from rootCoord successfully",
 			zap.Int64("collectionID", collectionID),
 			zap.Int64("segmentID", segmentID),
 			zap.Bool("enableIndex", false))
 		return false, 0, nil
 	}
 
-	log.Debug("describe segment from rootCoord successfully",
+	log.Info("describe segment from rootCoord successfully",
 		zap.Int64("collectionID", collectionID),
 		zap.Int64("segmentID", segmentID),
 		zap.Bool("enableIndex", true),
@@ -186,12 +192,12 @@ func (broker *globalMetaBroker) getIndexFilePaths(ctx context.Context, buildID i
 		log.Error(err.Error())
 		return nil, err
 	}
-	log.Debug("get index info from indexCoord successfully", zap.Int64("buildID", buildID))
+	log.Info("get index info from indexCoord successfully", zap.Int64("buildID", buildID))
 
 	return pathResponse.FilePaths, nil
 }
 
-func (broker *globalMetaBroker) parseIndexInfo(ctx context.Context, segmentID UniqueID, indexInfo *querypb.VecFieldIndexInfo) error {
+func (broker *globalMetaBroker) parseIndexInfo(ctx context.Context, segmentID UniqueID, indexInfo *querypb.FieldIndexInfo) error {
 	if !indexInfo.EnableIndex {
 		log.Debug(fmt.Sprintf("fieldID %d of segment %d don't has index", indexInfo.FieldID, segmentID))
 		return nil
@@ -262,46 +268,153 @@ func (broker *globalMetaBroker) parseIndexInfo(ctx context.Context, segmentID Un
 		return err
 	}
 
-	log.Debug("set index info  success", zap.Int64("segmentID", segmentID), zap.Int64("fieldID", indexInfo.FieldID), zap.Int64("buildID", buildID))
+	log.Info("set index info  success", zap.Int64("segmentID", segmentID), zap.Int64("fieldID", indexInfo.FieldID), zap.Int64("buildID", buildID))
 
 	return nil
 }
 
-func (broker *globalMetaBroker) getIndexInfo(ctx context.Context, collectionID UniqueID, segmentID UniqueID, schema *schemapb.CollectionSchema) ([]*querypb.VecFieldIndexInfo, error) {
-	// TODO:: collection has multi vec field, and build index for every vec field, get indexInfo by fieldID
-	// Currently, each collection can only have one vector field
-	vecFieldIDs := funcutil.GetVecFieldIDs(schema)
-	if len(vecFieldIDs) != 1 {
-		err := fmt.Errorf("collection %d has multi vec field, num of vec fields = %d", collectionID, len(vecFieldIDs))
-		log.Error("get index info failed",
-			zap.Int64("collectionID", collectionID),
-			zap.Int64("segmentID", segmentID),
+// Better to let index params key appear in the file paths first.
+func (broker *globalMetaBroker) loadIndexExtraInfo(ctx context.Context, fieldPathInfo *indexpb.IndexFilePathInfo) (*extraIndexInfo, error) {
+	indexCodec := storage.NewIndexFileBinlogCodec()
+	for _, indexFilePath := range fieldPathInfo.IndexFilePaths {
+		// get index params when detecting indexParamPrefix
+		if path.Base(indexFilePath) == storage.IndexParamsKey {
+			content, err := broker.cm.MultiRead([]string{indexFilePath})
+			if err != nil {
+				return nil, err
+			}
+
+			if len(content) <= 0 {
+				return nil, fmt.Errorf("failed to read index file binlog, path: %s", indexFilePath)
+			}
+
+			indexPiece := content[0]
+			_, indexParams, indexName, _, err := indexCodec.Deserialize([]*storage.Blob{{Key: storage.IndexParamsKey, Value: indexPiece}})
+			if err != nil {
+				return nil, err
+			}
+
+			return &extraIndexInfo{
+				indexName:   indexName,
+				indexParams: funcutil.Map2KeyValuePair(indexParams),
+			}, nil
+		}
+	}
+	return nil, errors.New("failed to load index extra info")
+}
+
+func (broker *globalMetaBroker) describeSegments(ctx context.Context, collectionID UniqueID, segmentIDs []UniqueID) (*rootcoordpb.DescribeSegmentsResponse, error) {
+	resp, err := broker.rootCoord.DescribeSegments(ctx, &rootcoordpb.DescribeSegmentsRequest{
+		Base: &commonpb.MsgBase{
+			MsgType: commonpb.MsgType_DescribeSegments,
+		},
+		CollectionID: collectionID,
+		SegmentIDs:   segmentIDs,
+	})
+	if err != nil {
+		log.Error("failed to describe segments",
+			zap.Int64("collection", collectionID),
+			zap.Int64s("segments", segmentIDs),
 			zap.Error(err))
 		return nil, err
 	}
-	indexInfo := &querypb.VecFieldIndexInfo{
-		FieldID: vecFieldIDs[0],
-	}
-	// check the buildID of the segment's index whether exist on rootCoord
-	enableIndex, buildID, err := broker.getIndexBuildID(ctx, collectionID, segmentID)
+
+	log.Info("describe segments successfully",
+		zap.Int64("collection", collectionID),
+		zap.Int64s("segments", segmentIDs))
+
+	return resp, nil
+}
+
+// return: segment_id -> segment_index_infos
+func (broker *globalMetaBroker) getFullIndexInfos(ctx context.Context, collectionID UniqueID, segmentIDs []UniqueID) (map[UniqueID][]*querypb.FieldIndexInfo, error) {
+	resp, err := broker.describeSegments(ctx, collectionID, segmentIDs)
 	if err != nil {
 		return nil, err
 	}
 
-	// if the segment.EnableIndex == false, then load the segment immediately
-	if !enableIndex {
-		indexInfo.EnableIndex = false
-	} else {
-		indexInfo.BuildID = buildID
-		indexInfo.EnableIndex = true
-		err = broker.parseIndexInfo(ctx, segmentID, indexInfo)
-		if err != nil {
-			return nil, err
+	ret := make(map[UniqueID][]*querypb.FieldIndexInfo)
+	for _, segmentID := range segmentIDs {
+		infos, ok := resp.GetSegmentInfos()[segmentID]
+		if !ok {
+			log.Warn("segment not found",
+				zap.Int64("collection", collectionID),
+				zap.Int64("segment", segmentID))
+			return nil, fmt.Errorf("segment not found, collection: %d, segment: %d", collectionID, segmentID)
+		}
+
+		if _, ok := ret[segmentID]; !ok {
+			ret[segmentID] = make([]*querypb.FieldIndexInfo, 0, len(infos.IndexInfos))
+		}
+
+		for _, info := range infos.IndexInfos {
+			extraInfo, ok := infos.GetExtraIndexInfos()[info.IndexID]
+			indexInfo := &querypb.FieldIndexInfo{
+				FieldID:        info.FieldID,
+				EnableIndex:    info.EnableIndex,
+				IndexName:      "",
+				IndexID:        info.IndexID,
+				BuildID:        info.BuildID,
+				IndexParams:    nil,
+				IndexFilePaths: nil,
+				IndexSize:      0,
+			}
+
+			if !info.EnableIndex {
+				ret[segmentID] = append(ret[segmentID], indexInfo)
+				continue
+			}
+
+			paths, err := broker.getIndexFilePaths(ctx, info.BuildID)
+			//TODO:: returns partially successful index
+			if err != nil {
+				log.Warn("failed to get index file paths",
+					zap.Int64("collection", collectionID),
+					zap.Int64("segment", segmentID),
+					zap.Int64("buildID", info.BuildID),
+					zap.Error(err))
+				return nil, err
+			}
+
+			if len(paths) <= 0 || len(paths[0].IndexFilePaths) <= 0 {
+				log.Warn("index not ready", zap.Int64("index_build_id", info.BuildID))
+				return nil, fmt.Errorf("index not ready, index build id: %d", info.BuildID)
+			}
+
+			indexInfo.IndexFilePaths = paths[0].IndexFilePaths
+			indexInfo.IndexSize = int64(paths[0].SerializedSize)
+
+			if ok {
+				indexInfo.IndexName = extraInfo.IndexName
+				indexInfo.IndexParams = extraInfo.IndexParams
+			} else {
+				// get index name, index params from binlog.
+				extra, err := broker.loadIndexExtraInfo(ctx, paths[0])
+				if err != nil {
+					log.Error("failed to load index extra info",
+						zap.Int64("index build id", info.BuildID),
+						zap.Error(err))
+					return nil, err
+				}
+				indexInfo.IndexName = extra.indexName
+				indexInfo.IndexParams = extra.indexParams
+			}
+			ret[segmentID] = append(ret[segmentID], indexInfo)
 		}
 	}
-	log.Debug("get index info success", zap.Int64("collectionID", collectionID), zap.Int64("segmentID", segmentID), zap.Bool("enableIndex", enableIndex))
 
-	return []*querypb.VecFieldIndexInfo{indexInfo}, nil
+	return ret, nil
+}
+
+func (broker *globalMetaBroker) getIndexInfo(ctx context.Context, collectionID UniqueID, segmentID UniqueID, schema *schemapb.CollectionSchema) ([]*querypb.FieldIndexInfo, error) {
+	segmentIndexInfos, err := broker.getFullIndexInfos(ctx, collectionID, []UniqueID{segmentID})
+	if err != nil {
+		return nil, err
+	}
+	if infos, ok := segmentIndexInfos[segmentID]; ok {
+		return infos, nil
+	}
+	return nil, fmt.Errorf("failed to get segment index infos, collection: %d, segment: %d", collectionID, segmentID)
 }
 
 func (broker *globalMetaBroker) generateSegmentLoadInfo(ctx context.Context,
@@ -312,13 +425,14 @@ func (broker *globalMetaBroker) generateSegmentLoadInfo(ctx context.Context,
 	schema *schemapb.CollectionSchema) *querypb.SegmentLoadInfo {
 	segmentID := segmentBinlog.SegmentID
 	segmentLoadInfo := &querypb.SegmentLoadInfo{
-		SegmentID:    segmentID,
-		PartitionID:  partitionID,
-		CollectionID: collectionID,
-		BinlogPaths:  segmentBinlog.FieldBinlogs,
-		NumOfRows:    segmentBinlog.NumOfRows,
-		Statslogs:    segmentBinlog.Statslogs,
-		Deltalogs:    segmentBinlog.Deltalogs,
+		SegmentID:     segmentID,
+		PartitionID:   partitionID,
+		CollectionID:  collectionID,
+		BinlogPaths:   segmentBinlog.FieldBinlogs,
+		NumOfRows:     segmentBinlog.NumOfRows,
+		Statslogs:     segmentBinlog.Statslogs,
+		Deltalogs:     segmentBinlog.Deltalogs,
+		InsertChannel: segmentBinlog.InsertChannel,
 	}
 	if setIndex {
 		// if index not exist, load binlog to query node
@@ -363,4 +477,56 @@ func (broker *globalMetaBroker) getSegmentStates(ctx context.Context, segmentID 
 	}
 
 	return resp.States[0], nil
+}
+
+func (broker *globalMetaBroker) acquireSegmentsReferLock(ctx context.Context, segmentIDs []UniqueID) error {
+	ctx, cancel := context.WithTimeout(ctx, timeoutForRPC)
+	defer cancel()
+	acquireSegLockReq := &datapb.AcquireSegmentLockRequest{
+		SegmentIDs: segmentIDs,
+		NodeID:     Params.QueryCoordCfg.GetNodeID(),
+	}
+	status, err := broker.dataCoord.AcquireSegmentLock(ctx, acquireSegLockReq)
+	if err != nil {
+		log.Error("QueryCoord acquire the segment reference lock error", zap.Int64s("segIDs", segmentIDs),
+			zap.Error(err))
+		return err
+	}
+	if status.ErrorCode != commonpb.ErrorCode_Success {
+		log.Error("QueryCoord acquire the segment reference lock error", zap.Int64s("segIDs", segmentIDs),
+			zap.String("failed reason", status.Reason))
+		return fmt.Errorf(status.Reason)
+	}
+
+	return nil
+}
+
+func (broker *globalMetaBroker) releaseSegmentReferLock(ctx context.Context, segmentIDs []UniqueID) error {
+	ctx, cancel := context.WithTimeout(ctx, timeoutForRPC)
+	defer cancel()
+
+	releaseSegReferLockReq := &datapb.ReleaseSegmentLockRequest{
+		SegmentIDs: segmentIDs,
+		NodeID:     Params.QueryCoordCfg.GetNodeID(),
+	}
+
+	if err := retry.Do(ctx, func() error {
+		status, err := broker.dataCoord.ReleaseSegmentLock(ctx, releaseSegReferLockReq)
+		if err != nil {
+			log.Error("QueryCoord release reference lock on segments failed", zap.Int64s("segmentIDs", segmentIDs),
+				zap.Error(err))
+			return err
+		}
+
+		if status.ErrorCode != commonpb.ErrorCode_Success {
+			log.Error("QueryCoord release reference lock on segments failed", zap.Int64s("segmentIDs", segmentIDs),
+				zap.String("failed reason", status.Reason))
+			return errors.New(status.Reason)
+		}
+		return nil
+	}, retry.Attempts(100)); err != nil {
+		return err
+	}
+
+	return nil
 }

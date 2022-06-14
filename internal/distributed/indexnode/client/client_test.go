@@ -21,18 +21,20 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"google.golang.org/grpc"
+
 	grpcindexnode "github.com/milvus-io/milvus/internal/distributed/indexnode"
 	"github.com/milvus-io/milvus/internal/indexnode"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
+	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/etcd"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/mock"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	"github.com/stretchr/testify/assert"
-	"google.golang.org/grpc"
 )
 
 var ParamsGlobal paramtable.ComponentParam
@@ -84,33 +86,33 @@ func Test_NewClient(t *testing.T) {
 		retCheck(retNotNil, r5, err)
 	}
 
-	client.grpcClient = &mock.ClientBase{
+	client.grpcClient = &mock.GRPCClientBase{
 		GetGrpcClientErr: errors.New("dummy"),
 	}
 
 	newFunc1 := func(cc *grpc.ClientConn) interface{} {
-		return &mock.IndexNodeClient{Err: nil}
+		return &mock.GrpcIndexNodeClient{Err: nil}
 	}
 	client.grpcClient.SetNewGrpcClientFunc(newFunc1)
 
 	checkFunc(false)
 
-	client.grpcClient = &mock.ClientBase{
+	client.grpcClient = &mock.GRPCClientBase{
 		GetGrpcClientErr: nil,
 	}
 
 	newFunc2 := func(cc *grpc.ClientConn) interface{} {
-		return &mock.IndexNodeClient{Err: errors.New("dummy")}
+		return &mock.GrpcIndexNodeClient{Err: errors.New("dummy")}
 	}
 	client.grpcClient.SetNewGrpcClientFunc(newFunc2)
 	checkFunc(false)
 
-	client.grpcClient = &mock.ClientBase{
+	client.grpcClient = &mock.GRPCClientBase{
 		GetGrpcClientErr: nil,
 	}
 
 	newFunc3 := func(cc *grpc.ClientConn) interface{} {
-		return &mock.IndexNodeClient{Err: nil}
+		return &mock.GrpcIndexNodeClient{Err: nil}
 	}
 	client.grpcClient.SetNewGrpcClientFunc(newFunc3)
 	checkFunc(true)
@@ -122,7 +124,8 @@ func Test_NewClient(t *testing.T) {
 func TestIndexNodeClient(t *testing.T) {
 	ctx := context.Background()
 
-	ins, err := grpcindexnode.NewServer(ctx)
+	factory := dependency.NewDefaultFactory(true)
+	ins, err := grpcindexnode.NewServer(ctx, factory)
 	assert.Nil(t, err)
 	assert.NotNil(t, ins)
 

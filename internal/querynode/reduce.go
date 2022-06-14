@@ -27,28 +27,63 @@ package querynode
 */
 import "C"
 import (
-	"errors"
-	"unsafe"
+	"fmt"
 )
+
+type sliceInfo struct {
+	sliceNQs   []int32
+	sliceTopKs []int32
+}
 
 // SearchResult contains a pointer to the search result in C++ memory
 type SearchResult struct {
 	cSearchResult C.CSearchResult
 }
 
-// MarshaledHits contains a pointer to the marshaled hits in C++ memory
-type MarshaledHits struct {
-	cMarshaledHits C.CMarshaledHits
-}
+// searchResultDataBlobs is the CSearchResultsDataBlobs in C++
+type searchResultDataBlobs = C.CSearchResultDataBlobs
 
 // RetrieveResult contains a pointer to the retrieve result in C++ memory
 type RetrieveResult struct {
 	cRetrieveResult C.CRetrieveResult
 }
 
-func reduceSearchResultsAndFillData(plan *SearchPlan, searchResults []*SearchResult, numSegments int64) error {
+func parseSliceInfo(originNQs []int64, originTopKs []int64, nqPerSlice int64) *sliceInfo {
+	sInfo := &sliceInfo{
+		sliceNQs:   make([]int32, 0),
+		sliceTopKs: make([]int32, 0),
+	}
+
+	if nqPerSlice == 0 {
+		return sInfo
+	}
+
+	for i := 0; i < len(originNQs); i++ {
+		for j := 0; j < int(originNQs[i]/nqPerSlice); j++ {
+			sInfo.sliceNQs = append(sInfo.sliceNQs, int32(nqPerSlice))
+			sInfo.sliceTopKs = append(sInfo.sliceTopKs, int32(originTopKs[i]))
+		}
+		if tailSliceSize := originNQs[i] % nqPerSlice; tailSliceSize > 0 {
+			sInfo.sliceNQs = append(sInfo.sliceNQs, int32(tailSliceSize))
+			sInfo.sliceTopKs = append(sInfo.sliceTopKs, int32(originTopKs[i]))
+		}
+	}
+
+	return sInfo
+}
+
+func reduceSearchResultsAndFillData(plan *SearchPlan, searchResults []*SearchResult,
+	numSegments int64, sliceNQs []int32, sliceTopKs []int32) (searchResultDataBlobs, error) {
 	if plan.cSearchPlan == nil {
-		return errors.New("nil search plan")
+		return nil, fmt.Errorf("nil search plan")
+	}
+
+	if len(sliceNQs) == 0 {
+		return nil, fmt.Errorf("empty slice nqs is not allowed")
+	}
+
+	if len(sliceNQs) != len(sliceTopKs) {
+		return nil, fmt.Errorf("unaligned sliceNQs(len=%d) and sliceTopKs(len=%d)", len(sliceNQs), len(sliceTopKs))
 	}
 
 	cSearchResults := make([]C.CSearchResult, 0)
@@ -57,59 +92,55 @@ func reduceSearchResultsAndFillData(plan *SearchPlan, searchResults []*SearchRes
 	}
 	cSearchResultPtr := (*C.CSearchResult)(&cSearchResults[0])
 	cNumSegments := C.int64_t(numSegments)
-
-	status := C.ReduceSearchResultsAndFillData(plan.cSearchPlan, cSearchResultPtr, cNumSegments)
+	var cSliceNQSPtr = (*C.int32_t)(&sliceNQs[0])
+	var cSliceTopKSPtr = (*C.int32_t)(&sliceTopKs[0])
+	var cNumSlices = C.int32_t(len(sliceNQs))
+	var cSearchResultDataBlobs searchResultDataBlobs
+	status := C.ReduceSearchResultsAndFillData(&cSearchResultDataBlobs, plan.cSearchPlan, cSearchResultPtr,
+		cNumSegments, cSliceNQSPtr, cSliceTopKSPtr, cNumSlices)
 	if err := HandleCStatus(&status, "ReduceSearchResultsAndFillData failed"); err != nil {
-		return err
-	}
-	return nil
-}
-
-func reorganizeSearchResults(searchResults []*SearchResult, numSegments int64) (*MarshaledHits, error) {
-	cSearchResults := make([]C.CSearchResult, 0)
-	for _, res := range searchResults {
-		cSearchResults = append(cSearchResults, res.cSearchResult)
-	}
-	cSearchResultPtr := (*C.CSearchResult)(&cSearchResults[0])
-
-	var cNumSegments = C.int64_t(numSegments)
-	var cMarshaledHits C.CMarshaledHits
-
-	status := C.ReorganizeSearchResults(&cMarshaledHits, cSearchResultPtr, cNumSegments)
-	if err := HandleCStatus(&status, "ReorganizeSearchResults failed"); err != nil {
 		return nil, err
 	}
-	return &MarshaledHits{cMarshaledHits: cMarshaledHits}, nil
+	return cSearchResultDataBlobs, nil
 }
 
-func (mh *MarshaledHits) getHitsBlobSize() int64 {
-	res := C.GetHitsBlobSize(mh.cMarshaledHits)
-	return int64(res)
+func getReqSlices(nqOfReqs []int64, nqPerSlice int64) ([]int32, error) {
+	if nqPerSlice == 0 {
+		return nil, fmt.Errorf("zero nqPerSlice is not allowed")
+	}
+
+	slices := make([]int32, 0)
+	for i := 0; i < len(nqOfReqs); i++ {
+		for j := 0; j < int(nqOfReqs[i]/nqPerSlice); j++ {
+			slices = append(slices, int32(nqPerSlice))
+		}
+		if tailSliceSize := nqOfReqs[i] % nqPerSlice; tailSliceSize > 0 {
+			slices = append(slices, int32(tailSliceSize))
+		}
+	}
+	return slices, nil
 }
 
-func (mh *MarshaledHits) getHitsBlob() ([]byte, error) {
-	byteSize := mh.getHitsBlobSize()
-	result := make([]byte, byteSize)
-	cResultPtr := unsafe.Pointer(&result[0])
-	C.GetHitsBlob(mh.cMarshaledHits, cResultPtr)
-	return result, nil
+func getSearchResultDataBlob(cSearchResultDataBlobs searchResultDataBlobs, blobIndex int) ([]byte, error) {
+	var blob C.CProto
+	status := C.GetSearchResultDataBlob(&blob, cSearchResultDataBlobs, C.int32_t(blobIndex))
+	if err := HandleCStatus(&status, "marshal failed"); err != nil {
+		return nil, err
+	}
+	return GetCProtoBlob(&blob), nil
 }
 
-func (mh *MarshaledHits) hitBlobSizeInGroup(groupOffset int64) ([]int64, error) {
-	cGroupOffset := (C.int64_t)(groupOffset)
-	numQueries := C.GetNumQueriesPerGroup(mh.cMarshaledHits, cGroupOffset)
-	result := make([]int64, int64(numQueries))
-	cResult := (*C.int64_t)(&result[0])
-	C.GetHitSizePerQueries(mh.cMarshaledHits, cGroupOffset, cResult)
-	return result, nil
-}
-
-func deleteMarshaledHits(hits *MarshaledHits) {
-	C.DeleteMarshaledHits(hits.cMarshaledHits)
+func deleteSearchResultDataBlobs(cSearchResultDataBlobs searchResultDataBlobs) {
+	C.DeleteSearchResultDataBlobs(cSearchResultDataBlobs)
 }
 
 func deleteSearchResults(results []*SearchResult) {
+	if len(results) == 0 {
+		return
+	}
 	for _, result := range results {
-		C.DeleteSearchResult(result.cSearchResult)
+		if result != nil {
+			C.DeleteSearchResult(result.cSearchResult)
+		}
 	}
 }

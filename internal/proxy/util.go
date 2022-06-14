@@ -21,17 +21,23 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
-	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/tsoutil"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
+
+const strongTS = 0
+const boundedTS = 2
 
 // enableMultipleVectorFields indicates whether to enable multiple vector fields.
 const enableMultipleVectorFields = false
 
 // maximum length of variable-length strings
-const maxVarCharLength = int64(65535)
+const maxVarCharLengthKey = "max_length"
+const defaultMaxVarCharLength = 65535
 
 // isAlpha check if c is alpha.
 func isAlpha(c uint8) bool {
@@ -47,6 +53,14 @@ func isNumber(c uint8) bool {
 		return false
 	}
 	return true
+}
+
+func validateTopK(topK int64) error {
+	// TODO make this configurable
+	if topK <= 0 || topK >= 16385 {
+		return fmt.Errorf("limit should be in range [1, 16385], but got %d", topK)
+	}
+	return nil
 }
 
 func validateCollectionNameOrAlias(entity, entityType string) error {
@@ -154,13 +168,54 @@ func validateFieldName(fieldName string) error {
 	return nil
 }
 
-func validateDimension(dim int64, isBinary bool) error {
+func validateDimension(field *schemapb.FieldSchema) error {
+	exist := false
+	var dim int64
+	for _, param := range field.TypeParams {
+		if param.Key == "dim" {
+			exist = true
+			tmp, err := strconv.ParseInt(param.Value, 10, 64)
+			if err != nil {
+				return err
+			}
+			dim = tmp
+			break
+		}
+	}
+	if !exist {
+		return errors.New("dimension is not defined in field type params, check type param `dim` for vector field")
+	}
+
 	if dim <= 0 || dim > Params.ProxyCfg.MaxDimension {
 		return fmt.Errorf("invalid dimension: %d. should be in range 1 ~ %d", dim, Params.ProxyCfg.MaxDimension)
 	}
-	if isBinary && dim%8 != 0 {
+	if field.DataType == schemapb.DataType_BinaryVector && dim%8 != 0 {
 		return fmt.Errorf("invalid dimension: %d. should be multiple of 8. ", dim)
 	}
+	return nil
+}
+
+func validateMaxLengthPerRow(collectionName string, field *schemapb.FieldSchema) error {
+	exist := false
+	for _, param := range field.TypeParams {
+		if param.Key != maxVarCharLengthKey {
+			return fmt.Errorf("type param key(max_length) should be specified for varChar field, not %s", param.Key)
+		}
+
+		maxLengthPerRow, err := strconv.ParseInt(param.Value, 10, 64)
+		if err != nil {
+			return err
+		}
+		if maxLengthPerRow > defaultMaxVarCharLength || maxLengthPerRow <= 0 {
+			return fmt.Errorf("the maximum length specified for a VarChar shoule be in (0, 65535]")
+		}
+		exist = true
+	}
+	// if not exist type params max_length, return error
+	if !exist {
+		return fmt.Errorf("type param(max_length) should be specified for varChar field of collection %s", collectionName)
+	}
+
 	return nil
 }
 
@@ -235,19 +290,6 @@ func validatePrimaryKey(coll *schemapb.CollectionSchema) error {
 			if field.DataType == schemapb.DataType_VarChar {
 				if field.AutoID {
 					return fmt.Errorf("autoID is not supported when the VarChar field is the primary key")
-				}
-				typeParams := funcutil.KeyValuePair2Map(field.TypeParams)
-				maxLengthPerRowKey := "max_length_per_row"
-				maxLengthPerRowValue, ok := typeParams[maxLengthPerRowKey]
-				if !ok {
-					return fmt.Errorf("the max_length_per_row was not specified when the VarChar field is the primary key")
-				}
-				maxLengthPerRow, err := strconv.ParseInt(maxLengthPerRowValue, 10, 64)
-				if err != nil {
-					return err
-				}
-				if maxLengthPerRow > maxVarCharLength || maxLengthPerRow <= 0 {
-					return fmt.Errorf("the maximum length specified for a VarChar shoule be in (0, 65535]")
 				}
 			}
 
@@ -414,27 +456,6 @@ func validateMultipleVectorFields(schema *schemapb.CollectionSchema) error {
 	return nil
 }
 
-// getPrimaryFieldData get primary field data from all field data inserted from sdk
-func getPrimaryFieldData(datas []*schemapb.FieldData, primaryFieldSchema *schemapb.FieldSchema) (*schemapb.FieldData, error) {
-	primaryFieldName := primaryFieldSchema.Name
-
-	var primaryFieldData *schemapb.FieldData
-	for _, field := range datas {
-		if field.FieldName == primaryFieldName {
-			if primaryFieldSchema.AutoID {
-				return nil, fmt.Errorf("autoID field %v does not require data", primaryFieldName)
-			}
-			primaryFieldData = field
-		}
-	}
-
-	if primaryFieldData == nil {
-		return nil, fmt.Errorf("can't find data for primary field %v", primaryFieldName)
-	}
-
-	return primaryFieldData, nil
-}
-
 // parsePrimaryFieldData2IDs get IDs to fill grpc result, for example insert request, delete request etc.
 func parsePrimaryFieldData2IDs(fieldData *schemapb.FieldData) (*schemapb.IDs, error) {
 	primaryData := &schemapb.IDs{}
@@ -507,4 +528,68 @@ func fillFieldIDBySchema(columns []*schemapb.FieldData, schema *schemapb.Collect
 	}
 
 	return nil
+}
+
+func ValidateUsername(username string) error {
+	username = strings.TrimSpace(username)
+
+	if username == "" {
+		return errors.New("username should not be empty")
+	}
+
+	invalidMsg := "Invalid username: " + username + ". "
+	if int64(len(username)) > Params.ProxyCfg.MaxUsernameLength {
+		msg := invalidMsg + "The length of username must be less than " +
+			strconv.FormatInt(Params.ProxyCfg.MaxUsernameLength, 10) + " characters."
+		return errors.New(msg)
+	}
+
+	firstChar := username[0]
+	if !isAlpha(firstChar) {
+		msg := invalidMsg + "The first character of username must be a letter."
+		return errors.New(msg)
+	}
+
+	usernameSize := len(username)
+	for i := 1; i < usernameSize; i++ {
+		c := username[i]
+		if c != '_' && !isAlpha(c) && !isNumber(c) {
+			msg := invalidMsg + "Username should only contain numbers, letters, and underscores."
+			return errors.New(msg)
+		}
+	}
+	return nil
+}
+
+func ValidatePassword(password string) error {
+	if int64(len(password)) < Params.ProxyCfg.MinPasswordLength || int64(len(password)) > Params.ProxyCfg.MaxPasswordLength {
+		msg := "The length of password must be great than " + strconv.FormatInt(Params.ProxyCfg.MinPasswordLength, 10) +
+			" and less than " + strconv.FormatInt(Params.ProxyCfg.MaxPasswordLength, 10) + " characters."
+		return errors.New(msg)
+	}
+	return nil
+}
+
+func validateTravelTimestamp(travelTs, tMax typeutil.Timestamp) error {
+	durationSeconds := tsoutil.CalculateDuration(tMax, travelTs) / 1000
+	if durationSeconds > Params.CommonCfg.RetentionDuration {
+		duration := time.Second * time.Duration(durationSeconds)
+		return fmt.Errorf("only support to travel back to %s so far", duration.String())
+	}
+	return nil
+}
+
+func ReplaceID2Name(oldStr string, id int64, name string) string {
+	return strings.ReplaceAll(oldStr, strconv.FormatInt(id, 10), name)
+}
+
+func parseGuaranteeTs(ts, tMax typeutil.Timestamp) typeutil.Timestamp {
+	switch ts {
+	case strongTS:
+		ts = tMax
+	case boundedTS:
+		ratio := time.Duration(-Params.CommonCfg.GracefulTime)
+		ts = tsoutil.AddPhysicalDurationOnTs(tMax, ratio*time.Millisecond)
+	}
+	return ts
 }

@@ -12,6 +12,21 @@ enum OpType {
   LessEqual = 4;
   Equal = 5;
   NotEqual = 6;
+  PrefixMatch = 7;  // startsWith
+  PostfixMatch = 8; // endsWith
+  Match = 9;        // like
+  Range = 10;       // for case 1 < a < b
+  In = 11;          // TODO:: used for term expr
+  NotIn = 12;
+};
+
+enum ArithOpType {
+  Unknown = 0;
+  Add = 1;
+  Sub = 2;
+  Mul = 3;
+  Div = 4;
+  Mod = 5;
 };
 
 message GenericValue {
@@ -19,6 +34,7 @@ message GenericValue {
     bool bool_val = 1;
     int64 int64_val = 2;
     double float_val = 3;
+    string string_val = 4;
   };
 }
 
@@ -34,6 +50,14 @@ message ColumnInfo {
   schema.DataType data_type = 2;
   bool is_primary_key = 3;
   bool is_autoID = 4;
+}
+
+message ColumnExpr {
+  ColumnInfo info = 1;
+}
+
+message ValueExpr {
+  GenericValue value = 1;
 }
 
 message UnaryRangeExpr {
@@ -81,6 +105,26 @@ message BinaryExpr {
   Expr right = 3;
 }
 
+message BinaryArithOp {
+  ColumnInfo column_info = 1;
+  ArithOpType arith_op = 2;
+  GenericValue right_operand = 3;
+}
+
+message BinaryArithExpr {
+  Expr left = 1;
+  Expr right = 2;
+  ArithOpType op = 3;
+}
+
+message BinaryArithOpEvalRangeExpr {
+  ColumnInfo column_info = 1;
+  ArithOpType arith_op = 2;
+  GenericValue right_operand = 3;
+  OpType op = 4;
+  GenericValue value = 5;
+}
+
 message Expr {
   oneof expr {
     TermExpr term_expr = 1;
@@ -89,6 +133,10 @@ message Expr {
     CompareExpr compare_expr = 4;
     UnaryRangeExpr unary_range_expr = 5;
     BinaryRangeExpr binary_range_expr = 6;
+    BinaryArithOpEvalRangeExpr binary_arith_op_eval_range_expr = 7;
+    BinaryArithExpr binary_arith_expr = 8;
+    ValueExpr value_expr = 9;
+    ColumnExpr column_expr = 10;
   };
 }
 

@@ -21,34 +21,36 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/spf13/cast"
+	"github.com/spf13/viper"
+
 	memkv "github.com/milvus-io/milvus/internal/kv/mem"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/util/logutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	"github.com/spf13/cast"
-	"github.com/spf13/viper"
 )
 
 // UniqueID is type alias of typeutil.UniqueID
 type UniqueID = typeutil.UniqueID
 
 const (
+	DefaultMilvusYaml           = "milvus.yaml"
+	DefaultEasyloggingYaml      = "easylogging.yaml"
 	DefaultMinioHost            = "localhost"
 	DefaultMinioPort            = "9000"
 	DefaultMinioAccessKey       = "minioadmin"
 	DefaultMinioSecretAccessKey = "minioadmin"
 	DefaultMinioUseSSL          = "false"
 	DefaultMinioBucketName      = "a-bucket"
-	DefaultPulsarHost           = "localhost"
-	DefaultPulsarPort           = "6650"
+	DefaultMinioUseIAM          = "false"
+	DefaultMinioIAMEndpoint     = ""
 	DefaultEtcdEndpoints        = "localhost:2379"
-	DefaultRocksmqPath          = "/var/lib/milvus/rdb_data"
 	DefaultInsertBufferSize     = "16777216"
 	DefaultEnvPrefix            = "milvus"
 )
 
-var DefaultYaml = "milvus.yaml"
+var defaultYaml = DefaultMilvusYaml
 
 // Base abstracts BaseTable
 // TODO: it's never used, consider to substitute BaseTable or to remove it
@@ -78,7 +80,7 @@ type BaseTable struct {
 // GlobalInitWithYaml should be called only in standalone and embedded Milvus.
 func (gp *BaseTable) GlobalInitWithYaml(yaml string) {
 	gp.once.Do(func() {
-		DefaultYaml = yaml
+		defaultYaml = yaml
 		gp.Init()
 	})
 }
@@ -87,7 +89,7 @@ func (gp *BaseTable) GlobalInitWithYaml(yaml string) {
 func (gp *BaseTable) Init() {
 	gp.params = memkv.NewMemoryKV()
 	gp.configDir = gp.initConfPath()
-	gp.loadFromYaml(DefaultYaml)
+	gp.loadFromYaml(defaultYaml)
 	gp.tryLoadFromEnv()
 	gp.InitLogCfg()
 }
@@ -145,10 +147,10 @@ func (gp *BaseTable) Load(key string) (string, error) {
 	return gp.params.Load(strings.ToLower(key))
 }
 
-// Load2 loads an object with multiple @keys, return the first successful value.
+// LoadWithPriority loads an object with multiple @keys, return the first successful value.
 // If all keys not exist, return error.
 // This is to be compatible with old configuration file.
-func (gp *BaseTable) Load2(keys []string) (string, error) {
+func (gp *BaseTable) LoadWithPriority(keys []string) (string, error) {
 	for _, key := range keys {
 		if str, err := gp.params.Load(strings.ToLower(key)); err == nil {
 			return str, nil
@@ -222,6 +224,10 @@ func (gp *BaseTable) LoadYaml(fileName string) error {
 	}
 
 	return nil
+}
+
+func (gp *BaseTable) Get(key string) string {
+	return gp.params.Get(strings.ToLower(key))
 }
 
 func (gp *BaseTable) Remove(key string) error {
@@ -386,6 +392,13 @@ func (gp *BaseTable) InitLogCfg() {
 // SetLogConfig set log config of the base table
 func (gp *BaseTable) SetLogConfig() {
 	gp.LogCfgFunc = func(cfg log.Config) {
+		var err error
+		grpclog, err := gp.Load("grpc.log.level")
+		if err != nil {
+			cfg.GrpcLevel = DefaultLogLevel
+		} else {
+			cfg.GrpcLevel = strings.ToUpper(grpclog)
+		}
 		logutil.SetupLogger(&cfg)
 		defer log.Sync()
 	}
@@ -412,12 +425,23 @@ func (gp *BaseTable) SetLogger(id UniqueID) {
 	}
 }
 
+func (gp *BaseTable) loadKafkaConfig() {
+	brokerList := os.Getenv("KAFKA_BROKER_LIST")
+	if brokerList == "" {
+		brokerList = gp.Get("kafka.brokerList")
+	}
+	gp.Save("_KafkaBrokerList", brokerList)
+}
+
 func (gp *BaseTable) loadPulsarConfig() {
 	pulsarAddress := os.Getenv("PULSAR_ADDRESS")
 	if pulsarAddress == "" {
-		pulsarHost := gp.LoadWithDefault("pulsar.address", DefaultPulsarHost)
-		port := gp.LoadWithDefault("pulsar.port", DefaultPulsarPort)
-		pulsarAddress = "pulsar://" + pulsarHost + ":" + port
+		pulsarHost := gp.Get("pulsar.address")
+		port := gp.Get("pulsar.port")
+
+		if len(pulsarHost) != 0 && len(port) != 0 {
+			pulsarAddress = "pulsar://" + pulsarHost + ":" + port
+		}
 	}
 
 	gp.Save("_PulsarAddress", pulsarAddress)
@@ -426,13 +450,14 @@ func (gp *BaseTable) loadPulsarConfig() {
 func (gp *BaseTable) loadRocksMQConfig() {
 	rocksmqPath := os.Getenv("ROCKSMQ_PATH")
 	if rocksmqPath == "" {
-		rocksmqPath = gp.LoadWithDefault("rocksmq.path", DefaultRocksmqPath)
+		rocksmqPath = gp.Get("rocksmq.path")
 	}
 	gp.Save("_RocksmqPath", rocksmqPath)
 }
 
 func (gp *BaseTable) loadMQConfig() {
 	gp.loadPulsarConfig()
+	gp.loadKafkaConfig()
 	gp.loadRocksMQConfig()
 }
 
@@ -476,6 +501,18 @@ func (gp *BaseTable) loadMinioConfig() {
 		minioBucketName = gp.LoadWithDefault("minio.bucketName", DefaultMinioBucketName)
 	}
 	gp.Save("_MinioBucketName", minioBucketName)
+
+	minioUseIAM := os.Getenv("MINIO_USE_IAM")
+	if minioUseIAM == "" {
+		minioUseIAM = gp.LoadWithDefault("minio.useIAM", DefaultMinioUseIAM)
+	}
+	gp.Save("_MinioUseIAM", minioUseIAM)
+
+	minioIAMEndpoint := os.Getenv("MINIO_IAM_ENDPOINT")
+	if minioIAMEndpoint == "" {
+		minioIAMEndpoint = gp.LoadWithDefault("minio.iamEndpoint", DefaultMinioIAMEndpoint)
+	}
+	gp.Save("_MinioIAMEndpoint", minioIAMEndpoint)
 }
 
 func (gp *BaseTable) loadDataNodeConfig() {

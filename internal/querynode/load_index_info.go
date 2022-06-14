@@ -32,10 +32,8 @@ import (
 	"path/filepath"
 	"unsafe"
 
-	"go.uber.org/zap"
-
-	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
+	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 )
 
@@ -59,12 +57,12 @@ func deleteLoadIndexInfo(info *LoadIndexInfo) {
 	C.DeleteLoadIndexInfo(info.cLoadIndexInfo)
 }
 
-func (li *LoadIndexInfo) appendIndexInfo(bytesIndex [][]byte, indexInfo *querypb.VecFieldIndexInfo) error {
+func (li *LoadIndexInfo) appendIndexInfo(bytesIndex [][]byte, indexInfo *querypb.FieldIndexInfo, fieldType schemapb.DataType) error {
 	fieldID := indexInfo.FieldID
 	indexParams := funcutil.KeyValuePair2Map(indexInfo.IndexParams)
 	indexPaths := indexInfo.IndexFilePaths
 
-	err := li.appendFieldInfo(fieldID)
+	err := li.appendFieldInfo(fieldID, fieldType)
 	if err != nil {
 		return err
 	}
@@ -88,10 +86,11 @@ func (li *LoadIndexInfo) appendIndexParam(indexKey string, indexValue string) er
 	return HandleCStatus(&status, "AppendIndexParam failed")
 }
 
-// appendFieldInfo appends fieldID to index
-func (li *LoadIndexInfo) appendFieldInfo(fieldID FieldID) error {
+// appendFieldInfo appends fieldID & fieldType to index
+func (li *LoadIndexInfo) appendFieldInfo(fieldID FieldID, fieldType schemapb.DataType) error {
 	cFieldID := C.int64_t(fieldID)
-	status := C.AppendFieldInfo(li.cLoadIndexInfo, cFieldID)
+	cintDType := uint32(fieldType)
+	status := C.AppendFieldInfo(li.cLoadIndexInfo, cFieldID, cintDType)
 	return HandleCStatus(&status, "AppendFieldInfo failed")
 }
 
@@ -109,7 +108,6 @@ func (li *LoadIndexInfo) appendIndexData(bytesIndex [][]byte, indexKeys []string
 		indexPtr := unsafe.Pointer(&byteIndex[0])
 		indexLen := C.int64_t(len(byteIndex))
 		binarySetKey := filepath.Base(indexKeys[i])
-		log.Debug("", zap.String("index key", binarySetKey))
 		indexKey := C.CString(binarySetKey)
 		status = C.AppendIndexBinary(cBinarySet, indexPtr, indexLen, indexKey)
 		C.free(unsafe.Pointer(indexKey))

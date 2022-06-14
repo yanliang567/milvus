@@ -69,8 +69,8 @@ func waitAllQueryNodeOffline(cluster Cluster, nodeIDs []int64) bool {
 	for {
 		allOffline := true
 		for _, nodeID := range nodeIDs {
-			nodeExist := cluster.hasNode(nodeID)
-			if nodeExist {
+			isOnline, err := cluster.IsOnline(nodeID)
+			if err == nil && isOnline {
 				allOffline = false
 				break
 			}
@@ -85,7 +85,7 @@ func waitAllQueryNodeOffline(cluster Cluster, nodeIDs []int64) bool {
 
 func waitQueryNodeOnline(cluster Cluster, nodeID int64) {
 	for {
-		online, err := cluster.isOnline(nodeID)
+		online, err := cluster.IsOnline(nodeID)
 		if err != nil {
 			continue
 		}
@@ -118,8 +118,9 @@ func TestQueryNode_MultiNode_stop(t *testing.T) {
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadCollection,
 		},
-		CollectionID: defaultCollectionID,
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	})
 	_, err = queryCoord.ReleaseCollection(baseCtx, &querypb.ReleaseCollectionRequest{
 		Base: &commonpb.MsgBase{
@@ -129,7 +130,7 @@ func TestQueryNode_MultiNode_stop(t *testing.T) {
 	})
 	assert.Nil(t, err)
 	time.Sleep(100 * time.Millisecond)
-	onlineNodeIDs := queryCoord.cluster.onlineNodeIDs()
+	onlineNodeIDs := queryCoord.cluster.OnlineNodeIDs()
 	assert.NotEqual(t, 0, len(onlineNodeIDs))
 	queryNode2.stop()
 	err = removeNodeSession(queryNode2.queryNodeID)
@@ -157,8 +158,9 @@ func TestQueryNode_MultiNode_reStart(t *testing.T) {
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadCollection,
 		},
-		CollectionID: defaultCollectionID,
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	})
 	queryNode1.stop()
 	err = removeNodeSession(queryNode1.queryNodeID)
@@ -174,7 +176,7 @@ func TestQueryNode_MultiNode_reStart(t *testing.T) {
 		CollectionID: defaultCollectionID,
 	})
 	assert.Nil(t, err)
-	onlineNodeIDs := queryCoord.cluster.onlineNodeIDs()
+	onlineNodeIDs := queryCoord.cluster.OnlineNodeIDs()
 	assert.NotEqual(t, 0, len(onlineNodeIDs))
 	queryNode3.stop()
 	err = removeNodeSession(queryNode3.queryNodeID)
@@ -256,8 +258,9 @@ func TestSealedSegmentChangeAfterQueryNodeStop(t *testing.T) {
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadCollection,
 		},
-		CollectionID: defaultCollectionID,
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	})
 
 	queryNode2, err := startQueryNodeServer(baseCtx)
@@ -305,18 +308,6 @@ func TestGrpcRequestWithNodeOffline(t *testing.T) {
 		req := &querypb.WatchDmChannelsRequest{}
 		err = node.watchDmChannels(baseCtx, req)
 		assert.NotNil(t, err)
-	})
-
-	t.Run("Test AddQueryChannel", func(t *testing.T) {
-		req := &querypb.AddQueryChannelRequest{}
-		err = node.addQueryChannel(baseCtx, req)
-		assert.NotNil(t, err)
-	})
-
-	t.Run("Test RemoveQueryChannel", func(t *testing.T) {
-		req := &querypb.RemoveQueryChannelRequest{}
-		err = node.removeQueryChannel(baseCtx, req)
-		assert.Nil(t, err)
 	})
 
 	t.Run("Test ReleaseCollection", func(t *testing.T) {

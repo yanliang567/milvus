@@ -26,6 +26,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"go.uber.org/zap"
+
 	"github.com/milvus-io/milvus/internal/common"
 	grpcindexnode "github.com/milvus-io/milvus/internal/distributed/indexnode"
 	"github.com/milvus-io/milvus/internal/indexnode"
@@ -35,11 +38,10 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
+	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/etcd"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
-	"github.com/stretchr/testify/assert"
-	"go.uber.org/zap"
 )
 
 func TestIndexCoord(t *testing.T) {
@@ -55,16 +57,31 @@ func TestIndexCoord(t *testing.T) {
 	assert.Nil(t, err)
 	err = inm0.Start()
 	assert.Nil(t, err)
-	ic, err := NewIndexCoord(ctx)
+	factory := dependency.NewDefaultFactory(true)
+	ic, err := NewIndexCoord(ctx, factory)
 	assert.Nil(t, err)
 	ic.reqTimeoutInterval = time.Second * 10
 	ic.durationInterval = time.Second
 	ic.assignTaskInterval = 200 * time.Millisecond
 	ic.taskLimit = 20
 
+	dcm := &DataCoordMock{
+		Err:  false,
+		Fail: false,
+	}
+	err = ic.SetDataCoord(dcm)
+	assert.Nil(t, err)
+
 	ic.SetEtcdClient(etcdCli)
 	err = ic.Init()
 	assert.Nil(t, err)
+
+	ccm := &ChunkManagerMock{
+		Err:  false,
+		Fail: false,
+	}
+	ic.chunkManager = ccm
+
 	err = ic.Register()
 	assert.Nil(t, err)
 	err = ic.Start()
@@ -73,7 +90,34 @@ func TestIndexCoord(t *testing.T) {
 	err = inm0.Stop()
 	assert.Nil(t, err)
 
-	in, err := grpcindexnode.NewServer(ctx)
+	t.Run("create index without indexnodes", func(t *testing.T) {
+		indexID := int64(rand.Int())
+		req := &indexpb.BuildIndexRequest{
+			IndexID:   indexID,
+			DataPaths: []string{"NoIndexNode-1", "NoIndexNode-2"},
+			NumRows:   10,
+			TypeParams: []*commonpb.KeyValuePair{
+				{
+					Key:   "dim",
+					Value: "128",
+				},
+			},
+			FieldSchema: &schemapb.FieldSchema{
+				DataType: schemapb.DataType_FloatVector,
+			},
+		}
+		resp, err := ic.BuildIndex(ctx, req)
+		assert.Nil(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
+		time.Sleep(time.Second)
+		status, err := ic.DropIndex(ctx, &indexpb.DropIndexRequest{
+			IndexID: indexID,
+		})
+		assert.Nil(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
+	})
+
+	in, err := grpcindexnode.NewServer(ctx, factory)
 	assert.Nil(t, err)
 	assert.NotNil(t, in)
 	inm := &indexnode.Mock{
@@ -120,6 +164,24 @@ func TestIndexCoord(t *testing.T) {
 		assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
 		assert.Equal(t, indexBuildID, resp2.IndexBuildID)
 		assert.Equal(t, "already have same index", resp2.Status.Reason)
+
+		req2 := &indexpb.BuildIndexRequest{
+			IndexID:   indexID,
+			DataPaths: []string{"DataPath-3", "DataPath-4"},
+			NumRows:   1000,
+			TypeParams: []*commonpb.KeyValuePair{
+				{
+					Key:   "dim",
+					Value: "128",
+				},
+			},
+			FieldSchema: &schemapb.FieldSchema{
+				DataType: schemapb.DataType_FloatVector,
+			},
+		}
+		resp3, err := ic.BuildIndex(ctx, req2)
+		assert.Nil(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, resp3.Status.ErrorCode)
 	})
 
 	t.Run("Get Index State", func(t *testing.T) {
@@ -130,8 +192,7 @@ func TestIndexCoord(t *testing.T) {
 			resp, err := ic.GetIndexStates(ctx, req)
 			assert.Nil(t, err)
 			assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
-			if resp.States[0].State == commonpb.IndexState_Finished ||
-				resp.States[0].State == commonpb.IndexState_Failed {
+			if resp.States[0].State == commonpb.IndexState_Finished {
 				break
 			}
 			time.Sleep(100 * time.Millisecond)
@@ -301,4 +362,111 @@ func TestIndexCoord_NotHealthy(t *testing.T) {
 	resp4, err := ic.GetIndexFilePaths(context.Background(), req4)
 	assert.Nil(t, err)
 	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp4.Status.ErrorCode)
+}
+
+func TestIndexCoord_GetIndexFilePaths(t *testing.T) {
+	ic := &IndexCoord{
+		metaTable: &metaTable{
+			indexBuildID2Meta: map[UniqueID]Meta{
+				1: {
+					indexMeta: &indexpb.IndexMeta{
+						IndexBuildID:   1,
+						State:          commonpb.IndexState_Finished,
+						IndexFilePaths: []string{"indexFiles-1", "indexFiles-2"},
+					},
+				},
+				2: {
+					indexMeta: &indexpb.IndexMeta{
+						IndexBuildID: 2,
+						State:        commonpb.IndexState_Failed,
+					},
+				},
+			},
+		},
+	}
+
+	ic.stateCode.Store(internalpb.StateCode_Healthy)
+
+	t.Run("GetIndexFilePaths success", func(t *testing.T) {
+		resp, err := ic.GetIndexFilePaths(context.Background(), &indexpb.GetIndexFilePathsRequest{IndexBuildIDs: []UniqueID{1}})
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
+		assert.Equal(t, 1, len(resp.FilePaths))
+		assert.ElementsMatch(t, resp.FilePaths[0].IndexFilePaths, []string{"indexFiles-1", "indexFiles-2"})
+	})
+
+	t.Run("GetIndexFilePaths failed", func(t *testing.T) {
+		resp, err := ic.GetIndexFilePaths(context.Background(), &indexpb.GetIndexFilePathsRequest{IndexBuildIDs: []UniqueID{2}})
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp.Status.ErrorCode)
+		assert.NotEqual(t, "", resp.Status.Reason)
+	})
+
+	t.Run("set DataCoord with nil", func(t *testing.T) {
+		err := ic.SetDataCoord(nil)
+		assert.Error(t, err)
+	})
+}
+
+func Test_tryAcquireSegmentReferLock(t *testing.T) {
+	ic := &IndexCoord{
+		session: &sessionutil.Session{
+			ServerID: 1,
+		},
+	}
+	dcm := &DataCoordMock{
+		Err:  false,
+		Fail: false,
+	}
+	cmm := &ChunkManagerMock{
+		Err:  false,
+		Fail: false,
+	}
+
+	ic.dataCoordClient = dcm
+	ic.chunkManager = cmm
+
+	t.Run("success", func(t *testing.T) {
+		err := ic.tryAcquireSegmentReferLock(context.Background(), []UniqueID{1})
+		assert.Nil(t, err)
+	})
+
+	t.Run("error", func(t *testing.T) {
+		dcmE := &DataCoordMock{
+			Err:  true,
+			Fail: false,
+		}
+		ic.dataCoordClient = dcmE
+		err := ic.tryAcquireSegmentReferLock(context.Background(), []UniqueID{1})
+		assert.Error(t, err)
+	})
+
+	t.Run("Fail", func(t *testing.T) {
+		dcmF := &DataCoordMock{
+			Err:  false,
+			Fail: true,
+		}
+		ic.dataCoordClient = dcmF
+		err := ic.tryAcquireSegmentReferLock(context.Background(), []UniqueID{1})
+		assert.Error(t, err)
+	})
+}
+
+func Test_tryReleaseSegmentReferLock(t *testing.T) {
+	ic := &IndexCoord{
+		session: &sessionutil.Session{
+			ServerID: 1,
+		},
+	}
+	dcm := &DataCoordMock{
+		Err:  false,
+		Fail: false,
+	}
+
+	ic.dataCoordClient = dcm
+
+	t.Run("success", func(t *testing.T) {
+		err := ic.tryReleaseSegmentReferLock(context.Background(), []UniqueID{1})
+		assert.NoError(t, err)
+	})
 }

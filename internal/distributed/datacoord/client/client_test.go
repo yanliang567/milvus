@@ -120,14 +120,32 @@ func Test_NewClient(t *testing.T) {
 
 		r21, err := client.DropVirtualChannel(ctx, nil)
 		retCheck(retNotNil, r21, err)
+
+		r22, err := client.SetSegmentState(ctx, nil)
+		retCheck(retNotNil, r22, err)
+
+		r23, err := client.Import(ctx, nil)
+		retCheck(retNotNil, r23, err)
+
+		r24, err := client.UpdateSegmentStatistics(ctx, nil)
+		retCheck(retNotNil, r24, err)
+
+		r25, err := client.AcquireSegmentLock(ctx, nil)
+		retCheck(retNotNil, r25, err)
+
+		r26, err := client.ReleaseSegmentLock(ctx, nil)
+		retCheck(retNotNil, r26, err)
+
+		r27, err := client.AddSegment(ctx, nil)
+		retCheck(retNotNil, r27, err)
 	}
 
-	client.grpcClient = &mock.ClientBase{
+	client.grpcClient = &mock.GRPCClientBase{
 		GetGrpcClientErr: errors.New("dummy"),
 	}
 
 	newFunc1 := func(cc *grpc.ClientConn) interface{} {
-		return &mock.DataCoordClient{Err: nil}
+		return &mock.GrpcDataCoordClient{Err: nil}
 	}
 	client.grpcClient.SetNewGrpcClientFunc(newFunc1)
 
@@ -138,11 +156,11 @@ func Test_NewClient(t *testing.T) {
 	assert.Nil(t, ret)
 	assert.NotNil(t, err)
 
-	client.grpcClient = &mock.ClientBase{
+	client.grpcClient = &mock.GRPCClientBase{
 		GetGrpcClientErr: nil,
 	}
 	newFunc2 := func(cc *grpc.ClientConn) interface{} {
-		return &mock.DataCoordClient{Err: errors.New("dummy")}
+		return &mock.GrpcDataCoordClient{Err: errors.New("dummy")}
 	}
 	client.grpcClient.SetNewGrpcClientFunc(newFunc2)
 	checkFunc(false)
@@ -152,11 +170,11 @@ func Test_NewClient(t *testing.T) {
 	assert.Nil(t, ret)
 	assert.NotNil(t, err)
 
-	client.grpcClient = &mock.ClientBase{
+	client.grpcClient = &mock.GRPCClientBase{
 		GetGrpcClientErr: nil,
 	}
 	newFunc3 := func(cc *grpc.ClientConn) interface{} {
-		return &mock.DataCoordClient{Err: nil}
+		return &mock.GrpcDataCoordClient{Err: nil}
 	}
 	client.grpcClient.SetNewGrpcClientFunc(newFunc3)
 	checkFunc(true)

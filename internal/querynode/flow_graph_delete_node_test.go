@@ -24,6 +24,7 @@ import (
 
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
+	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
 )
 
@@ -31,14 +32,13 @@ func TestFlowGraphDeleteNode_delete(t *testing.T) {
 	t.Run("test delete", func(t *testing.T) {
 		historical, err := genSimpleReplica()
 		assert.NoError(t, err)
-		deleteNode := newDeleteNode(historical)
+		deleteNode := newDeleteNode(historical, defaultCollectionID)
 
 		err = historical.addSegment(defaultSegmentID,
 			defaultPartitionID,
 			defaultCollectionID,
 			defaultDMLChannel,
-			segmentTypeSealed,
-			true)
+			segmentTypeSealed)
 		assert.NoError(t, err)
 
 		deleteData, err := genFlowGraphDeleteData()
@@ -46,20 +46,20 @@ func TestFlowGraphDeleteNode_delete(t *testing.T) {
 
 		wg := &sync.WaitGroup{}
 		wg.Add(1)
-		deleteNode.delete(deleteData, defaultSegmentID, wg)
+		err = deleteNode.delete(deleteData, defaultSegmentID, wg)
+		assert.NoError(t, err)
 	})
 
 	t.Run("test segment delete error", func(t *testing.T) {
 		historical, err := genSimpleReplica()
 		assert.NoError(t, err)
-		deleteNode := newDeleteNode(historical)
+		deleteNode := newDeleteNode(historical, defaultCollectionID)
 
 		err = historical.addSegment(defaultSegmentID,
 			defaultPartitionID,
 			defaultCollectionID,
 			defaultDMLChannel,
-			segmentTypeSealed,
-			true)
+			segmentTypeSealed)
 		assert.NoError(t, err)
 
 		deleteData, err := genFlowGraphDeleteData()
@@ -68,34 +68,36 @@ func TestFlowGraphDeleteNode_delete(t *testing.T) {
 		wg := &sync.WaitGroup{}
 		wg.Add(1)
 		deleteData.deleteTimestamps[defaultSegmentID] = deleteData.deleteTimestamps[defaultSegmentID][:len(deleteData.deleteTimestamps)/2]
-		deleteNode.delete(deleteData, defaultSegmentID, wg)
+		err = deleteNode.delete(deleteData, defaultSegmentID, wg)
+		assert.Error(t, err)
 	})
 
 	t.Run("test no target segment", func(t *testing.T) {
 		historical, err := genSimpleReplica()
 		assert.NoError(t, err)
-		deleteNode := newDeleteNode(historical)
+		deleteNode := newDeleteNode(historical, defaultCollectionID)
 		wg := &sync.WaitGroup{}
 		wg.Add(1)
-		deleteNode.delete(nil, defaultSegmentID, wg)
+		err = deleteNode.delete(nil, defaultSegmentID, wg)
+		assert.Error(t, err)
 	})
 
 	t.Run("test invalid segmentType", func(t *testing.T) {
 		historical, err := genSimpleReplica()
 		assert.NoError(t, err)
-		deleteNode := newDeleteNode(historical)
+		deleteNode := newDeleteNode(historical, defaultCollectionID)
 
 		err = historical.addSegment(defaultSegmentID,
 			defaultPartitionID,
 			defaultCollectionID,
 			defaultDMLChannel,
-			segmentTypeGrowing,
-			true)
+			segmentTypeGrowing)
 		assert.NoError(t, err)
 
 		wg := &sync.WaitGroup{}
 		wg.Add(1)
-		deleteNode.delete(&deleteData{}, defaultSegmentID, wg)
+		err = deleteNode.delete(&deleteData{}, defaultSegmentID, wg)
+		assert.Error(t, err)
 	})
 }
 
@@ -103,18 +105,16 @@ func TestFlowGraphDeleteNode_operate(t *testing.T) {
 	t.Run("test operate", func(t *testing.T) {
 		historical, err := genSimpleReplica()
 		assert.NoError(t, err)
-		deleteNode := newDeleteNode(historical)
+		deleteNode := newDeleteNode(historical, defaultCollectionID)
 
 		err = historical.addSegment(defaultSegmentID,
 			defaultPartitionID,
 			defaultCollectionID,
 			defaultDMLChannel,
-			segmentTypeSealed,
-			true)
+			segmentTypeSealed)
 		assert.NoError(t, err)
 
-		msgDeleteMsg, err := genSimpleDeleteMsg()
-		assert.NoError(t, err)
+		msgDeleteMsg := genDeleteMsg(defaultCollectionID, schemapb.DataType_Int64, defaultDelLength)
 		dMsg := deleteMsg{
 			deleteMessages: []*msgstream.DeleteMsg{
 				msgDeleteMsg,
@@ -122,10 +122,10 @@ func TestFlowGraphDeleteNode_operate(t *testing.T) {
 		}
 		msg := []flowgraph.Msg{&dMsg}
 		deleteNode.Operate(msg)
-		s, err := historical.getSegmentByID(defaultSegmentID)
-		pks := make([]int64, defaultMsgLength)
+		s, err := historical.getSegmentByID(defaultSegmentID, segmentTypeSealed)
+		pks := make([]primaryKey, defaultMsgLength)
 		for i := 0; i < defaultMsgLength; i++ {
-			pks[i] = int64(i)
+			pks[i] = newInt64PrimaryKey(int64(i))
 		}
 		s.updateBloomFilter(pks)
 		assert.Nil(t, err)
@@ -134,24 +134,21 @@ func TestFlowGraphDeleteNode_operate(t *testing.T) {
 			common.Endian.PutUint64(buf, uint64(i))
 			assert.True(t, s.pkFilter.Test(buf))
 		}
-
 	})
 
 	t.Run("test invalid partitionID", func(t *testing.T) {
 		historical, err := genSimpleReplica()
 		assert.NoError(t, err)
-		deleteNode := newDeleteNode(historical)
+		deleteNode := newDeleteNode(historical, defaultCollectionID)
 
 		err = historical.addSegment(defaultSegmentID,
 			defaultPartitionID,
 			defaultCollectionID,
 			defaultDMLChannel,
-			segmentTypeSealed,
-			true)
+			segmentTypeSealed)
 		assert.NoError(t, err)
 
-		msgDeleteMsg, err := genSimpleDeleteMsg()
-		assert.NoError(t, err)
+		msgDeleteMsg := genDeleteMsg(defaultCollectionID, schemapb.DataType_Int64, defaultDelLength)
 		msgDeleteMsg.PartitionID = common.InvalidPartitionID
 		assert.NoError(t, err)
 		dMsg := deleteMsg{
@@ -166,17 +163,16 @@ func TestFlowGraphDeleteNode_operate(t *testing.T) {
 	t.Run("test collection partition not exist", func(t *testing.T) {
 		historical, err := genSimpleReplica()
 		assert.NoError(t, err)
-		deleteNode := newDeleteNode(historical)
+		deleteNode := newDeleteNode(historical, defaultCollectionID)
 
 		err = historical.addSegment(defaultSegmentID,
 			defaultPartitionID,
 			defaultCollectionID,
 			defaultDMLChannel,
-			segmentTypeSealed,
-			true)
+			segmentTypeSealed)
 		assert.NoError(t, err)
 
-		msgDeleteMsg, err := genSimpleDeleteMsg()
+		msgDeleteMsg := genDeleteMsg(defaultCollectionID, schemapb.DataType_Int64, defaultDelLength)
 		msgDeleteMsg.CollectionID = 9999
 		msgDeleteMsg.PartitionID = -1
 		assert.NoError(t, err)
@@ -186,23 +182,24 @@ func TestFlowGraphDeleteNode_operate(t *testing.T) {
 			},
 		}
 		msg := []flowgraph.Msg{&dMsg}
-		deleteNode.Operate(msg)
+		assert.Panics(t, func() {
+			deleteNode.Operate(msg)
+		})
 	})
 
 	t.Run("test partition not exist", func(t *testing.T) {
 		historical, err := genSimpleReplica()
 		assert.NoError(t, err)
-		deleteNode := newDeleteNode(historical)
+		deleteNode := newDeleteNode(historical, defaultCollectionID)
 
 		err = historical.addSegment(defaultSegmentID,
 			defaultPartitionID,
 			defaultCollectionID,
 			defaultDMLChannel,
-			segmentTypeSealed,
-			true)
+			segmentTypeSealed)
 		assert.NoError(t, err)
 
-		msgDeleteMsg, err := genSimpleDeleteMsg()
+		msgDeleteMsg := genDeleteMsg(defaultCollectionID, schemapb.DataType_Int64, defaultDelLength)
 		msgDeleteMsg.PartitionID = 9999
 		assert.NoError(t, err)
 		dMsg := deleteMsg{
@@ -211,24 +208,24 @@ func TestFlowGraphDeleteNode_operate(t *testing.T) {
 			},
 		}
 		msg := []flowgraph.Msg{&dMsg}
-		deleteNode.Operate(msg)
+		assert.Panics(t, func() {
+			deleteNode.Operate(msg)
+		})
 	})
 
 	t.Run("test invalid input length", func(t *testing.T) {
 		historical, err := genSimpleReplica()
 		assert.NoError(t, err)
-		deleteNode := newDeleteNode(historical)
+		deleteNode := newDeleteNode(historical, defaultCollectionID)
 
 		err = historical.addSegment(defaultSegmentID,
 			defaultPartitionID,
 			defaultCollectionID,
 			defaultDMLChannel,
-			segmentTypeSealed,
-			true)
+			segmentTypeSealed)
 		assert.NoError(t, err)
 
-		msgDeleteMsg, err := genSimpleDeleteMsg()
-		assert.NoError(t, err)
+		msgDeleteMsg := genDeleteMsg(defaultCollectionID, schemapb.DataType_Int64, defaultDelLength)
 		dMsg := deleteMsg{
 			deleteMessages: []*msgstream.DeleteMsg{
 				msgDeleteMsg,

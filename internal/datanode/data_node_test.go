@@ -32,7 +32,9 @@ import (
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
+	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/dependency"
 
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
@@ -49,6 +51,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
+
+const returnError = "ReturnError"
+
+type ctxKey struct{}
 
 func TestMain(t *testing.M) {
 	rand.Seed(time.Now().Unix())
@@ -78,7 +84,10 @@ func TestDataNode(t *testing.T) {
 	assert.Nil(t, err)
 	err = node.Start()
 	assert.Nil(t, err)
+	defer node.Stop()
 
+	node.chunkManager = storage.NewLocalChunkManager(storage.RootPath("/tmp/lib/milvus"))
+	Params.DataNodeCfg.SetNodeID(1)
 	t.Run("Test WatchDmChannels ", func(t *testing.T) {
 		emptyNode := &DataNode{}
 
@@ -209,10 +218,8 @@ func TestDataNode(t *testing.T) {
 			timeTickMsgPack.Msgs = append(timeTickMsgPack.Msgs, timeTickMsg)
 
 			// pulsar produce
-			msFactory := msgstream.NewPmsFactory()
-			err = msFactory.Init(&Params)
-			assert.NoError(t, err)
-			insertStream, err := msFactory.NewMsgStream(node1.ctx)
+			factory := dependency.NewDefaultFactory(true)
+			insertStream, err := factory.NewMsgStream(node1.ctx)
 			assert.NoError(t, err)
 			insertStream.AsProducer([]string{dmChannelName})
 			insertStream.Start()
@@ -317,12 +324,146 @@ func TestDataNode(t *testing.T) {
 	})
 
 	t.Run("Test Import", func(t *testing.T) {
-		req := &datapb.ImportTask{
-			CollectionName: "dummy",
+		node.rootCoord = &RootCoordFactory{
+			collectionID: 100,
+			pkType:       schemapb.DataType_Int64,
 		}
-		stat, err := node.Import(node.ctx, req)
+		content := []byte(`{
+		"rows":[
+			{"bool_field": true, "int8_field": 10, "int16_field": 101, "int32_field": 1001, "int64_field": 10001, "float32_field": 3.14, "float64_field": 1.56, "varChar_field": "hello world", "binary_vector_field": [254, 0, 254, 0], "float_vector_field": [1.1, 1.2]},
+			{"bool_field": false, "int8_field": 11, "int16_field": 102, "int32_field": 1002, "int64_field": 10002, "float32_field": 3.15, "float64_field": 2.56, "varChar_field": "hello world", "binary_vector_field": [253, 0, 253, 0], "float_vector_field": [2.1, 2.2]},
+			{"bool_field": true, "int8_field": 12, "int16_field": 103, "int32_field": 1003, "int64_field": 10003, "float32_field": 3.16, "float64_field": 3.56, "varChar_field": "hello world", "binary_vector_field": [252, 0, 252, 0], "float_vector_field": [3.1, 3.2]},
+			{"bool_field": false, "int8_field": 13, "int16_field": 104, "int32_field": 1004, "int64_field": 10004, "float32_field": 3.17, "float64_field": 4.56, "varChar_field": "hello world", "binary_vector_field": [251, 0, 251, 0], "float_vector_field": [4.1, 4.2]},
+			{"bool_field": true, "int8_field": 14, "int16_field": 105, "int32_field": 1005, "int64_field": 10005, "float32_field": 3.18, "float64_field": 5.56, "varChar_field": "hello world", "binary_vector_field": [250, 0, 250, 0], "float_vector_field": [5.1, 5.2]}
+		]
+		}`)
+
+		filePath := "import/rows_1.json"
+		err = node.chunkManager.Write(filePath, content)
 		assert.NoError(t, err)
-		assert.Equal(t, commonpb.ErrorCode_Success, stat.ErrorCode)
+		req := &datapb.ImportTaskRequest{
+			ImportTask: &datapb.ImportTask{
+				CollectionId: 100,
+				PartitionId:  100,
+				ChannelNames: []string{"ch1", "ch2"},
+				Files:        []string{filePath},
+				RowBased:     true,
+			},
+		}
+		stat, err := node.Import(context.WithValue(ctx, ctxKey{}, ""), req)
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, stat.GetErrorCode())
+		assert.Equal(t, "", stat.GetReason())
+	})
+
+	t.Run("Test Import w/ bad flow graph", func(t *testing.T) {
+		node.rootCoord = &RootCoordFactory{
+			collectionID: 100,
+			pkType:       schemapb.DataType_Int64,
+		}
+
+		chName1 := "fake-by-dev-rootcoord-dml-testimport-1"
+		chName2 := "fake-by-dev-rootcoord-dml-testimport-2"
+		err := node.flowgraphManager.addAndStart(node, &datapb.VchannelInfo{
+			CollectionID:      100,
+			ChannelName:       chName1,
+			UnflushedSegments: []*datapb.SegmentInfo{},
+			FlushedSegments:   []*datapb.SegmentInfo{},
+		})
+		require.Nil(t, err)
+		err = node.flowgraphManager.addAndStart(node, &datapb.VchannelInfo{
+			CollectionID:      999, // wrong collection ID.
+			ChannelName:       chName2,
+			UnflushedSegments: []*datapb.SegmentInfo{},
+			FlushedSegments:   []*datapb.SegmentInfo{},
+		})
+		require.Nil(t, err)
+
+		_, ok := node.flowgraphManager.getFlowgraphService(chName1)
+		assert.True(t, ok)
+		_, ok = node.flowgraphManager.getFlowgraphService(chName2)
+		assert.True(t, ok)
+
+		content := []byte(`{
+		"rows":[
+			{"bool_field": true, "int8_field": 10, "int16_field": 101, "int32_field": 1001, "int64_field": 10001, "float32_field": 3.14, "float64_field": 1.56, "varChar_field": "hello world", "binary_vector_field": [254, 0, 254, 0], "float_vector_field": [1.1, 1.2]},
+			{"bool_field": false, "int8_field": 11, "int16_field": 102, "int32_field": 1002, "int64_field": 10002, "float32_field": 3.15, "float64_field": 2.56, "varChar_field": "hello world", "binary_vector_field": [253, 0, 253, 0], "float_vector_field": [2.1, 2.2]},
+			{"bool_field": true, "int8_field": 12, "int16_field": 103, "int32_field": 1003, "int64_field": 10003, "float32_field": 3.16, "float64_field": 3.56, "varChar_field": "hello world", "binary_vector_field": [252, 0, 252, 0], "float_vector_field": [3.1, 3.2]},
+			{"bool_field": false, "int8_field": 13, "int16_field": 104, "int32_field": 1004, "int64_field": 10004, "float32_field": 3.17, "float64_field": 4.56, "varChar_field": "hello world", "binary_vector_field": [251, 0, 251, 0], "float_vector_field": [4.1, 4.2]},
+			{"bool_field": true, "int8_field": 14, "int16_field": 105, "int32_field": 1005, "int64_field": 10005, "float32_field": 3.18, "float64_field": 5.56, "varChar_field": "hello world", "binary_vector_field": [250, 0, 250, 0], "float_vector_field": [5.1, 5.2]}
+		]
+		}`)
+
+		filePath := "import/rows_1.json"
+		err = node.chunkManager.Write(filePath, content)
+		assert.NoError(t, err)
+		req := &datapb.ImportTaskRequest{
+			ImportTask: &datapb.ImportTask{
+				CollectionId: 100,
+				PartitionId:  100,
+				ChannelNames: []string{chName1, chName2},
+				Files:        []string{filePath},
+				RowBased:     true,
+			},
+		}
+		stat, err := node.Import(context.WithValue(ctx, ctxKey{}, ""), req)
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, stat.GetErrorCode())
+		assert.Equal(t, "", stat.GetReason())
+	})
+
+	t.Run("Test Import report import error", func(t *testing.T) {
+		node.rootCoord = &RootCoordFactory{
+			collectionID: 100,
+			pkType:       schemapb.DataType_Int64,
+		}
+		content := []byte(`{
+		"rows":[
+			{"bool_field": true, "int8_field": 10, "int16_field": 101, "int32_field": 1001, "int64_field": 10001, "float32_field": 3.14, "float64_field": 1.56, "varChar_field": "hello world", "binary_vector_field": [254, 0, 254, 0], "float_vector_field": [1.1, 1.2]},
+			{"bool_field": false, "int8_field": 11, "int16_field": 102, "int32_field": 1002, "int64_field": 10002, "float32_field": 3.15, "float64_field": 2.56, "varChar_field": "hello world", "binary_vector_field": [253, 0, 253, 0], "float_vector_field": [2.1, 2.2]},
+			{"bool_field": true, "int8_field": 12, "int16_field": 103, "int32_field": 1003, "int64_field": 10003, "float32_field": 3.16, "float64_field": 3.56, "varChar_field": "hello world", "binary_vector_field": [252, 0, 252, 0], "float_vector_field": [3.1, 3.2]},
+			{"bool_field": false, "int8_field": 13, "int16_field": 104, "int32_field": 1004, "int64_field": 10004, "float32_field": 3.17, "float64_field": 4.56, "varChar_field": "hello world", "binary_vector_field": [251, 0, 251, 0], "float_vector_field": [4.1, 4.2]},
+			{"bool_field": true, "int8_field": 14, "int16_field": 105, "int32_field": 1005, "int64_field": 10005, "float32_field": 3.18, "float64_field": 5.56, "varChar_field": "hello world", "binary_vector_field": [250, 0, 250, 0], "float_vector_field": [5.1, 5.2]}
+		]
+		}`)
+
+		filePath := "import/rows_1.json"
+		err = node.chunkManager.Write(filePath, content)
+		assert.NoError(t, err)
+		req := &datapb.ImportTaskRequest{
+			ImportTask: &datapb.ImportTask{
+				CollectionId: 100,
+				PartitionId:  100,
+				ChannelNames: []string{"ch1", "ch2"},
+				Files:        []string{filePath},
+				RowBased:     true,
+			},
+		}
+		stat, err := node.Import(context.WithValue(node.ctx, ctxKey{}, returnError), req)
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, stat.GetErrorCode())
+	})
+
+	t.Run("Test Import error", func(t *testing.T) {
+		node.rootCoord = &RootCoordFactory{collectionID: -1}
+		req := &datapb.ImportTaskRequest{
+			ImportTask: &datapb.ImportTask{
+				CollectionId: 100,
+				PartitionId:  100,
+			},
+		}
+		stat, err := node.Import(context.WithValue(ctx, ctxKey{}, ""), req)
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, stat.ErrorCode)
+
+		stat, err = node.Import(context.WithValue(ctx, ctxKey{}, returnError), req)
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, stat.GetErrorCode())
+
+		node.State.Store(internalpb.StateCode_Abnormal)
+		stat, err = node.Import(context.WithValue(ctx, ctxKey{}, ""), req)
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, stat.GetErrorCode())
 	})
 
 	t.Run("Test BackGroundGC", func(t *testing.T) {
@@ -354,6 +495,75 @@ func TestDataNode(t *testing.T) {
 	})
 }
 
+func TestDataNode_AddSegment(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	node := newIDLEDataNodeMock(ctx, schemapb.DataType_Int64)
+	etcdCli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
+	assert.Nil(t, err)
+	defer etcdCli.Close()
+	node.SetEtcdClient(etcdCli)
+	err = node.Init()
+	assert.Nil(t, err)
+	err = node.Start()
+	assert.Nil(t, err)
+	defer node.Stop()
+
+	node.chunkManager = storage.NewLocalChunkManager(storage.RootPath("/tmp/lib/milvus"))
+	Params.DataNodeCfg.SetNodeID(1)
+
+	t.Run("test AddSegment", func(t *testing.T) {
+		node.rootCoord = &RootCoordFactory{
+			collectionID: 100,
+			pkType:       schemapb.DataType_Int64,
+		}
+
+		chName1 := "fake-by-dev-rootcoord-dml-testaddsegment-1"
+		chName2 := "fake-by-dev-rootcoord-dml-testaddsegment-2"
+		err := node.flowgraphManager.addAndStart(node, &datapb.VchannelInfo{
+			CollectionID:      100,
+			ChannelName:       chName1,
+			UnflushedSegments: []*datapb.SegmentInfo{},
+			FlushedSegments:   []*datapb.SegmentInfo{},
+		})
+		require.Nil(t, err)
+		err = node.flowgraphManager.addAndStart(node, &datapb.VchannelInfo{
+			CollectionID:      100,
+			ChannelName:       chName2,
+			UnflushedSegments: []*datapb.SegmentInfo{},
+			FlushedSegments:   []*datapb.SegmentInfo{},
+		})
+		require.Nil(t, err)
+
+		_, ok := node.flowgraphManager.getFlowgraphService(chName1)
+		assert.True(t, ok)
+		_, ok = node.flowgraphManager.getFlowgraphService(chName2)
+		assert.True(t, ok)
+
+		stat, err := node.AddSegment(context.WithValue(ctx, ctxKey{}, ""), &datapb.AddSegmentRequest{
+			SegmentId:    100,
+			CollectionId: 100,
+			PartitionId:  100,
+			ChannelName:  chName1,
+			RowNum:       500,
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, stat.GetErrorCode())
+		assert.Equal(t, "", stat.GetReason())
+
+		stat, err = node.AddSegment(context.WithValue(ctx, ctxKey{}, ""), &datapb.AddSegmentRequest{
+			SegmentId:    100,
+			CollectionId: 100,
+			PartitionId:  100,
+			ChannelName:  "bad-ch-name",
+			RowNum:       500,
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, stat.GetErrorCode())
+	})
+}
+
 func TestWatchChannel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	node := newIDLEDataNodeMock(ctx, schemapb.DataType_Int64)
@@ -365,6 +575,7 @@ func TestWatchChannel(t *testing.T) {
 	assert.Nil(t, err)
 	err = node.Start()
 	assert.Nil(t, err)
+	defer node.Stop()
 	err = node.Register()
 	assert.Nil(t, err)
 
@@ -374,15 +585,15 @@ func TestWatchChannel(t *testing.T) {
 		// GOOSE TODO
 		kv := etcdkv.NewEtcdKV(etcdCli, Params.EtcdCfg.MetaRootPath)
 		oldInvalidCh := "datanode-etcd-test-by-dev-rootcoord-dml-channel-invalid"
-		path := fmt.Sprintf("%s/%d/%s", Params.DataNodeCfg.ChannelWatchSubPath, node.NodeID, oldInvalidCh)
+		path := fmt.Sprintf("%s/%d/%s", Params.DataNodeCfg.ChannelWatchSubPath, Params.DataNodeCfg.GetNodeID(), oldInvalidCh)
 		err = kv.Save(path, string([]byte{23}))
 		assert.NoError(t, err)
 
 		ch := fmt.Sprintf("datanode-etcd-test-by-dev-rootcoord-dml-channel_%d", rand.Int31())
-		path = fmt.Sprintf("%s/%d/%s", Params.DataNodeCfg.ChannelWatchSubPath, node.NodeID, ch)
+		path = fmt.Sprintf("%s/%d/%s", Params.DataNodeCfg.ChannelWatchSubPath, Params.DataNodeCfg.GetNodeID(), ch)
 		c := make(chan struct{})
 		go func() {
-			ec := kv.WatchWithPrefix(fmt.Sprintf("%s/%d", Params.DataNodeCfg.ChannelWatchSubPath, node.NodeID))
+			ec := kv.WatchWithPrefix(fmt.Sprintf("%s/%d", Params.DataNodeCfg.ChannelWatchSubPath, Params.DataNodeCfg.GetNodeID()))
 			c <- struct{}{}
 			cnt := 0
 			for {
@@ -421,7 +632,7 @@ func TestWatchChannel(t *testing.T) {
 		exist := node.flowgraphManager.exist(ch)
 		assert.True(t, exist)
 
-		err = kv.RemoveWithPrefix(fmt.Sprintf("%s/%d", Params.DataNodeCfg.ChannelWatchSubPath, node.NodeID))
+		err = kv.RemoveWithPrefix(fmt.Sprintf("%s/%d", Params.DataNodeCfg.ChannelWatchSubPath, Params.DataNodeCfg.GetNodeID()))
 		assert.Nil(t, err)
 		//TODO there is not way to sync Release done, use sleep for now
 		time.Sleep(100 * time.Millisecond)
@@ -433,15 +644,15 @@ func TestWatchChannel(t *testing.T) {
 	t.Run("Test release channel", func(t *testing.T) {
 		kv := etcdkv.NewEtcdKV(etcdCli, Params.EtcdCfg.MetaRootPath)
 		oldInvalidCh := "datanode-etcd-test-by-dev-rootcoord-dml-channel-invalid"
-		path := fmt.Sprintf("%s/%d/%s", Params.DataNodeCfg.ChannelWatchSubPath, node.NodeID, oldInvalidCh)
+		path := fmt.Sprintf("%s/%d/%s", Params.DataNodeCfg.ChannelWatchSubPath, Params.DataNodeCfg.GetNodeID(), oldInvalidCh)
 		err = kv.Save(path, string([]byte{23}))
 		assert.NoError(t, err)
 
 		ch := fmt.Sprintf("datanode-etcd-test-by-dev-rootcoord-dml-channel_%d", rand.Int31())
-		path = fmt.Sprintf("%s/%d/%s", Params.DataNodeCfg.ChannelWatchSubPath, node.NodeID, ch)
+		path = fmt.Sprintf("%s/%d/%s", Params.DataNodeCfg.ChannelWatchSubPath, Params.DataNodeCfg.GetNodeID(), ch)
 		c := make(chan struct{})
 		go func() {
-			ec := kv.WatchWithPrefix(fmt.Sprintf("%s/%d", Params.DataNodeCfg.ChannelWatchSubPath, node.NodeID))
+			ec := kv.WatchWithPrefix(fmt.Sprintf("%s/%d", Params.DataNodeCfg.ChannelWatchSubPath, Params.DataNodeCfg.GetNodeID()))
 			c <- struct{}{}
 			cnt := 0
 			for {
@@ -480,7 +691,7 @@ func TestWatchChannel(t *testing.T) {
 		exist := node.flowgraphManager.exist(ch)
 		assert.False(t, exist)
 
-		err = kv.RemoveWithPrefix(fmt.Sprintf("%s/%d", Params.DataNodeCfg.ChannelWatchSubPath, node.NodeID))
+		err = kv.RemoveWithPrefix(fmt.Sprintf("%s/%d", Params.DataNodeCfg.ChannelWatchSubPath, Params.DataNodeCfg.GetNodeID()))
 		assert.Nil(t, err)
 		//TODO there is not way to sync Release done, use sleep for now
 		time.Sleep(100 * time.Millisecond)
@@ -521,9 +732,10 @@ func TestWatchChannel(t *testing.T) {
 				chPut <- struct{}{}
 				return r
 			},
-			func(vChan string) {
+			func(vChan string) bool {
 				node.handleDeleteEvent(vChan)
 				chDel <- struct{}{}
+				return true
 			}, time.Millisecond*100,
 		)
 		node.eventManagerMap.Store(ch, m)
@@ -537,12 +749,10 @@ func TestWatchChannel(t *testing.T) {
 		bs, err = proto.Marshal(&info)
 		assert.NoError(t, err)
 
-		msFactory := node.msFactory
-		defer func() { node.msFactory = msFactory }()
+		msFactory := node.factory
+		defer func() { node.factory = msFactory }()
 
-		node.msFactory = &FailMessageStreamFactory{
-			node.msFactory,
-		}
+		node.factory = &FailMessageStreamFactory{}
 		node.handleWatchInfo(e, ch, bs)
 		<-chPut
 		exist = node.flowgraphManager.exist(ch)
@@ -560,9 +770,10 @@ func TestWatchChannel(t *testing.T) {
 				chPut <- struct{}{}
 				return r
 			},
-			func(vChan string) {
+			func(vChan string) bool {
 				node.handleDeleteEvent(vChan)
 				chDel <- struct{}{}
+				return true
 			}, time.Millisecond*100,
 		)
 		node.eventManagerMap.Store(ch, m)
@@ -585,7 +796,6 @@ func TestWatchChannel(t *testing.T) {
 		exist := node.flowgraphManager.exist("test3")
 		assert.False(t, exist)
 	})
-
 }
 
 func TestDataNode_GetComponentStates(t *testing.T) {
@@ -600,4 +810,60 @@ func TestDataNode_GetComponentStates(t *testing.T) {
 	resp, err = n.GetComponentStates(context.Background())
 	assert.NoError(t, err)
 	assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
+}
+
+func TestDataNode_ResendSegmentStats(t *testing.T) {
+	etcdCli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
+	assert.Nil(t, err)
+	defer etcdCli.Close()
+	dmChannelName := "fake-by-dev-rootcoord-dml-channel-test-ResendSegmentStats"
+
+	node := newIDLEDataNodeMock(context.TODO(), schemapb.DataType_Int64)
+	node.SetEtcdClient(etcdCli)
+	err = node.Init()
+	assert.Nil(t, err)
+	err = node.Start()
+	assert.Nil(t, err)
+	defer func() {
+		err := node.Stop()
+		assert.Nil(t, err)
+	}()
+
+	vChan := &datapb.VchannelInfo{
+		CollectionID:      1,
+		ChannelName:       dmChannelName,
+		UnflushedSegments: []*datapb.SegmentInfo{},
+		FlushedSegments:   []*datapb.SegmentInfo{},
+	}
+
+	err = node.flowgraphManager.addAndStart(node, vChan)
+	require.Nil(t, err)
+
+	fgService, ok := node.flowgraphManager.getFlowgraphService(dmChannelName)
+	assert.True(t, ok)
+
+	err = fgService.replica.addNewSegment(0, 1, 1, dmChannelName, &internalpb.MsgPosition{}, &internalpb.MsgPosition{})
+	assert.Nil(t, err)
+	err = fgService.replica.addNewSegment(1, 1, 2, dmChannelName, &internalpb.MsgPosition{}, &internalpb.MsgPosition{})
+	assert.Nil(t, err)
+	err = fgService.replica.addNewSegment(2, 1, 3, dmChannelName, &internalpb.MsgPosition{}, &internalpb.MsgPosition{})
+	assert.Nil(t, err)
+
+	req := &datapb.ResendSegmentStatsRequest{
+		Base: &commonpb.MsgBase{},
+	}
+
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+
+	resp, err := node.ResendSegmentStats(node.ctx, req)
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
+	assert.ElementsMatch(t, []UniqueID{0, 1, 2}, resp.GetSegResent())
+
+	// Duplicate call.
+	resp, err = node.ResendSegmentStats(node.ctx, req)
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
+	assert.ElementsMatch(t, []UniqueID{0, 1, 2}, resp.GetSegResent())
 }

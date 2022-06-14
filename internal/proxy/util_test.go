@@ -17,6 +17,7 @@
 package proxy
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
@@ -101,15 +102,62 @@ func TestValidateFieldName(t *testing.T) {
 }
 
 func TestValidateDimension(t *testing.T) {
-	assert.Nil(t, validateDimension(1, false))
-	assert.Nil(t, validateDimension(Params.ProxyCfg.MaxDimension, false))
-	assert.Nil(t, validateDimension(8, true))
-	assert.Nil(t, validateDimension(Params.ProxyCfg.MaxDimension, true))
+	fieldSchema := &schemapb.FieldSchema{
+		DataType: schemapb.DataType_FloatVector,
+		TypeParams: []*commonpb.KeyValuePair{
+			{
+				Key:   "dim",
+				Value: "1",
+			},
+		},
+	}
+	assert.Nil(t, validateDimension(fieldSchema))
+	fieldSchema.TypeParams = []*commonpb.KeyValuePair{
+		{
+			Key:   "dim",
+			Value: strconv.Itoa(int(Params.ProxyCfg.MaxDimension)),
+		},
+	}
+	assert.Nil(t, validateDimension(fieldSchema))
 
 	// invalid dim
-	assert.NotNil(t, validateDimension(-1, false))
-	assert.NotNil(t, validateDimension(Params.ProxyCfg.MaxDimension+1, false))
-	assert.NotNil(t, validateDimension(9, true))
+	fieldSchema.TypeParams = []*commonpb.KeyValuePair{
+		{
+			Key:   "dim",
+			Value: "-1",
+		},
+	}
+	assert.NotNil(t, validateDimension(fieldSchema))
+	fieldSchema.TypeParams = []*commonpb.KeyValuePair{
+		{
+			Key:   "dim",
+			Value: strconv.Itoa(int(Params.ProxyCfg.MaxDimension + 1)),
+		},
+	}
+	assert.NotNil(t, validateDimension(fieldSchema))
+
+	fieldSchema.DataType = schemapb.DataType_BinaryVector
+	fieldSchema.TypeParams = []*commonpb.KeyValuePair{
+		{
+			Key:   "dim",
+			Value: "8",
+		},
+	}
+	assert.Nil(t, validateDimension(fieldSchema))
+	fieldSchema.TypeParams = []*commonpb.KeyValuePair{
+		{
+			Key:   "dim",
+			Value: strconv.Itoa(int(Params.ProxyCfg.MaxDimension)),
+		},
+	}
+	assert.Nil(t, validateDimension(fieldSchema))
+	fieldSchema.TypeParams = []*commonpb.KeyValuePair{
+		{
+			Key:   "dim",
+			Value: "9",
+		},
+	}
+	assert.NotNil(t, validateDimension(fieldSchema))
 }
 
 func TestValidateVectorFieldMetricType(t *testing.T) {
@@ -169,7 +217,7 @@ func TestValidatePrimaryKey(t *testing.T) {
 		DataType:     schemapb.DataType_VarChar,
 		TypeParams: []*commonpb.KeyValuePair{
 			{
-				Key:   "max_length_per_row",
+				Key:   "max_length",
 				Value: "100",
 			},
 		},
@@ -526,4 +574,45 @@ func TestFillFieldIDBySchema(t *testing.T) {
 	assert.Equal(t, "TestFillFieldIDBySchema", columns[0].FieldName)
 	assert.Equal(t, schemapb.DataType_Int64, columns[0].Type)
 	assert.Equal(t, int64(1), columns[0].FieldId)
+}
+
+func TestValidateUsername(t *testing.T) {
+	// only spaces
+	res := ValidateUsername(" ")
+	assert.Error(t, res)
+	// starts with non-alphabet
+	res = ValidateUsername("1abc")
+	assert.Error(t, res)
+	// length gt 32
+	res = ValidateUsername("aaaaaaaaaabbbbbbbbbbccccccccccddddd")
+	assert.Error(t, res)
+	// illegal character which not alphabet, _, or number
+	res = ValidateUsername("a1^7*).,")
+	assert.Error(t, res)
+	// normal username that only contains alphabet, _, and number
+	Params.InitOnce()
+	res = ValidateUsername("a17_good")
+	assert.Nil(t, res)
+}
+
+func TestValidatePassword(t *testing.T) {
+	Params.InitOnce()
+	// only spaces
+	res := ValidatePassword("")
+	assert.NotNil(t, res)
+	//
+	res = ValidatePassword("1abc")
+	assert.NotNil(t, res)
+	//
+	res = ValidatePassword("a1^7*).,")
+	assert.Nil(t, res)
+	//
+	res = ValidatePassword("aaaaaaaaaabbbbbbbbbbccccccccccddddddddddeeeeeeeeeeffffffffffgggggggggghhhhhhhhhhiiiiiiiiiijjjjjjjjjjkkkkkkkkkkllllllllllmmmmmmmmmnnnnnnnnnnnooooooooooppppppppppqqqqqqqqqqrrrrrrrrrrsssssssssstttttttttttuuuuuuuuuuuvvvvvvvvvvwwwwwwwwwwwxxxxxxxxxxyyyyyyyyyzzzzzzzzzzz")
+	assert.Error(t, res)
+}
+
+func TestReplaceID2Name(t *testing.T) {
+	srcStr := "collection 432682805904801793 has not been loaded to memory or load failed"
+	dstStr := "collection default_collection has not been loaded to memory or load failed"
+	assert.Equal(t, dstStr, ReplaceID2Name(srcStr, int64(432682805904801793), "default_collection"))
 }

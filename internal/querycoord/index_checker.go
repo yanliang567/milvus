@@ -30,6 +30,14 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 )
 
+type extraIndexInfo struct {
+	indexID        UniqueID
+	indexName      string
+	indexParams    []*commonpb.KeyValuePair
+	indexSize      uint64
+	indexFilePaths []string
+}
+
 // IndexChecker checks index
 type IndexChecker struct {
 	ctx    context.Context
@@ -114,7 +122,7 @@ func (ic *IndexChecker) reloadFromKV() error {
 			// in case handoffReqChan is full, and block start process
 			go ic.enqueueHandoffReq(segmentInfo)
 		} else {
-			log.Debug("reloadFromKV: collection/partition has not been loaded, remove req from etcd", zap.Any("segmentInfo", segmentInfo))
+			log.Info("reloadFromKV: collection/partition has not been loaded, remove req from etcd", zap.Any("segmentInfo", segmentInfo))
 			buildQuerySegmentPath := fmt.Sprintf("%s/%d/%d/%d", handoffSegmentPrefix, segmentInfo.CollectionID, segmentInfo.PartitionID, segmentInfo.SegmentID)
 			err = ic.client.Remove(buildQuerySegmentPath)
 			if err != nil {
@@ -122,7 +130,7 @@ func (ic *IndexChecker) reloadFromKV() error {
 				return err
 			}
 		}
-		log.Debug("reloadFromKV: process handoff request done", zap.Any("segmentInfo", segmentInfo))
+		log.Info("reloadFromKV: process handoff request done", zap.Any("segmentInfo", segmentInfo))
 	}
 
 	return nil
@@ -199,7 +207,7 @@ func (ic *IndexChecker) checkIndexLoop() {
 						continue
 					}
 
-					log.Debug("checkIndexLoop: segment has been compacted and dropped before handoff", zap.Int64("segmentID", segmentInfo.SegmentID))
+					log.Info("checkIndexLoop: segment has been compacted and dropped before handoff", zap.Int64("segmentID", segmentInfo.SegmentID))
 				}
 
 				buildQuerySegmentPath := fmt.Sprintf("%s/%d/%d/%d", handoffSegmentPrefix, segmentInfo.CollectionID, segmentInfo.PartitionID, segmentInfo.SegmentID)
@@ -212,8 +220,7 @@ func (ic *IndexChecker) checkIndexLoop() {
 			}
 		case segmentInfo := <-ic.unIndexedSegmentsChan:
 			//TODO:: check index after load collection/partition, some segments may don't has index when loading
-			log.Debug("checkIndexLoop: start check index for segment which has not loaded index", zap.Int64("segmentID", segmentInfo.SegmentID))
-
+			log.Warn("checkIndexLoop: start check index for segment which has not loaded index", zap.Int64("segmentID", segmentInfo.SegmentID))
 		}
 	}
 }
@@ -229,7 +236,7 @@ func (ic *IndexChecker) processHandoffAfterIndexDone() {
 			collectionID := segmentInfo.CollectionID
 			partitionID := segmentInfo.PartitionID
 			segmentID := segmentInfo.SegmentID
-			log.Debug("processHandoffAfterIndexDone: handoff segment start", zap.Any("segmentInfo", segmentInfo))
+			log.Info("processHandoffAfterIndexDone: handoff segment start", zap.Any("segmentInfo", segmentInfo))
 			baseTask := newBaseTask(ic.ctx, querypb.TriggerCondition_Handoff)
 			handoffReq := &querypb.HandoffSegmentsRequest{
 				Base: &commonpb.MsgBase{
@@ -257,7 +264,7 @@ func (ic *IndexChecker) processHandoffAfterIndexDone() {
 					log.Warn("processHandoffAfterIndexDone: handoffTask failed", zap.Error(err))
 				}
 
-				log.Debug("processHandoffAfterIndexDone: handoffTask completed", zap.Any("segment infos", handoffTask.SegmentInfos))
+				log.Info("processHandoffAfterIndexDone: handoffTask completed", zap.Any("segment infos", handoffTask.SegmentInfos))
 			}()
 
 			// once task enqueue, etcd data can be cleaned, handoffTask will recover from taskScheduler's reloadFromKV()

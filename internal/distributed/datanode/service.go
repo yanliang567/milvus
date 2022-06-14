@@ -27,26 +27,27 @@ import (
 	"time"
 
 	ot "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
+
 	dn "github.com/milvus-io/milvus/internal/datanode"
 	dcc "github.com/milvus-io/milvus/internal/distributed/datacoord/client"
 	rcc "github.com/milvus-io/milvus/internal/distributed/rootcoord/client"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/etcd"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/trace"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/keepalive"
 )
 
 // Params contains parameters for datanode grpc server.
@@ -60,7 +61,7 @@ type Server struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	etcdCli     *clientv3.Client
-	msFactory   msgstream.Factory
+	factory     dependency.Factory
 
 	rootCoord types.RootCoord
 	dataCoord types.DataCoord
@@ -72,12 +73,12 @@ type Server struct {
 }
 
 // NewServer new DataNode grpc server
-func NewServer(ctx context.Context, factory msgstream.Factory) (*Server, error) {
+func NewServer(ctx context.Context, factory dependency.Factory) (*Server, error) {
 	ctx1, cancel := context.WithCancel(ctx)
 	var s = &Server{
 		ctx:         ctx1,
 		cancel:      cancel,
-		msFactory:   factory,
+		factory:     factory,
 		grpcErrChan: make(chan error),
 		newRootCoordClient: func(etcdMetaRoot string, client *clientv3.Client) (types.RootCoord, error) {
 			return rcc.NewClient(ctx1, etcdMetaRoot, client)
@@ -87,7 +88,7 @@ func NewServer(ctx context.Context, factory msgstream.Factory) (*Server, error) 
 		},
 	}
 
-	s.datanode = dn.NewDataNode(s.ctx, s.msFactory)
+	s.datanode = dn.NewDataNode(s.ctx, s.factory)
 
 	return s, nil
 }
@@ -296,7 +297,6 @@ func (s *Server) init() error {
 		}
 	}
 
-	s.datanode.SetNodeID(dn.Params.DataNodeCfg.NodeID)
 	s.datanode.UpdateStateCode(internalpb.StateCode_Initializing)
 
 	if err := s.datanode.Init(); err != nil {
@@ -354,6 +354,14 @@ func (s *Server) Compaction(ctx context.Context, request *datapb.CompactionPlan)
 	return s.datanode.Compaction(ctx, request)
 }
 
-func (s *Server) Import(ctx context.Context, request *datapb.ImportTask) (*commonpb.Status, error) {
+func (s *Server) Import(ctx context.Context, request *datapb.ImportTaskRequest) (*commonpb.Status, error) {
 	return s.datanode.Import(ctx, request)
+}
+
+func (s *Server) ResendSegmentStats(ctx context.Context, request *datapb.ResendSegmentStatsRequest) (*datapb.ResendSegmentStatsResponse, error) {
+	return s.datanode.ResendSegmentStats(ctx, request)
+}
+
+func (s *Server) AddSegment(ctx context.Context, request *datapb.AddSegmentRequest) (*commonpb.Status, error) {
+	return s.datanode.AddSegment(ctx, request)
 }

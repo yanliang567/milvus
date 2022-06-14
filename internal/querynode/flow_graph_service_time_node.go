@@ -18,11 +18,13 @@ package querynode
 
 import (
 	"fmt"
+	"reflect"
 
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
+	"github.com/milvus-io/milvus/internal/util/tsoutil"
 )
 
 // serviceTimeNode is one of the nodes in delta flow graph
@@ -40,8 +42,6 @@ func (stNode *serviceTimeNode) Name() string {
 
 // Operate handles input messages, to execute insert operations
 func (stNode *serviceTimeNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
-	//log.Debug("Do serviceTimeNode operation")
-
 	if len(in) != 1 {
 		log.Warn("Invalid operate message input in serviceTimeNode, input length = ", zap.Int("input node", len(in)))
 		return []Msg{}
@@ -49,7 +49,11 @@ func (stNode *serviceTimeNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 
 	serviceTimeMsg, ok := in[0].(*serviceTimeMsg)
 	if !ok {
-		log.Warn("type assertion failed for serviceTimeMsg")
+		if in[0] == nil {
+			log.Debug("type assertion failed for serviceTimeMsg because it's nil")
+		} else {
+			log.Warn("type assertion failed for serviceTimeMsg", zap.String("name", reflect.TypeOf(in[0]).Name()))
+		}
 		return []Msg{}
 	}
 
@@ -60,19 +64,16 @@ func (stNode *serviceTimeNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 	// update service time
 	err := stNode.tSafeReplica.setTSafe(stNode.vChannel, serviceTimeMsg.timeRange.timestampMax)
 	if err != nil {
-		log.Error("serviceTimeNode setTSafe failed",
-			zap.Any("collectionID", stNode.collectionID),
-			zap.Error(err),
-		)
+		// should not happen, QueryNode should addTSafe before start flow graph
+		panic(fmt.Errorf("serviceTimeNode setTSafe timeout, collectionID = %d, err = %s", stNode.collectionID, err))
 	}
-	//p, _ := tsoutil.ParseTS(serviceTimeMsg.timeRange.timestampMax)
-	//log.Debug("update tSafe:",
-	//	zap.Any("collectionID", stNode.collectionID),
-	//	zap.Any("tSafe", serviceTimeMsg.timeRange.timestampMax),
-	//	zap.Any("tSafe_p", p),
-	//	zap.Any("id", id),
-	//	zap.Any("channel", stNode.vChannel),
-	//)
+	p, _ := tsoutil.ParseTS(serviceTimeMsg.timeRange.timestampMax)
+	log.RatedDebug(10.0, "update tSafe:",
+		zap.Any("collectionID", stNode.collectionID),
+		zap.Any("tSafe", serviceTimeMsg.timeRange.timestampMax),
+		zap.Any("tSafe_p", p),
+		zap.Any("channel", stNode.vChannel),
+	)
 
 	return []Msg{}
 }

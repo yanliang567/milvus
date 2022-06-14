@@ -21,27 +21,27 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"path"
 	"strconv"
+	"sync/atomic"
 	"testing"
 
-	"github.com/milvus-io/milvus/internal/util/indexcgowrapper"
-
 	"github.com/stretchr/testify/assert"
-	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/internal/kv"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/etcdpb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
+	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/storage"
+	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/etcd"
+	"github.com/milvus-io/milvus/internal/util/indexcgowrapper"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
@@ -225,47 +225,6 @@ func genStorageBlob(collectionID UniqueID,
 	return binLogs, err
 }
 
-func saveSimpleBinLog(ctx context.Context, schema *schemapb.CollectionSchema, dataKV kv.DataKV) ([]*datapb.FieldBinlog, error) {
-	return saveBinLog(ctx, defaultCollectionID, defaultPartitionID, defaultSegmentID, defaultNumRowPerSegment, schema, dataKV)
-}
-
-func saveBinLog(ctx context.Context,
-	collectionID UniqueID,
-	partitionID UniqueID,
-	segmentID UniqueID,
-	msgLength int,
-	schema *schemapb.CollectionSchema,
-	dataKV kv.DataKV) ([]*datapb.FieldBinlog, error) {
-	binLogs, err := genStorageBlob(collectionID, partitionID, segmentID, msgLength, schema)
-	if err != nil {
-		return nil, err
-	}
-
-	log.Debug(".. [query coord unittest] Saving bin logs to MinIO ..", zap.Int("number", len(binLogs)))
-	kvs := make(map[string]string, len(binLogs))
-
-	// write insert binlog
-	fieldBinlog := make([]*datapb.FieldBinlog, 0)
-	for _, blob := range binLogs {
-		fieldID, err := strconv.ParseInt(blob.GetKey(), 10, 64)
-		log.Debug("[QueryCoord unittest] save binlog", zap.Int64("fieldID", fieldID))
-		if err != nil {
-			return nil, err
-		}
-
-		key := genKey(collectionID, partitionID, segmentID, fieldID)
-		kvs[key] = string(blob.Value[:])
-		fieldBinlog = append(fieldBinlog, &datapb.FieldBinlog{
-			FieldID: fieldID,
-			Binlogs: []*datapb.Binlog{{LogPath: key}},
-		})
-	}
-	log.Debug("[QueryCoord unittest] save binlog file to MinIO/S3")
-
-	err = dataKV.MultiSave(kvs)
-	return fieldBinlog, err
-}
-
 func genKey(collectionID, partitionID, segmentID UniqueID, fieldID int64) string {
 	ids := []string{
 		defaultKVRootPath,
@@ -409,10 +368,15 @@ func TestReloadClusterFromKV(t *testing.T) {
 		clusterSession := sessionutil.NewSession(context.Background(), Params.EtcdCfg.MetaRootPath, etcdCli)
 		clusterSession.Init(typeutil.QueryCoordRole, Params.QueryCoordCfg.Address, true, false)
 		clusterSession.Register()
-		factory := msgstream.NewPmsFactory()
+		factory := dependency.NewDefaultFactory(true)
 		handler, err := newChannelUnsubscribeHandler(ctx, kv, factory)
 		assert.Nil(t, err)
-		meta, err := newMeta(ctx, kv, factory, nil)
+		id := UniqueID(rand.Int31())
+		idAllocator := func() (UniqueID, error) {
+			newID := atomic.AddInt64(&id, 1)
+			return newID, nil
+		}
+		meta, err := newMeta(ctx, kv, factory, idAllocator)
 		assert.Nil(t, err)
 
 		cluster := &queryNodeCluster{
@@ -456,19 +420,29 @@ func TestGrpcRequest(t *testing.T) {
 	clusterSession := sessionutil.NewSession(context.Background(), Params.EtcdCfg.MetaRootPath, etcdCli)
 	clusterSession.Init(typeutil.QueryCoordRole, Params.QueryCoordCfg.Address, true, false)
 	clusterSession.Register()
-	factory := msgstream.NewPmsFactory()
-	err = factory.Init(&Params)
+	factory := dependency.NewDefaultFactory(true)
 	assert.Nil(t, err)
 	idAllocator := func() (UniqueID, error) {
 		return 0, nil
 	}
 	meta, err := newMeta(baseCtx, kv, factory, idAllocator)
 	assert.Nil(t, err)
+	deltaChannelInfo := []*datapb.VchannelInfo{
+		{
+			CollectionID: defaultCollectionID,
+			ChannelName:  "by-dev-rootcoord-delta_1_2021v1",
+			SeekPosition: &internalpb.MsgPosition{
+				ChannelName: "by-dev-rootcoord-dml_1",
+			},
+		},
+	}
+	err = meta.setDeltaChannel(defaultCollectionID, deltaChannelInfo)
+	assert.Nil(t, err)
 
 	handler, err := newChannelUnsubscribeHandler(baseCtx, kv, factory)
 	assert.Nil(t, err)
 
-	cluster := &queryNodeCluster{
+	var cluster Cluster = &queryNodeCluster{
 		ctx:         baseCtx,
 		cancel:      cancel,
 		client:      kv,
@@ -480,7 +454,7 @@ func TestGrpcRequest(t *testing.T) {
 	}
 
 	t.Run("Test GetNodeInfoByIDWithNodeNotExist", func(t *testing.T) {
-		_, err := cluster.getNodeInfoByID(defaultQueryNodeID)
+		_, err := cluster.GetNodeInfoByID(defaultQueryNodeID)
 		assert.NotNil(t, err)
 	})
 
@@ -491,7 +465,7 @@ func TestGrpcRequest(t *testing.T) {
 			},
 			CollectionID: defaultCollectionID,
 		}
-		_, err = cluster.getSegmentInfoByNode(baseCtx, defaultQueryNodeID, getSegmentInfoReq)
+		_, err = cluster.GetSegmentInfoByNode(baseCtx, defaultQueryNodeID, getSegmentInfoReq)
 		assert.NotNil(t, err)
 	})
 
@@ -499,7 +473,7 @@ func TestGrpcRequest(t *testing.T) {
 	assert.Nil(t, err)
 	nodeSession := node.session
 	nodeID := node.queryNodeID
-	cluster.registerNode(baseCtx, nodeSession, nodeID, disConnect)
+	cluster.RegisterNode(baseCtx, nodeSession, nodeID, disConnect)
 	waitQueryNodeOnline(cluster, nodeID)
 
 	t.Run("Test GetComponentInfos", func(t *testing.T) {
@@ -509,9 +483,10 @@ func TestGrpcRequest(t *testing.T) {
 
 	t.Run("Test LoadSegments", func(t *testing.T) {
 		segmentLoadInfo := &querypb.SegmentLoadInfo{
-			SegmentID:    defaultSegmentID,
-			PartitionID:  defaultPartitionID,
-			CollectionID: defaultCollectionID,
+			SegmentID:     defaultSegmentID,
+			PartitionID:   defaultPartitionID,
+			CollectionID:  defaultCollectionID,
+			InsertChannel: "by-dev-rootcoord-dml_1_2021v1",
 		}
 		loadSegmentReq := &querypb.LoadSegmentsRequest{
 			DstNodeID:    nodeID,
@@ -519,7 +494,36 @@ func TestGrpcRequest(t *testing.T) {
 			Schema:       genDefaultCollectionSchema(false),
 			CollectionID: defaultCollectionID,
 		}
-		err := cluster.loadSegments(baseCtx, nodeID, loadSegmentReq)
+		err := cluster.LoadSegments(baseCtx, nodeID, loadSegmentReq)
+		assert.Equal(t, 0, len(loadSegmentReq.DeltaPositions))
+		assert.Nil(t, err)
+	})
+
+	t.Run("Test WatchDeletaChannel", func(t *testing.T) {
+		watchDeltaChannelReq := &querypb.WatchDeltaChannelsRequest{
+			CollectionID: defaultCollectionID,
+			Infos:        deltaChannelInfo,
+		}
+		err := cluster.WatchDeltaChannels(baseCtx, nodeID, watchDeltaChannelReq)
+		assert.Nil(t, err)
+		assert.Equal(t, true, cluster.HasWatchedDeltaChannel(baseCtx, nodeID, defaultCollectionID))
+	})
+
+	t.Run("Test LoadSegmentsAfterWatchDeltaChannel", func(t *testing.T) {
+		segmentLoadInfo := &querypb.SegmentLoadInfo{
+			SegmentID:     defaultSegmentID,
+			PartitionID:   defaultPartitionID,
+			CollectionID:  defaultCollectionID,
+			InsertChannel: "by-dev-rootcoord-dml_1_2021v1",
+		}
+		loadSegmentReq := &querypb.LoadSegmentsRequest{
+			DstNodeID:    nodeID,
+			Infos:        []*querypb.SegmentLoadInfo{segmentLoadInfo},
+			Schema:       genDefaultCollectionSchema(false),
+			CollectionID: defaultCollectionID,
+		}
+		err := cluster.LoadSegments(baseCtx, nodeID, loadSegmentReq)
+		assert.Equal(t, 1, len(loadSegmentReq.DeltaPositions))
 		assert.Nil(t, err)
 	})
 
@@ -530,31 +534,7 @@ func TestGrpcRequest(t *testing.T) {
 			PartitionIDs: []UniqueID{defaultPartitionID},
 			SegmentIDs:   []UniqueID{defaultSegmentID},
 		}
-		err := cluster.releaseSegments(baseCtx, nodeID, releaseSegmentReq)
-		assert.Nil(t, err)
-	})
-
-	t.Run("Test AddQueryChannel", func(t *testing.T) {
-		info := cluster.clusterMeta.getQueryChannelInfoByID(defaultCollectionID)
-		addQueryChannelReq := &querypb.AddQueryChannelRequest{
-			NodeID:             nodeID,
-			CollectionID:       defaultCollectionID,
-			QueryChannel:       info.QueryChannel,
-			QueryResultChannel: info.QueryResultChannel,
-		}
-		err = cluster.addQueryChannel(baseCtx, nodeID, addQueryChannelReq)
-		assert.Nil(t, err)
-	})
-
-	t.Run("Test RemoveQueryChannel", func(t *testing.T) {
-		info := cluster.clusterMeta.getQueryChannelInfoByID(defaultCollectionID)
-		removeQueryChannelReq := &querypb.RemoveQueryChannelRequest{
-			NodeID:             nodeID,
-			CollectionID:       defaultCollectionID,
-			QueryChannel:       info.QueryChannel,
-			QueryResultChannel: info.QueryResultChannel,
-		}
-		err = cluster.removeQueryChannel(baseCtx, nodeID, removeQueryChannelReq)
+		err := cluster.ReleaseSegments(baseCtx, nodeID, releaseSegmentReq)
 		assert.Nil(t, err)
 	})
 
@@ -565,7 +545,7 @@ func TestGrpcRequest(t *testing.T) {
 			},
 			CollectionID: defaultCollectionID,
 		}
-		_, err = cluster.getSegmentInfo(baseCtx, getSegmentInfoReq)
+		_, err = cluster.GetSegmentInfo(baseCtx, getSegmentInfoReq)
 		assert.Nil(t, err)
 	})
 
@@ -576,7 +556,7 @@ func TestGrpcRequest(t *testing.T) {
 			},
 			CollectionID: defaultCollectionID,
 		}
-		_, err = cluster.getSegmentInfoByNode(baseCtx, nodeID, getSegmentInfoReq)
+		_, err = cluster.GetSegmentInfoByNode(baseCtx, nodeID, getSegmentInfoReq)
 		assert.Nil(t, err)
 	})
 
@@ -589,7 +569,7 @@ func TestGrpcRequest(t *testing.T) {
 			},
 			CollectionID: defaultCollectionID,
 		}
-		_, err = cluster.getSegmentInfo(baseCtx, getSegmentInfoReq)
+		_, err = cluster.GetSegmentInfo(baseCtx, getSegmentInfoReq)
 		assert.NotNil(t, err)
 	})
 
@@ -600,14 +580,14 @@ func TestGrpcRequest(t *testing.T) {
 			},
 			CollectionID: defaultCollectionID,
 		}
-		_, err = cluster.getSegmentInfoByNode(baseCtx, nodeID, getSegmentInfoReq)
+		_, err = cluster.GetSegmentInfoByNode(baseCtx, nodeID, getSegmentInfoReq)
 		assert.NotNil(t, err)
 	})
 
 	node.getSegmentInfos = returnSuccessGetSegmentInfoResult
 
 	t.Run("Test GetNodeInfoByID", func(t *testing.T) {
-		res, err := cluster.getNodeInfoByID(nodeID)
+		res, err := cluster.GetNodeInfoByID(nodeID)
 		assert.Nil(t, err)
 		assert.NotNil(t, res)
 	})
@@ -615,13 +595,13 @@ func TestGrpcRequest(t *testing.T) {
 	node.getMetrics = returnFailedGetMetricsResult
 
 	t.Run("Test GetNodeInfoByIDFailed", func(t *testing.T) {
-		_, err := cluster.getNodeInfoByID(nodeID)
+		_, err := cluster.GetNodeInfoByID(nodeID)
 		assert.NotNil(t, err)
 	})
 
 	node.getMetrics = returnSuccessGetMetricsResult
 
-	cluster.stopNode(nodeID)
+	cluster.StopNode(nodeID)
 	t.Run("Test GetSegmentInfoByNodeAfterNodeStop", func(t *testing.T) {
 		getSegmentInfoReq := &querypb.GetSegmentInfoRequest{
 			Base: &commonpb.MsgBase{
@@ -629,7 +609,7 @@ func TestGrpcRequest(t *testing.T) {
 			},
 			CollectionID: defaultCollectionID,
 		}
-		_, err = cluster.getSegmentInfoByNode(baseCtx, nodeID, getSegmentInfoReq)
+		_, err = cluster.GetSegmentInfoByNode(baseCtx, nodeID, getSegmentInfoReq)
 		assert.NotNil(t, err)
 	})
 
@@ -647,9 +627,7 @@ func TestSetNodeState(t *testing.T) {
 	clusterSession := sessionutil.NewSession(context.Background(), Params.EtcdCfg.MetaRootPath, etcdCli)
 	clusterSession.Init(typeutil.QueryCoordRole, Params.QueryCoordCfg.Address, true, false)
 	clusterSession.Register()
-	factory := msgstream.NewPmsFactory()
-	err = factory.Init(&Params)
-	assert.Nil(t, err)
+	factory := dependency.NewDefaultFactory(true)
 	idAllocator := func() (UniqueID, error) {
 		return 0, nil
 	}
@@ -672,7 +650,7 @@ func TestSetNodeState(t *testing.T) {
 
 	node, err := startQueryNodeServer(baseCtx)
 	assert.Nil(t, err)
-	err = cluster.registerNode(baseCtx, node.session, node.queryNodeID, disConnect)
+	err = cluster.RegisterNode(baseCtx, node.session, node.queryNodeID, disConnect)
 	assert.Nil(t, err)
 	waitQueryNodeOnline(cluster, node.queryNodeID)
 
@@ -680,6 +658,7 @@ func TestSetNodeState(t *testing.T) {
 		CollectionID: defaultCollectionID,
 		DmChannel:    "test-dmChannel",
 		NodeIDLoaded: node.queryNodeID,
+		NodeIds:      []int64{node.queryNodeID},
 	}
 	err = meta.setDmChannelInfos([]*querypb.DmChannelWatchInfo{dmChannelWatchInfo})
 	assert.Nil(t, err)
@@ -690,7 +669,7 @@ func TestSetNodeState(t *testing.T) {
 	err = meta.setDeltaChannel(defaultCollectionID, []*datapb.VchannelInfo{deltaChannelInfo})
 	assert.Nil(t, err)
 
-	nodeInfo, err := cluster.getNodeInfoByID(node.queryNodeID)
+	nodeInfo, err := cluster.GetNodeInfoByID(node.queryNodeID)
 	assert.Nil(t, err)
 	cluster.setNodeState(node.queryNodeID, nodeInfo, offline)
 	assert.Equal(t, 1, len(handler.downNodeChan))

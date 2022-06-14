@@ -57,6 +57,9 @@ func NewClient(ctx context.Context, metaRoot string, etcdCli *clientv3.Client) (
 		grpcClient: &grpcclient.ClientBase{
 			ClientMaxRecvSize: ClientParams.ClientMaxRecvSize,
 			ClientMaxSendSize: ClientParams.ClientMaxSendSize,
+			DialTimeout:       ClientParams.DialTimeout,
+			KeepAliveTime:     ClientParams.KeepAliveTime,
+			KeepAliveTimeout:  ClientParams.KeepAliveTimeout,
 		},
 		sess: sess,
 	}
@@ -487,8 +490,22 @@ func (c *Client) DropVirtualChannel(ctx context.Context, req *datapb.DropVirtual
 	return ret.(*datapb.DropVirtualChannelResponse), err
 }
 
+// SetSegmentState sets the state of a given segment.
+func (c *Client) SetSegmentState(ctx context.Context, req *datapb.SetSegmentStateRequest) (*datapb.SetSegmentStateResponse, error) {
+	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(datapb.DataCoordClient).SetSegmentState(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*datapb.SetSegmentStateResponse), err
+}
+
 // Import data files(json, numpy, etc.) on MinIO/S3 storage, read and parse them into sealed segments
-func (c *Client) Import(ctx context.Context, req *datapb.ImportTask) (*datapb.ImportTaskResponse, error) {
+func (c *Client) Import(ctx context.Context, req *datapb.ImportTaskRequest) (*datapb.ImportTaskResponse, error) {
 	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
 		if !funcutil.CheckCtxValid(ctx) {
 			return nil, ctx.Err()
@@ -499,4 +516,60 @@ func (c *Client) Import(ctx context.Context, req *datapb.ImportTask) (*datapb.Im
 		return nil, err
 	}
 	return ret.(*datapb.ImportTaskResponse), err
+}
+
+// UpdateSegmentStatistics is the client side caller of UpdateSegmentStatistics.
+func (c *Client) UpdateSegmentStatistics(ctx context.Context, req *datapb.UpdateSegmentStatisticsRequest) (*commonpb.Status, error) {
+	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(datapb.DataCoordClient).UpdateSegmentStatistics(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*commonpb.Status), err
+}
+
+// AcquireSegmentLock acquire the reference lock of the segments.
+func (c *Client) AcquireSegmentLock(ctx context.Context, req *datapb.AcquireSegmentLockRequest) (*commonpb.Status, error) {
+	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(datapb.DataCoordClient).AcquireSegmentLock(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*commonpb.Status), err
+}
+
+// ReleaseSegmentLock release the reference lock of the segments.
+func (c *Client) ReleaseSegmentLock(ctx context.Context, req *datapb.ReleaseSegmentLockRequest) (*commonpb.Status, error) {
+	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(datapb.DataCoordClient).ReleaseSegmentLock(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*commonpb.Status), err
+}
+
+// AddSegment is the DataCoord client side code for AddSegment call.
+func (c *Client) AddSegment(ctx context.Context, req *datapb.AddSegmentRequest) (*commonpb.Status, error) {
+	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(datapb.DataCoordClient).AddSegment(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*commonpb.Status), err
 }

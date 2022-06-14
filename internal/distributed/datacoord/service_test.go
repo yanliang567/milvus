@@ -55,7 +55,12 @@ type MockDataCoord struct {
 	watchChannelsResp    *datapb.WatchChannelsResponse
 	getFlushStateResp    *milvuspb.GetFlushStateResponse
 	dropVChanResp        *datapb.DropVirtualChannelResponse
+	setSegmentStateResp  *datapb.SetSegmentStateResponse
 	importResp           *datapb.ImportTaskResponse
+	updateSegStatResp    *commonpb.Status
+	acquireSegLockResp   *commonpb.Status
+	releaseSegLockResp   *commonpb.Status
+	addSegmentResp       *commonpb.Status
 }
 
 func (m *MockDataCoord) Init() error {
@@ -165,8 +170,28 @@ func (m *MockDataCoord) DropVirtualChannel(ctx context.Context, req *datapb.Drop
 	return m.dropVChanResp, m.err
 }
 
-func (m *MockDataCoord) Import(ctx context.Context, req *datapb.ImportTask) (*datapb.ImportTaskResponse, error) {
+func (m *MockDataCoord) SetSegmentState(ctx context.Context, req *datapb.SetSegmentStateRequest) (*datapb.SetSegmentStateResponse, error) {
+	return m.setSegmentStateResp, m.err
+}
+
+func (m *MockDataCoord) Import(ctx context.Context, req *datapb.ImportTaskRequest) (*datapb.ImportTaskResponse, error) {
 	return m.importResp, m.err
+}
+
+func (m *MockDataCoord) UpdateSegmentStatistics(ctx context.Context, req *datapb.UpdateSegmentStatisticsRequest) (*commonpb.Status, error) {
+	return m.updateSegStatResp, m.err
+}
+
+func (m *MockDataCoord) AcquireSegmentLock(ctx context.Context, req *datapb.AcquireSegmentLockRequest) (*commonpb.Status, error) {
+	return m.acquireSegLockResp, m.err
+}
+
+func (m *MockDataCoord) ReleaseSegmentLock(ctx context.Context, req *datapb.ReleaseSegmentLockRequest) (*commonpb.Status, error) {
+	return m.releaseSegLockResp, m.err
+}
+
+func (m *MockDataCoord) AddSegment(ctx context.Context, req *datapb.AddSegmentRequest) (*commonpb.Status, error) {
+	return m.addSegmentResp, m.err
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -379,13 +404,66 @@ func Test_NewServer(t *testing.T) {
 		assert.NotNil(t, resp)
 	})
 
-	t.Run("Import", func(t *testing.T) {
+	t.Run("set segment state", func(t *testing.T) {
+		server.dataCoord = &MockDataCoord{
+			setSegmentStateResp: &datapb.SetSegmentStateResponse{},
+		}
+		resp, err := server.SetSegmentState(ctx, nil)
+		assert.Nil(t, err)
+		assert.NotNil(t, resp)
+	})
+
+	t.Run("import", func(t *testing.T) {
 		server.dataCoord = &MockDataCoord{
 			importResp: &datapb.ImportTaskResponse{
 				Status: &commonpb.Status{},
 			},
 		}
 		resp, err := server.Import(ctx, nil)
+		assert.Nil(t, err)
+		assert.NotNil(t, resp)
+	})
+
+	t.Run("update seg stat", func(t *testing.T) {
+		server.dataCoord = &MockDataCoord{
+			updateSegStatResp: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_Success,
+			},
+		}
+		resp, err := server.UpdateSegmentStatistics(ctx, nil)
+		assert.Nil(t, err)
+		assert.NotNil(t, resp)
+	})
+
+	t.Run("acquire segment reference lock", func(t *testing.T) {
+		server.dataCoord = &MockDataCoord{
+			acquireSegLockResp: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_Success,
+			},
+		}
+		resp, err := server.AcquireSegmentLock(ctx, nil)
+		assert.Nil(t, err)
+		assert.NotNil(t, resp)
+	})
+
+	t.Run("release segment reference lock", func(t *testing.T) {
+		server.dataCoord = &MockDataCoord{
+			releaseSegLockResp: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_Success,
+			},
+		}
+		resp, err := server.ReleaseSegmentLock(ctx, nil)
+		assert.Nil(t, err)
+		assert.NotNil(t, resp)
+	})
+
+	t.Run("add segment", func(t *testing.T) {
+		server.dataCoord = &MockDataCoord{
+			addSegmentResp: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_Success,
+			},
+		}
+		resp, err := server.AddSegment(ctx, nil)
 		assert.Nil(t, err)
 		assert.NotNil(t, resp)
 	})

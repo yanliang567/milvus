@@ -27,6 +27,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.uber.org/zap"
+
 	datanodeclient "github.com/milvus-io/milvus/internal/distributed/datanode/client"
 	rootcoordclient "github.com/milvus-io/milvus/internal/distributed/rootcoord/client"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
@@ -38,6 +43,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/logutil"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
@@ -46,14 +52,10 @@ import (
 	"github.com/milvus-io/milvus/internal/util/timerecord"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	"github.com/minio/minio-go/v7"
-	"github.com/minio/minio-go/v7/pkg/credentials"
-	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.uber.org/zap"
 )
 
 const (
-	connEtcdMaxRetryTime = 100000
+	connEtcdMaxRetryTime = 100
 	allPartitionID       = 0 // paritionID means no filtering
 )
 
@@ -93,8 +95,8 @@ var _ types.DataCoord = (*Server)(nil)
 
 var Params paramtable.ComponentParam
 
-// Server implements `types.Datacoord`
-// handles Data Cooridinator related jobs
+// Server implements `types.DataCoord`
+// handles Data Coordinator related jobs
 type Server struct {
 	ctx              context.Context
 	serverLoopCtx    context.Context
@@ -122,14 +124,18 @@ type Server struct {
 
 	metricsCacheManager *metricsinfo.MetricsCacheManager
 
-	flushCh   chan UniqueID
-	msFactory msgstream.Factory
+	flushCh chan UniqueID
+	factory dependency.Factory
 
-	session *sessionutil.Session
-	eventCh <-chan *sessionutil.SessionEvent
+	session   *sessionutil.Session
+	dnEventCh <-chan *sessionutil.SessionEvent
+	icEventCh <-chan *sessionutil.SessionEvent
+	qcEventCh <-chan *sessionutil.SessionEvent
 
 	dataNodeCreator        dataNodeCreatorFunc
 	rootCoordClientCreator rootCoordCreatorFunc
+
+	segReferManager *SegmentReferenceManager
 }
 
 // ServerHelper datacoord server injection helper
@@ -182,12 +188,12 @@ func SetSegmentManager(manager Manager) Option {
 }
 
 // CreateServer creates a `Server` instance
-func CreateServer(ctx context.Context, factory msgstream.Factory, opts ...Option) *Server {
+func CreateServer(ctx context.Context, factory dependency.Factory, opts ...Option) *Server {
 	rand.Seed(time.Now().UnixNano())
 	s := &Server{
 		ctx:                    ctx,
 		quitCh:                 make(chan struct{}),
-		msFactory:              factory,
+		factory:                factory,
 		flushCh:                make(chan UniqueID, 1024),
 		dataNodeCreator:        defaultDataNodeCreatorFunc,
 		rootCoordClientCreator: defaultRootCoordCreatorFunc,
@@ -239,14 +245,15 @@ func (s *Server) initSession() error {
 		return errors.New("failed to initialize session")
 	}
 	s.session.Init(typeutil.DataCoordRole, Params.DataCoordCfg.Address, true, true)
-	Params.DataCoordCfg.NodeID = s.session.ServerID
-	Params.SetLogger(Params.DataCoordCfg.NodeID)
+	Params.DataCoordCfg.SetNodeID(s.session.ServerID)
+	Params.SetLogger(Params.DataCoordCfg.GetNodeID())
 	return nil
 }
 
 // Init change server state to Initializing
 func (s *Server) Init() error {
 	atomic.StoreInt64(&s.isServing, ServerStateInitializing)
+	s.factory.Init(&Params)
 	return s.initSession()
 }
 
@@ -259,10 +266,6 @@ func (s *Server) Init() error {
 // 4. set server state to Healthy
 func (s *Server) Start() error {
 	var err error
-	err = s.msFactory.Init(&Params)
-	if err != nil {
-		return err
-	}
 	if err = s.initRootCoordClient(); err != nil {
 		return err
 	}
@@ -298,6 +301,13 @@ func (s *Server) Start() error {
 	atomic.StoreInt64(&s.isServing, ServerStateHealthy)
 	logutil.Logger(s.ctx).Debug("startup success")
 
+	// DataCoord (re)starts successfully and starts to collection segment stats
+	// data from all DataNode.
+	// This will prevent DataCoord from missing out any important segment stats
+	// data while offline.
+	log.Info("DataNode (re)starts successfully and re-collecting segment stats from DataNodes")
+	s.reCollectSegmentStats(s.ctx)
+
 	return nil
 }
 
@@ -307,7 +317,7 @@ func (s *Server) initCluster() error {
 	}
 
 	var err error
-	s.channelManager, err = NewChannelManager(s.kvClient, s.handler, withMsgstreamFactory(s.msFactory))
+	s.channelManager, err = NewChannelManager(s.kvClient, s.handler, withMsgstreamFactory(s.factory), withStateChecker())
 	if err != nil {
 		return err
 	}
@@ -343,38 +353,32 @@ func (s *Server) initGarbageCollection() error {
 	var cli *minio.Client
 	var err error
 	if Params.DataCoordCfg.EnableGarbageCollection {
+		var creds *credentials.Credentials
+		if Params.MinioCfg.UseIAM {
+			creds = credentials.NewIAM(Params.MinioCfg.IAMEndpoint)
+		} else {
+			creds = credentials.NewStaticV4(Params.MinioCfg.AccessKeyID, Params.MinioCfg.SecretAccessKey, "")
+		}
+		// TODO: We call minio.New in different places with same procedures to call several functions.
+		// We should abstract this to a focade function to avoid applying changes to only one place.
 		cli, err = minio.New(Params.MinioCfg.Address, &minio.Options{
-			Creds:  credentials.NewStaticV4(Params.MinioCfg.AccessKeyID, Params.MinioCfg.SecretAccessKey, ""),
+			Creds:  creds,
 			Secure: Params.MinioCfg.UseSSL,
 		})
 		if err != nil {
-			return err
-		}
-
-		checkBucketFn := func() error {
-			has, err := cli.BucketExists(context.TODO(), Params.MinioCfg.BucketName)
-			if err != nil {
-				return err
-			}
-			if !has {
-				err = cli.MakeBucket(context.TODO(), Params.MinioCfg.BucketName, minio.MakeBucketOptions{})
-				if err != nil {
-					return err
-				}
-			}
-			return nil
+			return fmt.Errorf("failed to create minio client: %v", err)
 		}
 		// retry times shall be two, just to prevent
 		// 1. bucket not exists
 		// 2. bucket is created by other componnent
 		// 3. datacoord try to create but failed with bucket already exists error
-		err = retry.Do(s.ctx, checkBucketFn, retry.Attempts(2))
+		err = retry.Do(s.ctx, getCheckBucketFn(cli), retry.Attempts(2))
 		if err != nil {
 			return err
 		}
 	}
 
-	s.garbageCollector = newGarbageCollector(s.meta, GcOption{
+	s.garbageCollector = newGarbageCollector(s.meta, s.segReferManager, GcOption{
 		cli:        cli,
 		enabled:    Params.DataCoordCfg.EnableGarbageCollection,
 		bucketName: Params.MinioCfg.BucketName,
@@ -385,6 +389,23 @@ func (s *Server) initGarbageCollection() error {
 		dropTolerance:    Params.DataCoordCfg.GCDropTolerance,
 	})
 	return nil
+}
+
+// here we use variable for test convenience
+var getCheckBucketFn = func(cli *minio.Client) func() error {
+	return func() error {
+		has, err := cli.BucketExists(context.TODO(), Params.MinioCfg.BucketName)
+		if err != nil {
+			return err
+		}
+		if !has {
+			err = cli.MakeBucket(context.TODO(), Params.MinioCfg.BucketName, minio.MakeBucketOptions{})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 }
 
 func (s *Server) initServiceDiscovery() error {
@@ -404,11 +425,34 @@ func (s *Server) initServiceDiscovery() error {
 		datanodes = append(datanodes, info)
 	}
 
-	s.cluster.Startup(datanodes)
+	s.cluster.Startup(s.ctx, datanodes)
 
 	// TODO implement rewatch logic
-	s.eventCh = s.session.WatchServices(typeutil.DataNodeRole, rev+1, nil)
-	return nil
+	s.dnEventCh = s.session.WatchServices(typeutil.DataNodeRole, rev+1, nil)
+
+	icSessions, icRevision, err := s.session.GetSessions(typeutil.IndexCoordRole)
+	if err != nil {
+		log.Error("DataCoord get IndexCoord session failed", zap.Error(err))
+		return err
+	}
+	serverIDs := make([]UniqueID, 0, len(icSessions))
+	for _, session := range icSessions {
+		serverIDs = append(serverIDs, session.ServerID)
+	}
+	s.icEventCh = s.session.WatchServices(typeutil.IndexCoordRole, icRevision+1, nil)
+
+	qcSessions, qcRevision, err := s.session.GetSessions(typeutil.QueryCoordRole)
+	if err != nil {
+		log.Error("DataCoord get QueryCoord session failed", zap.Error(err))
+		return err
+	}
+	for _, session := range qcSessions {
+		serverIDs = append(serverIDs, session.ServerID)
+	}
+	s.qcEventCh = s.session.WatchServices(typeutil.QueryCoordRole, qcRevision+1, nil)
+
+	s.segReferManager, err = NewSegmentReferenceManager(s.kvClient, serverIDs)
+	return err
 }
 
 func (s *Server) startSegmentManager() {
@@ -443,7 +487,7 @@ func (s *Server) startServerLoop() {
 // startDataNodeTtLoop start a goroutine to recv data node tt msg from msgstream
 // tt msg stands for the currently consumed timestamp for each channel
 func (s *Server) startDataNodeTtLoop(ctx context.Context) {
-	ttMsgStream, err := s.msFactory.NewMsgStream(ctx)
+	ttMsgStream, err := s.factory.NewMsgStream(ctx)
 	if err != nil {
 		log.Error("DataCoord failed to create timetick channel", zap.Error(err))
 		return
@@ -519,7 +563,7 @@ func (s *Server) handleTimetickMessage(ctx context.Context, ttMsg *msgstream.Dat
 	}
 
 	utcT, _ := tsoutil.ParseHybridTs(ts)
-	metrics.DataCoordSyncUTC.WithLabelValues().Set(float64(utcT))
+	metrics.DataCoordSyncEpoch.WithLabelValues(ch).Set(float64(utcT))
 
 	s.updateSegmentStatistics(ttMsg.GetSegmentsStats())
 
@@ -540,7 +584,9 @@ func (s *Server) handleTimetickMessage(ctx context.Context, ttMsg *msgstream.Dat
 		return nil
 	}
 
-	log.Info("flush segments", zap.Int64s("segmentIDs", flushableIDs), zap.Int("markSegments count", len(staleSegments)))
+	log.Info("start flushing segments",
+		zap.Int64s("segment IDs", flushableIDs),
+		zap.Int("# of stale/mark segments", len(staleSegments)))
 
 	s.setLastFlushTime(flushableSegments)
 	s.setLastFlushTime(staleSegments)
@@ -620,7 +666,7 @@ func (s *Server) watchService(ctx context.Context) {
 		case <-ctx.Done():
 			log.Info("watch service shutdown")
 			return
-		case event, ok := <-s.eventCh:
+		case event, ok := <-s.dnEventCh:
 			if !ok {
 				// ErrCompacted in handled inside SessionWatcher
 				// So there is some other error occurred, closing DataCoord server
@@ -640,6 +686,56 @@ func (s *Server) watchService(ctx context.Context) {
 					}
 				}()
 				return
+			}
+		case event, ok := <-s.icEventCh:
+			if !ok {
+				// ErrCompacted in handled inside SessionWatcher
+				// So there is some other error occurred, closing DataCoord server
+				logutil.Logger(s.ctx).Error("watch service channel closed", zap.Int64("serverID", s.session.ServerID))
+				go s.Stop()
+				if s.session.TriggerKill {
+					if p, err := os.FindProcess(os.Getpid()); err == nil {
+						p.Signal(syscall.SIGINT)
+					}
+				}
+				return
+			}
+			switch event.EventType {
+			case sessionutil.SessionAddEvent:
+				log.Info("there is a new IndexCoord online", zap.Int64("serverID", event.Session.ServerID))
+
+			case sessionutil.SessionDelEvent:
+				log.Warn("there is IndexCoord offline", zap.Int64("serverID", event.Session.ServerID))
+				if err := retry.Do(ctx, func() error {
+					return s.segReferManager.ReleaseSegmentsLockByNodeID(event.Session.ServerID)
+				}, retry.Attempts(100)); err != nil {
+					panic(err)
+				}
+			}
+		case event, ok := <-s.qcEventCh:
+			if !ok {
+				// ErrCompacted in handled inside SessionWatcher
+				// So there is some other error occurred, closing DataCoord server
+				logutil.Logger(s.ctx).Error("watch service channel closed", zap.Int64("serverID", s.session.ServerID))
+				go s.Stop()
+				if s.session.TriggerKill {
+					if p, err := os.FindProcess(os.Getpid()); err == nil {
+						p.Signal(syscall.SIGINT)
+					}
+				}
+				return
+			}
+			switch event.EventType {
+			case sessionutil.SessionAddEvent:
+				log.Info("there is a new QueryCoord online", zap.Int64("serverID", event.Session.ServerID))
+
+			case sessionutil.SessionDelEvent:
+				log.Warn("there is QueryCoord offline", zap.Int64("serverID", event.Session.ServerID))
+				if err := retry.Do(ctx, func() error {
+					return s.segReferManager.ReleaseSegmentsLockByNodeID(event.Session.ServerID)
+				}, retry.Attempts(100)); err != nil {
+					panic(err)
+				}
 			}
 		}
 	}
@@ -815,7 +911,7 @@ func (s *Server) loadCollectionFromRootCoord(ctx context.Context, collectionID i
 	resp, err := s.rootCoordClient.DescribeCollection(ctx, &milvuspb.DescribeCollectionRequest{
 		Base: &commonpb.MsgBase{
 			MsgType:  commonpb.MsgType_DescribeCollection,
-			SourceID: Params.DataCoordCfg.NodeID,
+			SourceID: Params.DataCoordCfg.GetNodeID(),
 		},
 		DbName:       "",
 		CollectionID: collectionID,
@@ -828,7 +924,7 @@ func (s *Server) loadCollectionFromRootCoord(ctx context.Context, collectionID i
 			MsgType:   commonpb.MsgType_ShowPartitions,
 			MsgID:     0,
 			Timestamp: 0,
-			SourceID:  Params.DataCoordCfg.NodeID,
+			SourceID:  Params.DataCoordCfg.GetNodeID(),
 		},
 		DbName:         "",
 		CollectionName: resp.Schema.Name,
@@ -847,4 +943,17 @@ func (s *Server) loadCollectionFromRootCoord(ctx context.Context, collectionID i
 	}
 	s.meta.AddCollection(collInfo)
 	return nil
+}
+
+func (s *Server) reCollectSegmentStats(ctx context.Context) {
+	if s.channelManager == nil {
+		log.Error("null channel manager found, which should NOT happen in non-testing environment")
+		return
+	}
+	nodes := s.channelManager.store.GetNodes()
+	log.Info("re-collecting segment stats from DataNodes",
+		zap.Int64s("DataNode IDs", nodes))
+	for _, node := range nodes {
+		s.cluster.ReCollectSegmentStats(ctx, node)
+	}
 }

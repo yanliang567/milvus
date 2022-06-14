@@ -40,9 +40,24 @@ func TestComponentParam(t *testing.T) {
 		t.Logf("default index name = %s", Params.DefaultIndexName)
 
 		assert.Equal(t, Params.RetentionDuration, int64(DefaultRetentionDuration))
+		t.Logf("default retention duration = %d", Params.RetentionDuration)
+
+		assert.Equal(t, int64(Params.EntityExpirationTTL), int64(-1))
+		t.Logf("default entity expiration = %d", Params.EntityExpirationTTL)
+
+		// test the case coommo
+		Params.Base.Save("common.entityExpiration", "50")
+		Params.initEntityExpiration()
+		assert.Equal(t, int64(Params.EntityExpirationTTL.Seconds()), int64(DefaultRetentionDuration))
 
 		assert.NotEqual(t, Params.SimdType, "")
 		t.Logf("knowhere simd type = %s", Params.SimdType)
+
+		assert.Equal(t, Params.IndexSliceSize, int64(DefaultIndexSliceSize))
+		t.Logf("knowhere index slice size = %d", Params.IndexSliceSize)
+
+		assert.Equal(t, Params.GracefulTime, int64(DefaultGracefulTime))
+		t.Logf("default grafeful time = %d", Params.GracefulTime)
 
 		// -- proxy --
 		assert.Equal(t, Params.ProxySubName, "by-dev-proxy")
@@ -100,9 +115,16 @@ func TestComponentParam(t *testing.T) {
 
 		assert.NotEqual(t, Params.MaxPartitionNum, 0)
 		t.Logf("master MaxPartitionNum = %d", Params.MaxPartitionNum)
-
 		assert.NotEqual(t, Params.MinSegmentSizeToEnableIndex, 0)
 		t.Logf("master MinSegmentSizeToEnableIndex = %d", Params.MinSegmentSizeToEnableIndex)
+		assert.NotEqual(t, Params.ImportTaskExpiration, 0)
+		t.Logf("master ImportTaskExpiration = %f", Params.ImportTaskExpiration)
+		assert.NotEqual(t, Params.ImportTaskRetention, 0)
+		t.Logf("master ImportTaskRetention = %f", Params.ImportTaskRetention)
+		assert.NotEqual(t, Params.ImportIndexCheckInterval, 0)
+		t.Logf("master ImportIndexCheckInterval = %f", Params.ImportIndexCheckInterval)
+		assert.NotEqual(t, Params.ImportIndexWaitLimit, 0)
+		t.Logf("master ImportIndexWaitLimit = %f", Params.ImportIndexWaitLimit)
 
 		Params.CreatedTime = time.Now()
 		Params.UpdatedTime = time.Now()
@@ -144,6 +166,21 @@ func TestComponentParam(t *testing.T) {
 		shouldPanic(t, "proxy.maxNameLength", func() {
 			Params.Base.Save("proxy.maxNameLength", "abc")
 			Params.initMaxNameLength()
+		})
+
+		shouldPanic(t, "proxy.maxUsernameLength", func() {
+			Params.Base.Save("proxy.maxUsernameLength", "abc")
+			Params.initMaxUsernameLength()
+		})
+
+		shouldPanic(t, "proxy.minPasswordLength", func() {
+			Params.Base.Save("proxy.minPasswordLength", "abc")
+			Params.initMinPasswordLength()
+		})
+
+		shouldPanic(t, "proxy.maxPasswordLength", func() {
+			Params.Base.Save("proxy.maxPasswordLength", "abc")
+			Params.initMaxPasswordLength()
 		})
 
 		shouldPanic(t, "proxy.maxFieldNum", func() {
@@ -188,32 +225,67 @@ func TestComponentParam(t *testing.T) {
 		interval := Params.StatsPublishInterval
 		assert.Equal(t, 1000, interval)
 
-		bufSize := Params.SearchReceiveBufSize
-		assert.Equal(t, int64(512), bufSize)
-
-		bufSize = Params.SearchResultReceiveBufSize
-		assert.Equal(t, int64(64), bufSize)
-
-		bufSize = Params.SearchPulsarBufSize
-		assert.Equal(t, int64(512), bufSize)
-
 		length := Params.FlowGraphMaxQueueLength
 		assert.Equal(t, int32(1024), length)
 
 		maxParallelism := Params.FlowGraphMaxParallelism
 		assert.Equal(t, int32(1024), maxParallelism)
+
+		// test query side config
+		chunkRows := Params.ChunkRows
+		assert.Equal(t, int64(32768), chunkRows)
+
+		nlist := Params.SmallIndexNlist
+		assert.Equal(t, int64(256), nlist)
+
+		nprobe := Params.SmallIndexNProbe
+		assert.Equal(t, int64(16), nprobe)
+
+		assert.Equal(t, true, Params.GroupEnabled)
+		assert.Equal(t, int32(10240), Params.MaxReceiveChanSize)
+		assert.Equal(t, int32(10240), Params.MaxUnsolvedQueueSize)
+		assert.Equal(t, int64(1000), Params.MaxGroupNQ)
+		assert.Equal(t, 10.0, Params.TopKMergeRatio)
+
+		// test small indexNlist/NProbe default
+		Params.Base.Remove("queryNode.segcore.smallIndex.nlist")
+		Params.Base.Remove("queryNode.segcore.smallIndex.nprobe")
+		Params.Base.Save("queryNode.segcore.chunkRows", "8192")
+		Params.initSmallIndexParams()
+		chunkRows = Params.ChunkRows
+		assert.Equal(t, int64(8192), chunkRows)
+
+		nlist = Params.SmallIndexNlist
+		assert.Equal(t, int64(128), nlist)
+
+		nprobe = Params.SmallIndexNProbe
+		assert.Equal(t, int64(8), nprobe)
+
+		Params.Base.Remove("queryNode.segcore.smallIndex.nlist")
+		Params.Base.Remove("queryNode.segcore.smallIndex.nprobe")
+		Params.Base.Save("queryNode.segcore.chunkRows", "64")
+		Params.initSmallIndexParams()
+		chunkRows = Params.ChunkRows
+		assert.Equal(t, int64(1024), chunkRows)
+
+		nlist = Params.SmallIndexNlist
+		assert.Equal(t, int64(64), nlist)
+
+		nprobe = Params.SmallIndexNProbe
+		assert.Equal(t, int64(4), nprobe)
 	})
 
 	t.Run("test dataCoordConfig", func(t *testing.T) {
-		//Params := CParams.DataCoordCfg
+		Params := CParams.DataCoordCfg
+		assert.Equal(t, 24*60*60*time.Second, Params.SegmentMaxLifetime)
 	})
 
 	t.Run("test dataNodeConfig", func(t *testing.T) {
 		Params := CParams.DataNodeCfg
 
-		Params.NodeID = 2
+		Params.SetNodeID(2)
 
-		id := Params.NodeID
+		id := Params.GetNodeID()
 		t.Logf("NodeID: %d", id)
 
 		alias := Params.Alias
@@ -267,7 +339,7 @@ func TestComponentParam(t *testing.T) {
 
 		t.Logf("Port: %v", Params.Port)
 
-		t.Logf("NodeID: %v", Params.NodeID)
+		t.Logf("NodeID: %v", Params.GetNodeID())
 
 		t.Logf("Alias: %v", Params.Alias)
 

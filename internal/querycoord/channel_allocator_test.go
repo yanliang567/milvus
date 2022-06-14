@@ -18,6 +18,8 @@ package querycoord
 
 import (
 	"context"
+	"math/rand"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -41,9 +43,14 @@ func TestShuffleChannelsToQueryNode(t *testing.T) {
 	clusterSession := sessionutil.NewSession(context.Background(), Params.EtcdCfg.MetaRootPath, etcdCli)
 	clusterSession.Init(typeutil.QueryCoordRole, Params.QueryCoordCfg.Address, true, false)
 	clusterSession.Register()
-	meta, err := newMeta(baseCtx, kv, nil, nil)
+	id := UniqueID(rand.Int31())
+	idAllocator := func() (UniqueID, error) {
+		newID := atomic.AddInt64(&id, 1)
+		return newID, nil
+	}
+	meta, err := newMeta(baseCtx, kv, nil, idAllocator)
 	assert.Nil(t, err)
-	cluster := &queryNodeCluster{
+	var cluster Cluster = &queryNodeCluster{
 		ctx:         baseCtx,
 		cancel:      cancel,
 		client:      kv,
@@ -73,17 +80,17 @@ func TestShuffleChannelsToQueryNode(t *testing.T) {
 	}
 	reqs := []*querypb.WatchDmChannelsRequest{firstReq, secondReq}
 
-	err = shuffleChannelsToQueryNode(baseCtx, reqs, cluster, meta, false, nil)
+	err = shuffleChannelsToQueryNode(baseCtx, reqs, cluster, meta, false, nil, nil, -1)
 	assert.NotNil(t, err)
 
 	node, err := startQueryNodeServer(baseCtx)
 	assert.Nil(t, err)
 	nodeSession := node.session
 	nodeID := node.queryNodeID
-	cluster.registerNode(baseCtx, nodeSession, nodeID, disConnect)
+	cluster.RegisterNode(baseCtx, nodeSession, nodeID, disConnect)
 	waitQueryNodeOnline(cluster, nodeID)
 
-	err = shuffleChannelsToQueryNode(baseCtx, reqs, cluster, meta, false, nil)
+	err = shuffleChannelsToQueryNode(baseCtx, reqs, cluster, meta, false, nil, nil, -1)
 	assert.Nil(t, err)
 
 	assert.Equal(t, nodeID, firstReq.NodeID)

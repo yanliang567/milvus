@@ -41,9 +41,12 @@ const (
 	maxBloomFalsePositive float64 = 0.005
 )
 
-type PrimaryKey = storage.PrimaryKey
-type Int64PrimaryKey = storage.Int64PrimaryKey
-type StringPrimaryKey = storage.StringPrimaryKey
+type primaryKey = storage.PrimaryKey
+type int64PrimaryKey = storage.Int64PrimaryKey
+type varCharPrimaryKey = storage.VarCharPrimaryKey
+
+var newInt64PrimaryKey = storage.NewInt64PrimaryKey
+var newVarCharPrimaryKey = storage.NewVarCharPrimaryKey
 
 // Replica is DataNode unique replication
 type Replica interface {
@@ -52,6 +55,7 @@ type Replica interface {
 	getCollectionAndPartitionID(segID UniqueID) (collID, partitionID UniqueID, err error)
 
 	listAllSegmentIDs() []UniqueID
+	listNotFlushedSegmentIDs() []UniqueID
 	addNewSegment(segID, collID, partitionID UniqueID, channelName string, startPos, endPos *internalpb.MsgPosition) error
 	addNormalSegment(segID, collID, partitionID UniqueID, channelName string, numOfRows int64, statsBinlog []*datapb.FieldBinlog, cp *segmentCheckPoint, recoverTs Timestamp) error
 	filterSegments(channelName string, partitionID UniqueID) []*Segment
@@ -90,8 +94,8 @@ type Segment struct {
 
 	pkFilter *bloom.BloomFilter //  bloom filter of pk inside a segment
 	// TODO silverxia, needs to change to interface to support `string` type PK
-	minPK PrimaryKey //	minimal pk value, shortcut for checking whether a pk is inside this segment
-	maxPK PrimaryKey //  maximal pk value, same above
+	minPK primaryKey //	minimal pk value, shortcut for checking whether a pk is inside this segment
+	maxPK primaryKey //  maximal pk value, same above
 }
 
 // SegmentReplica is the data replication of persistent data in datanode.
@@ -110,7 +114,7 @@ type SegmentReplica struct {
 	chunkManager storage.ChunkManager
 }
 
-func (s *Segment) updatePk(pk PrimaryKey) error {
+func (s *Segment) updatePk(pk primaryKey) error {
 	if s.minPK == nil {
 		s.minPK = pk
 	} else if s.minPK.GT(pk) {
@@ -131,9 +135,7 @@ func (s *Segment) updatePKRange(ids storage.FieldData) error {
 	case *storage.Int64FieldData:
 		buf := make([]byte, 8)
 		for _, pk := range pks.Data {
-			id := &Int64PrimaryKey{
-				Value: pk,
-			}
+			id := newInt64PrimaryKey(pk)
 			err := s.updatePk(id)
 			if err != nil {
 				return err
@@ -143,14 +145,12 @@ func (s *Segment) updatePKRange(ids storage.FieldData) error {
 		}
 	case *storage.StringFieldData:
 		for _, pk := range pks.Data {
-			id := &StringPrimaryKey{
-				Value: pk,
-			}
+			id := newVarCharPrimaryKey(pk)
 			err := s.updatePk(id)
 			if err != nil {
 				return err
 			}
-			s.pkFilter.Add([]byte(pk))
+			s.pkFilter.AddString(pk)
 		}
 	default:
 		//TODO::
@@ -227,7 +227,7 @@ func (replica *SegmentReplica) normal2FlushedSegment(segID UniqueID) {
 	replica.flushedSegments[segID] = &seg
 
 	delete(replica.normalSegments, segID)
-	metrics.DataNodeNumUnflushedSegments.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.NodeID)).Dec()
+	metrics.DataNodeNumUnflushedSegments.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID())).Dec()
 }
 
 func (replica *SegmentReplica) getCollectionAndPartitionID(segID UniqueID) (collID, partitionID UniqueID, err error) {
@@ -319,7 +319,7 @@ func (replica *SegmentReplica) filterSegments(channelName string, partitionID Un
 	results := make([]*Segment, 0)
 
 	isMatched := func(segment *Segment, chanName string, partID UniqueID) bool {
-		return segment.channelName == chanName && (partID == common.InvalidFieldID || segment.partitionID == partID)
+		return segment.channelName == chanName && (partID == common.InvalidPartitionID || segment.partitionID == partID)
 	}
 	for _, seg := range replica.newSegments {
 		if isMatched(seg, channelName, partitionID) {
@@ -818,6 +818,23 @@ func (replica *SegmentReplica) listAllSegmentIDs() []UniqueID {
 	}
 
 	for _, seg := range replica.flushedSegments {
+		segIDs = append(segIDs, seg.segmentID)
+	}
+
+	return segIDs
+}
+
+func (replica *SegmentReplica) listNotFlushedSegmentIDs() []UniqueID {
+	replica.segMu.RLock()
+	defer replica.segMu.RUnlock()
+
+	var segIDs []UniqueID
+
+	for _, seg := range replica.newSegments {
+		segIDs = append(segIDs, seg.segmentID)
+	}
+
+	for _, seg := range replica.normalSegments {
 		segIDs = append(segIDs, seg.segmentID)
 	}
 

@@ -18,13 +18,17 @@ package querycoord
 
 import (
 	"context"
+	"errors"
+	"math/rand"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
-	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
+	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/etcd"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
@@ -39,8 +43,14 @@ func TestShuffleSegmentsToQueryNode(t *testing.T) {
 	kv := etcdkv.NewEtcdKV(etcdCli, Params.EtcdCfg.MetaRootPath)
 	clusterSession := sessionutil.NewSession(context.Background(), Params.EtcdCfg.MetaRootPath, etcdCli)
 	clusterSession.Init(typeutil.QueryCoordRole, Params.QueryCoordCfg.Address, true, false)
-	factory := msgstream.NewPmsFactory()
-	meta, err := newMeta(baseCtx, kv, factory, nil)
+	factory := dependency.NewDefaultFactory(true) //msgstream.NewPmsFactory()
+
+	id := UniqueID(rand.Int31())
+	idAllocator := func() (UniqueID, error) {
+		newID := atomic.AddInt64(&id, 1)
+		return newID, nil
+	}
+	meta, err := newMeta(baseCtx, kv, factory, idAllocator)
 	assert.Nil(t, err)
 	handler, err := newChannelUnsubscribeHandler(baseCtx, kv, factory)
 	assert.Nil(t, err)
@@ -83,7 +93,7 @@ func TestShuffleSegmentsToQueryNode(t *testing.T) {
 	reqs := []*querypb.LoadSegmentsRequest{firstReq, secondReq}
 
 	t.Run("Test shuffleSegmentsWithoutQueryNode", func(t *testing.T) {
-		err = shuffleSegmentsToQueryNode(baseCtx, reqs, cluster, meta, false, nil, nil)
+		err = shuffleSegmentsToQueryNode(baseCtx, reqs, cluster, meta, false, nil, nil, -1)
 		assert.NotNil(t, err)
 	})
 
@@ -91,11 +101,11 @@ func TestShuffleSegmentsToQueryNode(t *testing.T) {
 	assert.Nil(t, err)
 	node1Session := node1.session
 	node1ID := node1.queryNodeID
-	cluster.registerNode(baseCtx, node1Session, node1ID, disConnect)
+	cluster.RegisterNode(baseCtx, node1Session, node1ID, disConnect)
 	waitQueryNodeOnline(cluster, node1ID)
 
 	t.Run("Test shuffleSegmentsToQueryNode", func(t *testing.T) {
-		err = shuffleSegmentsToQueryNode(baseCtx, reqs, cluster, meta, false, nil, nil)
+		err = shuffleSegmentsToQueryNode(baseCtx, reqs, cluster, meta, false, nil, nil, -1)
 		assert.Nil(t, err)
 
 		assert.Equal(t, node1ID, firstReq.DstNodeID)
@@ -106,24 +116,62 @@ func TestShuffleSegmentsToQueryNode(t *testing.T) {
 	assert.Nil(t, err)
 	node2Session := node2.session
 	node2ID := node2.queryNodeID
-	cluster.registerNode(baseCtx, node2Session, node2ID, disConnect)
+	cluster.RegisterNode(baseCtx, node2Session, node2ID, disConnect)
 	waitQueryNodeOnline(cluster, node2ID)
-	cluster.stopNode(node1ID)
+	cluster.StopNode(node1ID)
 
 	t.Run("Test shuffleSegmentsToQueryNodeV2", func(t *testing.T) {
-		err = shuffleSegmentsToQueryNodeV2(baseCtx, reqs, cluster, meta, false, nil, nil)
+		err = shuffleSegmentsToQueryNodeV2(baseCtx, reqs, cluster, meta, false, nil, nil, -1)
 		assert.Nil(t, err)
 
 		assert.Equal(t, node2ID, firstReq.DstNodeID)
 		assert.Equal(t, node2ID, secondReq.DstNodeID)
 
-		err = shuffleSegmentsToQueryNodeV2(baseCtx, reqs, cluster, meta, true, nil, nil)
+		err = shuffleSegmentsToQueryNodeV2(baseCtx, reqs, cluster, meta, true, nil, nil, -1)
 		assert.Nil(t, err)
 
 		assert.Equal(t, node2ID, firstReq.DstNodeID)
 		assert.Equal(t, node2ID, secondReq.DstNodeID)
 	})
 
+	cluster.StopNode(node2ID)
+
+	t.Run("Test shuffleSegmentsToQueryNodeV2 ctx", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		err = shuffleSegmentsToQueryNodeV2(ctx, reqs, cluster, meta, true, nil, nil, -1)
+		assert.Error(t, err)
+
+		assert.True(t, errors.Is(err, context.Canceled))
+	})
+
 	err = removeAllSession()
 	assert.Nil(t, err)
+}
+
+func Test_waitWithContext(t *testing.T) {
+	t.Run("normal wait", func(t *testing.T) {
+		ctx := context.Background()
+
+		err := waitWithContext(ctx, time.Millisecond)
+		assert.NoError(t, err)
+	})
+
+	t.Run("context canceled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err := waitWithContext(ctx, time.Second)
+		assert.Error(t, err)
+		assert.True(t, errors.Is(err, context.Canceled))
+	})
+
+	t.Run("context deadline", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+		defer cancel()
+
+		err := waitWithContext(ctx, time.Second)
+		assert.Error(t, err)
+		assert.True(t, errors.Is(err, context.DeadlineExceeded))
+	})
 }

@@ -12,6 +12,8 @@ default_top_k = 10
 default_nq = 2
 default_limit = 10
 default_search_params = {"metric_type": "L2", "params": {"nprobe": 10}}
+default_search_ip_params = {"metric_type": "IP", "params": {"nprobe": 10}}
+default_search_binary_params = {"metric_type": "JACCARD", "params": {"nprobe": 10}}
 default_index = {"index_type": "IVF_SQ8", "metric_type": "L2", "params": {"nlist": 64}}
 default_binary_index = {"index_type": "BIN_IVF_FLAT", "params": {"nlist": 128}, "metric_type": "JACCARD"}
 max_top_k = 16384
@@ -26,13 +28,14 @@ default_int32_field_name = "int32"
 default_int64_field_name = "int64"
 default_float_field_name = "float"
 default_double_field_name = "double"
-default_string_field_name = "string"
+default_string_field_name = "varchar"
 default_float_vec_field_name = "float_vector"
 another_float_vec_field_name = "float_vector1"
 default_binary_vec_field_name = "binary_vector"
 default_partition_name = "_default"
 default_tag = "1970_01_01"
 row_count = "row_count"
+default_length = 65535
 default_desc = ""
 default_collection_desc = "default collection"
 default_index_name = "default_index_name"
@@ -50,6 +53,7 @@ compact_delta_ratio_reciprocal = 5  # compact_delta_binlog_ratio is 0.2
 compact_retention_duration = 40  # compaction travel time retention range 20s
 max_compaction_interval = 60  # the max time interval (s) from the last compaction
 max_field_num = 256  # Maximum number of fields in a collection
+default_replica_num = 1
 
 Not_Exist = "Not_Exist"
 Connect_Object_Name = True
@@ -144,6 +148,7 @@ get_dict_without_host_port = [
     {"": ""}
 ]
 
+
 get_wrong_format_dict = [
     {"host": "string_host", "port": {}},
     {"host": 0, "port": 19520}
@@ -183,6 +188,13 @@ class CheckTasks:
     check_merge_compact = "check_merge_compact"
 
 
+class BulkLoadStates:
+    BulkLoadPersisted = "BulkLoadPersisted"
+    BulkLoadFailed = "BulkLoadFailed"
+    BulkLoadDataQueryable = "BulkLoadDataQueryable"
+    BulkLoadDataIndexed = "BulkLoadDataIndexed"
+
+
 class CaseLabel:
     """
     Testcase Levels
@@ -206,9 +218,14 @@ class CaseLabel:
             Stability/Performance/reliability, etc. special tests
             Triggered by cron job or manually
             run duration depends on test configuration
+        Loadbalance:
+            loadbalance testcases which need to be run in multi query nodes
+        ClusterOnly:
+            For functions only suitable to cluster mode
     """
     L0 = "L0"
     L1 = "L1"
     L2 = "L2"
     L3 = "L3"
-    Loadbalance = "Loadbalance"  # loadbalance testcases which need to be run in multi querynodes
+    Loadbalance = "Loadbalance"  # loadbalance testcases which need to be run in multi query nodes
+    ClusterOnly = "ClusterOnly"  # For functions only suitable to cluster mode

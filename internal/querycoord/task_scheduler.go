@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"sync"
 
@@ -34,7 +35,6 @@ import (
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
-	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/trace"
 	oplog "github.com/opentracing/opentracing-go/log"
 )
@@ -110,7 +110,6 @@ func (queue *taskQueue) popTask() task {
 	defer queue.Unlock()
 
 	if queue.tasks.Len() <= 0 {
-		log.Warn("sorry, but the unissued task list is empty!")
 		return nil
 	}
 
@@ -337,6 +336,7 @@ func (scheduler *TaskScheduler) unmarshalTask(taskID UniqueID, t string) (task, 
 			cluster:             scheduler.cluster,
 			meta:                scheduler.meta,
 			excludeNodeIDs:      []int64{},
+			broker:              scheduler.broker,
 		}
 		newTask = loadSegmentTask
 	case commonpb.MsgType_ReleaseSegments:
@@ -381,18 +381,8 @@ func (scheduler *TaskScheduler) unmarshalTask(taskID UniqueID, t string) (task, 
 		}
 		newTask = watchDeltaChannelTask
 	case commonpb.MsgType_WatchQueryChannels:
-		//TODO::trigger condition may be different
-		loadReq := querypb.AddQueryChannelRequest{}
-		err = proto.Unmarshal([]byte(t), &loadReq)
-		if err != nil {
-			return nil, err
-		}
-		watchQueryChannelTask := &watchQueryChannelTask{
-			baseTask:               baseTask,
-			AddQueryChannelRequest: &loadReq,
-			cluster:                scheduler.cluster,
-		}
-		newTask = watchQueryChannelTask
+		//Deprecated WatchQueryChannel
+		log.Warn("legacy WatchQueryChannels type found, ignore")
 	case commonpb.MsgType_LoadBalanceSegments:
 		//TODO::trigger condition may be different
 		loadReq := querypb.LoadBalanceRequest{}
@@ -402,6 +392,7 @@ func (scheduler *TaskScheduler) unmarshalTask(taskID UniqueID, t string) (task, 
 		}
 		// if triggerCondition == nodeDown, and the queryNode resources are insufficient,
 		// queryCoord will waits until queryNode can load the data, ensuring that the data is not lost
+		baseTask = newBaseTaskWithRetry(scheduler.ctx, loadReq.BalanceReason, 0)
 		baseTask.setTriggerCondition(loadReq.BalanceReason)
 		loadBalanceTask := &loadBalanceTask{
 			baseTask:           baseTask,
@@ -467,6 +458,7 @@ func (scheduler *TaskScheduler) Enqueue(t task) error {
 }
 
 func (scheduler *TaskScheduler) processTask(t task) error {
+	log.Info("begin to process task", zap.Int64("taskID", t.getTaskID()), zap.String("task", reflect.TypeOf(t).String()))
 	var taskInfoKey string
 	// assign taskID for childTask and update triggerTask's childTask to etcd
 	updateKVFn := func(parentTask task) error {
@@ -489,8 +481,6 @@ func (scheduler *TaskScheduler) processTask(t task) error {
 				protoSize = proto.Size(childTask.(*watchDmChannelTask).WatchDmChannelsRequest)
 			case commonpb.MsgType_WatchDeltaChannels:
 				protoSize = proto.Size(childTask.(*watchDeltaChannelTask).WatchDeltaChannelsRequest)
-			case commonpb.MsgType_WatchQueryChannels:
-				protoSize = proto.Size(childTask.(*watchQueryChannelTask).AddQueryChannelRequest)
 			default:
 				//TODO::
 			}
@@ -533,7 +523,11 @@ func (scheduler *TaskScheduler) processTask(t task) error {
 
 	// task preExecute
 	span.LogFields(oplog.Int64("processTask: scheduler process PreExecute", t.getTaskID()))
-	t.preExecute(ctx)
+	err = t.preExecute(ctx)
+	if err != nil {
+		log.Warn("failed to preExecute task", zap.Error(err))
+		return err
+	}
 	taskInfoKey = fmt.Sprintf("%s/%d", taskInfoPrefix, t.getTaskID())
 	err = scheduler.client.Save(taskInfoKey, strconv.Itoa(int(taskDoing)))
 	if err != nil {
@@ -547,11 +541,13 @@ func (scheduler *TaskScheduler) processTask(t task) error {
 	span.LogFields(oplog.Int64("processTask: scheduler process Execute", t.getTaskID()))
 	err = t.execute(ctx)
 	if err != nil {
+		log.Warn("failed to execute task", zap.Error(err))
 		trace.LogError(span, err)
 		return err
 	}
 	err = updateKVFn(t)
 	if err != nil {
+		log.Warn("failed to execute task", zap.Error(err))
 		trace.LogError(span, err)
 		t.setResultInfo(err)
 		return err
@@ -573,7 +569,10 @@ func (scheduler *TaskScheduler) scheduleLoop() {
 	var triggerTask task
 
 	processInternalTaskFn := func(activateTasks []task, triggerTask task) {
-		log.Debug("scheduleLoop: num of child task", zap.Int("num child task", len(activateTasks)))
+		log.Debug("scheduleLoop: num of child task",
+			zap.Int("num child task", len(activateTasks)),
+			zap.Int64("trigger task ID", triggerTask.getTaskID()),
+		)
 		for _, childTask := range activateTasks {
 			if childTask != nil {
 				log.Debug("scheduleLoop: add an activate task to activateChan", zap.Int64("taskID", childTask.getTaskID()))
@@ -619,12 +618,15 @@ func (scheduler *TaskScheduler) scheduleLoop() {
 			return
 		case <-scheduler.triggerTaskQueue.Chan():
 			triggerTask = scheduler.triggerTaskQueue.popTask()
-			log.Debug("scheduleLoop: pop a triggerTask from triggerTaskQueue", zap.Int64("triggerTaskID", triggerTask.getTaskID()))
+			if triggerTask == nil {
+				break
+			}
+			log.Info("scheduleLoop: pop a triggerTask from triggerTaskQueue", zap.Int64("triggerTaskID", triggerTask.getTaskID()))
 			alreadyNotify := true
 			if triggerTask.getState() == taskUndo || triggerTask.getState() == taskDoing {
 				err = scheduler.processTask(triggerTask)
 				if err != nil {
-					log.Debug("scheduleLoop: process triggerTask failed", zap.Int64("triggerTaskID", triggerTask.getTaskID()), zap.Error(err))
+					log.Warn("scheduleLoop: process triggerTask failed", zap.Int64("triggerTaskID", triggerTask.getTaskID()), zap.Error(err))
 					alreadyNotify = false
 				}
 			}
@@ -653,6 +655,8 @@ func (scheduler *TaskScheduler) scheduleLoop() {
 				// if triggerCondition == NodeDown, loadSegment and watchDmchannel request will keep reschedule until the success
 				// the node info has been deleted after assgining child task to triggerTask
 				// so it is necessary to update the meta of segment and dmchannel, or some data may be lost in meta
+
+				// triggerTask may be LoadCollection, LoadPartitions, LoadBalance
 				if triggerTask.getResultInfo().ErrorCode == commonpb.ErrorCode_Success || triggerTask.getTriggerCondition() == querypb.TriggerCondition_NodeDown {
 					err = updateSegmentInfoFromTask(scheduler.ctx, triggerTask, scheduler.meta)
 					if err != nil {
@@ -666,9 +670,10 @@ func (scheduler *TaskScheduler) scheduleLoop() {
 						alreadyNotify = true
 					}
 					rollBackTasks := triggerTask.rollBack(scheduler.ctx)
-					log.Debug("scheduleLoop: start rollBack after triggerTask failed",
+					log.Info("scheduleLoop: start rollBack after triggerTask failed",
 						zap.Int64("triggerTaskID", triggerTask.getTaskID()),
-						zap.Any("rollBackTasks", rollBackTasks))
+						zap.Any("rollBackTasks", rollBackTasks),
+						zap.String("error", resultInfo.Reason))
 					// there is no need to save rollBacked internal task to etcd
 					// After queryCoord recover, it will retry failed childTask
 					// if childTask still execute failed, then reProduce rollBacked tasks
@@ -676,12 +681,20 @@ func (scheduler *TaskScheduler) scheduleLoop() {
 				}
 			}
 
+			err = triggerTask.globalPostExecute(triggerTask.traceCtx())
+			if err != nil {
+				log.Error("scheduleLoop: failed to execute globalPostExecute() of task",
+					zap.Int64("taskID", triggerTask.getTaskID()),
+					zap.Error(err))
+				triggerTask.setResultInfo(err)
+			}
+
 			err = removeTaskFromKVFn(triggerTask)
 			if err != nil {
 				log.Error("scheduleLoop: error when remove trigger and internal tasks from etcd", zap.Int64("triggerTaskID", triggerTask.getTaskID()), zap.Error(err))
 				triggerTask.setResultInfo(err)
 			} else {
-				log.Debug("scheduleLoop: trigger task done and delete from etcd", zap.Int64("triggerTaskID", triggerTask.getTaskID()))
+				log.Info("scheduleLoop: trigger task done and delete from etcd", zap.Int64("triggerTaskID", triggerTask.getTaskID()))
 			}
 
 			resultStatus := triggerTask.getResultInfo()
@@ -707,7 +720,7 @@ func (scheduler *TaskScheduler) waitActivateTaskDone(wg *sync.WaitGroup, t task,
 	var err error
 	redoFunc1 := func() {
 		if !t.isValid() || !t.isRetryable() {
-			log.Debug("waitActivateTaskDone: reSchedule the activate task",
+			log.Info("waitActivateTaskDone: reSchedule the activate task",
 				zap.Int64("taskID", t.getTaskID()),
 				zap.Int64("triggerTaskID", triggerTask.getTaskID()))
 			reScheduledTasks, err := t.reschedule(scheduler.ctx)
@@ -737,7 +750,7 @@ func (scheduler *TaskScheduler) waitActivateTaskDone(wg *sync.WaitGroup, t task,
 						return
 					}
 					rt.setTaskID(id)
-					log.Debug("waitActivateTaskDone: reScheduler set id", zap.Int64("id", rt.getTaskID()))
+					log.Info("waitActivateTaskDone: reScheduler set id", zap.Int64("id", rt.getTaskID()))
 					taskKey := fmt.Sprintf("%s/%d", activeTaskPrefix, rt.getTaskID())
 					blobs, err := rt.marshal()
 					if err != nil {
@@ -752,7 +765,6 @@ func (scheduler *TaskScheduler) waitActivateTaskDone(wg *sync.WaitGroup, t task,
 					saves[stateKey] = strconv.Itoa(int(taskUndo))
 				}
 			}
-			//TODO::queryNode auto watch queryChannel, then update etcd use same id directly
 			err = scheduler.client.MultiSaveAndRemove(saves, removes)
 			if err != nil {
 				log.Error("waitActivateTaskDone: error when save and remove task from etcd", zap.Int64("triggerTaskID", triggerTask.getTaskID()))
@@ -760,7 +772,7 @@ func (scheduler *TaskScheduler) waitActivateTaskDone(wg *sync.WaitGroup, t task,
 				return
 			}
 			triggerTask.removeChildTaskByID(t.getTaskID())
-			log.Debug("waitActivateTaskDone: delete failed active task and save reScheduled task to etcd",
+			log.Info("waitActivateTaskDone: delete failed active task and save reScheduled task to etcd",
 				zap.Int64("triggerTaskID", triggerTask.getTaskID()),
 				zap.Int64("failed taskID", t.getTaskID()),
 				zap.Any("reScheduled tasks", reScheduledTasks))
@@ -768,7 +780,7 @@ func (scheduler *TaskScheduler) waitActivateTaskDone(wg *sync.WaitGroup, t task,
 			for _, rt := range reScheduledTasks {
 				if rt != nil {
 					triggerTask.addChildTask(rt)
-					log.Debug("waitActivateTaskDone: add a reScheduled active task to activateChan", zap.Int64("taskID", rt.getTaskID()))
+					log.Info("waitActivateTaskDone: add a reScheduled active task to activateChan", zap.Int64("taskID", rt.getTaskID()))
 					scheduler.activateTaskChan <- rt
 					wg.Add(1)
 					go scheduler.waitActivateTaskDone(wg, rt, triggerTask)
@@ -776,7 +788,7 @@ func (scheduler *TaskScheduler) waitActivateTaskDone(wg *sync.WaitGroup, t task,
 			}
 			//delete task from etcd
 		} else {
-			log.Debug("waitActivateTaskDone: retry the active task",
+			log.Info("waitActivateTaskDone: retry the active task",
 				zap.Int64("taskID", t.getTaskID()),
 				zap.Int64("triggerTaskID", triggerTask.getTaskID()))
 			scheduler.activateTaskChan <- t
@@ -794,7 +806,7 @@ func (scheduler *TaskScheduler) waitActivateTaskDone(wg *sync.WaitGroup, t task,
 				triggerTask.setResultInfo(err)
 				return
 			}
-			log.Debug("waitActivateTaskDone: retry the active task",
+			log.Info("waitActivateTaskDone: retry the active task",
 				zap.Int64("taskID", t.getTaskID()),
 				zap.Int64("triggerTaskID", triggerTask.getTaskID()))
 			scheduler.activateTaskChan <- t
@@ -804,7 +816,7 @@ func (scheduler *TaskScheduler) waitActivateTaskDone(wg *sync.WaitGroup, t task,
 	}
 	err = t.waitToFinish()
 	if err != nil {
-		log.Debug("waitActivateTaskDone: activate task return err",
+		log.Warn("waitActivateTaskDone: activate task return err",
 			zap.Int64("taskID", t.getTaskID()),
 			zap.Int64("triggerTaskID", triggerTask.getTaskID()),
 			zap.Error(err))
@@ -828,7 +840,7 @@ func (scheduler *TaskScheduler) waitActivateTaskDone(wg *sync.WaitGroup, t task,
 			//TODO:: case commonpb.MsgType_RemoveDmChannels:
 		}
 	} else {
-		log.Debug("waitActivateTaskDone: one activate task done",
+		log.Info("waitActivateTaskDone: one activate task done",
 			zap.Int64("taskID", t.getTaskID()),
 			zap.Int64("triggerTaskID", triggerTask.getTaskID()))
 		metrics.QueryCoordChildTaskLatency.WithLabelValues().Observe(float64(t.elapseSpan().Milliseconds()))
@@ -841,9 +853,8 @@ func (scheduler *TaskScheduler) processActivateTaskLoop() {
 	for {
 		select {
 		case <-scheduler.stopActivateTaskLoopChan:
-			log.Debug("processActivateTaskLoop, ctx done")
+			log.Info("processActivateTaskLoop, ctx done")
 			return
-
 		case t := <-scheduler.activateTaskChan:
 			if t == nil {
 				log.Error("processActivateTaskLoop: pop a nil active task", zap.Int64("taskID", t.getTaskID()))
@@ -851,7 +862,6 @@ func (scheduler *TaskScheduler) processActivateTaskLoop() {
 			}
 
 			if t.getState() != taskDone {
-				log.Debug("processActivateTaskLoop: pop an active task from activateChan", zap.Int64("taskID", t.getTaskID()))
 				go func() {
 					err := scheduler.processTask(t)
 					t.notify(err)
@@ -881,14 +891,15 @@ func updateSegmentInfoFromTask(ctx context.Context, triggerTask task, meta Meta)
 	segmentInfosToSave := make(map[UniqueID][]*querypb.SegmentInfo)
 	segmentInfosToRemove := make(map[UniqueID][]*querypb.SegmentInfo)
 
-	var sealedSegmentChangeInfos col2SealedSegmentChangeInfos
+	//var sealedSegmentChangeInfos col2SealedSegmentChangeInfos
 	var err error
 	switch triggerTask.msgType() {
 	case commonpb.MsgType_ReleaseCollection:
 		// release all segmentInfo of the collection when release collection
 		req := triggerTask.(*releaseCollectionTask).ReleaseCollectionRequest
 		collectionID := req.CollectionID
-		sealedSegmentChangeInfos, err = meta.removeGlobalSealedSegInfos(collectionID, nil)
+		_, err = meta.removeGlobalSealedSegInfos(collectionID, nil)
+
 	case commonpb.MsgType_ReleasePartitions:
 		// release all segmentInfo of the partitions when release partitions
 		req := triggerTask.(*releasePartitionTask).ReleasePartitionsRequest
@@ -902,9 +913,14 @@ func updateSegmentInfoFromTask(ctx context.Context, triggerTask task, meta Meta)
 				segmentInfosToRemove[collectionID] = append(segmentInfosToRemove[collectionID], info)
 			}
 		}
-		sealedSegmentChangeInfos, err = meta.removeGlobalSealedSegInfos(collectionID, req.PartitionIDs)
+		_, err = meta.removeGlobalSealedSegInfos(collectionID, req.PartitionIDs)
+
 	default:
 		// save new segmentInfo when load segment
+		var (
+			segments = make(map[UniqueID]*querypb.SegmentInfo)
+		)
+
 		for _, childTask := range triggerTask.getChildTask() {
 			if childTask.msgType() == commonpb.MsgType_LoadSegments {
 				req := childTask.(*loadSegmentTask).LoadSegmentsRequest
@@ -912,43 +928,51 @@ func updateSegmentInfoFromTask(ctx context.Context, triggerTask task, meta Meta)
 				for _, loadInfo := range req.Infos {
 					collectionID := loadInfo.CollectionID
 					segmentID := loadInfo.SegmentID
-					segmentInfo := &querypb.SegmentInfo{
-						SegmentID:      segmentID,
-						CollectionID:   loadInfo.CollectionID,
-						PartitionID:    loadInfo.PartitionID,
-						NodeID:         dstNodeID,
-						SegmentState:   commonpb.SegmentState_Sealed,
-						CompactionFrom: loadInfo.CompactionFrom,
+
+					segment, saved := segments[segmentID]
+					if !saved {
+						segment, err = meta.getSegmentInfoByID(segmentID)
+						if err != nil {
+							segment = &querypb.SegmentInfo{
+								SegmentID:      segmentID,
+								CollectionID:   loadInfo.CollectionID,
+								PartitionID:    loadInfo.PartitionID,
+								DmChannel:      loadInfo.InsertChannel,
+								SegmentState:   commonpb.SegmentState_Sealed,
+								CompactionFrom: loadInfo.CompactionFrom,
+								ReplicaIds:     []UniqueID{},
+								NodeIds:        []UniqueID{},
+								NumRows:        loadInfo.NumOfRows,
+							}
+						}
 					}
+					segment.ReplicaIds = append(segment.ReplicaIds, req.ReplicaID)
+					segment.ReplicaIds = removeFromSlice(segment.GetReplicaIds())
+
+					segment.NodeIds = append(segment.NodeIds, dstNodeID)
+					segment.NodeID = dstNodeID
+
+					segments[segmentID] = segment
+
 					if _, ok := segmentInfosToSave[collectionID]; !ok {
 						segmentInfosToSave[collectionID] = make([]*querypb.SegmentInfo, 0)
 					}
-					segmentInfosToSave[collectionID] = append(segmentInfosToSave[collectionID], segmentInfo)
+
+					if !saved {
+						segmentInfosToSave[collectionID] = append(segmentInfosToSave[collectionID], segment)
+					}
 				}
 			}
 		}
-		sealedSegmentChangeInfos, err = meta.saveGlobalSealedSegInfos(segmentInfosToSave)
+
+		log.Info("update segment info",
+			zap.Int64("triggerTaskID", triggerTask.getTaskID()),
+			zap.Any("segment", segmentInfosToSave))
+		_, err = meta.saveGlobalSealedSegInfos(segmentInfosToSave)
 	}
 
+	// no need to rollback since etcd meta is not changed
 	if err != nil {
-		log.Error("Failed to update global sealed seg infos, begin to rollback", zap.Error(err))
-		rollBackSegmentChangeInfoErr := retry.Do(ctx, func() error {
-			rollBackChangeInfos := reverseSealedSegmentChangeInfo(sealedSegmentChangeInfos)
-			for collectionID, infos := range rollBackChangeInfos {
-				channelInfo := meta.getQueryChannelInfoByID(collectionID)
-				_, sendErr := meta.sendSealedSegmentChangeInfos(collectionID, channelInfo.QueryChannel, infos)
-				if sendErr != nil {
-					return sendErr
-				}
-			}
-			return nil
-		}, retry.Attempts(20))
-		if rollBackSegmentChangeInfoErr != nil {
-			log.Error("scheduleLoop: Restore the information of global sealed segments in query node failed", zap.Error(rollBackSegmentChangeInfoErr))
-			panic(rollBackSegmentChangeInfoErr)
-		} else {
-			log.Info("Successfully roll back segment info change")
-		}
 		return err
 	}
 
@@ -982,66 +1006,29 @@ func reverseSealedSegmentChangeInfo(changeInfosMap map[UniqueID]*querypb.SealedS
 // generateDerivedInternalTasks generate watchDeltaChannel and watchQueryChannel tasks
 func generateDerivedInternalTasks(triggerTask task, meta Meta, cluster Cluster) ([]task, error) {
 	var derivedInternalTasks []task
-	watchQueryChannelInfo := make(map[int64]map[UniqueID]struct{})
-	watchDeltaChannelInfo := make(map[int64]map[UniqueID]struct{})
-	addChannelWatchInfoFn := func(nodeID int64, collectionID UniqueID, watchInfo map[int64]map[UniqueID]struct{}) {
+	watchDeltaChannelInfo := make(map[int64]map[UniqueID]UniqueID)
+	addChannelWatchInfoFn := func(nodeID int64, collectionID UniqueID, replicaID UniqueID, watchInfo map[int64]map[UniqueID]UniqueID) {
 		if _, ok := watchInfo[nodeID]; !ok {
-			watchInfo[nodeID] = make(map[UniqueID]struct{})
+			watchInfo[nodeID] = make(map[UniqueID]UniqueID)
 		}
 
-		watchInfo[nodeID][collectionID] = struct{}{}
+		watchInfo[nodeID][collectionID] = replicaID
 	}
 
 	for _, childTask := range triggerTask.getChildTask() {
 		if childTask.msgType() == commonpb.MsgType_LoadSegments {
 			loadSegmentTask := childTask.(*loadSegmentTask)
 			collectionID := loadSegmentTask.CollectionID
+			replicaID := loadSegmentTask.GetReplicaID()
 			nodeID := loadSegmentTask.DstNodeID
-			if !cluster.hasWatchedQueryChannel(triggerTask.traceCtx(), nodeID, collectionID) {
-				addChannelWatchInfoFn(nodeID, collectionID, watchQueryChannelInfo)
+			if !cluster.HasWatchedDeltaChannel(triggerTask.traceCtx(), nodeID, collectionID) {
+				addChannelWatchInfoFn(nodeID, collectionID, replicaID, watchDeltaChannelInfo)
 			}
-			if !cluster.hasWatchedDeltaChannel(triggerTask.traceCtx(), nodeID, collectionID) {
-				addChannelWatchInfoFn(nodeID, collectionID, watchDeltaChannelInfo)
-			}
-		}
-
-		if childTask.msgType() == commonpb.MsgType_WatchDmChannels {
-			watchDmChannelTask := childTask.(*watchDmChannelTask)
-			collectionID := watchDmChannelTask.CollectionID
-			nodeID := watchDmChannelTask.NodeID
-			if !cluster.hasWatchedQueryChannel(triggerTask.traceCtx(), nodeID, collectionID) {
-				addChannelWatchInfoFn(nodeID, collectionID, watchQueryChannelInfo)
-			}
-		}
-	}
-
-	for nodeID, collectionIDs := range watchQueryChannelInfo {
-		for collectionID := range collectionIDs {
-			queryChannelInfo := meta.getQueryChannelInfoByID(collectionID)
-			msgBase := proto.Clone(triggerTask.msgBase()).(*commonpb.MsgBase)
-			msgBase.MsgType = commonpb.MsgType_WatchQueryChannels
-			addQueryChannelRequest := &querypb.AddQueryChannelRequest{
-				Base:                 msgBase,
-				NodeID:               nodeID,
-				CollectionID:         collectionID,
-				QueryChannel:         queryChannelInfo.QueryChannel,
-				QueryResultChannel:   queryChannelInfo.QueryResultChannel,
-				GlobalSealedSegments: queryChannelInfo.GlobalSealedSegments,
-			}
-			baseTask := newBaseTask(triggerTask.traceCtx(), triggerTask.getTriggerCondition())
-			baseTask.setParentTask(triggerTask)
-			watchQueryChannelTask := &watchQueryChannelTask{
-				baseTask: baseTask,
-
-				AddQueryChannelRequest: addQueryChannelRequest,
-				cluster:                cluster,
-			}
-			derivedInternalTasks = append(derivedInternalTasks, watchQueryChannelTask)
 		}
 	}
 
 	for nodeID, collectionIDs := range watchDeltaChannelInfo {
-		for collectionID := range collectionIDs {
+		for collectionID, replicaID := range collectionIDs {
 			deltaChannelInfo, err := meta.getDeltaChannelsByCollectionID(collectionID)
 			if err != nil {
 				return nil, err
@@ -1052,6 +1039,8 @@ func generateDerivedInternalTasks(triggerTask task, meta Meta, cluster Cluster) 
 				Base:         msgBase,
 				CollectionID: collectionID,
 				Infos:        deltaChannelInfo,
+
+				ReplicaId: replicaID,
 			}
 			watchDeltaRequest.NodeID = nodeID
 			baseTask := newBaseTask(triggerTask.traceCtx(), triggerTask.getTriggerCondition())

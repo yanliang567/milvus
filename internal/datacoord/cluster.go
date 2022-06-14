@@ -19,12 +19,11 @@ package datacoord
 import (
 	"context"
 
-	"go.uber.org/zap"
-
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
+	"go.uber.org/zap"
 )
 
 // Cluster provides interfaces to interact with datanode cluster
@@ -44,7 +43,7 @@ func NewCluster(sessionManager *SessionManager, channelManager *ChannelManager) 
 }
 
 // Startup inits the cluster with the given data nodes.
-func (c *Cluster) Startup(nodes []*NodeInfo) error {
+func (c *Cluster) Startup(ctx context.Context, nodes []*NodeInfo) error {
 	for _, node := range nodes {
 		c.sessionManager.AddSession(node)
 	}
@@ -52,7 +51,7 @@ func (c *Cluster) Startup(nodes []*NodeInfo) error {
 	for _, node := range nodes {
 		currs = append(currs, node.NodeID)
 	}
-	return c.channelManager.Startup(currs)
+	return c.channelManager.Startup(ctx, currs)
 }
 
 // Register registers a new node in cluster
@@ -80,7 +79,7 @@ func (c *Cluster) Watch(ch string, collectionID UniqueID) error {
 	return c.channelManager.Watch(&channel{Name: ch, CollectionID: collectionID})
 }
 
-// Flush sends flush requests to corresponding datanodes according to channels that segments belong to
+// Flush sends flush requests to corresponding dataNodes according to channels where segments are assigned to.
 func (c *Cluster) Flush(ctx context.Context, segments []*datapb.SegmentInfo, markSegments []*datapb.SegmentInfo) {
 	channels := c.channelManager.GetChannels()
 	nodeSegments := make(map[int64][]int64)
@@ -126,15 +125,33 @@ func (c *Cluster) Flush(ctx context.Context, segments []*datapb.SegmentInfo, mar
 		req := &datapb.FlushSegmentsRequest{
 			Base: &commonpb.MsgBase{
 				MsgType:  commonpb.MsgType_Flush,
-				SourceID: Params.DataCoordCfg.NodeID,
+				SourceID: Params.DataCoordCfg.GetNodeID(),
 			},
 			CollectionID:   collectionID,
 			SegmentIDs:     segments,
 			MarkSegmentIDs: marks,
 		}
-		log.Info("Plan to flush", zap.Int64("node_id", nodeID), zap.Int64s("segments", segments), zap.Int64s("marks", marks))
+		log.Info("calling dataNode to flush",
+			zap.Int64("dataNode ID", nodeID),
+			zap.Int64s("segments", segments),
+			zap.Int64s("marks", marks))
 		c.sessionManager.Flush(ctx, nodeID, req)
 	}
+}
+
+// Import sends import requests to DataNodes whose ID==nodeID.
+func (c *Cluster) Import(ctx context.Context, nodeID int64, it *datapb.ImportTaskRequest) {
+	c.sessionManager.Import(ctx, nodeID, it)
+}
+
+// ReCollectSegmentStats triggers a ReCollectSegmentStats call from session manager.
+func (c *Cluster) ReCollectSegmentStats(ctx context.Context, nodeID int64) {
+	c.sessionManager.ReCollectSegmentStats(ctx, nodeID)
+}
+
+// AddSegment triggers a AddSegment call from session manager.
+func (c *Cluster) AddSegment(ctx context.Context, nodeID int64, req *datapb.AddSegmentRequest) {
+	c.sessionManager.AddSegment(ctx, nodeID, req)
 }
 
 // GetSessions returns all sessions

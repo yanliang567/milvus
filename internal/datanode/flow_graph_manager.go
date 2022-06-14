@@ -55,7 +55,8 @@ func (fm *flowgraphManager) addAndStart(dn *DataNode, vchan *datapb.VchannelInfo
 
 	var alloc allocatorInterface = newAllocator(dn.rootCoord)
 
-	dataSyncService, err := newDataSyncService(dn.ctx, make(chan flushMsg, 100), replica, alloc, dn.msFactory, vchan, dn.clearSignal, dn.dataCoord, dn.segmentCache, dn.chunkManager, dn.compactionExecutor)
+	dataSyncService, err := newDataSyncService(dn.ctx, make(chan flushMsg, 100), make(chan resendTTMsg, 100), replica,
+		alloc, dn.factory, vchan, dn.clearSignal, dn.dataCoord, dn.segmentCache, dn.chunkManager, dn.compactionExecutor)
 	if err != nil {
 		log.Warn("new data sync service fail", zap.String("vChannelName", vchan.GetChannelName()), zap.Error(err))
 		return err
@@ -67,7 +68,7 @@ func (fm *flowgraphManager) addAndStart(dn *DataNode, vchan *datapb.VchannelInfo
 
 	fm.flowgraphs.Store(vchan.GetChannelName(), dataSyncService)
 
-	metrics.DataNodeNumFlowGraphs.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.NodeID)).Inc()
+	metrics.DataNodeNumFlowGraphs.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID())).Inc()
 	return nil
 }
 
@@ -76,7 +77,7 @@ func (fm *flowgraphManager) release(vchanName string) {
 
 	if fg, loaded := fm.flowgraphs.LoadAndDelete(vchanName); loaded {
 		fg.(*dataSyncService).close()
-		metrics.DataNodeNumFlowGraphs.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.NodeID)).Dec()
+		metrics.DataNodeNumFlowGraphs.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID())).Dec()
 	}
 	log.Info("release flowgraph resources end", zap.String("Vchannel", vchanName))
 }
@@ -102,6 +103,26 @@ func (fm *flowgraphManager) getFlushCh(segID UniqueID) (chan<- flushMsg, error) 
 	}
 
 	return nil, fmt.Errorf("cannot find segment %d in all flowgraphs", segID)
+}
+
+// resendTT loops through flow graphs, looks for segments that are not flushed, and sends them to that flow graph's
+// `resendTTCh` channel so stats of these segments will be resent.
+func (fm *flowgraphManager) resendTT() []UniqueID {
+	var unFlushedSegments []UniqueID
+	fm.flowgraphs.Range(func(key, value interface{}) bool {
+		fg := value.(*dataSyncService)
+		segIDs := fg.replica.listNotFlushedSegmentIDs()
+		if len(segIDs) > 0 {
+			log.Info("un-flushed segments found, stats will be resend",
+				zap.Int64s("segment IDs", segIDs))
+			unFlushedSegments = append(unFlushedSegments, segIDs...)
+			fg.resendTTCh <- resendTTMsg{
+				segmentIDs: segIDs,
+			}
+		}
+		return true
+	})
+	return unFlushedSegments
 }
 
 func (fm *flowgraphManager) getFlowgraphService(vchan string) (*dataSyncService, bool) {

@@ -22,30 +22,27 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math/rand"
 	"strconv"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/milvus-io/milvus/internal/util/timerecord"
+	"github.com/milvus-io/milvus/internal/allocator"
+	"github.com/milvus-io/milvus/internal/mq/msgstream"
+
+	"github.com/milvus-io/milvus/internal/util/typeutil"
 
 	"github.com/golang/protobuf/proto"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/common"
-	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
-	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
+
 	"github.com/milvus-io/milvus/internal/util/distance"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
-	"github.com/milvus-io/milvus/internal/util/typeutil"
 	"github.com/milvus-io/milvus/internal/util/uniquegenerator"
 )
 
@@ -58,7 +55,7 @@ const (
 	testInt64Field       = "int64"
 	testFloatField       = "float"
 	testDoubleField      = "double"
-	testStringField      = "stringField"
+	testVarCharField     = "varChar"
 	testFloatVecField    = "fvec"
 	testBinaryVecField   = "bvec"
 	testVecDim           = 128
@@ -120,6 +117,14 @@ func constructCollectionSchemaByDataType(collectionName string, fieldName2DataTy
 				{
 					Key:   "dim",
 					Value: strconv.Itoa(testVecDim),
+				},
+			}
+		}
+		if dataType == schemapb.DataType_VarChar {
+			fieldSchema.TypeParams = []*commonpb.KeyValuePair{
+				{
+					Key:   "max_length",
+					Value: strconv.Itoa(testMaxVarCharLength),
 				},
 			}
 		}
@@ -260,7 +265,7 @@ func constructCollectionSchemaWithAllType(
 
 func constructPlaceholderGroup(
 	nq, dim int,
-) *milvuspb.PlaceholderGroup {
+) *commonpb.PlaceholderGroup {
 	values := make([][]byte, 0, nq)
 	for i := 0; i < nq; i++ {
 		bs := make([]byte, 0, dim*4)
@@ -276,11 +281,11 @@ func constructPlaceholderGroup(
 		values = append(values, bs)
 	}
 
-	return &milvuspb.PlaceholderGroup{
-		Placeholders: []*milvuspb.PlaceholderValue{
+	return &commonpb.PlaceholderGroup{
+		Placeholders: []*commonpb.PlaceholderValue{
 			{
 				Tag:    "$0",
-				Type:   milvuspb.PlaceholderType_FloatVector,
+				Type:   commonpb.PlaceholderType_FloatVector,
 				Values: values,
 			},
 		},
@@ -344,7 +349,7 @@ func constructSearchRequest(
 func TestInsertTask_checkLengthOfFieldsData(t *testing.T) {
 	var err error
 
-	// schema is empty, though won't happened in system
+	// schema is empty, though won't happen in system
 	case1 := insertTask{
 		schema: &schemapb.CollectionSchema{
 			Name:        "TestInsertTask_checkLengthOfFieldsData",
@@ -391,7 +396,7 @@ func TestInsertTask_checkLengthOfFieldsData(t *testing.T) {
 	// 		Base: &commonpb.MsgBase{
 	// 			MsgType:  commonpb.MsgType_Insert,
 	// 			MsgID:    0,
-	// 			SourceID: Params.ProxyCfg.ProxyID,
+	// 			SourceID: Params.ProxyCfg.GetNodeID(),
 	// 		},
 	// 	},
 	// }
@@ -799,114 +804,6 @@ func TestTranslateOutputFields(t *testing.T) {
 	assert.ElementsMatch(t, []string{idFieldName, floatVectorFieldName, binaryVectorFieldName}, outputFields)
 }
 
-func TestSearchTask(t *testing.T) {
-	ctx := context.Background()
-	ctxCancel, cancel := context.WithCancel(ctx)
-	qt := &searchTask{
-		ctx:       ctxCancel,
-		Condition: NewTaskCondition(context.TODO()),
-		SearchRequest: &internalpb.SearchRequest{
-			Base: &commonpb.MsgBase{
-				MsgType:  commonpb.MsgType_Search,
-				SourceID: Params.ProxyCfg.ProxyID,
-			},
-			ResultChannelID: strconv.FormatInt(Params.ProxyCfg.ProxyID, 10),
-		},
-		resultBuf: make(chan []*internalpb.SearchResults),
-		query:     nil,
-		chMgr:     nil,
-		qc:        nil,
-		tr:        timerecord.NewTimeRecorder("search"),
-	}
-
-	// no result
-	go func() {
-		qt.resultBuf <- []*internalpb.SearchResults{}
-	}()
-	err := qt.PostExecute(context.TODO())
-	assert.NotNil(t, err)
-
-	// test trace context done
-	cancel()
-	err = qt.PostExecute(context.TODO())
-	assert.NotNil(t, err)
-
-	// error result
-	ctx = context.Background()
-	qt = &searchTask{
-		ctx:       ctx,
-		Condition: NewTaskCondition(context.TODO()),
-		SearchRequest: &internalpb.SearchRequest{
-			Base: &commonpb.MsgBase{
-				MsgType:  commonpb.MsgType_Search,
-				SourceID: Params.ProxyCfg.ProxyID,
-			},
-			ResultChannelID: strconv.FormatInt(Params.ProxyCfg.ProxyID, 10),
-		},
-		resultBuf: make(chan []*internalpb.SearchResults),
-		query:     nil,
-		chMgr:     nil,
-		qc:        nil,
-		tr:        timerecord.NewTimeRecorder("search"),
-	}
-
-	// no result
-	go func() {
-		result := internalpb.SearchResults{
-			Status: &commonpb.Status{
-				ErrorCode: commonpb.ErrorCode_UnexpectedError,
-				Reason:    "test",
-			},
-		}
-		results := make([]*internalpb.SearchResults, 1)
-		results[0] = &result
-		qt.resultBuf <- results
-	}()
-	err = qt.PostExecute(context.TODO())
-	assert.NotNil(t, err)
-
-	log.Debug("PostExecute failed" + err.Error())
-	// check result SlicedBlob
-
-	ctx = context.Background()
-	qt = &searchTask{
-		ctx:       ctx,
-		Condition: NewTaskCondition(context.TODO()),
-		SearchRequest: &internalpb.SearchRequest{
-			Base: &commonpb.MsgBase{
-				MsgType:  commonpb.MsgType_Search,
-				SourceID: Params.ProxyCfg.ProxyID,
-			},
-			ResultChannelID: strconv.FormatInt(Params.ProxyCfg.ProxyID, 10),
-		},
-		resultBuf: make(chan []*internalpb.SearchResults),
-		query:     nil,
-		chMgr:     nil,
-		qc:        nil,
-		tr:        timerecord.NewTimeRecorder("search"),
-	}
-
-	// no result
-	go func() {
-		result := internalpb.SearchResults{
-			Status: &commonpb.Status{
-				ErrorCode: commonpb.ErrorCode_Success,
-				Reason:    "test",
-			},
-			SlicedBlob: nil,
-		}
-		results := make([]*internalpb.SearchResults, 1)
-		results[0] = &result
-		qt.resultBuf <- results
-	}()
-	err = qt.PostExecute(context.TODO())
-	assert.Nil(t, err)
-
-	assert.Equal(t, qt.result.Status.ErrorCode, commonpb.ErrorCode_Success)
-
-	// TODO, add decode result, reduce result test
-}
-
 func TestCreateCollectionTask(t *testing.T) {
 	Params.Init()
 
@@ -920,9 +817,13 @@ func TestCreateCollectionTask(t *testing.T) {
 	collectionName := prefix + funcutil.GenRandomStr()
 	int64Field := "int64"
 	floatVecField := "fvec"
-	dim := 128
+	varCharField := "varChar"
 
-	schema := constructCollectionSchema(int64Field, floatVecField, dim, collectionName)
+	fieldName2Type := make(map[string]schemapb.DataType)
+	fieldName2Type[int64Field] = schemapb.DataType_Int64
+	fieldName2Type[varCharField] = schemapb.DataType_VarChar
+	fieldName2Type[floatVecField] = schemapb.DataType_FloatVector
+	schema := constructCollectionSchemaByDataType(collectionName, fieldName2Type, int64Field, false)
 	var marshaledSchema []byte
 	marshaledSchema, err := proto.Marshal(schema)
 	assert.NoError(t, err)
@@ -1079,6 +980,19 @@ func TestCreateCollectionTask(t *testing.T) {
 		err = task.PreExecute(ctx)
 		assert.Error(t, err)
 
+		// validateMaxLengthPerRow
+		schema = proto.Clone(schemaBackup).(*schemapb.CollectionSchema)
+		for idx := range schema.Fields {
+			if schema.Fields[idx].DataType == schemapb.DataType_VarChar {
+				schema.Fields[idx].TypeParams = nil
+			}
+		}
+		noTypeParamsSchema, err := proto.Marshal(schema)
+		assert.NoError(t, err)
+		task.CreateCollectionRequest.Schema = noTypeParamsSchema
+		err = task.PreExecute(ctx)
+		assert.Error(t, err)
+
 		// ValidateVectorField
 		schema = proto.Clone(schemaBackup).(*schemapb.CollectionSchema)
 		for idx := range schema.Fields {
@@ -1173,44 +1087,12 @@ func TestCreateCollectionTask(t *testing.T) {
 
 func TestDropCollectionTask(t *testing.T) {
 	Params.Init()
-	rc := NewRootCoordMock()
-	rc.Start()
-	defer rc.Stop()
-	ctx := context.Background()
-	InitMetaCache(rc)
-
-	master := newMockGetChannelsService()
-	query := newMockGetChannelsService()
-	factory := newSimpleMockMsgStreamFactory()
-	channelMgr := newChannelsMgrImpl(master.GetChannels, nil, query.GetChannels, nil, factory)
-	defer channelMgr.removeAllDMLStream()
 
 	prefix := "TestDropCollectionTask"
 	dbName := ""
 	collectionName := prefix + funcutil.GenRandomStr()
+	ctx := context.Background()
 
-	shardsNum := int32(2)
-	int64Field := "int64"
-	floatVecField := "fvec"
-	dim := 128
-
-	schema := constructCollectionSchema(int64Field, floatVecField, dim, collectionName)
-	marshaledSchema, err := proto.Marshal(schema)
-	assert.NoError(t, err)
-
-	createColReq := &milvuspb.CreateCollectionRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:   commonpb.MsgType_DropCollection,
-			MsgID:     100,
-			Timestamp: 100,
-		},
-		DbName:         dbName,
-		CollectionName: collectionName,
-		Schema:         marshaledSchema,
-		ShardsNum:      shardsNum,
-	}
-
-	//CreateCollection
 	task := &dropCollectionTask{
 		Condition: NewTaskCondition(ctx),
 		DropCollectionRequest: &milvuspb.DropCollectionRequest{
@@ -1222,38 +1104,58 @@ func TestDropCollectionTask(t *testing.T) {
 			DbName:         dbName,
 			CollectionName: collectionName,
 		},
-		ctx:       ctx,
-		chMgr:     channelMgr,
-		rootCoord: rc,
-		result:    nil,
+		ctx:    ctx,
+		result: nil,
 	}
-	task.PreExecute(ctx)
 
-	assert.Equal(t, commonpb.MsgType_DropCollection, task.Type())
+	task.SetID(100)
 	assert.Equal(t, UniqueID(100), task.ID())
+	assert.Equal(t, DropCollectionTaskName, task.Name())
+	assert.Equal(t, commonpb.MsgType_DropCollection, task.Type())
+	task.SetTs(100)
 	assert.Equal(t, Timestamp(100), task.BeginTs())
 	assert.Equal(t, Timestamp(100), task.EndTs())
-	assert.Equal(t, Params.ProxyCfg.ProxyID, task.GetBase().GetSourceID())
-	// missing collectionID in globalMetaCache
-	err = task.Execute(ctx)
-	assert.NotNil(t, err)
-	// createCollection in RootCood and fill GlobalMetaCache
-	rc.CreateCollection(ctx, createColReq)
-	globalMetaCache.GetCollectionID(ctx, collectionName)
 
-	// success to drop collection
-	err = task.Execute(ctx)
-	assert.Nil(t, err)
+	err := task.PreExecute(ctx)
+	assert.NoError(t, err)
+	assert.Equal(t, Params.ProxyCfg.GetNodeID(), task.GetBase().GetSourceID())
 
-	// illegal name
 	task.CollectionName = "#0xc0de"
 	err = task.PreExecute(ctx)
-	assert.NotNil(t, err)
-
+	assert.Error(t, err)
 	task.CollectionName = collectionName
-	err = task.PreExecute(ctx)
-	assert.Nil(t, err)
 
+	cache := newMockCache()
+	chMgr := newMockChannelsMgr()
+	rc := newMockRootCoord()
+
+	globalMetaCache = cache
+	task.chMgr = chMgr
+	task.rootCoord = rc
+
+	cache.setGetIDFunc(func(ctx context.Context, collectionName string) (typeutil.UniqueID, error) {
+		return 0, errors.New("mock")
+	})
+	err = task.Execute(ctx)
+	assert.Error(t, err)
+	cache.setGetIDFunc(func(ctx context.Context, collectionName string) (typeutil.UniqueID, error) {
+		return 0, nil
+	})
+
+	rc.DropCollectionFunc = func(ctx context.Context, request *milvuspb.DropCollectionRequest) (*commonpb.Status, error) {
+		return nil, errors.New("mock")
+	}
+	err = task.Execute(ctx)
+	assert.Error(t, err)
+	rc.DropCollectionFunc = func(ctx context.Context, request *milvuspb.DropCollectionRequest) (*commonpb.Status, error) {
+		return &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success}, nil
+	}
+
+	// normal case
+	err = task.Execute(ctx)
+	assert.NoError(t, err)
+	err = task.PostExecute(ctx)
+	assert.NoError(t, err)
 }
 
 func TestHasCollectionTask(t *testing.T) {
@@ -1261,8 +1163,12 @@ func TestHasCollectionTask(t *testing.T) {
 	rc := NewRootCoordMock()
 	rc.Start()
 	defer rc.Stop()
+	qc := NewQueryCoordMock()
+	qc.Start()
+	defer qc.Stop()
 	ctx := context.Background()
-	InitMetaCache(rc)
+	mgr := newShardClientMgr()
+	InitMetaCache(rc, qc, mgr)
 	prefix := "TestHasCollectionTask"
 	dbName := ""
 	collectionName := prefix + funcutil.GenRandomStr()
@@ -1310,7 +1216,7 @@ func TestHasCollectionTask(t *testing.T) {
 	assert.Equal(t, UniqueID(100), task.ID())
 	assert.Equal(t, Timestamp(100), task.BeginTs())
 	assert.Equal(t, Timestamp(100), task.EndTs())
-	assert.Equal(t, Params.ProxyCfg.ProxyID, task.GetBase().GetSourceID())
+	assert.Equal(t, Params.ProxyCfg.GetNodeID(), task.GetBase().GetSourceID())
 	// missing collectionID in globalMetaCache
 	err = task.Execute(ctx)
 	assert.Nil(t, err)
@@ -1343,8 +1249,12 @@ func TestDescribeCollectionTask(t *testing.T) {
 	rc := NewRootCoordMock()
 	rc.Start()
 	defer rc.Stop()
+	qc := NewQueryCoordMock()
+	qc.Start()
+	defer qc.Stop()
 	ctx := context.Background()
-	InitMetaCache(rc)
+	mgr := newShardClientMgr()
+	InitMetaCache(rc, qc, mgr)
 	prefix := "TestDescribeCollectionTask"
 	dbName := ""
 	collectionName := prefix + funcutil.GenRandomStr()
@@ -1371,7 +1281,7 @@ func TestDescribeCollectionTask(t *testing.T) {
 	assert.Equal(t, UniqueID(100), task.ID())
 	assert.Equal(t, Timestamp(100), task.BeginTs())
 	assert.Equal(t, Timestamp(100), task.EndTs())
-	assert.Equal(t, Params.ProxyCfg.ProxyID, task.GetBase().GetSourceID())
+	assert.Equal(t, Params.ProxyCfg.GetNodeID(), task.GetBase().GetSourceID())
 	// missing collectionID in globalMetaCache
 	err := task.Execute(ctx)
 	assert.Nil(t, err)
@@ -1402,8 +1312,12 @@ func TestDescribeCollectionTask_ShardsNum1(t *testing.T) {
 	rc := NewRootCoordMock()
 	rc.Start()
 	defer rc.Stop()
+	qc := NewQueryCoordMock()
+	qc.Start()
+	defer qc.Stop()
 	ctx := context.Background()
-	InitMetaCache(rc)
+	mgr := newShardClientMgr()
+	InitMetaCache(rc, qc, mgr)
 	prefix := "TestDescribeCollectionTask"
 	dbName := ""
 	collectionName := prefix + funcutil.GenRandomStr()
@@ -1463,8 +1377,12 @@ func TestDescribeCollectionTask_ShardsNum2(t *testing.T) {
 	rc := NewRootCoordMock()
 	rc.Start()
 	defer rc.Stop()
+	qc := NewQueryCoordMock()
+	qc.Start()
+	defer qc.Stop()
 	ctx := context.Background()
-	InitMetaCache(rc)
+	mgr := newShardClientMgr()
+	InitMetaCache(rc, qc, mgr)
 	prefix := "TestDescribeCollectionTask"
 	dbName := ""
 	collectionName := prefix + funcutil.GenRandomStr()
@@ -1553,7 +1471,7 @@ func TestCreatePartitionTask(t *testing.T) {
 	assert.Equal(t, UniqueID(100), task.ID())
 	assert.Equal(t, Timestamp(100), task.BeginTs())
 	assert.Equal(t, Timestamp(100), task.EndTs())
-	assert.Equal(t, Params.ProxyCfg.ProxyID, task.GetBase().GetSourceID())
+	assert.Equal(t, Params.ProxyCfg.GetNodeID(), task.GetBase().GetSourceID())
 	err := task.Execute(ctx)
 	assert.NotNil(t, err)
 
@@ -1600,7 +1518,7 @@ func TestDropPartitionTask(t *testing.T) {
 	assert.Equal(t, UniqueID(100), task.ID())
 	assert.Equal(t, Timestamp(100), task.BeginTs())
 	assert.Equal(t, Timestamp(100), task.EndTs())
-	assert.Equal(t, Params.ProxyCfg.ProxyID, task.GetBase().GetSourceID())
+	assert.Equal(t, Params.ProxyCfg.GetNodeID(), task.GetBase().GetSourceID())
 	err := task.Execute(ctx)
 	assert.NotNil(t, err)
 
@@ -1647,7 +1565,7 @@ func TestHasPartitionTask(t *testing.T) {
 	assert.Equal(t, UniqueID(100), task.ID())
 	assert.Equal(t, Timestamp(100), task.BeginTs())
 	assert.Equal(t, Timestamp(100), task.EndTs())
-	assert.Equal(t, Params.ProxyCfg.ProxyID, task.GetBase().GetSourceID())
+	assert.Equal(t, Params.ProxyCfg.GetNodeID(), task.GetBase().GetSourceID())
 	err := task.Execute(ctx)
 	assert.NotNil(t, err)
 
@@ -1695,7 +1613,7 @@ func TestShowPartitionsTask(t *testing.T) {
 	assert.Equal(t, UniqueID(100), task.ID())
 	assert.Equal(t, Timestamp(100), task.BeginTs())
 	assert.Equal(t, Timestamp(100), task.EndTs())
-	assert.Equal(t, Params.ProxyCfg.ProxyID, task.GetBase().GetSourceID())
+	assert.Equal(t, Params.ProxyCfg.GetNodeID(), task.GetBase().GetSourceID())
 	err := task.Execute(ctx)
 	assert.NotNil(t, err)
 
@@ -1716,796 +1634,7 @@ func TestShowPartitionsTask(t *testing.T) {
 	assert.NotNil(t, err)
 
 }
-
-func TestSearchTask_all(t *testing.T) {
-	var err error
-
-	Params.Init()
-	Params.ProxyCfg.SearchResultChannelNames = []string{funcutil.GenRandomStr()}
-
-	rc := NewRootCoordMock()
-	rc.Start()
-	defer rc.Stop()
-
-	ctx := context.Background()
-
-	err = InitMetaCache(rc)
-	assert.NoError(t, err)
-
-	shardsNum := int32(2)
-	prefix := "TestSearchTask_all"
-	dbName := ""
-	collectionName := prefix + funcutil.GenRandomStr()
-
-	dim := 128
-	expr := fmt.Sprintf("%s > 0", testInt64Field)
-	nq := 10
-	topk := 10
-	roundDecimal := 3
-	nprobe := 10
-
-	fieldName2Types := map[string]schemapb.DataType{
-		testBoolField:     schemapb.DataType_Bool,
-		testInt32Field:    schemapb.DataType_Int32,
-		testInt64Field:    schemapb.DataType_Int64,
-		testFloatField:    schemapb.DataType_Float,
-		testDoubleField:   schemapb.DataType_Double,
-		testFloatVecField: schemapb.DataType_FloatVector,
-	}
-	if enableMultipleVectorFields {
-		fieldName2Types[testBinaryVecField] = schemapb.DataType_BinaryVector
-	}
-
-	schema := constructCollectionSchemaByDataType(collectionName, fieldName2Types, testInt64Field, false)
-	marshaledSchema, err := proto.Marshal(schema)
-	assert.NoError(t, err)
-
-	createColT := &createCollectionTask{
-		Condition: NewTaskCondition(ctx),
-		CreateCollectionRequest: &milvuspb.CreateCollectionRequest{
-			Base:           nil,
-			DbName:         dbName,
-			CollectionName: collectionName,
-			Schema:         marshaledSchema,
-			ShardsNum:      shardsNum,
-		},
-		ctx:       ctx,
-		rootCoord: rc,
-		result:    nil,
-		schema:    nil,
-	}
-
-	assert.NoError(t, createColT.OnEnqueue())
-	assert.NoError(t, createColT.PreExecute(ctx))
-	assert.NoError(t, createColT.Execute(ctx))
-	assert.NoError(t, createColT.PostExecute(ctx))
-
-	dmlChannelsFunc := getDmlChannelsFunc(ctx, rc)
-	query := newMockGetChannelsService()
-	factory := newSimpleMockMsgStreamFactory()
-	chMgr := newChannelsMgrImpl(dmlChannelsFunc, nil, query.GetChannels, nil, factory)
-	defer chMgr.removeAllDMLStream()
-	defer chMgr.removeAllDQLStream()
-
-	collectionID, err := globalMetaCache.GetCollectionID(ctx, collectionName)
-	assert.NoError(t, err)
-
-	qc := NewQueryCoordMock()
-	qc.Start()
-	defer qc.Stop()
-	status, err := qc.LoadCollection(ctx, &querypb.LoadCollectionRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:   commonpb.MsgType_LoadCollection,
-			MsgID:     0,
-			Timestamp: 0,
-			SourceID:  Params.ProxyCfg.ProxyID,
-		},
-		DbID:         0,
-		CollectionID: collectionID,
-		Schema:       nil,
-	})
-	assert.NoError(t, err)
-	assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
-
-	req := constructSearchRequest(dbName, collectionName,
-		expr,
-		testFloatVecField,
-		nq, dim, nprobe, topk, roundDecimal)
-
-	task := &searchTask{
-		Condition: NewTaskCondition(ctx),
-		SearchRequest: &internalpb.SearchRequest{
-			Base: &commonpb.MsgBase{
-				MsgType:   commonpb.MsgType_Search,
-				MsgID:     0,
-				Timestamp: 0,
-				SourceID:  Params.ProxyCfg.ProxyID,
-			},
-			ResultChannelID:    strconv.FormatInt(Params.ProxyCfg.ProxyID, 10),
-			DbID:               0,
-			CollectionID:       0,
-			PartitionIDs:       nil,
-			Dsl:                "",
-			PlaceholderGroup:   nil,
-			DslType:            0,
-			SerializedExprPlan: nil,
-			OutputFieldsId:     nil,
-			TravelTimestamp:    0,
-			GuaranteeTimestamp: 0,
-		},
-		ctx:       ctx,
-		resultBuf: make(chan []*internalpb.SearchResults),
-		result:    nil,
-		query:     req,
-		chMgr:     chMgr,
-		qc:        qc,
-		tr:        timerecord.NewTimeRecorder("search"),
-	}
-
-	// simple mock for query node
-	// TODO(dragondriver): should we replace this mock using RocksMq or MemMsgStream?
-
-	err = chMgr.createDQLStream(collectionID)
-	assert.NoError(t, err)
-	stream, err := chMgr.getDQLStream(collectionID)
-	assert.NoError(t, err)
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	consumeCtx, cancel := context.WithCancel(ctx)
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-consumeCtx.Done():
-				return
-			case pack, ok := <-stream.Chan():
-				assert.True(t, ok)
-				if pack == nil {
-					continue
-				}
-
-				for _, msg := range pack.Msgs {
-					_, ok := msg.(*msgstream.SearchMsg)
-					assert.True(t, ok)
-					// TODO(dragondriver): construct result according to the request
-
-					constructSearchResulstData := func() *schemapb.SearchResultData {
-						resultData := &schemapb.SearchResultData{
-							NumQueries: int64(nq),
-							TopK:       int64(topk),
-							Scores:     make([]float32, nq*topk),
-							Ids: &schemapb.IDs{
-								IdField: &schemapb.IDs_IntId{
-									IntId: &schemapb.LongArray{
-										Data: make([]int64, nq*topk),
-									},
-								},
-							},
-							Topks: make([]int64, nq),
-						}
-
-						fieldID := common.StartOfUserFieldID
-						for fieldName, dataType := range fieldName2Types {
-							resultData.FieldsData = append(resultData.FieldsData, generateFieldData(dataType, fieldName, int64(fieldID), nq*topk))
-							fieldID++
-						}
-
-						for i := 0; i < nq; i++ {
-							for j := 0; j < topk; j++ {
-								offset := i*topk + j
-								score := float32(uniquegenerator.GetUniqueIntGeneratorIns().GetInt()) // increasingly
-								id := int64(uniquegenerator.GetUniqueIntGeneratorIns().GetInt())
-								resultData.Scores[offset] = score
-								resultData.Ids.IdField.(*schemapb.IDs_IntId).IntId.Data[offset] = id
-							}
-							resultData.Topks[i] = int64(topk)
-						}
-
-						return resultData
-					}
-
-					result1 := &internalpb.SearchResults{
-						Base: &commonpb.MsgBase{
-							MsgType:   commonpb.MsgType_SearchResult,
-							MsgID:     0,
-							Timestamp: 0,
-							SourceID:  0,
-						},
-						Status: &commonpb.Status{
-							ErrorCode: commonpb.ErrorCode_Success,
-							Reason:    "",
-						},
-						ResultChannelID:          "",
-						MetricType:               distance.L2,
-						NumQueries:               int64(nq),
-						TopK:                     int64(topk),
-						SealedSegmentIDsSearched: nil,
-						ChannelIDsSearched:       nil,
-						GlobalSealedSegmentIDs:   nil,
-						SlicedBlob:               nil,
-						SlicedNumCount:           1,
-						SlicedOffset:             0,
-					}
-					resultData := constructSearchResulstData()
-					sliceBlob, err := proto.Marshal(resultData)
-					assert.NoError(t, err)
-					result1.SlicedBlob = sliceBlob
-
-					// result2.SliceBlob = nil, will be skipped in decode stage
-					result2 := &internalpb.SearchResults{
-						Base: &commonpb.MsgBase{
-							MsgType:   commonpb.MsgType_SearchResult,
-							MsgID:     0,
-							Timestamp: 0,
-							SourceID:  0,
-						},
-						Status: &commonpb.Status{
-							ErrorCode: commonpb.ErrorCode_Success,
-							Reason:    "",
-						},
-						ResultChannelID:          "",
-						MetricType:               distance.L2,
-						NumQueries:               int64(nq),
-						TopK:                     int64(topk),
-						SealedSegmentIDsSearched: nil,
-						ChannelIDsSearched:       nil,
-						GlobalSealedSegmentIDs:   nil,
-						SlicedBlob:               nil,
-						SlicedNumCount:           1,
-						SlicedOffset:             0,
-					}
-
-					// send search result
-					task.resultBuf <- []*internalpb.SearchResults{result1, result2}
-				}
-			}
-		}
-	}()
-
-	assert.NoError(t, task.OnEnqueue())
-	assert.NoError(t, task.PreExecute(ctx))
-	assert.NoError(t, task.Execute(ctx))
-	assert.NoError(t, task.PostExecute(ctx))
-
-	cancel()
-	wg.Wait()
-}
-
-func TestSearchTaskWithInvalidRoundDecimal(t *testing.T) {
-	var err error
-
-	Params.Init()
-	Params.ProxyCfg.SearchResultChannelNames = []string{funcutil.GenRandomStr()}
-
-	rc := NewRootCoordMock()
-	rc.Start()
-	defer rc.Stop()
-
-	ctx := context.Background()
-
-	err = InitMetaCache(rc)
-	assert.NoError(t, err)
-
-	shardsNum := int32(2)
-	prefix := "TestSearchTask_all"
-	dbName := ""
-	collectionName := prefix + funcutil.GenRandomStr()
-
-	dim := 128
-	expr := fmt.Sprintf("%s > 0", testInt64Field)
-	nq := 10
-	topk := 10
-	roundDecimal := 7
-	nprobe := 10
-
-	fieldName2Types := map[string]schemapb.DataType{
-		testBoolField:     schemapb.DataType_Bool,
-		testInt32Field:    schemapb.DataType_Int32,
-		testInt64Field:    schemapb.DataType_Int64,
-		testFloatField:    schemapb.DataType_Float,
-		testDoubleField:   schemapb.DataType_Double,
-		testFloatVecField: schemapb.DataType_FloatVector,
-	}
-	if enableMultipleVectorFields {
-		fieldName2Types[testBinaryVecField] = schemapb.DataType_BinaryVector
-	}
-	schema := constructCollectionSchemaByDataType(collectionName, fieldName2Types, testInt64Field, false)
-	marshaledSchema, err := proto.Marshal(schema)
-	assert.NoError(t, err)
-
-	createColT := &createCollectionTask{
-		Condition: NewTaskCondition(ctx),
-		CreateCollectionRequest: &milvuspb.CreateCollectionRequest{
-			Base:           nil,
-			DbName:         dbName,
-			CollectionName: collectionName,
-			Schema:         marshaledSchema,
-			ShardsNum:      shardsNum,
-		},
-		ctx:       ctx,
-		rootCoord: rc,
-		result:    nil,
-		schema:    nil,
-	}
-
-	assert.NoError(t, createColT.OnEnqueue())
-	assert.NoError(t, createColT.PreExecute(ctx))
-	assert.NoError(t, createColT.Execute(ctx))
-	assert.NoError(t, createColT.PostExecute(ctx))
-
-	dmlChannelsFunc := getDmlChannelsFunc(ctx, rc)
-	query := newMockGetChannelsService()
-	factory := newSimpleMockMsgStreamFactory()
-	chMgr := newChannelsMgrImpl(dmlChannelsFunc, nil, query.GetChannels, nil, factory)
-	defer chMgr.removeAllDMLStream()
-	defer chMgr.removeAllDQLStream()
-
-	collectionID, err := globalMetaCache.GetCollectionID(ctx, collectionName)
-	assert.NoError(t, err)
-
-	qc := NewQueryCoordMock()
-	qc.Start()
-	defer qc.Stop()
-	status, err := qc.LoadCollection(ctx, &querypb.LoadCollectionRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:   commonpb.MsgType_LoadCollection,
-			MsgID:     0,
-			Timestamp: 0,
-			SourceID:  Params.ProxyCfg.ProxyID,
-		},
-		DbID:         0,
-		CollectionID: collectionID,
-		Schema:       nil,
-	})
-	assert.NoError(t, err)
-	assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
-
-	req := constructSearchRequest(dbName, collectionName,
-		expr,
-		testFloatVecField,
-		nq, dim, nprobe, topk, roundDecimal)
-
-	task := &searchTask{
-		Condition: NewTaskCondition(ctx),
-		SearchRequest: &internalpb.SearchRequest{
-			Base: &commonpb.MsgBase{
-				MsgType:   commonpb.MsgType_Search,
-				MsgID:     0,
-				Timestamp: 0,
-				SourceID:  Params.ProxyCfg.ProxyID,
-			},
-			ResultChannelID:    strconv.FormatInt(Params.ProxyCfg.ProxyID, 10),
-			DbID:               0,
-			CollectionID:       0,
-			PartitionIDs:       nil,
-			Dsl:                "",
-			PlaceholderGroup:   nil,
-			DslType:            0,
-			SerializedExprPlan: nil,
-			OutputFieldsId:     nil,
-			TravelTimestamp:    0,
-			GuaranteeTimestamp: 0,
-		},
-		ctx:       ctx,
-		resultBuf: make(chan []*internalpb.SearchResults),
-		result:    nil,
-		query:     req,
-		chMgr:     chMgr,
-		qc:        qc,
-		tr:        timerecord.NewTimeRecorder("search"),
-	}
-
-	// simple mock for query node
-	// TODO(dragondriver): should we replace this mock using RocksMq or MemMsgStream?
-
-	err = chMgr.createDQLStream(collectionID)
-	assert.NoError(t, err)
-	stream, err := chMgr.getDQLStream(collectionID)
-	assert.NoError(t, err)
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	consumeCtx, cancel := context.WithCancel(ctx)
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-consumeCtx.Done():
-				return
-			case pack, ok := <-stream.Chan():
-				assert.True(t, ok)
-				if pack == nil {
-					continue
-				}
-
-				for _, msg := range pack.Msgs {
-					_, ok := msg.(*msgstream.SearchMsg)
-					assert.True(t, ok)
-					// TODO(dragondriver): construct result according to the request
-
-					constructSearchResulstData := func() *schemapb.SearchResultData {
-						resultData := &schemapb.SearchResultData{
-							NumQueries: int64(nq),
-							TopK:       int64(topk),
-							Scores:     make([]float32, nq*topk),
-							Ids: &schemapb.IDs{
-								IdField: &schemapb.IDs_IntId{
-									IntId: &schemapb.LongArray{
-										Data: make([]int64, nq*topk),
-									},
-								},
-							},
-							Topks: make([]int64, nq),
-						}
-
-						fieldID := common.StartOfUserFieldID
-						for fieldName, dataType := range fieldName2Types {
-							resultData.FieldsData = append(resultData.FieldsData, generateFieldData(dataType, fieldName, int64(fieldID), nq*topk))
-							fieldID++
-						}
-
-						for i := 0; i < nq; i++ {
-							for j := 0; j < topk; j++ {
-								offset := i*topk + j
-								score := float32(uniquegenerator.GetUniqueIntGeneratorIns().GetInt()) // increasingly
-								id := int64(uniquegenerator.GetUniqueIntGeneratorIns().GetInt())
-								resultData.Scores[offset] = score
-								resultData.Ids.IdField.(*schemapb.IDs_IntId).IntId.Data[offset] = id
-							}
-							resultData.Topks[i] = int64(topk)
-						}
-
-						return resultData
-					}
-
-					result1 := &internalpb.SearchResults{
-						Base: &commonpb.MsgBase{
-							MsgType:   commonpb.MsgType_SearchResult,
-							MsgID:     0,
-							Timestamp: 0,
-							SourceID:  0,
-						},
-						Status: &commonpb.Status{
-							ErrorCode: commonpb.ErrorCode_Success,
-							Reason:    "",
-						},
-						ResultChannelID:          "",
-						MetricType:               distance.L2,
-						NumQueries:               int64(nq),
-						TopK:                     int64(topk),
-						SealedSegmentIDsSearched: nil,
-						ChannelIDsSearched:       nil,
-						GlobalSealedSegmentIDs:   nil,
-						SlicedBlob:               nil,
-						SlicedNumCount:           1,
-						SlicedOffset:             0,
-					}
-					resultData := constructSearchResulstData()
-					sliceBlob, err := proto.Marshal(resultData)
-					assert.NoError(t, err)
-					result1.SlicedBlob = sliceBlob
-
-					// result2.SliceBlob = nil, will be skipped in decode stage
-					result2 := &internalpb.SearchResults{
-						Base: &commonpb.MsgBase{
-							MsgType:   commonpb.MsgType_SearchResult,
-							MsgID:     0,
-							Timestamp: 0,
-							SourceID:  0,
-						},
-						Status: &commonpb.Status{
-							ErrorCode: commonpb.ErrorCode_Success,
-							Reason:    "",
-						},
-						ResultChannelID:          "",
-						MetricType:               distance.L2,
-						NumQueries:               int64(nq),
-						TopK:                     int64(topk),
-						SealedSegmentIDsSearched: nil,
-						ChannelIDsSearched:       nil,
-						GlobalSealedSegmentIDs:   nil,
-						SlicedBlob:               nil,
-						SlicedNumCount:           1,
-						SlicedOffset:             0,
-					}
-
-					// send search result
-					task.resultBuf <- []*internalpb.SearchResults{result1, result2}
-				}
-			}
-		}
-	}()
-
-	assert.NoError(t, task.OnEnqueue())
-	assert.Error(t, task.PreExecute(ctx))
-
-	cancel()
-	wg.Wait()
-}
-
-func TestSearchTask_7803_reduce(t *testing.T) {
-	var err error
-
-	Params.Init()
-	Params.ProxyCfg.SearchResultChannelNames = []string{funcutil.GenRandomStr()}
-
-	rc := NewRootCoordMock()
-	rc.Start()
-	defer rc.Stop()
-
-	ctx := context.Background()
-
-	err = InitMetaCache(rc)
-	assert.NoError(t, err)
-
-	shardsNum := int32(2)
-	prefix := "TestSearchTask_7803_reduce"
-	dbName := ""
-	collectionName := prefix + funcutil.GenRandomStr()
-	int64Field := "int64"
-	floatVecField := "fvec"
-	dim := 128
-	expr := fmt.Sprintf("%s > 0", int64Field)
-	nq := 10
-	topk := 10
-	roundDecimal := 3
-	nprobe := 10
-
-	schema := constructCollectionSchema(
-		int64Field,
-		floatVecField,
-		dim,
-		collectionName)
-	marshaledSchema, err := proto.Marshal(schema)
-	assert.NoError(t, err)
-
-	createColT := &createCollectionTask{
-		Condition: NewTaskCondition(ctx),
-		CreateCollectionRequest: &milvuspb.CreateCollectionRequest{
-			Base:           nil,
-			DbName:         dbName,
-			CollectionName: collectionName,
-			Schema:         marshaledSchema,
-			ShardsNum:      shardsNum,
-		},
-		ctx:       ctx,
-		rootCoord: rc,
-		result:    nil,
-		schema:    nil,
-	}
-
-	assert.NoError(t, createColT.OnEnqueue())
-	assert.NoError(t, createColT.PreExecute(ctx))
-	assert.NoError(t, createColT.Execute(ctx))
-	assert.NoError(t, createColT.PostExecute(ctx))
-
-	dmlChannelsFunc := getDmlChannelsFunc(ctx, rc)
-	query := newMockGetChannelsService()
-	factory := newSimpleMockMsgStreamFactory()
-	chMgr := newChannelsMgrImpl(dmlChannelsFunc, nil, query.GetChannels, nil, factory)
-	defer chMgr.removeAllDMLStream()
-	defer chMgr.removeAllDQLStream()
-
-	collectionID, err := globalMetaCache.GetCollectionID(ctx, collectionName)
-	assert.NoError(t, err)
-
-	qc := NewQueryCoordMock()
-	qc.Start()
-	defer qc.Stop()
-	status, err := qc.LoadCollection(ctx, &querypb.LoadCollectionRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:   commonpb.MsgType_LoadCollection,
-			MsgID:     0,
-			Timestamp: 0,
-			SourceID:  Params.ProxyCfg.ProxyID,
-		},
-		DbID:         0,
-		CollectionID: collectionID,
-		Schema:       nil,
-	})
-	assert.NoError(t, err)
-	assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
-
-	req := constructSearchRequest(dbName, collectionName,
-		expr,
-		floatVecField,
-		nq, dim, nprobe, topk, roundDecimal)
-
-	task := &searchTask{
-		Condition: NewTaskCondition(ctx),
-		SearchRequest: &internalpb.SearchRequest{
-			Base: &commonpb.MsgBase{
-				MsgType:   commonpb.MsgType_Search,
-				MsgID:     0,
-				Timestamp: 0,
-				SourceID:  Params.ProxyCfg.ProxyID,
-			},
-			ResultChannelID:    strconv.FormatInt(Params.ProxyCfg.ProxyID, 10),
-			DbID:               0,
-			CollectionID:       0,
-			PartitionIDs:       nil,
-			Dsl:                "",
-			PlaceholderGroup:   nil,
-			DslType:            0,
-			SerializedExprPlan: nil,
-			OutputFieldsId:     nil,
-			TravelTimestamp:    0,
-			GuaranteeTimestamp: 0,
-		},
-		ctx:       ctx,
-		resultBuf: make(chan []*internalpb.SearchResults),
-		result:    nil,
-		query:     req,
-		chMgr:     chMgr,
-		qc:        qc,
-		tr:        timerecord.NewTimeRecorder("search"),
-	}
-
-	// simple mock for query node
-	// TODO(dragondriver): should we replace this mock using RocksMq or MemMsgStream?
-
-	err = chMgr.createDQLStream(collectionID)
-	assert.NoError(t, err)
-	stream, err := chMgr.getDQLStream(collectionID)
-	assert.NoError(t, err)
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	consumeCtx, cancel := context.WithCancel(ctx)
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-consumeCtx.Done():
-				return
-			case pack, ok := <-stream.Chan():
-				assert.True(t, ok)
-				if pack == nil {
-					continue
-				}
-
-				for _, msg := range pack.Msgs {
-					_, ok := msg.(*msgstream.SearchMsg)
-					assert.True(t, ok)
-					// TODO(dragondriver): construct result according to the request
-
-					constructSearchResulstData := func(invalidNum int) *schemapb.SearchResultData {
-						resultData := &schemapb.SearchResultData{
-							NumQueries: int64(nq),
-							TopK:       int64(topk),
-							FieldsData: nil,
-							Scores:     make([]float32, nq*topk),
-							Ids: &schemapb.IDs{
-								IdField: &schemapb.IDs_IntId{
-									IntId: &schemapb.LongArray{
-										Data: make([]int64, nq*topk),
-									},
-								},
-							},
-							Topks: make([]int64, nq),
-						}
-
-						for i := 0; i < nq; i++ {
-							for j := 0; j < topk; j++ {
-								offset := i*topk + j
-								if j >= invalidNum {
-									resultData.Scores[offset] = minFloat32
-									resultData.Ids.IdField.(*schemapb.IDs_IntId).IntId.Data[offset] = -1
-								} else {
-									score := float32(uniquegenerator.GetUniqueIntGeneratorIns().GetInt()) // increasingly
-									id := int64(uniquegenerator.GetUniqueIntGeneratorIns().GetInt())
-									resultData.Scores[offset] = score
-									resultData.Ids.IdField.(*schemapb.IDs_IntId).IntId.Data[offset] = id
-								}
-							}
-							resultData.Topks[i] = int64(topk)
-						}
-
-						return resultData
-					}
-
-					result1 := &internalpb.SearchResults{
-						Base: &commonpb.MsgBase{
-							MsgType:   commonpb.MsgType_SearchResult,
-							MsgID:     0,
-							Timestamp: 0,
-							SourceID:  0,
-						},
-						Status: &commonpb.Status{
-							ErrorCode: commonpb.ErrorCode_Success,
-							Reason:    "",
-						},
-						ResultChannelID:          "",
-						MetricType:               distance.L2,
-						NumQueries:               int64(nq),
-						TopK:                     int64(topk),
-						SealedSegmentIDsSearched: nil,
-						ChannelIDsSearched:       nil,
-						GlobalSealedSegmentIDs:   nil,
-						SlicedBlob:               nil,
-						SlicedNumCount:           1,
-						SlicedOffset:             0,
-					}
-					resultData := constructSearchResulstData(topk / 2)
-					sliceBlob, err := proto.Marshal(resultData)
-					assert.NoError(t, err)
-					result1.SlicedBlob = sliceBlob
-
-					result2 := &internalpb.SearchResults{
-						Base: &commonpb.MsgBase{
-							MsgType:   commonpb.MsgType_SearchResult,
-							MsgID:     0,
-							Timestamp: 0,
-							SourceID:  0,
-						},
-						Status: &commonpb.Status{
-							ErrorCode: commonpb.ErrorCode_Success,
-							Reason:    "",
-						},
-						ResultChannelID:          "",
-						MetricType:               distance.L2,
-						NumQueries:               int64(nq),
-						TopK:                     int64(topk),
-						SealedSegmentIDsSearched: nil,
-						ChannelIDsSearched:       nil,
-						GlobalSealedSegmentIDs:   nil,
-						SlicedBlob:               nil,
-						SlicedNumCount:           1,
-						SlicedOffset:             0,
-					}
-					resultData2 := constructSearchResulstData(topk - topk/2)
-					sliceBlob2, err := proto.Marshal(resultData2)
-					assert.NoError(t, err)
-					result2.SlicedBlob = sliceBlob2
-
-					// send search result
-					task.resultBuf <- []*internalpb.SearchResults{result1, result2}
-				}
-			}
-		}
-	}()
-
-	assert.NoError(t, task.OnEnqueue())
-	assert.NoError(t, task.PreExecute(ctx))
-	assert.NoError(t, task.Execute(ctx))
-	assert.NoError(t, task.PostExecute(ctx))
-
-	cancel()
-	wg.Wait()
-}
-
-func TestSearchTask_Type(t *testing.T) {
-	Params.Init()
-
-	task := &searchTask{
-		SearchRequest: &internalpb.SearchRequest{
-			Base: nil,
-		},
-		tr: timerecord.NewTimeRecorder("search"),
-	}
-	assert.NoError(t, task.OnEnqueue())
-	assert.Equal(t, commonpb.MsgType_Search, task.Type())
-}
-
-func TestSearchTask_Ts(t *testing.T) {
-	Params.Init()
-
-	task := &searchTask{
-		SearchRequest: &internalpb.SearchRequest{
-			Base: nil,
-		},
-		tr: timerecord.NewTimeRecorder("search"),
-	}
-	assert.NoError(t, task.OnEnqueue())
-
-	ts := Timestamp(time.Now().Nanosecond())
-	task.SetTs(ts)
-	assert.Equal(t, ts, task.BeginTs())
-	assert.Equal(t, ts, task.EndTs())
-}
-
-func TestSearchTask_Channels(t *testing.T) {
+func TestTask_Int64PrimaryKey(t *testing.T) {
 	var err error
 
 	Params.Init()
@@ -2513,749 +1642,14 @@ func TestSearchTask_Channels(t *testing.T) {
 	rc := NewRootCoordMock()
 	rc.Start()
 	defer rc.Stop()
-
-	ctx := context.Background()
-
-	err = InitMetaCache(rc)
-	assert.NoError(t, err)
-
-	dmlChannelsFunc := getDmlChannelsFunc(ctx, rc)
-	query := newMockGetChannelsService()
-	factory := newSimpleMockMsgStreamFactory()
-	chMgr := newChannelsMgrImpl(dmlChannelsFunc, nil, query.GetChannels, nil, factory)
-	defer chMgr.removeAllDMLStream()
-	defer chMgr.removeAllDQLStream()
-
-	prefix := "TestSearchTask_Channels"
-	collectionName := prefix + funcutil.GenRandomStr()
-	shardsNum := int32(2)
-	dbName := ""
-	int64Field := "int64"
-	floatVecField := "fvec"
-	dim := 128
-
-	task := &searchTask{
-		ctx: ctx,
-		query: &milvuspb.SearchRequest{
-			CollectionName: collectionName,
-		},
-		chMgr: chMgr,
-		tr:    timerecord.NewTimeRecorder("search"),
-	}
-
-	// collection not exist
-	_, err = task.getVChannels()
-	assert.Error(t, err)
-	_, err = task.getVChannels()
-	assert.Error(t, err)
-
-	schema := constructCollectionSchema(int64Field, floatVecField, dim, collectionName)
-	marshaledSchema, err := proto.Marshal(schema)
-	assert.NoError(t, err)
-
-	createColT := &createCollectionTask{
-		Condition: NewTaskCondition(ctx),
-		CreateCollectionRequest: &milvuspb.CreateCollectionRequest{
-			Base:           nil,
-			DbName:         dbName,
-			CollectionName: collectionName,
-			Schema:         marshaledSchema,
-			ShardsNum:      shardsNum,
-		},
-		ctx:       ctx,
-		rootCoord: rc,
-		result:    nil,
-		schema:    nil,
-	}
-
-	assert.NoError(t, createColT.OnEnqueue())
-	assert.NoError(t, createColT.PreExecute(ctx))
-	assert.NoError(t, createColT.Execute(ctx))
-	assert.NoError(t, createColT.PostExecute(ctx))
-
-	_, err = task.getChannels()
-	assert.NoError(t, err)
-	_, err = task.getVChannels()
-	assert.NoError(t, err)
-
-	_ = chMgr.removeAllDMLStream()
-	chMgr.dmlChannelsMgr.getChannelsFunc = func(collectionID UniqueID) (map[vChan]pChan, error) {
-		return nil, errors.New("mock")
-	}
-	_, err = task.getChannels()
-	assert.Error(t, err)
-	_, err = task.getVChannels()
-	assert.Error(t, err)
-}
-
-func TestSearchTask_PreExecute(t *testing.T) {
-	var err error
-
-	Params.Init()
-	Params.ProxyCfg.SearchResultChannelNames = []string{funcutil.GenRandomStr()}
-
-	rc := NewRootCoordMock()
-	rc.Start()
-	defer rc.Stop()
-
 	qc := NewQueryCoordMock()
 	qc.Start()
 	defer qc.Stop()
 
 	ctx := context.Background()
 
-	err = InitMetaCache(rc)
-	assert.NoError(t, err)
-
-	dmlChannelsFunc := getDmlChannelsFunc(ctx, rc)
-	query := newMockGetChannelsService()
-	factory := newSimpleMockMsgStreamFactory()
-	chMgr := newChannelsMgrImpl(dmlChannelsFunc, nil, query.GetChannels, nil, factory)
-	defer chMgr.removeAllDMLStream()
-	defer chMgr.removeAllDQLStream()
-
-	prefix := "TestSearchTask_PreExecute"
-	collectionName := prefix + funcutil.GenRandomStr()
-	shardsNum := int32(2)
-	dbName := ""
-	int64Field := "int64"
-	floatVecField := "fvec"
-	dim := 128
-
-	task := &searchTask{
-		ctx:           ctx,
-		SearchRequest: &internalpb.SearchRequest{},
-		query: &milvuspb.SearchRequest{
-			CollectionName: collectionName,
-		},
-		chMgr: chMgr,
-		qc:    qc,
-		tr:    timerecord.NewTimeRecorder("search"),
-	}
-	assert.NoError(t, task.OnEnqueue())
-
-	// collection not exist
-	assert.Error(t, task.PreExecute(ctx))
-
-	schema := constructCollectionSchema(int64Field, floatVecField, dim, collectionName)
-	marshaledSchema, err := proto.Marshal(schema)
-	assert.NoError(t, err)
-
-	createColT := &createCollectionTask{
-		Condition: NewTaskCondition(ctx),
-		CreateCollectionRequest: &milvuspb.CreateCollectionRequest{
-			Base:           nil,
-			DbName:         dbName,
-			CollectionName: collectionName,
-			Schema:         marshaledSchema,
-			ShardsNum:      shardsNum,
-		},
-		ctx:       ctx,
-		rootCoord: rc,
-		result:    nil,
-		schema:    nil,
-	}
-
-	assert.NoError(t, createColT.OnEnqueue())
-	assert.NoError(t, createColT.PreExecute(ctx))
-	assert.NoError(t, createColT.Execute(ctx))
-	assert.NoError(t, createColT.PostExecute(ctx))
-
-	collectionID, _ := globalMetaCache.GetCollectionID(ctx, collectionName)
-
-	// validateCollectionName
-	task.query.CollectionName = "$"
-	assert.Error(t, task.PreExecute(ctx))
-	task.query.CollectionName = collectionName
-
-	// Validate Partition
-	task.query.PartitionNames = []string{"$"}
-	assert.Error(t, task.PreExecute(ctx))
-	task.query.PartitionNames = nil
-
-	// mock show collections of QueryCoord
-	qc.SetShowCollectionsFunc(func(ctx context.Context, request *querypb.ShowCollectionsRequest) (*querypb.ShowCollectionsResponse, error) {
-		return nil, errors.New("mock")
-	})
-	assert.Error(t, task.PreExecute(ctx))
-	qc.SetShowCollectionsFunc(func(ctx context.Context, request *querypb.ShowCollectionsRequest) (*querypb.ShowCollectionsResponse, error) {
-		return &querypb.ShowCollectionsResponse{
-			Status: &commonpb.Status{
-				ErrorCode: commonpb.ErrorCode_UnexpectedError,
-				Reason:    "mock",
-			},
-		}, nil
-	})
-	assert.Error(t, task.PreExecute(ctx))
-	qc.ResetShowCollectionsFunc()
-
-	// collection not loaded
-	assert.Error(t, task.PreExecute(ctx))
-	_, _ = qc.LoadCollection(ctx, &querypb.LoadCollectionRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:   commonpb.MsgType_LoadCollection,
-			MsgID:     0,
-			Timestamp: 0,
-			SourceID:  0,
-		},
-		DbID:         0,
-		CollectionID: collectionID,
-		Schema:       nil,
-	})
-
-	// no anns field
-	task.query.DslType = commonpb.DslType_BoolExprV1
-	assert.Error(t, task.PreExecute(ctx))
-	task.query.SearchParams = []*commonpb.KeyValuePair{
-		{
-			Key:   AnnsFieldKey,
-			Value: floatVecField,
-		},
-	}
-
-	// no topk
-	assert.Error(t, task.PreExecute(ctx))
-	task.query.SearchParams = []*commonpb.KeyValuePair{
-		{
-			Key:   AnnsFieldKey,
-			Value: floatVecField,
-		},
-		{
-			Key:   TopKKey,
-			Value: "invalid",
-		},
-	}
-
-	// invalid topk
-	assert.Error(t, task.PreExecute(ctx))
-	task.query.SearchParams = []*commonpb.KeyValuePair{
-		{
-			Key:   AnnsFieldKey,
-			Value: floatVecField,
-		},
-		{
-			Key:   TopKKey,
-			Value: "10",
-		},
-	}
-
-	// no metric type
-	assert.Error(t, task.PreExecute(ctx))
-	task.query.SearchParams = []*commonpb.KeyValuePair{
-		{
-			Key:   AnnsFieldKey,
-			Value: floatVecField,
-		},
-		{
-			Key:   TopKKey,
-			Value: "10",
-		},
-		{
-			Key:   MetricTypeKey,
-			Value: distance.L2,
-		},
-	}
-
-	// no search params
-	assert.Error(t, task.PreExecute(ctx))
-	task.query.SearchParams = []*commonpb.KeyValuePair{
-		{
-			Key:   AnnsFieldKey,
-			Value: int64Field,
-		},
-		{
-			Key:   TopKKey,
-			Value: "10",
-		},
-		{
-			Key:   MetricTypeKey,
-			Value: distance.L2,
-		},
-		{
-			Key:   SearchParamsKey,
-			Value: `{"nprobe": 10}`,
-		},
-	}
-
-	// invalid round_decimal
-	assert.Error(t, task.PreExecute(ctx))
-	task.query.SearchParams = []*commonpb.KeyValuePair{
-		{
-			Key:   AnnsFieldKey,
-			Value: int64Field,
-		},
-		{
-			Key:   TopKKey,
-			Value: "10",
-		},
-		{
-			Key:   MetricTypeKey,
-			Value: distance.L2,
-		},
-		{
-			Key:   SearchParamsKey,
-			Value: `{"nprobe": 10}`,
-		},
-		{
-			Key:   RoundDecimalKey,
-			Value: "invalid",
-		},
-	}
-
-	// invalid round_decimal
-	assert.Error(t, task.PreExecute(ctx))
-	task.query.SearchParams = []*commonpb.KeyValuePair{
-		{
-			Key:   AnnsFieldKey,
-			Value: floatVecField,
-		},
-		{
-			Key:   TopKKey,
-			Value: "10",
-		},
-		{
-			Key:   MetricTypeKey,
-			Value: distance.L2,
-		},
-		{
-			Key:   RoundDecimalKey,
-			Value: "-1",
-		},
-	}
-
-	// failed to create query plan
-	assert.Error(t, task.PreExecute(ctx))
-	task.query.SearchParams = []*commonpb.KeyValuePair{
-		{
-			Key:   AnnsFieldKey,
-			Value: floatVecField,
-		},
-		{
-			Key:   TopKKey,
-			Value: "10",
-		},
-		{
-			Key:   MetricTypeKey,
-			Value: distance.L2,
-		},
-		{
-			Key:   SearchParamsKey,
-			Value: `{"nprobe": 10}`,
-		},
-		{
-			Key:   RoundDecimalKey,
-			Value: "-1",
-		},
-	}
-
-	// search task with timeout
-	ctx1, cancel := context.WithTimeout(ctx, time.Second)
-	defer cancel()
-	// before preExecute
-	assert.Equal(t, typeutil.ZeroTimestamp, task.TimeoutTimestamp)
-	task.ctx = ctx1
-	assert.NoError(t, task.PreExecute(ctx))
-	// after preExecute
-	assert.Greater(t, task.TimeoutTimestamp, typeutil.ZeroTimestamp)
-
-	// field not exist
-	task.query.OutputFields = []string{int64Field + funcutil.GenRandomStr()}
-	assert.Error(t, task.PreExecute(ctx))
-	// contain vector field
-	task.query.OutputFields = []string{floatVecField}
-	assert.Error(t, task.PreExecute(ctx))
-	task.query.OutputFields = []string{int64Field}
-
-	// partition
-	rc.showPartitionsFunc = func(ctx context.Context, request *milvuspb.ShowPartitionsRequest) (*milvuspb.ShowPartitionsResponse, error) {
-		return nil, errors.New("mock")
-	}
-	assert.Error(t, task.PreExecute(ctx))
-	rc.showPartitionsFunc = nil
-
-	// TODO(dragondriver): test partition-related error
-}
-
-func TestSearchTask_Execute(t *testing.T) {
-	var err error
-
-	Params.Init()
-	Params.ProxyCfg.SearchResultChannelNames = []string{funcutil.GenRandomStr()}
-
-	rc := NewRootCoordMock()
-	rc.Start()
-	defer rc.Stop()
-
-	qc := NewQueryCoordMock()
-	qc.Start()
-	defer qc.Stop()
-
-	ctx := context.Background()
-
-	err = InitMetaCache(rc)
-	assert.NoError(t, err)
-
-	dmlChannelsFunc := getDmlChannelsFunc(ctx, rc)
-	query := newMockGetChannelsService()
-	factory := newSimpleMockMsgStreamFactory()
-	chMgr := newChannelsMgrImpl(dmlChannelsFunc, nil, query.GetChannels, nil, factory)
-	defer chMgr.removeAllDMLStream()
-	defer chMgr.removeAllDQLStream()
-
-	prefix := "TestSearchTask_Execute"
-	collectionName := prefix + funcutil.GenRandomStr()
-	shardsNum := int32(2)
-	dbName := ""
-	int64Field := "int64"
-	floatVecField := "fvec"
-	dim := 128
-
-	task := &searchTask{
-		ctx: ctx,
-		SearchRequest: &internalpb.SearchRequest{
-			Base: &commonpb.MsgBase{
-				MsgType:   commonpb.MsgType_Search,
-				MsgID:     0,
-				Timestamp: uint64(time.Now().UnixNano()),
-				SourceID:  0,
-			},
-		},
-		query: &milvuspb.SearchRequest{
-			CollectionName: collectionName,
-		},
-		result: &milvuspb.SearchResults{
-			Status:  &commonpb.Status{},
-			Results: nil,
-		},
-		chMgr: chMgr,
-		qc:    qc,
-		tr:    timerecord.NewTimeRecorder("search"),
-	}
-	assert.NoError(t, task.OnEnqueue())
-
-	// collection not exist
-	assert.Error(t, task.PreExecute(ctx))
-
-	schema := constructCollectionSchema(int64Field, floatVecField, dim, collectionName)
-	marshaledSchema, err := proto.Marshal(schema)
-	assert.NoError(t, err)
-
-	createColT := &createCollectionTask{
-		Condition: NewTaskCondition(ctx),
-		CreateCollectionRequest: &milvuspb.CreateCollectionRequest{
-			Base:           nil,
-			DbName:         dbName,
-			CollectionName: collectionName,
-			Schema:         marshaledSchema,
-			ShardsNum:      shardsNum,
-		},
-		ctx:       ctx,
-		rootCoord: rc,
-		result:    nil,
-		schema:    nil,
-	}
-
-	assert.NoError(t, createColT.OnEnqueue())
-	assert.NoError(t, createColT.PreExecute(ctx))
-	assert.NoError(t, createColT.Execute(ctx))
-	assert.NoError(t, createColT.PostExecute(ctx))
-
-	assert.NoError(t, task.Execute(ctx))
-
-	_ = chMgr.removeAllDQLStream()
-	query.f = func(collectionID UniqueID) (map[vChan]pChan, error) {
-		return nil, errors.New("mock")
-	}
-	assert.Error(t, task.Execute(ctx))
-	// TODO(dragondriver): cover getDQLStream
-}
-
-func genSearchResultData(nq int64, topk int64, ids []int64, scores []float32) *schemapb.SearchResultData {
-	return &schemapb.SearchResultData{
-		NumQueries: nq,
-		TopK:       topk,
-		FieldsData: nil,
-		Scores:     scores,
-		Ids: &schemapb.IDs{
-			IdField: &schemapb.IDs_IntId{
-				IntId: &schemapb.LongArray{
-					Data: ids,
-				},
-			},
-		},
-		Topks: make([]int64, nq),
-	}
-}
-
-func TestSearchTask_Reduce(t *testing.T) {
-	const (
-		nq         = 1
-		topk       = 4
-		metricType = "L2"
-	)
-	t.Run("case1", func(t *testing.T) {
-		ids := []int64{1, 2, 3, 4}
-		scores := []float32{-1.0, -2.0, -3.0, -4.0}
-		data1 := genSearchResultData(nq, topk, ids, scores)
-		data2 := genSearchResultData(nq, topk, ids, scores)
-		dataArray := make([]*schemapb.SearchResultData, 0)
-		dataArray = append(dataArray, data1)
-		dataArray = append(dataArray, data2)
-		res, err := reduceSearchResultData(dataArray, nq, topk, metricType)
-		assert.Nil(t, err)
-		assert.Equal(t, ids, res.Results.Ids.GetIntId().Data)
-		assert.Equal(t, []float32{1.0, 2.0, 3.0, 4.0}, res.Results.Scores)
-	})
-	t.Run("case2", func(t *testing.T) {
-		ids1 := []int64{1, 2, 3, 4}
-		scores1 := []float32{-1.0, -2.0, -3.0, -4.0}
-		ids2 := []int64{5, 1, 3, 4}
-		scores2 := []float32{-1.0, -1.0, -3.0, -4.0}
-		data1 := genSearchResultData(nq, topk, ids1, scores1)
-		data2 := genSearchResultData(nq, topk, ids2, scores2)
-		dataArray := make([]*schemapb.SearchResultData, 0)
-		dataArray = append(dataArray, data1)
-		dataArray = append(dataArray, data2)
-		res, err := reduceSearchResultData(dataArray, nq, topk, metricType)
-		assert.Nil(t, err)
-		assert.ElementsMatch(t, []int64{1, 5, 2, 3}, res.Results.Ids.GetIntId().Data)
-	})
-}
-
-func TestQueryTask_all(t *testing.T) {
-	var err error
-
-	Params.Init()
-	Params.ProxyCfg.RetrieveResultChannelNames = []string{funcutil.GenRandomStr()}
-
-	rc := NewRootCoordMock()
-	rc.Start()
-	defer rc.Stop()
-
-	ctx := context.Background()
-
-	err = InitMetaCache(rc)
-	assert.NoError(t, err)
-
-	shardsNum := int32(2)
-	prefix := "TestQueryTask_all"
-	dbName := ""
-	collectionName := prefix + funcutil.GenRandomStr()
-
-	fieldName2Types := map[string]schemapb.DataType{
-		testBoolField:     schemapb.DataType_Bool,
-		testInt32Field:    schemapb.DataType_Int32,
-		testInt64Field:    schemapb.DataType_Int64,
-		testFloatField:    schemapb.DataType_Float,
-		testDoubleField:   schemapb.DataType_Double,
-		testFloatVecField: schemapb.DataType_FloatVector,
-	}
-	if enableMultipleVectorFields {
-		fieldName2Types[testBinaryVecField] = schemapb.DataType_BinaryVector
-	}
-
-	expr := fmt.Sprintf("%s > 0", testInt64Field)
-	hitNum := 10
-
-	schema := constructCollectionSchemaByDataType(collectionName, fieldName2Types, testInt64Field, false)
-	marshaledSchema, err := proto.Marshal(schema)
-	assert.NoError(t, err)
-
-	createColT := &createCollectionTask{
-		Condition: NewTaskCondition(ctx),
-		CreateCollectionRequest: &milvuspb.CreateCollectionRequest{
-			Base:           nil,
-			DbName:         dbName,
-			CollectionName: collectionName,
-			Schema:         marshaledSchema,
-			ShardsNum:      shardsNum,
-		},
-		ctx:       ctx,
-		rootCoord: rc,
-		result:    nil,
-		schema:    nil,
-	}
-
-	assert.NoError(t, createColT.OnEnqueue())
-	assert.NoError(t, createColT.PreExecute(ctx))
-	assert.NoError(t, createColT.Execute(ctx))
-	assert.NoError(t, createColT.PostExecute(ctx))
-
-	dmlChannelsFunc := getDmlChannelsFunc(ctx, rc)
-	query := newMockGetChannelsService()
-	factory := newSimpleMockMsgStreamFactory()
-	chMgr := newChannelsMgrImpl(dmlChannelsFunc, nil, query.GetChannels, nil, factory)
-	defer chMgr.removeAllDMLStream()
-	defer chMgr.removeAllDQLStream()
-
-	collectionID, err := globalMetaCache.GetCollectionID(ctx, collectionName)
-	assert.NoError(t, err)
-
-	qc := NewQueryCoordMock()
-	qc.Start()
-	defer qc.Stop()
-	status, err := qc.LoadCollection(ctx, &querypb.LoadCollectionRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:   commonpb.MsgType_LoadCollection,
-			MsgID:     0,
-			Timestamp: 0,
-			SourceID:  Params.ProxyCfg.ProxyID,
-		},
-		DbID:         0,
-		CollectionID: collectionID,
-		Schema:       nil,
-	})
-	assert.NoError(t, err)
-	assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
-
-	task := &queryTask{
-		Condition: NewTaskCondition(ctx),
-		RetrieveRequest: &internalpb.RetrieveRequest{
-			Base: &commonpb.MsgBase{
-				MsgType:   commonpb.MsgType_Retrieve,
-				MsgID:     0,
-				Timestamp: 0,
-				SourceID:  Params.ProxyCfg.ProxyID,
-			},
-			ResultChannelID:    strconv.Itoa(int(Params.ProxyCfg.ProxyID)),
-			DbID:               0,
-			CollectionID:       collectionID,
-			PartitionIDs:       nil,
-			SerializedExprPlan: nil,
-			OutputFieldsId:     make([]int64, len(fieldName2Types)),
-			TravelTimestamp:    0,
-			GuaranteeTimestamp: 0,
-		},
-		ctx:       ctx,
-		resultBuf: make(chan []*internalpb.RetrieveResults),
-		result: &milvuspb.QueryResults{
-			Status: &commonpb.Status{
-				ErrorCode: commonpb.ErrorCode_Success,
-			},
-			FieldsData: nil,
-		},
-		query: &milvuspb.QueryRequest{
-			Base: &commonpb.MsgBase{
-				MsgType:   commonpb.MsgType_Retrieve,
-				MsgID:     0,
-				Timestamp: 0,
-				SourceID:  Params.ProxyCfg.ProxyID,
-			},
-			DbName:             dbName,
-			CollectionName:     collectionName,
-			Expr:               expr,
-			OutputFields:       nil,
-			PartitionNames:     nil,
-			TravelTimestamp:    0,
-			GuaranteeTimestamp: 0,
-		},
-		chMgr: chMgr,
-		qc:    qc,
-		ids:   nil,
-	}
-	for i := 0; i < len(fieldName2Types); i++ {
-		task.RetrieveRequest.OutputFieldsId[i] = int64(common.StartOfUserFieldID + i)
-	}
-
-	// simple mock for query node
-	// TODO(dragondriver): should we replace this mock using RocksMq or MemMsgStream?
-
-	err = chMgr.createDQLStream(collectionID)
-	assert.NoError(t, err)
-	stream, err := chMgr.getDQLStream(collectionID)
-	assert.NoError(t, err)
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	consumeCtx, cancel := context.WithCancel(ctx)
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-consumeCtx.Done():
-				return
-			case pack, ok := <-stream.Chan():
-				assert.True(t, ok)
-
-				if pack == nil {
-					continue
-				}
-
-				for _, msg := range pack.Msgs {
-					_, ok := msg.(*msgstream.RetrieveMsg)
-					assert.True(t, ok)
-					// TODO(dragondriver): construct result according to the request
-
-					result1 := &internalpb.RetrieveResults{
-						Base: &commonpb.MsgBase{
-							MsgType:   commonpb.MsgType_RetrieveResult,
-							MsgID:     0,
-							Timestamp: 0,
-							SourceID:  0,
-						},
-						Status: &commonpb.Status{
-							ErrorCode: commonpb.ErrorCode_Success,
-							Reason:    "",
-						},
-						ResultChannelID: strconv.Itoa(int(Params.ProxyCfg.ProxyID)),
-						Ids: &schemapb.IDs{
-							IdField: &schemapb.IDs_IntId{
-								IntId: &schemapb.LongArray{
-									Data: generateInt64Array(hitNum),
-								},
-							},
-						},
-						SealedSegmentIDsRetrieved: nil,
-						ChannelIDsRetrieved:       nil,
-						GlobalSealedSegmentIDs:    nil,
-					}
-
-					fieldID := common.StartOfUserFieldID
-					for fieldName, dataType := range fieldName2Types {
-						result1.FieldsData = append(result1.FieldsData, generateFieldData(dataType, fieldName, int64(fieldID), hitNum))
-						fieldID++
-					}
-
-					// send search result
-					task.resultBuf <- []*internalpb.RetrieveResults{result1}
-				}
-			}
-		}
-	}()
-
-	assert.NoError(t, task.OnEnqueue())
-
-	// test query task with timeout
-	ctx1, cancel1 := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel1()
-	// before preExecute
-	assert.Equal(t, typeutil.ZeroTimestamp, task.TimeoutTimestamp)
-	task.ctx = ctx1
-	assert.NoError(t, task.PreExecute(ctx))
-	// after preExecute
-	assert.Greater(t, task.TimeoutTimestamp, typeutil.ZeroTimestamp)
-	task.ctx = ctx
-
-	assert.NoError(t, task.Execute(ctx))
-	assert.NoError(t, task.PostExecute(ctx))
-
-	cancel()
-	wg.Wait()
-}
-
-func TestTask_all(t *testing.T) {
-	var err error
-
-	Params.Init()
-	Params.ProxyCfg.RetrieveResultChannelNames = []string{funcutil.GenRandomStr()}
-
-	rc := NewRootCoordMock()
-	rc.Start()
-	defer rc.Stop()
-
-	ctx := context.Background()
-
-	err = InitMetaCache(rc)
+	mgr := newShardClientMgr()
+	err = InitMetaCache(rc, qc, mgr)
 	assert.NoError(t, err)
 
 	shardsNum := int32(2)
@@ -3265,12 +1659,11 @@ func TestTask_all(t *testing.T) {
 	partitionName := prefix + funcutil.GenRandomStr()
 
 	fieldName2Types := map[string]schemapb.DataType{
-		testBoolField:   schemapb.DataType_Bool,
-		testInt32Field:  schemapb.DataType_Int32,
-		testInt64Field:  schemapb.DataType_Int64,
-		testFloatField:  schemapb.DataType_Float,
-		testDoubleField: schemapb.DataType_Double,
-		//testStringField:   schemapb.DataType_String,
+		testBoolField:     schemapb.DataType_Bool,
+		testInt32Field:    schemapb.DataType_Int32,
+		testInt64Field:    schemapb.DataType_Int64,
+		testFloatField:    schemapb.DataType_Float,
+		testDoubleField:   schemapb.DataType_Double,
 		testFloatVecField: schemapb.DataType_FloatVector}
 	if enableMultipleVectorFields {
 		fieldName2Types[testBinaryVecField] = schemapb.DataType_BinaryVector
@@ -3307,7 +1700,7 @@ func TestTask_all(t *testing.T) {
 				MsgType:   commonpb.MsgType_CreatePartition,
 				MsgID:     0,
 				Timestamp: 0,
-				SourceID:  Params.ProxyCfg.ProxyID,
+				SourceID:  Params.ProxyCfg.GetNodeID(),
 			},
 			DbName:         dbName,
 			CollectionName: collectionName,
@@ -3319,13 +1712,11 @@ func TestTask_all(t *testing.T) {
 	assert.NoError(t, err)
 
 	dmlChannelsFunc := getDmlChannelsFunc(ctx, rc)
-	query := newMockGetChannelsService()
 	factory := newSimpleMockMsgStreamFactory()
-	chMgr := newChannelsMgrImpl(dmlChannelsFunc, nil, query.GetChannels, nil, factory)
+	chMgr := newChannelsMgrImpl(dmlChannelsFunc, nil, factory)
 	defer chMgr.removeAllDMLStream()
-	defer chMgr.removeAllDQLStream()
 
-	err = chMgr.createDMLMsgStream(collectionID)
+	_, err = chMgr.getOrCreateDmlStream(collectionID)
 	assert.NoError(t, err)
 	pchans, err := chMgr.getChannels(collectionID)
 	assert.NoError(t, err)
@@ -3337,7 +1728,7 @@ func TestTask_all(t *testing.T) {
 	_ = ticker.start()
 	defer ticker.close()
 
-	idAllocator, err := allocator.NewIDAllocator(ctx, rc, Params.ProxyCfg.ProxyID)
+	idAllocator, err := allocator.NewIDAllocator(ctx, rc, Params.ProxyCfg.GetNodeID())
 	assert.NoError(t, err)
 	_ = idAllocator.Start()
 	defer idAllocator.Close()
@@ -3359,7 +1750,7 @@ func TestTask_all(t *testing.T) {
 					Base: &commonpb.MsgBase{
 						MsgType:  commonpb.MsgType_Insert,
 						MsgID:    0,
-						SourceID: Params.ProxyCfg.ProxyID,
+						SourceID: Params.ProxyCfg.GetNodeID(),
 					},
 					DbName:         dbName,
 					CollectionName: collectionName,
@@ -3394,10 +1785,8 @@ func TestTask_all(t *testing.T) {
 			schema:         nil,
 		}
 
-		fieldID := common.StartOfUserFieldID
 		for fieldName, dataType := range fieldName2Types {
-			task.FieldsData = append(task.FieldsData, generateFieldData(dataType, fieldName, int64(fieldID), nb))
-			fieldID++
+			task.FieldsData = append(task.FieldsData, generateFieldData(dataType, fieldName, nb))
 		}
 
 		assert.NoError(t, task.OnEnqueue())
@@ -3416,25 +1805,14 @@ func TestTask_all(t *testing.T) {
 						MsgType:   commonpb.MsgType_Delete,
 						MsgID:     0,
 						Timestamp: 0,
-						SourceID:  Params.ProxyCfg.ProxyID,
+						SourceID:  Params.ProxyCfg.GetNodeID(),
 					},
 					CollectionName: collectionName,
 					PartitionName:  partitionName,
 				},
 			},
-			req: &milvuspb.DeleteRequest{
-				Base: &commonpb.MsgBase{
-					MsgType:   commonpb.MsgType_Delete,
-					MsgID:     0,
-					Timestamp: 0,
-					SourceID:  Params.ProxyCfg.ProxyID,
-				},
-				DbName:         dbName,
-				CollectionName: collectionName,
-				PartitionName:  partitionName,
-				Expr:           "int64 in [0, 1]",
-			},
-			ctx: ctx,
+			deleteExpr: "int64 in [0, 1]",
+			ctx:        ctx,
 			result: &milvuspb.MutationResult{
 				Status: &commonpb.Status{
 					ErrorCode: commonpb.ErrorCode_Success,
@@ -3471,6 +1849,299 @@ func TestTask_all(t *testing.T) {
 		assert.NoError(t, task.PreExecute(ctx))
 		assert.NoError(t, task.Execute(ctx))
 		assert.NoError(t, task.PostExecute(ctx))
+
+		task2 := &deleteTask{
+			Condition: NewTaskCondition(ctx),
+			BaseDeleteTask: msgstream.DeleteMsg{
+				BaseMsg: msgstream.BaseMsg{},
+				DeleteRequest: internalpb.DeleteRequest{
+					Base: &commonpb.MsgBase{
+						MsgType:   commonpb.MsgType_Delete,
+						MsgID:     0,
+						Timestamp: 0,
+						SourceID:  Params.ProxyCfg.GetNodeID(),
+					},
+					CollectionName: collectionName,
+					PartitionName:  partitionName,
+				},
+			},
+			deleteExpr: "int64 not in [0, 1]",
+			ctx:        ctx,
+			result: &milvuspb.MutationResult{
+				Status: &commonpb.Status{
+					ErrorCode: commonpb.ErrorCode_Success,
+					Reason:    "",
+				},
+				IDs:          nil,
+				SuccIndex:    nil,
+				ErrIndex:     nil,
+				Acknowledged: false,
+				InsertCnt:    0,
+				DeleteCnt:    0,
+				UpsertCnt:    0,
+				Timestamp:    0,
+			},
+			chMgr:    chMgr,
+			chTicker: ticker,
+		}
+		assert.Error(t, task2.PreExecute(ctx))
+	})
+}
+
+func TestTask_VarCharPrimaryKey(t *testing.T) {
+	var err error
+
+	Params.Init()
+
+	rc := NewRootCoordMock()
+	rc.Start()
+	defer rc.Stop()
+	qc := NewQueryCoordMock()
+	qc.Start()
+	defer qc.Stop()
+
+	ctx := context.Background()
+
+	mgr := newShardClientMgr()
+	err = InitMetaCache(rc, qc, mgr)
+	assert.NoError(t, err)
+
+	shardsNum := int32(2)
+	prefix := "TestTask_all"
+	dbName := ""
+	collectionName := prefix + funcutil.GenRandomStr()
+	partitionName := prefix + funcutil.GenRandomStr()
+
+	fieldName2Types := map[string]schemapb.DataType{
+		testBoolField:     schemapb.DataType_Bool,
+		testInt32Field:    schemapb.DataType_Int32,
+		testInt64Field:    schemapb.DataType_Int64,
+		testFloatField:    schemapb.DataType_Float,
+		testDoubleField:   schemapb.DataType_Double,
+		testVarCharField:  schemapb.DataType_VarChar,
+		testFloatVecField: schemapb.DataType_FloatVector}
+	if enableMultipleVectorFields {
+		fieldName2Types[testBinaryVecField] = schemapb.DataType_BinaryVector
+	}
+	nb := 10
+
+	t.Run("create collection", func(t *testing.T) {
+		schema := constructCollectionSchemaByDataType(collectionName, fieldName2Types, testVarCharField, false)
+		marshaledSchema, err := proto.Marshal(schema)
+		assert.NoError(t, err)
+
+		createColT := &createCollectionTask{
+			Condition: NewTaskCondition(ctx),
+			CreateCollectionRequest: &milvuspb.CreateCollectionRequest{
+				Base:           nil,
+				DbName:         dbName,
+				CollectionName: collectionName,
+				Schema:         marshaledSchema,
+				ShardsNum:      shardsNum,
+			},
+			ctx:       ctx,
+			rootCoord: rc,
+			result:    nil,
+			schema:    nil,
+		}
+
+		assert.NoError(t, createColT.OnEnqueue())
+		assert.NoError(t, createColT.PreExecute(ctx))
+		assert.NoError(t, createColT.Execute(ctx))
+		assert.NoError(t, createColT.PostExecute(ctx))
+
+		_, _ = rc.CreatePartition(ctx, &milvuspb.CreatePartitionRequest{
+			Base: &commonpb.MsgBase{
+				MsgType:   commonpb.MsgType_CreatePartition,
+				MsgID:     0,
+				Timestamp: 0,
+				SourceID:  Params.ProxyCfg.GetNodeID(),
+			},
+			DbName:         dbName,
+			CollectionName: collectionName,
+			PartitionName:  partitionName,
+		})
+	})
+
+	collectionID, err := globalMetaCache.GetCollectionID(ctx, collectionName)
+	assert.NoError(t, err)
+
+	dmlChannelsFunc := getDmlChannelsFunc(ctx, rc)
+	factory := newSimpleMockMsgStreamFactory()
+	chMgr := newChannelsMgrImpl(dmlChannelsFunc, nil, factory)
+	defer chMgr.removeAllDMLStream()
+
+	_, err = chMgr.getOrCreateDmlStream(collectionID)
+	assert.NoError(t, err)
+	pchans, err := chMgr.getChannels(collectionID)
+	assert.NoError(t, err)
+
+	interval := time.Millisecond * 10
+	tso := newMockTsoAllocator()
+
+	ticker := newChannelsTimeTicker(ctx, interval, []string{}, newGetStatisticsFunc(pchans), tso)
+	_ = ticker.start()
+	defer ticker.close()
+
+	idAllocator, err := allocator.NewIDAllocator(ctx, rc, Params.ProxyCfg.GetNodeID())
+	assert.NoError(t, err)
+	_ = idAllocator.Start()
+	defer idAllocator.Close()
+
+	segAllocator, err := newSegIDAssigner(ctx, &mockDataCoord{expireTime: Timestamp(2500)}, getLastTick1)
+	assert.NoError(t, err)
+	segAllocator.Init()
+	_ = segAllocator.Start()
+	defer segAllocator.Close()
+
+	t.Run("insert", func(t *testing.T) {
+		hash := generateHashKeys(nb)
+		task := &insertTask{
+			BaseInsertTask: BaseInsertTask{
+				BaseMsg: msgstream.BaseMsg{
+					HashValues: hash,
+				},
+				InsertRequest: internalpb.InsertRequest{
+					Base: &commonpb.MsgBase{
+						MsgType:  commonpb.MsgType_Insert,
+						MsgID:    0,
+						SourceID: Params.ProxyCfg.GetNodeID(),
+					},
+					DbName:         dbName,
+					CollectionName: collectionName,
+					PartitionName:  partitionName,
+					NumRows:        uint64(nb),
+					Version:        internalpb.InsertDataVersion_ColumnBased,
+				},
+			},
+
+			Condition: NewTaskCondition(ctx),
+			ctx:       ctx,
+			result: &milvuspb.MutationResult{
+				Status: &commonpb.Status{
+					ErrorCode: commonpb.ErrorCode_Success,
+					Reason:    "",
+				},
+				IDs:          nil,
+				SuccIndex:    nil,
+				ErrIndex:     nil,
+				Acknowledged: false,
+				InsertCnt:    0,
+				DeleteCnt:    0,
+				UpsertCnt:    0,
+				Timestamp:    0,
+			},
+			rowIDAllocator: idAllocator,
+			segIDAssigner:  segAllocator,
+			chMgr:          chMgr,
+			chTicker:       ticker,
+			vChannels:      nil,
+			pChannels:      nil,
+			schema:         nil,
+		}
+
+		fieldID := common.StartOfUserFieldID
+		for fieldName, dataType := range fieldName2Types {
+			task.FieldsData = append(task.FieldsData, generateFieldData(dataType, fieldName, nb))
+			fieldID++
+		}
+
+		assert.NoError(t, task.OnEnqueue())
+		assert.NoError(t, task.PreExecute(ctx))
+		assert.NoError(t, task.Execute(ctx))
+		assert.NoError(t, task.PostExecute(ctx))
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		task := &deleteTask{
+			Condition: NewTaskCondition(ctx),
+			BaseDeleteTask: msgstream.DeleteMsg{
+				BaseMsg: msgstream.BaseMsg{},
+				DeleteRequest: internalpb.DeleteRequest{
+					Base: &commonpb.MsgBase{
+						MsgType:   commonpb.MsgType_Delete,
+						MsgID:     0,
+						Timestamp: 0,
+						SourceID:  Params.ProxyCfg.GetNodeID(),
+					},
+					CollectionName: collectionName,
+					PartitionName:  partitionName,
+				},
+			},
+			deleteExpr: "varChar in [\"milvus\", \"test\"]",
+			ctx:        ctx,
+			result: &milvuspb.MutationResult{
+				Status: &commonpb.Status{
+					ErrorCode: commonpb.ErrorCode_Success,
+					Reason:    "",
+				},
+				IDs:          nil,
+				SuccIndex:    nil,
+				ErrIndex:     nil,
+				Acknowledged: false,
+				InsertCnt:    0,
+				DeleteCnt:    0,
+				UpsertCnt:    0,
+				Timestamp:    0,
+			},
+			chMgr:    chMgr,
+			chTicker: ticker,
+		}
+
+		assert.NoError(t, task.OnEnqueue())
+		assert.NotNil(t, task.TraceCtx())
+
+		id := UniqueID(uniquegenerator.GetUniqueIntGeneratorIns().GetInt())
+		task.SetID(id)
+		assert.Equal(t, id, task.ID())
+
+		task.Base.MsgType = commonpb.MsgType_Delete
+		assert.Equal(t, commonpb.MsgType_Delete, task.Type())
+
+		ts := Timestamp(time.Now().UnixNano())
+		task.SetTs(ts)
+		assert.Equal(t, ts, task.BeginTs())
+		assert.Equal(t, ts, task.EndTs())
+
+		assert.NoError(t, task.PreExecute(ctx))
+		assert.NoError(t, task.Execute(ctx))
+		assert.NoError(t, task.PostExecute(ctx))
+
+		task2 := &deleteTask{
+			Condition: NewTaskCondition(ctx),
+			BaseDeleteTask: msgstream.DeleteMsg{
+				BaseMsg: msgstream.BaseMsg{},
+				DeleteRequest: internalpb.DeleteRequest{
+					Base: &commonpb.MsgBase{
+						MsgType:   commonpb.MsgType_Delete,
+						MsgID:     0,
+						Timestamp: 0,
+						SourceID:  Params.ProxyCfg.GetNodeID(),
+					},
+					CollectionName: collectionName,
+					PartitionName:  partitionName,
+				},
+			},
+			deleteExpr: "varChar not in [\"milvus\", \"test\"]",
+			ctx:        ctx,
+			result: &milvuspb.MutationResult{
+				Status: &commonpb.Status{
+					ErrorCode: commonpb.ErrorCode_Success,
+					Reason:    "",
+				},
+				IDs:          nil,
+				SuccIndex:    nil,
+				ErrIndex:     nil,
+				Acknowledged: false,
+				InsertCnt:    0,
+				DeleteCnt:    0,
+				UpsertCnt:    0,
+				Timestamp:    0,
+			},
+			chMgr:    chMgr,
+			chTicker: ticker,
+		}
+		assert.Error(t, task2.PreExecute(ctx))
 	})
 }
 
@@ -3595,4 +2266,266 @@ func TestAlterAlias_all(t *testing.T) {
 	assert.NoError(t, task.PreExecute(ctx))
 	assert.NoError(t, task.Execute(ctx))
 	assert.NoError(t, task.PostExecute(ctx))
+}
+
+func Test_createIndexTask_getIndexedField(t *testing.T) {
+	collectionName := "test"
+	fieldName := "test"
+
+	cit := &createIndexTask{
+		CreateIndexRequest: &milvuspb.CreateIndexRequest{
+			CollectionName: collectionName,
+			FieldName:      fieldName,
+		},
+	}
+
+	t.Run("normal", func(t *testing.T) {
+		cache := newMockCache()
+		cache.setGetSchemaFunc(func(ctx context.Context, collectionName string) (*schemapb.CollectionSchema, error) {
+			return &schemapb.CollectionSchema{
+				Fields: []*schemapb.FieldSchema{
+					{
+						FieldID:      100,
+						Name:         fieldName,
+						IsPrimaryKey: false,
+						DataType:     schemapb.DataType_FloatVector,
+						TypeParams:   nil,
+						IndexParams: []*commonpb.KeyValuePair{
+							{
+								Key:   "dim",
+								Value: "128",
+							},
+						},
+						AutoID: false,
+					},
+				},
+			}, nil
+		})
+		globalMetaCache = cache
+		field, err := cit.getIndexedField(context.Background())
+		assert.NoError(t, err)
+		assert.Equal(t, fieldName, field.GetName())
+	})
+
+	t.Run("schema not found", func(t *testing.T) {
+		cache := newMockCache()
+		cache.setGetSchemaFunc(func(ctx context.Context, collectionName string) (*schemapb.CollectionSchema, error) {
+			return nil, errors.New("mock")
+		})
+		globalMetaCache = cache
+		_, err := cit.getIndexedField(context.Background())
+		assert.Error(t, err)
+	})
+
+	t.Run("invalid schema", func(t *testing.T) {
+		cache := newMockCache()
+		cache.setGetSchemaFunc(func(ctx context.Context, collectionName string) (*schemapb.CollectionSchema, error) {
+			return &schemapb.CollectionSchema{
+				Fields: []*schemapb.FieldSchema{
+					{
+						Name: fieldName,
+					},
+					{
+						Name: fieldName, // duplicate
+					},
+				},
+			}, nil
+		})
+		globalMetaCache = cache
+		_, err := cit.getIndexedField(context.Background())
+		assert.Error(t, err)
+	})
+
+	t.Run("field not found", func(t *testing.T) {
+		cache := newMockCache()
+		cache.setGetSchemaFunc(func(ctx context.Context, collectionName string) (*schemapb.CollectionSchema, error) {
+			return &schemapb.CollectionSchema{
+				Fields: []*schemapb.FieldSchema{
+					{
+						Name: fieldName + fieldName,
+					},
+				},
+			}, nil
+		})
+		globalMetaCache = cache
+		_, err := cit.getIndexedField(context.Background())
+		assert.Error(t, err)
+	})
+}
+
+func Test_fillDimension(t *testing.T) {
+	t.Run("scalar", func(t *testing.T) {
+		f := &schemapb.FieldSchema{
+			DataType: schemapb.DataType_Int64,
+		}
+		assert.NoError(t, fillDimension(f, nil))
+	})
+
+	t.Run("no dim in schema", func(t *testing.T) {
+		f := &schemapb.FieldSchema{
+			DataType: schemapb.DataType_FloatVector,
+		}
+		assert.Error(t, fillDimension(f, nil))
+	})
+
+	t.Run("dimension mismatch", func(t *testing.T) {
+		f := &schemapb.FieldSchema{
+			DataType: schemapb.DataType_FloatVector,
+			IndexParams: []*commonpb.KeyValuePair{
+				{
+					Key:   "dim",
+					Value: "128",
+				},
+			},
+		}
+		assert.Error(t, fillDimension(f, map[string]string{"dim": "8"}))
+	})
+
+	t.Run("normal", func(t *testing.T) {
+		f := &schemapb.FieldSchema{
+			DataType: schemapb.DataType_FloatVector,
+			IndexParams: []*commonpb.KeyValuePair{
+				{
+					Key:   "dim",
+					Value: "128",
+				},
+			},
+		}
+		m := map[string]string{}
+		assert.NoError(t, fillDimension(f, m))
+		assert.Equal(t, "128", m["dim"])
+	})
+}
+
+func Test_checkTrain(t *testing.T) {
+	t.Run("normal", func(t *testing.T) {
+		f := &schemapb.FieldSchema{
+			DataType: schemapb.DataType_FloatVector,
+			IndexParams: []*commonpb.KeyValuePair{
+				{
+					Key:   "dim",
+					Value: "128",
+				},
+			},
+		}
+		m := map[string]string{
+			"index_type":  "IVF_FLAT",
+			"nlist":       "1024",
+			"metric_type": "L2",
+		}
+		assert.NoError(t, checkTrain(f, m))
+	})
+
+	t.Run("scalar", func(t *testing.T) {
+		f := &schemapb.FieldSchema{
+			DataType: schemapb.DataType_Int64,
+		}
+		m := map[string]string{
+			"index_type": "scalar",
+		}
+		assert.NoError(t, checkTrain(f, m))
+	})
+
+	t.Run("dimension mismatch", func(t *testing.T) {
+		f := &schemapb.FieldSchema{
+			DataType: schemapb.DataType_FloatVector,
+			IndexParams: []*commonpb.KeyValuePair{
+				{
+					Key:   "dim",
+					Value: "128",
+				},
+			},
+		}
+		m := map[string]string{
+			"index_type":  "IVF_FLAT",
+			"nlist":       "1024",
+			"metric_type": "L2",
+			"dim":         "8",
+		}
+		assert.Error(t, checkTrain(f, m))
+	})
+
+	t.Run("invalid params", func(t *testing.T) {
+		f := &schemapb.FieldSchema{
+			DataType: schemapb.DataType_FloatVector,
+			IndexParams: []*commonpb.KeyValuePair{
+				{
+					Key:   "dim",
+					Value: "128",
+				},
+			},
+		}
+		m := map[string]string{
+			"index_type":  "IVF_FLAT",
+			"metric_type": "L2",
+		}
+		assert.Error(t, checkTrain(f, m))
+	})
+}
+
+func Test_createIndexTask_PreExecute(t *testing.T) {
+	collectionName := "test"
+	fieldName := "test"
+
+	cit := &createIndexTask{
+		CreateIndexRequest: &milvuspb.CreateIndexRequest{
+			Base: &commonpb.MsgBase{
+				MsgType: commonpb.MsgType_CreateIndex,
+			},
+			CollectionName: collectionName,
+			FieldName:      fieldName,
+		},
+	}
+
+	t.Run("normal", func(t *testing.T) {
+		cache := newMockCache()
+		cache.setGetIDFunc(func(ctx context.Context, collectionName string) (typeutil.UniqueID, error) {
+			return 100, nil
+		})
+		cache.setGetSchemaFunc(func(ctx context.Context, collectionName string) (*schemapb.CollectionSchema, error) {
+			return &schemapb.CollectionSchema{
+				Fields: []*schemapb.FieldSchema{
+					{
+						FieldID:      100,
+						Name:         fieldName,
+						IsPrimaryKey: false,
+						DataType:     schemapb.DataType_FloatVector,
+						TypeParams:   nil,
+						IndexParams: []*commonpb.KeyValuePair{
+							{
+								Key:   "dim",
+								Value: "128",
+							},
+						},
+						AutoID: false,
+					},
+				},
+			}, nil
+		})
+		globalMetaCache = cache
+		cit.CreateIndexRequest.ExtraParams = []*commonpb.KeyValuePair{
+			{
+				Key:   "index_type",
+				Value: "IVF_FLAT",
+			},
+			{
+				Key:   "nlist",
+				Value: "1024",
+			},
+			{
+				Key:   "metric_type",
+				Value: "L2",
+			},
+		}
+		assert.NoError(t, cit.PreExecute(context.Background()))
+	})
+
+	t.Run("collection not found", func(t *testing.T) {
+		cache := newMockCache()
+		cache.setGetIDFunc(func(ctx context.Context, collectionName string) (typeutil.UniqueID, error) {
+			return 0, errors.New("mock")
+		})
+		globalMetaCache = cache
+		assert.Error(t, cit.PreExecute(context.Background()))
+	})
 }

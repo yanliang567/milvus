@@ -23,12 +23,13 @@ import (
 
 	"github.com/milvus-io/milvus/internal/types"
 
+	"github.com/stretchr/testify/assert"
+	clientv3 "go.etcd.io/etcd/client/v3"
+
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
-	"github.com/stretchr/testify/assert"
-	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -43,6 +44,8 @@ type MockQueryNode struct {
 	strResp    *milvuspb.StringResponse
 	infoResp   *querypb.GetSegmentInfoResponse
 	metricResp *milvuspb.GetMetricsResponse
+	searchResp *internalpb.SearchResults
+	queryResp  *internalpb.RetrieveResults
 }
 
 func (m *MockQueryNode) Init() error {
@@ -71,14 +74,6 @@ func (m *MockQueryNode) GetStatisticsChannel(ctx context.Context) (*milvuspb.Str
 
 func (m *MockQueryNode) GetTimeTickChannel(ctx context.Context) (*milvuspb.StringResponse, error) {
 	return m.strResp, m.err
-}
-
-func (m *MockQueryNode) AddQueryChannel(ctx context.Context, req *querypb.AddQueryChannelRequest) (*commonpb.Status, error) {
-	return m.status, m.err
-}
-
-func (m *MockQueryNode) RemoveQueryChannel(ctx context.Context, req *querypb.RemoveQueryChannelRequest) (*commonpb.Status, error) {
-	return m.status, m.err
 }
 
 func (m *MockQueryNode) WatchDmChannels(ctx context.Context, req *querypb.WatchDmChannelsRequest) (*commonpb.Status, error) {
@@ -111,6 +106,18 @@ func (m *MockQueryNode) GetSegmentInfo(ctx context.Context, req *querypb.GetSegm
 
 func (m *MockQueryNode) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
 	return m.metricResp, m.err
+}
+
+func (m *MockQueryNode) Search(ctx context.Context, req *querypb.SearchRequest) (*internalpb.SearchResults, error) {
+	return m.searchResp, m.err
+}
+
+func (m *MockQueryNode) Query(ctx context.Context, req *querypb.QueryRequest) (*internalpb.RetrieveResults, error) {
+	return m.queryResp, m.err
+}
+
+func (m *MockQueryNode) SyncReplicaSegments(ctx context.Context, req *querypb.SyncReplicaSegmentsRequest) (*commonpb.Status, error) {
+	return m.status, m.err
 }
 
 func (m *MockQueryNode) SetEtcdClient(client *clientv3.Client) {
@@ -242,20 +249,6 @@ func Test_NewServer(t *testing.T) {
 		assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
 	})
 
-	t.Run("AddQueryChannel", func(t *testing.T) {
-		req := &querypb.AddQueryChannelRequest{}
-		resp, err := server.AddQueryChannel(ctx, req)
-		assert.Nil(t, err)
-		assert.Equal(t, commonpb.ErrorCode_Success, resp.ErrorCode)
-	})
-
-	t.Run("RemoveQueryChannel", func(t *testing.T) {
-		req := &querypb.RemoveQueryChannelRequest{}
-		resp, err := server.RemoveQueryChannel(ctx, req)
-		assert.Nil(t, err)
-		assert.Equal(t, commonpb.ErrorCode_Success, resp.ErrorCode)
-	})
-
 	t.Run("WatchDmChannels", func(t *testing.T) {
 		req := &querypb.WatchDmChannelsRequest{}
 		resp, err := server.WatchDmChannels(ctx, req)
@@ -305,6 +298,27 @@ func Test_NewServer(t *testing.T) {
 		resp, err := server.GetMetrics(ctx, req)
 		assert.Nil(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
+	})
+
+	t.Run("Search", func(t *testing.T) {
+		req := &querypb.SearchRequest{}
+		resp, err := server.Search(ctx, req)
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
+	})
+
+	t.Run("Query", func(t *testing.T) {
+		req := &querypb.QueryRequest{}
+		resp, err := server.Query(ctx, req)
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
+	})
+
+	t.Run("SyncReplicaSegments", func(t *testing.T) {
+		req := &querypb.SyncReplicaSegmentsRequest{}
+		resp, err := server.SyncReplicaSegments(ctx, req)
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetErrorCode())
 	})
 
 	err = server.Stop()

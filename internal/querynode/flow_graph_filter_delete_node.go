@@ -18,6 +18,7 @@ package querynode
 
 import (
 	"fmt"
+	"reflect"
 
 	"github.com/opentracing/opentracing-go"
 	"go.uber.org/zap"
@@ -33,7 +34,7 @@ import (
 type filterDeleteNode struct {
 	baseNode
 	collectionID UniqueID
-	replica      ReplicaInterface
+	metaReplica  ReplicaInterface
 }
 
 // Name returns the name of filterDeleteNode
@@ -50,7 +51,11 @@ func (fddNode *filterDeleteNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 
 	msgStreamMsg, ok := in[0].(*MsgStreamMsg)
 	if !ok {
-		log.Warn("type assertion failed for MsgStreamMsg")
+		if in[0] == nil {
+			log.Debug("type assertion failed for MsgStreamMsg because it's nil")
+		} else {
+			log.Warn("type assertion failed for MsgStreamMsg", zap.String("name", reflect.TypeOf(in[0]).Name()))
+		}
 		return []Msg{}
 	}
 
@@ -73,15 +78,29 @@ func (fddNode *filterDeleteNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 		},
 	}
 
+	collection, err := fddNode.metaReplica.getCollectionByID(fddNode.collectionID)
+	if err != nil {
+		// QueryNode should add collection before start flow graph
+		panic(fmt.Errorf("%s getCollectionByID failed, collectionID = %d", fddNode.Name(), fddNode.collectionID))
+	}
+	collection.RLock()
+	defer collection.RUnlock()
+
 	for _, msg := range msgStreamMsg.TsMessages() {
 		switch msg.Type() {
 		case commonpb.MsgType_Delete:
-			resMsg := fddNode.filterInvalidDeleteMessage(msg.(*msgstream.DeleteMsg))
+			resMsg, err := fddNode.filterInvalidDeleteMessage(msg.(*msgstream.DeleteMsg), collection.getLoadType())
+			if err != nil {
+				// error occurs when missing meta info or data is misaligned, should not happen
+				err = fmt.Errorf("filterInvalidDeleteMessage failed, err = %s", err)
+				log.Error(err.Error())
+				panic(err)
+			}
 			if resMsg != nil {
 				dMsg.deleteMessages = append(dMsg.deleteMessages, resMsg)
 			}
 		default:
-			log.Warn("Non supporting", zap.Int32("message type", int32(msg.Type())))
+			log.Warn("invalid message type in filterDeleteNode", zap.String("message type", msg.Type().String()))
 		}
 	}
 	var res Msg = &dMsg
@@ -92,31 +111,37 @@ func (fddNode *filterDeleteNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 }
 
 // filterInvalidDeleteMessage would filter invalid delete messages
-func (fddNode *filterDeleteNode) filterInvalidDeleteMessage(msg *msgstream.DeleteMsg) *msgstream.DeleteMsg {
+func (fddNode *filterDeleteNode) filterInvalidDeleteMessage(msg *msgstream.DeleteMsg, loadType loadType) (*msgstream.DeleteMsg, error) {
+	if err := msg.CheckAligned(); err != nil {
+		return nil, fmt.Errorf("CheckAligned failed, err = %s", err)
+	}
+
 	sp, ctx := trace.StartSpanFromContext(msg.TraceCtx())
 	msg.SetTraceCtx(ctx)
 	defer sp.Finish()
 
 	if msg.CollectionID != fddNode.collectionID {
-		return nil
-	}
-
-	if len(msg.PrimaryKeys) != len(msg.Timestamps) {
-		log.Warn("Error, misaligned messages detected")
-		return nil
+		return nil, nil
 	}
 
 	if len(msg.Timestamps) <= 0 {
 		log.Debug("filter invalid delete message, no message",
 			zap.Any("collectionID", msg.CollectionID),
 			zap.Any("partitionID", msg.PartitionID))
-		return nil
+		return nil, nil
 	}
-	return msg
+
+	if loadType == loadTypePartition {
+		if !fddNode.metaReplica.hasPartition(msg.PartitionID) {
+			// filter out msg which not belongs to the loaded partitions
+			return nil, nil
+		}
+	}
+	return msg, nil
 }
 
 // newFilteredDeleteNode returns a new filterDeleteNode
-func newFilteredDeleteNode(replica ReplicaInterface, collectionID UniqueID) *filterDeleteNode {
+func newFilteredDeleteNode(metaReplica ReplicaInterface, collectionID UniqueID) *filterDeleteNode {
 
 	maxQueueLength := Params.QueryNodeCfg.FlowGraphMaxQueueLength
 	maxParallelism := Params.QueryNodeCfg.FlowGraphMaxParallelism
@@ -128,6 +153,6 @@ func newFilteredDeleteNode(replica ReplicaInterface, collectionID UniqueID) *fil
 	return &filterDeleteNode{
 		baseNode:     baseNode,
 		collectionID: collectionID,
-		replica:      replica,
+		metaReplica:  metaReplica,
 	}
 }

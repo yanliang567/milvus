@@ -27,14 +27,25 @@ namespace milvus::config {
 std::once_flag init_knowhere_once_;
 
 void
-KnowhereInitImpl() {
-    auto init = []() {
+KnowhereInitImpl(const char* conf_file) {
+    auto init = [&]() {
         knowhere::KnowhereConfig::SetBlasThreshold(16384);
         knowhere::KnowhereConfig::SetEarlyStopThreshold(0);
         knowhere::KnowhereConfig::SetLogHandler();
         knowhere::KnowhereConfig::SetStatisticsLevel(0);
+
+#ifdef EMBEDDED_MILVUS
+        // always disable all logs for embedded milvus.
         el::Configurations el_conf;
-        el_conf.setGlobally(el::ConfigurationType::Enabled, std::to_string(false));
+        el_conf.setGlobally(el::ConfigurationType::Enabled, "false");
+        el::Loggers::reconfigureAllLoggers(el_conf);
+#else
+        if (conf_file != nullptr) {
+            el::Configurations el_conf(conf_file);
+            el::Loggers::reconfigureAllLoggers(el_conf);
+            LOG_SERVER_DEBUG_ << "Config easylogging with yaml file: " << conf_file;
+        }
+#endif
     };
 
     std::call_once(init_knowhere_once_, init);
@@ -60,6 +71,11 @@ KnowhereSetSimdType(const char* value) {
         LOG_SERVER_ERROR_ << e.what();
         PanicInfo(e.what());
     }
+}
+
+void
+KnowhereSetIndexSliceSize(const int64_t size) {
+    knowhere::KnowhereConfig::SetIndexFileSliceSize(size);
 }
 
 }  // namespace milvus::config

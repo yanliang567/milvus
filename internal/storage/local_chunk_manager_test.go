@@ -325,7 +325,7 @@ func TestLocalCM(t *testing.T) {
 		assert.Error(t, err)
 	})
 
-	t.Run("test GetSize", func(t *testing.T) {
+	t.Run("test Size", func(t *testing.T) {
 		testGetSizeRoot := "get_size"
 
 		testCM := NewLocalChunkManager(RootPath(localPath))
@@ -337,18 +337,18 @@ func TestLocalCM(t *testing.T) {
 		err := testCM.Write(key, value)
 		assert.NoError(t, err)
 
-		size, err := testCM.GetSize(key)
+		size, err := testCM.Size(key)
 		assert.NoError(t, err)
 		assert.Equal(t, size, int64(len(value)))
 
 		key2 := path.Join(testGetSizeRoot, "TestMemoryKV_GetSize_key2")
 
-		size, err = testCM.GetSize(key2)
+		size, err = testCM.Size(key2)
 		assert.Error(t, err)
 		assert.Equal(t, int64(0), size)
 	})
 
-	t.Run("test GetPath", func(t *testing.T) {
+	t.Run("test Path", func(t *testing.T) {
 		testGetSizeRoot := "get_path"
 
 		testCM := NewLocalChunkManager(RootPath(localPath))
@@ -360,14 +360,44 @@ func TestLocalCM(t *testing.T) {
 		err := testCM.Write(key, value)
 		assert.NoError(t, err)
 
-		p, err := testCM.GetPath(key)
+		p, err := testCM.Path(key)
 		assert.NoError(t, err)
 		assert.Equal(t, p, path.Join(localPath, key))
 
 		key2 := path.Join(testGetSizeRoot, "TestMemoryKV_GetSize_key2")
 
-		p, err = testCM.GetPath(key2)
+		p, err = testCM.Path(key2)
 		assert.Error(t, err)
 		assert.Equal(t, p, "")
+	})
+
+	t.Run("test Prefix", func(t *testing.T) {
+		testPrefix := "prefix"
+
+		testCM := NewLocalChunkManager(RootPath(localPath))
+		defer testCM.RemoveWithPrefix(testPrefix)
+
+		pathB := path.Join("a", "b")
+
+		key := path.Join(testPrefix, pathB)
+		value := []byte("a")
+
+		err := testCM.Write(key, value)
+		assert.NoError(t, err)
+
+		pathC := path.Join("a", "c")
+		key = path.Join(testPrefix, pathC)
+		err = testCM.Write(key, value)
+		assert.NoError(t, err)
+
+		pathPrefix := path.Join(testPrefix, "a")
+		r, err := testCM.ListWithPrefix(pathPrefix)
+		assert.NoError(t, err)
+		assert.Equal(t, len(r), 2)
+
+		testCM.RemoveWithPrefix(testPrefix)
+		r, err = testCM.ListWithPrefix(pathPrefix)
+		assert.NoError(t, err)
+		assert.Equal(t, len(r), 0)
 	})
 }

@@ -34,6 +34,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/golang/protobuf/proto"
+
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
@@ -216,6 +217,12 @@ func (it *IndexBuildTask) saveIndexMeta(ctx context.Context) error {
 			panic(errMsg)
 		}
 
+		if it.internalErr != nil {
+			log.Warn("IndexNode IndexBuildTask internal err is not nil, mark the task as retry",
+				zap.Int64("buildID", it.req.IndexBuildID))
+			it.SetState(TaskStateRetry)
+		}
+
 		taskState := it.updateTaskState(indexMeta)
 		if taskState == TaskStateAbandon {
 			log.Info("IndexNode IndexBuildTask saveIndexMeta", zap.String("TaskState", taskState.String()),
@@ -238,7 +245,7 @@ func (it *IndexBuildTask) saveIndexMeta(ctx context.Context) error {
 				zap.Int64("IndexBuildID", indexMeta.IndexBuildID), zap.Error(it.internalErr))
 			indexMeta.State = commonpb.IndexState_Unissued
 		} else { // TaskStateNormal
-			log.Info("IndexNode IndexBuildTask saveIndexmeta indexMeta.state to IndexState_Unissued",
+			log.Info("IndexNode IndexBuildTask saveIndexMeta indexMeta.state to IndexState_Finished",
 				zap.String("TaskState", taskState.String()),
 				zap.Int64("IndexBuildID", indexMeta.IndexBuildID))
 			indexMeta.State = commonpb.IndexState_Finished
@@ -377,16 +384,14 @@ func (it *IndexBuildTask) loadFieldData(ctx context.Context) (storage.FieldID, s
 	loadVectorDuration := it.tr.RecordSpan()
 	log.Debug("IndexNode load data success", zap.Int64("buildId", it.req.IndexBuildID))
 	it.tr.Record("load field data done")
+	metrics.IndexNodeLoadFieldLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.GetNodeID(), 10)).Observe(float64(loadVectorDuration))
 
 	var insertCodec storage.InsertCodec
 	collectionID, partitionID, segmentID, insertData, err2 := insertCodec.DeserializeAll(blobs)
 	if err2 != nil {
 		return storage.InvalidUniqueID, nil, err2
 	}
-
-	// TODO: @xiaocai2333 metrics.IndexNodeLoadBinlogLatency should be added above, put here to get segmentID.
-	metrics.IndexNodeLoadBinlogLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10)).Observe(float64(loadVectorDuration))
-	metrics.IndexNodeDecodeBinlogLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10)).Observe(float64(it.tr.RecordSpan()))
+	metrics.IndexNodeDecodeFieldLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.GetNodeID(), 10)).Observe(float64(it.tr.RecordSpan()))
 
 	if len(insertData.Data) != 1 {
 		return storage.InvalidUniqueID, nil, errors.New("we expect only one field in deserialized insert data")
@@ -442,7 +447,7 @@ func (it *IndexBuildTask) buildIndex(ctx context.Context) ([]*storage.Blob, erro
 			}
 		}
 
-		metrics.IndexNodeKnowhereBuildIndexLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10)).Observe(float64(it.tr.RecordSpan()))
+		metrics.IndexNodeKnowhereBuildIndexLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.GetNodeID(), 10)).Observe(float64(it.tr.RecordSpan()))
 
 		it.tr.Record("build index done")
 	}
@@ -479,7 +484,7 @@ func (it *IndexBuildTask) buildIndex(ctx context.Context) ([]*storage.Blob, erro
 		return nil, err
 	}
 	encodeIndexFileDur := it.tr.Record("index codec serialize done")
-	metrics.IndexNodeEncodeIndexFileLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10)).Observe(float64(encodeIndexFileDur.Milliseconds()))
+	metrics.IndexNodeEncodeIndexFileLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.GetNodeID(), 10)).Observe(float64(encodeIndexFileDur.Milliseconds()))
 	return serializedIndexBlobs, nil
 }
 
@@ -528,13 +533,8 @@ func (it *IndexBuildTask) saveIndex(ctx context.Context, blobs []*storage.Blob) 
 		return nil
 	}
 
-	err := funcutil.ProcessFuncParallel(blobCnt, runtime.NumCPU(), saveIndexFile, "saveIndexFile")
-	if err != nil {
-		log.Warn("saveIndexFile to minio failed", zap.Error(err))
-		// In this case, we intend not to return err, otherwise the task will be marked as failed.
-		it.internalErr = err
-	}
-	return nil
+	// If an error occurs, return the error that the task state will be set to retry.
+	return funcutil.ProcessFuncParallel(blobCnt, runtime.NumCPU(), saveIndexFile, "saveIndexFile")
 }
 
 func (it *IndexBuildTask) releaseMemory() {
@@ -575,7 +575,7 @@ func (it *IndexBuildTask) Execute(ctx context.Context) error {
 		return err
 	}
 	saveIndexFileDur := it.tr.Record("index file save done")
-	metrics.IndexNodeSaveIndexFileLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10)).Observe(float64(saveIndexFileDur.Milliseconds()))
+	metrics.IndexNodeSaveIndexFileLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.GetNodeID(), 10)).Observe(float64(saveIndexFileDur.Milliseconds()))
 	it.tr.Elapse("index building all done")
 	log.Info("IndexNode CreateIndex successfully ", zap.Int64("collect", it.collectionID),
 		zap.Int64("partition", it.partitionID), zap.Int64("segment", it.segmentID))

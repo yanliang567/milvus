@@ -60,13 +60,22 @@ func (m *MockAllocator) allocID(ctx context.Context) (UniqueID, error) {
 var _ allocator = (*FailsAllocator)(nil)
 
 // FailsAllocator allocator that fails
-type FailsAllocator struct{}
+type FailsAllocator struct {
+	allocTsSucceed bool
+	allocIDSucceed bool
+}
 
 func (a *FailsAllocator) allocTimestamp(_ context.Context) (Timestamp, error) {
+	if a.allocTsSucceed {
+		return 0, nil
+	}
 	return 0, errors.New("always fail")
 }
 
 func (a *FailsAllocator) allocID(_ context.Context) (UniqueID, error) {
+	if a.allocIDSucceed {
+		return 0, nil
+	}
 	return 0, errors.New("always fail")
 }
 
@@ -100,7 +109,7 @@ func newTestSchema() *schemapb.CollectionSchema {
 		Description: "schema for test used",
 		AutoID:      false,
 		Fields: []*schemapb.FieldSchema{
-			{FieldID: 1, Name: "field1", IsPrimaryKey: false, Description: "field no.1", DataType: schemapb.DataType_VarChar, TypeParams: []*commonpb.KeyValuePair{{Key: "max_length_per_row", Value: "100"}}},
+			{FieldID: 1, Name: "field1", IsPrimaryKey: false, Description: "field no.1", DataType: schemapb.DataType_VarChar, TypeParams: []*commonpb.KeyValuePair{{Key: "max_length", Value: "100"}}},
 			{FieldID: 2, Name: "field2", IsPrimaryKey: false, Description: "field no.2", DataType: schemapb.DataType_FloatVector},
 		},
 	}
@@ -157,6 +166,15 @@ func (c *mockDataNodeClient) FlushSegments(ctx context.Context, in *datapb.Flush
 	return &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success}, nil
 }
 
+func (c *mockDataNodeClient) ResendSegmentStats(ctx context.Context, req *datapb.ResendSegmentStatsRequest) (*datapb.ResendSegmentStatsResponse, error) {
+	return &datapb.ResendSegmentStatsResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+			Reason:    "",
+		},
+	}, nil
+}
+
 func (c *mockDataNodeClient) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
 	// TODO(dragondriver): change the id, though it's not important in ut
 	nodeID := UniqueID(c.id)
@@ -196,7 +214,11 @@ func (c *mockDataNodeClient) Compaction(ctx context.Context, req *datapb.Compact
 	return &commonpb.Status{ErrorCode: commonpb.ErrorCode_UnexpectedError, Reason: "not implemented"}, nil
 }
 
-func (c *mockDataNodeClient) Import(ctx context.Context, in *datapb.ImportTask) (*commonpb.Status, error) {
+func (c *mockDataNodeClient) Import(ctx context.Context, in *datapb.ImportTaskRequest) (*commonpb.Status, error) {
+	return &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success}, nil
+}
+
+func (c *mockDataNodeClient) AddSegment(ctx context.Context, req *datapb.AddSegmentRequest) (*commonpb.Status, error) {
 	return &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success}, nil
 }
 
@@ -383,6 +405,10 @@ func (m *mockRootCoordService) ShowSegments(ctx context.Context, req *milvuspb.S
 	panic("not implemented") // TODO: Implement
 }
 
+func (m *mockRootCoordService) DescribeSegments(ctx context.Context, req *rootcoordpb.DescribeSegmentsRequest) (*rootcoordpb.DescribeSegmentsResponse, error) {
+	panic("implement me")
+}
+
 func (m *mockRootCoordService) GetDdChannel(ctx context.Context) (*milvuspb.StringResponse, error) {
 	return &milvuspb.StringResponse{
 		Status: &commonpb.Status{
@@ -400,6 +426,11 @@ func (m *mockRootCoordService) UpdateChannelTimeTick(ctx context.Context, req *i
 func (m *mockRootCoordService) ReleaseDQLMessageStream(ctx context.Context, req *proxypb.ReleaseDQLMessageStreamRequest) (*commonpb.Status, error) {
 	panic("not implemented") // TODO: Implement
 }
+
+func (m *mockRootCoordService) InvalidateCollectionMetaCache(ctx context.Context, req *proxypb.InvalidateCollMetaCacheRequest) (*commonpb.Status, error) {
+	panic("not implemented") // TODO: Implement
+}
+
 func (m *mockRootCoordService) SegmentFlushCompleted(ctx context.Context, in *datapb.SegmentFlushCompletedMsg) (*commonpb.Status, error) {
 	return &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success}, nil
 }
@@ -453,6 +484,11 @@ func (m *mockRootCoordService) Import(ctx context.Context, req *milvuspb.ImportR
 
 // Check import task state from datanode
 func (m *mockRootCoordService) GetImportState(ctx context.Context, req *milvuspb.GetImportStateRequest) (*milvuspb.GetImportStateResponse, error) {
+	panic("not implemented") // TODO: Implement
+}
+
+// Returns id array of all import tasks
+func (m *mockRootCoordService) ListImportTasks(ctx context.Context, in *milvuspb.ListImportTasksRequest) (*milvuspb.ListImportTasksResponse, error) {
 	panic("not implemented") // TODO: Implement
 }
 
@@ -597,6 +633,26 @@ func (t *mockCompactionTrigger) stop() {
 		}
 	}
 	panic("not implemented")
+}
+
+func (m *mockRootCoordService) CreateCredential(ctx context.Context, req *internalpb.CredentialInfo) (*commonpb.Status, error) {
+	panic("implement me")
+}
+
+func (m *mockRootCoordService) UpdateCredential(ctx context.Context, req *internalpb.CredentialInfo) (*commonpb.Status, error) {
+	panic("implement me")
+}
+
+func (m *mockRootCoordService) DeleteCredential(ctx context.Context, req *milvuspb.DeleteCredentialRequest) (*commonpb.Status, error) {
+	panic("implement me")
+}
+
+func (m *mockRootCoordService) ListCredUsers(ctx context.Context, req *milvuspb.ListCredUsersRequest) (*milvuspb.ListCredUsersResponse, error) {
+	panic("implement me")
+}
+
+func (m *mockRootCoordService) GetCredential(ctx context.Context, req *rootcoordpb.GetCredentialRequest) (*rootcoordpb.GetCredentialResponse, error) {
+	panic("implement me")
 }
 
 type mockHandler struct {

@@ -18,6 +18,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"path"
 	"strconv"
 	"testing"
@@ -26,6 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TODO: NewMinioChunkManager is deprecated. Rewrite this unittest.
 func newMinIOChunkManager(ctx context.Context, bucketName string) (*MinioChunkManager, error) {
 	endPoint, _ := Params.Load("_MinioAddress")
 	accessKeyID, _ := Params.Load("minio.accessKeyID")
@@ -38,6 +40,8 @@ func newMinIOChunkManager(ctx context.Context, bucketName string) (*MinioChunkMa
 		SecretAccessKeyID(secretAccessKey),
 		UseSSL(useSSL),
 		BucketName(bucketName),
+		UseIAM(false),
+		IAMEndpoint(""),
 		CreateBucket(true),
 	)
 	return client, err
@@ -162,7 +166,7 @@ func TestMinIOCM(t *testing.T) {
 			expectedValue [][]byte
 			description   string
 		}{
-			{false, []string{"key_1", "key_not_exist"}, [][]byte{[]byte("111"), {}}, "multiload 1 exist 1 not"},
+			{false, []string{"key_1", "key_not_exist"}, [][]byte{[]byte("111"), nil}, "multiload 1 exist 1 not"},
 			{true, []string{"abc", "key_3"}, [][]byte{[]byte("123"), []byte("333")}, "multiload 2 exist"},
 		}
 
@@ -354,7 +358,7 @@ func TestMinIOCM(t *testing.T) {
 		assert.Error(t, err)
 	})
 
-	t.Run("test GetSize", func(t *testing.T) {
+	t.Run("test Size", func(t *testing.T) {
 		testGetSizeRoot := path.Join(testMinIOKVRoot, "get_size")
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -369,18 +373,18 @@ func TestMinIOCM(t *testing.T) {
 		err = testCM.Write(key, value)
 		assert.NoError(t, err)
 
-		size, err := testCM.GetSize(key)
+		size, err := testCM.Size(key)
 		assert.NoError(t, err)
 		assert.Equal(t, size, int64(len(value)))
 
 		key2 := path.Join(testGetSizeRoot, "TestMemoryKV_GetSize_key2")
 
-		size, err = testCM.GetSize(key2)
+		size, err = testCM.Size(key2)
 		assert.Error(t, err)
 		assert.Equal(t, int64(0), size)
 	})
 
-	t.Run("test GetPath", func(t *testing.T) {
+	t.Run("test Path", func(t *testing.T) {
 		testGetPathRoot := path.Join(testMinIOKVRoot, "get_path")
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -395,16 +399,17 @@ func TestMinIOCM(t *testing.T) {
 		err = testCM.Write(key, value)
 		assert.NoError(t, err)
 
-		p, err := testCM.GetPath(key)
+		p, err := testCM.Path(key)
 		assert.NoError(t, err)
 		assert.Equal(t, p, key)
 
 		key2 := path.Join(testGetPathRoot, "TestMemoryKV_GetSize_key2")
 
-		p, err = testCM.GetPath(key2)
+		p, err = testCM.Path(key2)
 		assert.Error(t, err)
 		assert.Equal(t, p, "")
 	})
+
 	t.Run("test Mmap", func(t *testing.T) {
 		testMmapRoot := path.Join(testMinIOKVRoot, "mmap")
 		ctx, cancel := context.WithCancel(context.Background())
@@ -424,5 +429,45 @@ func TestMinIOCM(t *testing.T) {
 		assert.Error(t, err)
 		assert.Nil(t, r)
 
+	})
+
+	t.Run("test Prefix", func(t *testing.T) {
+		testPrefix := path.Join(testMinIOKVRoot, "prefix")
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		testCM, err := newMinIOChunkManager(ctx, testBucket)
+		require.NoError(t, err)
+		defer testCM.RemoveWithPrefix(testPrefix)
+
+		pathB := path.Join("a", "b")
+
+		key := path.Join(testPrefix, pathB)
+		value := []byte("a")
+
+		err = testCM.Write(key, value)
+		assert.NoError(t, err)
+
+		pathC := path.Join("a", "c")
+		key = path.Join(testPrefix, pathC)
+		err = testCM.Write(key, value)
+		assert.NoError(t, err)
+
+		pathPrefix := path.Join(testPrefix, "a")
+		r, err := testCM.ListWithPrefix(pathPrefix)
+		assert.NoError(t, err)
+		assert.Equal(t, len(r), 2)
+
+		testCM.RemoveWithPrefix(testPrefix)
+		r, err = testCM.ListWithPrefix(pathPrefix)
+		assert.NoError(t, err)
+		assert.Equal(t, len(r), 0)
+
+		// test wrong prefix
+		b := make([]byte, 2048)
+		pathWrong := path.Join(testPrefix, string(b))
+		_, err = testCM.ListWithPrefix(pathWrong)
+		assert.Error(t, err)
+		fmt.Println(err)
 	})
 }

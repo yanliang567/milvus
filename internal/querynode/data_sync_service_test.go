@@ -27,106 +27,175 @@ func TestDataSyncService_DMLFlowGraphs(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	streamingReplica, err := genSimpleReplica()
+	replica, err := genSimpleReplica()
 	assert.NoError(t, err)
 
-	historicalReplica, err := genSimpleReplica()
-	assert.NoError(t, err)
-
-	fac, err := genFactory()
+	fac := genFactory()
 	assert.NoError(t, err)
 
 	tSafe := newTSafeReplica()
-	dataSyncService := newDataSyncService(ctx, streamingReplica, historicalReplica, tSafe, fac)
+	dataSyncService := newDataSyncService(ctx, replica, tSafe, fac)
 	assert.NotNil(t, dataSyncService)
 
-	_, err = dataSyncService.addFlowGraphsForDMLChannels(defaultCollectionID, []Channel{defaultDMLChannel})
-	assert.NoError(t, err)
-	assert.Len(t, dataSyncService.dmlChannel2FlowGraph, 1)
+	t.Run("test DMLFlowGraphs", func(t *testing.T) {
+		_, err = dataSyncService.addFlowGraphsForDMLChannels(defaultCollectionID, []Channel{defaultDMLChannel})
+		assert.NoError(t, err)
+		assert.Len(t, dataSyncService.dmlChannel2FlowGraph, 1)
 
-	_, err = dataSyncService.addFlowGraphsForDMLChannels(defaultCollectionID, []Channel{defaultDMLChannel})
-	assert.NoError(t, err)
-	assert.Len(t, dataSyncService.dmlChannel2FlowGraph, 1)
+		_, err = dataSyncService.addFlowGraphsForDMLChannels(defaultCollectionID, []Channel{defaultDMLChannel})
+		assert.NoError(t, err)
+		assert.Len(t, dataSyncService.dmlChannel2FlowGraph, 1)
 
-	fg, err := dataSyncService.getFlowGraphByDMLChannel(defaultCollectionID, defaultDMLChannel)
-	assert.NotNil(t, fg)
-	assert.NoError(t, err)
+		fg, err := dataSyncService.getFlowGraphByDMLChannel(defaultCollectionID, defaultDMLChannel)
+		assert.NotNil(t, fg)
+		assert.NoError(t, err)
 
-	fg, err = dataSyncService.getFlowGraphByDMLChannel(defaultCollectionID, "invalid-vChannel")
-	assert.Nil(t, fg)
-	assert.Error(t, err)
+		err = dataSyncService.startFlowGraphByDMLChannel(defaultCollectionID, defaultDMLChannel)
+		assert.NoError(t, err)
 
-	err = dataSyncService.startFlowGraphByDMLChannel(defaultCollectionID, defaultDMLChannel)
-	assert.NoError(t, err)
+		dataSyncService.removeFlowGraphsByDMLChannels([]Channel{defaultDMLChannel})
+		assert.Len(t, dataSyncService.dmlChannel2FlowGraph, 0)
 
-	err = dataSyncService.startFlowGraphByDMLChannel(defaultCollectionID, "invalid-vChannel")
-	assert.Error(t, err)
+		fg, err = dataSyncService.getFlowGraphByDMLChannel(defaultCollectionID, defaultDMLChannel)
+		assert.Nil(t, fg)
+		assert.Error(t, err)
 
-	dataSyncService.removeFlowGraphsByDMLChannels([]Channel{defaultDMLChannel})
-	assert.Len(t, dataSyncService.dmlChannel2FlowGraph, 0)
+		_, err = dataSyncService.addFlowGraphsForDMLChannels(defaultCollectionID, []Channel{defaultDMLChannel})
+		assert.NoError(t, err)
+		assert.Len(t, dataSyncService.dmlChannel2FlowGraph, 1)
 
-	fg, err = dataSyncService.getFlowGraphByDMLChannel(defaultCollectionID, defaultDMLChannel)
-	assert.Nil(t, fg)
-	assert.Error(t, err)
+		dataSyncService.close()
+		assert.Len(t, dataSyncService.dmlChannel2FlowGraph, 0)
+	})
 
-	_, err = dataSyncService.addFlowGraphsForDMLChannels(defaultCollectionID, []Channel{defaultDMLChannel})
-	assert.NoError(t, err)
-	assert.Len(t, dataSyncService.dmlChannel2FlowGraph, 1)
+	t.Run("test DMLFlowGraphs invalid channel", func(t *testing.T) {
+		fg, err := dataSyncService.getFlowGraphByDMLChannel(defaultCollectionID, "invalid-vChannel")
+		assert.Nil(t, fg)
+		assert.Error(t, err)
 
-	dataSyncService.close()
-	assert.Len(t, dataSyncService.dmlChannel2FlowGraph, 0)
+		err = dataSyncService.startFlowGraphByDMLChannel(defaultCollectionID, "invalid-vChannel")
+		assert.Error(t, err)
+	})
+
+	t.Run("test addFlowGraphsForDMLChannels checkReplica Failed", func(t *testing.T) {
+		err = dataSyncService.metaReplica.removeCollection(defaultCollectionID)
+		assert.NoError(t, err)
+		_, err = dataSyncService.addFlowGraphsForDMLChannels(defaultCollectionID, []Channel{defaultDMLChannel})
+		assert.Error(t, err)
+		dataSyncService.metaReplica.addCollection(defaultCollectionID, genTestCollectionSchema())
+	})
 }
 
 func TestDataSyncService_DeltaFlowGraphs(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	streamingReplica, err := genSimpleReplica()
+	replica, err := genSimpleReplica()
 	assert.NoError(t, err)
 
-	historicalReplica, err := genSimpleReplica()
-	assert.NoError(t, err)
-
-	fac, err := genFactory()
+	fac := genFactory()
 	assert.NoError(t, err)
 
 	tSafe := newTSafeReplica()
-	dataSyncService := newDataSyncService(ctx, streamingReplica, historicalReplica, tSafe, fac)
+	dataSyncService := newDataSyncService(ctx, replica, tSafe, fac)
 	assert.NotNil(t, dataSyncService)
 
-	_, err = dataSyncService.addFlowGraphsForDeltaChannels(defaultCollectionID, []Channel{defaultDeltaChannel})
+	t.Run("test DeltaFlowGraphs", func(t *testing.T) {
+		_, err = dataSyncService.addFlowGraphsForDeltaChannels(defaultCollectionID, []Channel{defaultDeltaChannel})
+		assert.NoError(t, err)
+		assert.Len(t, dataSyncService.deltaChannel2FlowGraph, 1)
+
+		_, err = dataSyncService.addFlowGraphsForDeltaChannels(defaultCollectionID, []Channel{defaultDeltaChannel})
+		assert.NoError(t, err)
+		assert.Len(t, dataSyncService.deltaChannel2FlowGraph, 1)
+
+		fg, err := dataSyncService.getFlowGraphByDeltaChannel(defaultCollectionID, defaultDeltaChannel)
+		assert.NotNil(t, fg)
+		assert.NoError(t, err)
+
+		err = dataSyncService.startFlowGraphForDeltaChannel(defaultCollectionID, defaultDeltaChannel)
+		assert.NoError(t, err)
+
+		dataSyncService.removeFlowGraphsByDeltaChannels([]Channel{defaultDeltaChannel})
+		assert.Len(t, dataSyncService.deltaChannel2FlowGraph, 0)
+
+		fg, err = dataSyncService.getFlowGraphByDeltaChannel(defaultCollectionID, defaultDeltaChannel)
+		assert.Nil(t, fg)
+		assert.Error(t, err)
+
+		_, err = dataSyncService.addFlowGraphsForDeltaChannels(defaultCollectionID, []Channel{defaultDMLChannel})
+		assert.NoError(t, err)
+		assert.Len(t, dataSyncService.deltaChannel2FlowGraph, 1)
+
+		dataSyncService.close()
+		assert.Len(t, dataSyncService.deltaChannel2FlowGraph, 0)
+	})
+
+	t.Run("test DeltaFlowGraphs invalid channel", func(t *testing.T) {
+		fg, err := dataSyncService.getFlowGraphByDeltaChannel(defaultCollectionID, "invalid-vChannel")
+		assert.Nil(t, fg)
+		assert.Error(t, err)
+
+		err = dataSyncService.startFlowGraphForDeltaChannel(defaultCollectionID, "invalid-vChannel")
+		assert.Error(t, err)
+	})
+
+	t.Run("test addFlowGraphsForDeltaChannels checkReplica Failed", func(t *testing.T) {
+		err = dataSyncService.metaReplica.removeCollection(defaultCollectionID)
+		assert.NoError(t, err)
+		_, err = dataSyncService.addFlowGraphsForDeltaChannels(defaultCollectionID, []Channel{defaultDMLChannel})
+		assert.Error(t, err)
+		dataSyncService.metaReplica.addCollection(defaultCollectionID, genTestCollectionSchema())
+	})
+}
+
+func TestDataSyncService_checkReplica(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	replica, err := genSimpleReplica()
 	assert.NoError(t, err)
-	assert.Len(t, dataSyncService.deltaChannel2FlowGraph, 1)
 
-	_, err = dataSyncService.addFlowGraphsForDeltaChannels(defaultCollectionID, []Channel{defaultDeltaChannel})
-	assert.NoError(t, err)
-	assert.Len(t, dataSyncService.deltaChannel2FlowGraph, 1)
-
-	fg, err := dataSyncService.getFlowGraphByDeltaChannel(defaultCollectionID, defaultDeltaChannel)
-	assert.NotNil(t, fg)
+	fac := genFactory()
 	assert.NoError(t, err)
 
-	fg, err = dataSyncService.getFlowGraphByDeltaChannel(defaultCollectionID, "invalid-vChannel")
-	assert.Nil(t, fg)
-	assert.Error(t, err)
+	tSafe := newTSafeReplica()
+	dataSyncService := newDataSyncService(ctx, replica, tSafe, fac)
+	assert.NotNil(t, dataSyncService)
+	defer dataSyncService.close()
 
-	err = dataSyncService.startFlowGraphForDeltaChannel(defaultCollectionID, defaultDeltaChannel)
-	assert.NoError(t, err)
+	t.Run("test checkReplica", func(t *testing.T) {
+		err = dataSyncService.checkReplica(defaultCollectionID)
+		assert.NoError(t, err)
+	})
 
-	err = dataSyncService.startFlowGraphForDeltaChannel(defaultCollectionID, "invalid-vChannel")
-	assert.Error(t, err)
+	t.Run("test collection doesn't exist", func(t *testing.T) {
+		err = dataSyncService.metaReplica.removeCollection(defaultCollectionID)
+		assert.NoError(t, err)
+		err = dataSyncService.checkReplica(defaultCollectionID)
+		assert.Error(t, err)
+		coll := dataSyncService.metaReplica.addCollection(defaultCollectionID, genTestCollectionSchema())
+		assert.NotNil(t, coll)
+	})
 
-	dataSyncService.removeFlowGraphsByDeltaChannels([]Channel{defaultDeltaChannel})
-	assert.Len(t, dataSyncService.deltaChannel2FlowGraph, 0)
+	t.Run("test cannot find tSafe", func(t *testing.T) {
+		coll, err := dataSyncService.metaReplica.getCollectionByID(defaultCollectionID)
+		assert.NoError(t, err)
+		coll.addVDeltaChannels([]Channel{defaultDeltaChannel})
+		coll.addVChannels([]Channel{defaultDMLChannel})
 
-	fg, err = dataSyncService.getFlowGraphByDeltaChannel(defaultCollectionID, defaultDeltaChannel)
-	assert.Nil(t, fg)
-	assert.Error(t, err)
+		dataSyncService.tSafeReplica.addTSafe(defaultDeltaChannel)
+		dataSyncService.tSafeReplica.addTSafe(defaultDMLChannel)
 
-	_, err = dataSyncService.addFlowGraphsForDeltaChannels(defaultCollectionID, []Channel{defaultDMLChannel})
-	assert.NoError(t, err)
-	assert.Len(t, dataSyncService.deltaChannel2FlowGraph, 1)
+		dataSyncService.tSafeReplica.removeTSafe(defaultDeltaChannel)
+		err = dataSyncService.checkReplica(defaultCollectionID)
+		assert.Error(t, err)
 
-	dataSyncService.close()
-	assert.Len(t, dataSyncService.deltaChannel2FlowGraph, 0)
+		dataSyncService.tSafeReplica.removeTSafe(defaultDMLChannel)
+		err = dataSyncService.checkReplica(defaultCollectionID)
+		assert.Error(t, err)
+
+		dataSyncService.tSafeReplica.addTSafe(defaultDeltaChannel)
+		dataSyncService.tSafeReplica.addTSafe(defaultDMLChannel)
+	})
 }

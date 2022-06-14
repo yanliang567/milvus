@@ -33,6 +33,7 @@ pull_request_rules:
       - "status-success=Code Checker AMD64 Ubuntu 18.04"
       - "status-success=Build and test AMD64 Ubuntu 18.04"
       - "status-success=Code Checker MacOS 11"
+      - "status-success=Code Checker CentOS 7"
       - "status-success=continuous-integration/jenkins/pr-merge"
       - "status-success=codecov/patch"
       - "status-success=codecov/project"
@@ -70,7 +71,7 @@ pull_request_rules:
       - or:
         - base=master
         - base~=^2(\.\d+){2}$
-      - -files~=^(?=.*\.(go|h|cpp)).*$
+      - -files~=^(?=.*((\.(go|h|cpp)|CMakeLists.txt))).*$
       - "status-success=continuous-integration/jenkins/pr-merge"
     actions:
       label:
@@ -85,6 +86,7 @@ pull_request_rules:
       - "status-success=Code Checker AMD64 Ubuntu 18.04"
       - "status-success=Build and test AMD64 Ubuntu 18.04"
       - "status-success=Code Checker MacOS 11"
+      - "status-success=Code Checker CentOS 7"
       - -files~=^(?!internal\/.*_test\.go).*$
     actions:
       label:
@@ -109,7 +111,7 @@ pull_request_rules:
         - base~=^2(\.\d+){2}$
       - title~=\[skip e2e\]
       - label=kind/improvement
-      - -files~=^(?=.*\.(go|h|cpp)).*$
+      - -files~=^(?=.*((\.(go|h|cpp)|CMakeLists.txt))).*$
     actions:
       label:
         add:
@@ -121,7 +123,9 @@ pull_request_rules:
       - or:
         - base=master
         - base~=^2(\.\d+){2}$
-      - -body~=\#[0-9]{1,6}(\s+|$)
+      - and:
+        - -body~=\#[0-9]{1,6}(\s+|$)
+        - -body~=https://github.com/milvus-io/milvus/issues/[0-9]{1,6}(\s+|$)
       - -label=kind/improvement
       - -title~=\[automated\]
     actions:
@@ -130,7 +134,7 @@ pull_request_rules:
           - do-not-merge/missing-related-issue
       comment:
         message: |
-          @{{author}} Please associate the related issue to the body of your Pull Request.  (eg. “issue: #6534”)
+          @{{author}} Please associate the related issue to the body of your Pull Request.  (eg. “issue: #<xyz>”)
 
 
   - name: Dismiss block label if related issue be added into PR
@@ -140,7 +144,9 @@ pull_request_rules:
           - or:
             - base=master
             - base~=^2(\.\d+){2}$
-          - body~=\#[0-9]{1,6}(\s+|$)
+          - or:
+            - body~=\#[0-9]{1,6}(\s+|$)
+            - body~=https://github.com/milvus-io/milvus/issues/[0-9]{1,6}(\s+|$)
         - and:
           - base=master
           - label=kind/improvement
@@ -169,7 +175,8 @@ pull_request_rules:
       - "status-success=Code Checker AMD64 Ubuntu 18.04"
       - "status-success=Build and test AMD64 Ubuntu 18.04"
       - "status-success=Code Checker MacOS 11"
-      - files~=^(?=.*\.(go|h|cpp)).*$
+      - "status-success=Code Checker CentOS 7"
+      - files~=^(?=.*((\.(go|h|cpp)|CMakeLists.txt))).*$
     actions:
       label:
         add:
@@ -182,11 +189,12 @@ pull_request_rules:
       - or:
         - base=master
         - base~=^2(\.\d+){2}$
-      - files~=^(?=.*\.(go|h|cpp)).*$
+      - files~=^(?=.*((\.(go|h|cpp)|CMakeLists.txt))).*$
       - or:
         - "status-success!=Code Checker AMD64 Ubuntu 18.04"
         - "status-success!=Build and test AMD64 Ubuntu 18.04" 
         - "status-success!=Code Checker MacOS 11"    
+        - "status-success!=Code Checker CentOS 7"
     actions:
       label:
         remove:

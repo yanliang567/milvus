@@ -25,26 +25,27 @@ import (
 	"time"
 
 	ot "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
+
 	dcc "github.com/milvus-io/milvus/internal/distributed/datacoord/client"
 	icc "github.com/milvus-io/milvus/internal/distributed/indexcoord/client"
 	rcc "github.com/milvus-io/milvus/internal/distributed/rootcoord/client"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	qc "github.com/milvus-io/milvus/internal/querycoord"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/etcd"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/trace"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/keepalive"
 )
 
 var Params paramtable.GrpcServerConfig
@@ -60,7 +61,7 @@ type Server struct {
 
 	queryCoord types.QueryCoordComponent
 
-	msFactory msgstream.Factory
+	factory dependency.Factory
 
 	etcdCli *clientv3.Client
 
@@ -72,7 +73,7 @@ type Server struct {
 }
 
 // NewServer create a new QueryCoord grpc server.
-func NewServer(ctx context.Context, factory msgstream.Factory) (*Server, error) {
+func NewServer(ctx context.Context, factory dependency.Factory) (*Server, error) {
 	ctx1, cancel := context.WithCancel(ctx)
 	svr, err := qc.NewQueryCoord(ctx1, factory)
 	if err != nil {
@@ -84,7 +85,7 @@ func NewServer(ctx context.Context, factory msgstream.Factory) (*Server, error) 
 		queryCoord:  svr,
 		loopCtx:     ctx1,
 		loopCancel:  cancel,
-		msFactory:   factory,
+		factory:     factory,
 		grpcErrChan: make(chan error),
 	}, nil
 }
@@ -370,11 +371,6 @@ func (s *Server) ReleasePartitions(ctx context.Context, req *querypb.ReleasePart
 	return s.queryCoord.ReleasePartitions(ctx, req)
 }
 
-// CreateQueryChannel creates the channels for querying in QueryCoord.
-func (s *Server) CreateQueryChannel(ctx context.Context, req *querypb.CreateQueryChannelRequest) (*querypb.CreateQueryChannelResponse, error) {
-	return s.queryCoord.CreateQueryChannel(ctx, req)
-}
-
 // GetSegmentInfo gets the information of the specified segment from QueryCoord.
 func (s *Server) GetSegmentInfo(ctx context.Context, req *querypb.GetSegmentInfoRequest) (*querypb.GetSegmentInfoResponse, error) {
 	return s.queryCoord.GetSegmentInfo(ctx, req)
@@ -388,4 +384,14 @@ func (s *Server) LoadBalance(ctx context.Context, req *querypb.LoadBalanceReques
 // GetMetrics gets the metrics information of QueryCoord.
 func (s *Server) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
 	return s.queryCoord.GetMetrics(ctx, req)
+}
+
+// GetReplicas returns the shard leaders of a certain collection.
+func (s *Server) GetReplicas(ctx context.Context, req *milvuspb.GetReplicasRequest) (*milvuspb.GetReplicasResponse, error) {
+	return s.queryCoord.GetReplicas(ctx, req)
+}
+
+// GetShardLeaders returns the shard leaders of a certain collection.
+func (s *Server) GetShardLeaders(ctx context.Context, req *querypb.GetShardLeadersRequest) (*querypb.GetShardLeadersResponse, error) {
+	return s.queryCoord.GetShardLeaders(ctx, req)
 }

@@ -24,6 +24,7 @@ import (
 
 	grpcdatanodeclient "github.com/milvus-io/milvus/internal/distributed/datanode/client"
 	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/types"
 	"go.uber.org/zap"
@@ -31,6 +32,10 @@ import (
 
 const (
 	flushTimeout = 5 * time.Second
+	// TODO: evaluate and update import timeout.
+	importTimeout     = 3 * time.Hour
+	reCollectTimeout  = 5 * time.Second
+	addSegmentTimeout = 30 * time.Second
 )
 
 // SessionManager provides the grpc interfaces of cluster
@@ -110,7 +115,7 @@ func (c *SessionManager) Flush(ctx context.Context, nodeID int64, req *datapb.Fl
 func (c *SessionManager) execFlush(ctx context.Context, nodeID int64, req *datapb.FlushSegmentsRequest) {
 	cli, err := c.getClient(ctx, nodeID)
 	if err != nil {
-		log.Warn("failed to get client", zap.Int64("nodeID", nodeID), zap.Error(err))
+		log.Warn("failed to get dataNode client", zap.Int64("dataNode ID", nodeID), zap.Error(err))
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, flushTimeout)
@@ -118,11 +123,10 @@ func (c *SessionManager) execFlush(ctx context.Context, nodeID int64, req *datap
 
 	resp, err := cli.FlushSegments(ctx, req)
 	if err := VerifyResponse(resp, err); err != nil {
-		log.Warn("failed to flush", zap.Int64("node", nodeID), zap.Error(err))
-		return
+		log.Error("flush call (perhaps partially) failed", zap.Int64("dataNode ID", nodeID), zap.Error(err))
+	} else {
+		log.Info("flush call succeeded", zap.Int64("dataNode ID", nodeID))
 	}
-
-	log.Info("success to flush", zap.Int64("node", nodeID), zap.Any("segments", req))
 }
 
 // Compaction is a grpc interface. It will send request to DataNode with provided `nodeID` asynchronously.
@@ -146,6 +150,81 @@ func (c *SessionManager) execCompaction(nodeID int64, plan *datapb.CompactionPla
 	}
 
 	log.Info("success to execute compaction", zap.Int64("node", nodeID), zap.Any("planID", plan.GetPlanID()))
+}
+
+// Import is a grpc interface. It will send request to DataNode with provided `nodeID` asynchronously.
+func (c *SessionManager) Import(ctx context.Context, nodeID int64, itr *datapb.ImportTaskRequest) {
+	go c.execImport(ctx, nodeID, itr)
+}
+
+// execImport gets the corresponding DataNode with its ID and calls its Import method.
+func (c *SessionManager) execImport(ctx context.Context, nodeID int64, itr *datapb.ImportTaskRequest) {
+	cli, err := c.getClient(ctx, nodeID)
+	if err != nil {
+		log.Warn("failed to get client for import", zap.Int64("nodeID", nodeID), zap.Error(err))
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, importTimeout)
+	defer cancel()
+	resp, err := cli.Import(ctx, itr)
+	if err := VerifyResponse(resp, err); err != nil {
+		log.Warn("failed to import", zap.Int64("node", nodeID), zap.Error(err))
+		return
+	}
+
+	log.Info("success to import", zap.Int64("node", nodeID), zap.Any("import task", itr))
+}
+
+// ReCollectSegmentStats collects segment stats info from DataNodes, after DataCoord reboots.
+func (c *SessionManager) ReCollectSegmentStats(ctx context.Context, nodeID int64) {
+	go c.execReCollectSegmentStats(ctx, nodeID)
+}
+
+func (c *SessionManager) execReCollectSegmentStats(ctx context.Context, nodeID int64) {
+	cli, err := c.getClient(ctx, nodeID)
+	if err != nil {
+		log.Warn("failed to get dataNode client", zap.Int64("DataNode ID", nodeID), zap.Error(err))
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, reCollectTimeout)
+	defer cancel()
+	resp, err := cli.ResendSegmentStats(ctx, &datapb.ResendSegmentStatsRequest{
+		Base: &commonpb.MsgBase{
+			MsgType:  commonpb.MsgType_ResendSegmentStats,
+			SourceID: Params.DataCoordCfg.GetNodeID(),
+		},
+	})
+	if err := VerifyResponse(resp, err); err != nil {
+		log.Error("re-collect segment stats call failed",
+			zap.Int64("DataNode ID", nodeID), zap.Error(err))
+	} else {
+		log.Info("re-collect segment stats call succeeded",
+			zap.Int64("DataNode ID", nodeID),
+			zap.Int64s("segment stat collected", resp.GetSegResent()))
+	}
+}
+
+// AddSegment calls DataNode with ID == `nodeID` to put the segment into this node.
+func (c *SessionManager) AddSegment(ctx context.Context, nodeID int64, req *datapb.AddSegmentRequest) {
+	go c.execAddSegment(ctx, nodeID, req)
+}
+
+func (c *SessionManager) execAddSegment(ctx context.Context, nodeID int64, req *datapb.AddSegmentRequest) {
+	cli, err := c.getClient(ctx, nodeID)
+	if err != nil {
+		log.Warn("failed to get client for AddSegment", zap.Int64("DataNode ID", nodeID), zap.Error(err))
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, addSegmentTimeout)
+	defer cancel()
+	req.Base.SourceID = Params.DataCoordCfg.GetNodeID()
+	resp, err := cli.AddSegment(ctx, req)
+	if err := VerifyResponse(resp, err); err != nil {
+		log.Warn("failed to add segment", zap.Int64("DataNode ID", nodeID), zap.Error(err))
+		return
+	}
+
+	log.Info("success to add segment", zap.Int64("DataNode ID", nodeID), zap.Any("add segment req", req))
 }
 
 func (c *SessionManager) getClient(ctx context.Context, nodeID int64) (types.DataNode, error) {

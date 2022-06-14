@@ -119,6 +119,22 @@ func (m *DataCoordClient) DropVirtualChannel(ctx context.Context, req *datapb.Dr
 	return &datapb.DropVirtualChannelResponse{}, m.Err
 }
 
-func (m *DataCoordClient) Import(ctx context.Context, req *datapb.ImportTask, opts ...grpc.CallOption) (*datapb.ImportTaskResponse, error) {
+func (m *DataCoordClient) SetSegmentState(ctx context.Context, req *datapb.SetSegmentStateRequest, opts ...grpc.CallOption) (*datapb.SetSegmentStateResponse, error) {
+	return &datapb.SetSegmentStateResponse{}, m.Err
+}
+
+func (m *DataCoordClient) Import(ctx context.Context, req *datapb.ImportTaskRequest, opts ...grpc.CallOption) (*datapb.ImportTaskResponse, error) {
 	return &datapb.ImportTaskResponse{}, m.Err
+}
+
+func (m *DataCoordClient) UpdateSegmentStatistics(ctx context.Context, req *datapb.UpdateSegmentStatisticsRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
+	return &commonpb.Status{}, m.Err
+}
+
+func (m *DataCoordClient) AcquireSegmentLock(ctx context.Context, req *datapb.AcquireSegmentLockRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
+	return &commonpb.Status{}, m.Err
+}
+
+func (m *DataCoordClient) ReleaseSegmentLock(ctx context.Context, req *datapb.ReleaseSegmentLockRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
+	return &commonpb.Status{}, m.Err
 }

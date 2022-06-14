@@ -57,12 +57,8 @@ VecIndexCreator::parse_impl(const std::string& serialized_params_str, knowhere::
         conf[key] = value;
     }
 
-    auto stoi_closure = [](const std::string& s) -> auto {
-        return std::stoi(s);
-    };
-    auto stof_closure = [](const std::string& s) -> auto {
-        return std::stof(s);
-    };
+    auto stoi_closure = [](const std::string& s) -> int { return std::stoi(s); };
+    auto stof_closure = [](const std::string& s) -> float { return std::stof(s); };
 
     /***************************** meta *******************************/
     check_parameter<int>(conf, knowhere::meta::DIM, stoi_closure, std::nullopt);
@@ -165,7 +161,8 @@ VecIndexCreator::BuildWithoutIds(const knowhere::DatasetPtr& dataset) {
         }
     }
     auto conf_adapter = knowhere::AdapterMgr::GetInstance().GetAdapter(index_type);
-    std::cout << "Konwhere BuildWithoutIds config_ is " << config_ << std::endl;
+    // TODO: Use easylogging instead, if you really need to keep this log.
+    // std::cout << "Konwhere BuildWithoutIds config_ is " << config_ << std::endl;
     AssertInfo(conf_adapter->CheckTrain(config_, index_mode), "something wrong in index parameters!");
 
     if (is_in_need_id_list(index_type)) {
@@ -238,10 +235,9 @@ VecIndexCreator::Serialize() {
         std::shared_ptr<uint8_t[]> raw_data(new uint8_t[raw_data_.size()], std::default_delete<uint8_t[]>());
         memcpy(raw_data.get(), raw_data_.data(), raw_data_.size());
         ret.Append(RAW_DATA, raw_data, raw_data_.size());
-        auto slice_size = get_index_file_slice_size();
         // https://github.com/milvus-io/milvus/issues/6421
         // Disassemble will only divide the raw vectors, other keys were already divided
-        knowhere::Disassemble(slice_size * 1024 * 1024, ret);
+        knowhere::Disassemble(ret, config_);
     }
     return ret;
 }
@@ -300,7 +296,7 @@ VecIndexCreator::get_index_file_slice_size() {
     if (config_.contains(knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE)) {
         return config_[knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE].get<int64_t>();
     }
-    return 4;  // by default
+    return knowhere::index_file_slice_size;  // by default
 }
 
 std::unique_ptr<VecIndexCreator::QueryResult>

@@ -76,37 +76,46 @@ func Test_NewClient(t *testing.T) {
 
 		r6, err := client.Compaction(ctx, nil)
 		retCheck(retNotNil, r6, err)
+
+		r7, err := client.Import(ctx, nil)
+		retCheck(retNotNil, r7, err)
+
+		r8, err := client.ResendSegmentStats(ctx, nil)
+		retCheck(retNotNil, r8, err)
+
+		r9, err := client.AddSegment(ctx, nil)
+		retCheck(retNotNil, r9, err)
 	}
 
-	client.grpcClient = &mock.ClientBase{
+	client.grpcClient = &mock.GRPCClientBase{
 		GetGrpcClientErr: errors.New("dummy"),
 	}
 
 	newFunc1 := func(cc *grpc.ClientConn) interface{} {
-		return &mock.DataNodeClient{Err: nil}
+		return &mock.GrpcDataNodeClient{Err: nil}
 	}
 	client.grpcClient.SetNewGrpcClientFunc(newFunc1)
 
 	checkFunc(false)
 
-	client.grpcClient = &mock.ClientBase{
+	client.grpcClient = &mock.GRPCClientBase{
 		GetGrpcClientErr: nil,
 	}
 
 	newFunc2 := func(cc *grpc.ClientConn) interface{} {
-		return &mock.DataNodeClient{Err: errors.New("dummy")}
+		return &mock.GrpcDataNodeClient{Err: errors.New("dummy")}
 	}
 
 	client.grpcClient.SetNewGrpcClientFunc(newFunc2)
 
 	checkFunc(false)
 
-	client.grpcClient = &mock.ClientBase{
+	client.grpcClient = &mock.GRPCClientBase{
 		GetGrpcClientErr: nil,
 	}
 
 	newFunc3 := func(cc *grpc.ClientConn) interface{} {
-		return &mock.DataNodeClient{Err: nil}
+		return &mock.GrpcDataNodeClient{Err: nil}
 	}
 	client.grpcClient.SetNewGrpcClientFunc(newFunc3)
 

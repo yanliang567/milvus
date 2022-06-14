@@ -67,31 +67,11 @@ Insert(CSegmentInterface c_segment,
        int64_t size,
        const int64_t* row_ids,
        const uint64_t* timestamps,
-       void* raw_data,
-       int sizeof_per_row,
-       int64_t count);
-
-CStatus
-InsertColumnData(CSegmentInterface c_segment,
-                 int64_t reserved_offset,
-                 int64_t size,
-                 const int64_t* row_ids,
-                 const uint64_t* timestamps,
-                 void* raw_data,
-                 int64_t count);
+       const uint8_t* data_info,
+       const uint64_t data_info_len);
 
 CStatus
 PreInsert(CSegmentInterface c_segment, int64_t size, int64_t* offset);
-
-CStatus
-Delete(CSegmentInterface c_segment,
-       int64_t reserved_offset,
-       int64_t size,
-       const int64_t* row_ids,
-       const uint64_t* timestamps);
-
-int64_t
-PreDelete(CSegmentInterface c_segment, int64_t size);
 
 //////////////////////////////    interfaces for sealed segment    //////////////////////////////
 CStatus
@@ -109,6 +89,17 @@ DropFieldData(CSegmentInterface c_segment, int64_t field_id);
 CStatus
 DropSealedSegmentIndex(CSegmentInterface c_segment, int64_t field_id);
 
+//////////////////////////////    interfaces for SegmentInterface    //////////////////////////////
+CStatus
+Delete(CSegmentInterface c_segment,
+       int64_t reserved_offset,
+       int64_t size,
+       const uint8_t* ids,
+       const uint64_t ids_size,
+       const uint64_t* timestamps);
+
+int64_t
+PreDelete(CSegmentInterface c_segment, int64_t size);
 #ifdef __cplusplus
 }
 #endif

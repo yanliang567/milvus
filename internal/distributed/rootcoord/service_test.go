@@ -29,8 +29,9 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/stretchr/testify/assert"
+
 	rcc "github.com/milvus-io/milvus/internal/distributed/rootcoord/client"
-	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/etcdpb"
@@ -41,11 +42,11 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/rootcoord"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/etcd"
 	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	"github.com/stretchr/testify/assert"
 )
 
 type proxyMock struct {
@@ -55,6 +56,12 @@ type proxyMock struct {
 
 func (p *proxyMock) InvalidateCollectionMetaCache(ctx context.Context, request *proxypb.InvalidateCollMetaCacheRequest) (*commonpb.Status, error) {
 	return p.invalidateCollectionMetaCache(ctx, request)
+}
+
+func (p *proxyMock) ReleaseDQLMessageStream(ctx context.Context, request *proxypb.ReleaseDQLMessageStreamRequest) (*commonpb.Status, error) {
+	return &commonpb.Status{
+		ErrorCode: commonpb.ErrorCode_Success,
+	}, nil
 }
 
 func TestGrpcService(t *testing.T) {
@@ -75,8 +82,8 @@ func TestGrpcService(t *testing.T) {
 	t.Log("newParams.Address:", Params.GetAddress())
 
 	ctx := context.Background()
-	msFactory := msgstream.NewPmsFactory()
-	svr, err := NewServer(ctx, msFactory)
+	factory := dependency.NewDefaultFactory(true)
+	svr, err := NewServer(ctx, factory)
 	assert.Nil(t, err)
 
 	rootcoord.Params.Init()
@@ -154,29 +161,38 @@ func TestGrpcService(t *testing.T) {
 		return nil
 	}
 
-	core.CallGetBinlogFilePathsService = func(ctx context.Context, segID typeutil.UniqueID, fieldID typeutil.UniqueID) ([]string, error) {
-		return []string{"file1", "file2", "file3"}, nil
+	core.CallGetRecoveryInfoService = func(ctx context.Context, collID, partID rootcoord.UniqueID) ([]*datapb.SegmentBinlogs, error) {
+		return []*datapb.SegmentBinlogs{
+			{
+				SegmentID: segID,
+				NumOfRows: rootcoord.Params.RootCoordCfg.MinSegmentSizeToEnableIndex,
+				FieldBinlogs: []*datapb.FieldBinlog{
+					{
+						FieldID: fieldID,
+						Binlogs: []*datapb.Binlog{{LogPath: "file1"}, {LogPath: "file2"}, {LogPath: "file3"}},
+					},
+				},
+			},
+		}, nil
 	}
-	core.CallGetNumRowsService = func(ctx context.Context, segID typeutil.UniqueID, isFromFlushedChan bool) (int64, error) {
-		return rootcoord.Params.RootCoordCfg.MinSegmentSizeToEnableIndex, nil
-	}
+
 	core.CallWatchChannels = func(ctx context.Context, collectionID int64, channelNames []string) error {
 		return nil
 	}
 
-	segs := []typeutil.UniqueID{}
+	var segs []typeutil.UniqueID
 	segLock := sync.Mutex{}
 	core.CallGetFlushedSegmentsService = func(ctx context.Context, collID, partID typeutil.UniqueID) ([]typeutil.UniqueID, error) {
 		segLock.Lock()
 		defer segLock.Unlock()
-		ret := []typeutil.UniqueID{}
+		var ret []typeutil.UniqueID
 		ret = append(ret, segs...)
 		return ret, nil
 	}
 
 	var binlogLock sync.Mutex
 	binlogPathArray := make([]string, 0, 16)
-	core.CallBuildIndexService = func(ctx context.Context, binlog []string, field *schemapb.FieldSchema, idxInfo *etcdpb.IndexInfo, numRows int64) (typeutil.UniqueID, error) {
+	core.CallBuildIndexService = func(ctx context.Context, segID typeutil.UniqueID, binlog []string, field *schemapb.FieldSchema, idxInfo *etcdpb.IndexInfo, numRows int64) (typeutil.UniqueID, error) {
 		binlogLock.Lock()
 		defer binlogLock.Unlock()
 		binlogPathArray = append(binlogPathArray, binlog...)
@@ -210,7 +226,7 @@ func TestGrpcService(t *testing.T) {
 	core.CallReleasePartitionService = func(ctx context.Context, ts typeutil.Timestamp, dbID, collectionID typeutil.UniqueID, partitionIDs []typeutil.UniqueID) error {
 		return nil
 	}
-	core.CallImportService = func(ctx context.Context, req *datapb.ImportTask) *datapb.ImportTaskResponse {
+	core.CallImportService = func(ctx context.Context, req *datapb.ImportTaskRequest) *datapb.ImportTaskResponse {
 		return nil
 	}
 
@@ -286,7 +302,9 @@ func TestGrpcService(t *testing.T) {
 
 	t.Run("release DQL msg stream", func(t *testing.T) {
 		req := &proxypb.ReleaseDQLMessageStreamRequest{}
-		assert.Panics(t, func() { svr.ReleaseDQLMessageStream(ctx, req) })
+		rsp, err := svr.ReleaseDQLMessageStream(ctx, req)
+		assert.Nil(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, rsp.ErrorCode)
 	})
 
 	t.Run("get metrics", func(t *testing.T) {
@@ -763,7 +781,6 @@ func TestGrpcService(t *testing.T) {
 		assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
 		assert.Equal(t, collName, dropCollectionArray[0].CollectionName)
 		assert.Equal(t, 3, len(collectionMetaCache))
-		assert.Equal(t, collName, collectionMetaCache[0])
 
 		req = &milvuspb.DropCollectionRequest{
 			Base: &commonpb.MsgBase{
@@ -943,7 +960,7 @@ func initEtcd(etcdEndpoints []string) (*clientv3.Client, error) {
 		etcdCli = etcd
 		return nil
 	}
-	err := retry.Do(context.TODO(), connectEtcdFn, retry.Attempts(300))
+	err := retry.Do(context.TODO(), connectEtcdFn, retry.Attempts(100))
 	if err != nil {
 		return nil, err
 	}

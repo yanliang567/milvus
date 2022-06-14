@@ -43,7 +43,6 @@ type queryNodeClientMock struct {
 }
 
 func newQueryNodeTest(ctx context.Context, address string, id UniqueID, kv *etcdkv.EtcdKV) (Node, error) {
-	watchedChannels := make(map[UniqueID]*querypb.QueryChannelInfo)
 	watchedDeltaChannels := make(map[UniqueID][]*datapb.VchannelInfo)
 	childCtx, cancel := context.WithCancel(ctx)
 	client, err := newQueryNodeClientMock(childCtx, address)
@@ -58,7 +57,6 @@ func newQueryNodeTest(ctx context.Context, address string, id UniqueID, kv *etcd
 		address:              address,
 		client:               client,
 		kvClient:             kv,
-		watchedQueryChannels: watchedChannels,
 		watchedDeltaChannels: watchedDeltaChannels,
 	}
 
@@ -118,14 +116,6 @@ func (client *queryNodeClientMock) GetStatisticsChannel(ctx context.Context) (*m
 	return client.grpcClient.GetStatisticsChannel(ctx, &internalpb.GetStatisticsChannelRequest{})
 }
 
-func (client *queryNodeClientMock) AddQueryChannel(ctx context.Context, req *querypb.AddQueryChannelRequest) (*commonpb.Status, error) {
-	return client.grpcClient.AddQueryChannel(ctx, req)
-}
-
-func (client *queryNodeClientMock) RemoveQueryChannel(ctx context.Context, req *querypb.RemoveQueryChannelRequest) (*commonpb.Status, error) {
-	return client.grpcClient.RemoveQueryChannel(ctx, req)
-}
-
 func (client *queryNodeClientMock) WatchDmChannels(ctx context.Context, req *querypb.WatchDmChannelsRequest) (*commonpb.Status, error) {
 	return client.grpcClient.WatchDmChannels(ctx, req)
 }
@@ -156,4 +146,16 @@ func (client *queryNodeClientMock) GetSegmentInfo(ctx context.Context, req *quer
 
 func (client *queryNodeClientMock) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
 	return client.grpcClient.GetMetrics(ctx, req)
+}
+
+func (client *queryNodeClientMock) Search(ctx context.Context, req *querypb.SearchRequest) (*internalpb.SearchResults, error) {
+	return client.grpcClient.Search(ctx, req)
+}
+
+func (client *queryNodeClientMock) Query(ctx context.Context, req *querypb.QueryRequest) (*internalpb.RetrieveResults, error) {
+	return client.grpcClient.Query(ctx, req)
+}
+
+func (client *queryNodeClientMock) SyncReplicaSegments(ctx context.Context, req *querypb.SyncReplicaSegmentsRequest) (*commonpb.Status, error) {
+	return client.grpcClient.SyncReplicaSegments(ctx, req)
 }

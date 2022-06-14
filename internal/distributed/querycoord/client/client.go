@@ -56,6 +56,9 @@ func NewClient(ctx context.Context, metaRoot string, etcdCli *clientv3.Client) (
 		grpcClient: &grpcclient.ClientBase{
 			ClientMaxRecvSize: ClientParams.ClientMaxRecvSize,
 			ClientMaxSendSize: ClientParams.ClientMaxSendSize,
+			DialTimeout:       ClientParams.DialTimeout,
+			KeepAliveTime:     ClientParams.KeepAliveTime,
+			KeepAliveTimeout:  ClientParams.KeepAliveTimeout,
 		},
 		sess: sess,
 	}
@@ -231,20 +234,6 @@ func (c *Client) ReleasePartitions(ctx context.Context, req *querypb.ReleasePart
 	return ret.(*commonpb.Status), err
 }
 
-// CreateQueryChannel creates the channels for querying in QueryCoord.
-func (c *Client) CreateQueryChannel(ctx context.Context, req *querypb.CreateQueryChannelRequest) (*querypb.CreateQueryChannelResponse, error) {
-	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
-		if !funcutil.CheckCtxValid(ctx) {
-			return nil, ctx.Err()
-		}
-		return client.(querypb.QueryCoordClient).CreateQueryChannel(ctx, req)
-	})
-	if err != nil || ret == nil {
-		return nil, err
-	}
-	return ret.(*querypb.CreateQueryChannelResponse), err
-}
-
 // GetPartitionStates gets the states of the specified partition.
 func (c *Client) GetPartitionStates(ctx context.Context, req *querypb.GetPartitionStatesRequest) (*querypb.GetPartitionStatesResponse, error) {
 	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
@@ -299,4 +288,32 @@ func (c *Client) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest
 		return nil, err
 	}
 	return ret.(*milvuspb.GetMetricsResponse), err
+}
+
+// GetReplicas gets the replicas of a certain collection.
+func (c *Client) GetReplicas(ctx context.Context, req *milvuspb.GetReplicasRequest) (*milvuspb.GetReplicasResponse, error) {
+	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(querypb.QueryCoordClient).GetReplicas(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*milvuspb.GetReplicasResponse), err
+}
+
+// GetShardLeaders gets the shard leaders of a certain collection.
+func (c *Client) GetShardLeaders(ctx context.Context, req *querypb.GetShardLeadersRequest) (*querypb.GetShardLeadersResponse, error) {
+	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(querypb.QueryCoordClient).GetShardLeaders(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*querypb.GetShardLeadersResponse), err
 }

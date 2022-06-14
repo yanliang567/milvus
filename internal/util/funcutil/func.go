@@ -17,7 +17,9 @@
 package funcutil
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +39,8 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/retry"
+
+	grpcStatus "google.golang.org/grpc/status"
 )
 
 // CheckGrpcReady wait for context timeout, or wait 100ms then send nil to targetCh
@@ -170,7 +174,7 @@ func GetAttrByKeyFromRepeatedKV(key string, kvs []*commonpb.KeyValuePair) (strin
 		}
 	}
 
-	return "", errors.New("key " + key + " not found")
+	return "", fmt.Errorf("key %s not found", key)
 }
 
 // CheckCtxValid check if the context is valid
@@ -343,4 +347,19 @@ func GetNumRowOfFieldData(fieldData *schemapb.FieldData) (uint64, error) {
 	}
 
 	return fieldNumRows, nil
+}
+
+// ReadBinary read byte slice as receiver.
+func ReadBinary(endian binary.ByteOrder, bs []byte, receiver interface{}) error {
+	buf := bytes.NewReader(bs)
+	return binary.Read(buf, endian, receiver)
+}
+
+// IsGrpcErr checks whether err is instance of grpc status error.
+func IsGrpcErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	_, ok := grpcStatus.FromError(err)
+	return ok
 }

@@ -25,7 +25,8 @@ import (
 )
 
 func TestFlowGraphMsg_insertMsg(t *testing.T) {
-	msg, err := genSimpleInsertMsg()
+	schema := genTestCollectionSchema()
+	msg, err := genSimpleInsertMsg(schema, defaultMsgLength)
 	assert.NoError(t, err)
 	timestampMax := Timestamp(1000)
 	im := insertMsg{

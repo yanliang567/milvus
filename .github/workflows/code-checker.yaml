@@ -43,37 +43,37 @@ jobs:
         uses: actions/checkout@v2
       - name: Cache CCache Volumes
         if: ${{  matrix.os == 'ubuntu-18.04' }}
-        uses: actions/cache@v1
+        uses: actions/cache@v3
         with:
           path: .docker/amd64-ubuntu18.04-ccache
           key: ubuntu18.04-ccache-${{ hashFiles('internal/core/**') }}
           restore-keys: ubuntu18.04-ccache-
       - name: Cache Third Party
         if: ${{  matrix.os == 'ubuntu-18.04' }}
-        uses: actions/cache@v1
+        uses: actions/cache@v3
         with:
           path: .docker/thirdparty
-          key: ubuntu18.04-thirdparty-${{ hashFiles('internal/core/**') }}
+          key: ubuntu18.04-thirdparty-${{ hashFiles('internal/core/thirdparty/**') }}
           restore-keys: ubuntu18.04-thirdparty-
       - name: Mac Cache Third Party
         if: ${{  matrix.os == 'macos-11' }}
-        uses: actions/cache@v1
+        uses: actions/cache@v3
         with:
           path: |
             /tmp/thirdparty 
-            cmake_build/3rdparty_download
-          key: macos-11-thirdparty-${{ hashFiles('internal/core/**') }}
+            cmake_build/3rdparty_download/download
+          key: macos-11-thirdparty-${{ hashFiles('internal/core/thirdparty/**') }}
           restore-keys: macos-11-thirdparty-
       - name: Mac Cache CCache Volumes
         if: ${{  matrix.os == 'macos-11' }}
-        uses: actions/cache@v1
+        uses: actions/cache@v3
         with:
           path: /var/tmp/ccache
           key: macos-11-ccache-${{ hashFiles('internal/core/**') }}
           restore-keys: macos-11-ccache-
       - name: Cache Go Mod Volumes
         if: ${{  matrix.os == 'ubuntu-18.04' }}
-        uses: actions/cache@v1
+        uses: actions/cache@v3
         with:
           path: .docker/amd64-ubuntu18.04-go-mod
           key: ubuntu18.04-go-mod-${{ hashFiles('**/go.sum') }}
@@ -82,10 +82,10 @@ jobs:
         uses: actions/setup-go@v2.2.0
         if: ${{  matrix.os == 'macos-11' }}
         with:
-          go-version: '^1.17.1'
+          go-version: '~1.17.1'
       - name: Mac Cache Go Mod Volumes
         if: ${{  matrix.os == 'macos-11' }}
-        uses: actions/cache@v1
+        uses: actions/cache@v3
         with:
           path: ~/go/pkg/mod
           key: macos-11-go-mod-${{ hashFiles('**/go.sum') }}
@@ -109,8 +109,40 @@ jobs:
           if [[ ! -d "/var/tmp/ccache" ]];then
             mkdir -p /var/tmp/ccache
           fi
-          brew install boost libomp ninja tbb ccache
-          make check-proto-product && make verifiers
+          brew install boost libomp ninja tbb openblas ccache
+          make check-proto-product && make verifiers && sh scripts/collect_arrow_dep.sh -f /tmp/thirdparty
+  centos:
+    name: Code Checker CentOS 7
+    # Run in centos docker 
+    runs-on: ubuntu-18.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Cache CCache Volumes
+        uses: actions/cache@v3
+        with:
+          path: .docker/amd64-centos7-ccache
+          key: centos7-ccache-${{ hashFiles('internal/core/**') }}
+          restore-keys: centos7-ccache-
+      - name: Cache Third Party
+        uses: actions/cache@v3
+        with:
+          path: .docker/thirdparty
+          key: centos7-thirdparty-${{ hashFiles('internal/core/thirdparty/**') }}
+          restore-keys: centos7-thirdparty-
+      - name: Cache Go Mod Volumes
+        uses: actions/cache@v3
+        with:
+          path: .docker/amd64-centos7-go-mod
+          key: centos7-go-mod-${{ hashFiles('**/go.sum') }}
+          restore-keys: centos7-go-mod-
+      - name: Code Check
+        env:
+          CHECK_BUILDER: "1"
+          OS_NAME: "centos7"
+        run: |
+           ./build/builder.sh /bin/bash -c "make install"
   mingw64:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -129,7 +161,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v2
       - name: Cache go
-        uses: actions/cache@v2
+        uses: actions/cache@v3
         with:
           path: |
             %LocalAppData%\go-build
@@ -137,14 +169,14 @@ jobs:
           key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
           restore-keys: ${{ runner.os }}-go-
       - name: Cache ccache
-        uses: actions/cache@v2
+        uses: actions/cache@v3
         with:
           path: |
             ${{ github.workspace }}/.ccache
           key: ${{ runner.os }}-ccache-${{ hashFiles('internal/core/**') }}
           restore-keys: ${{ runner.os }}-ccache-
       - name: Configure Toolchain
-        uses: msys2/setup-msys2@v2
+        uses: msys2/setup-msys2@v2.10.3
         with:
           msystem: mingw64
       - name: Install Deps

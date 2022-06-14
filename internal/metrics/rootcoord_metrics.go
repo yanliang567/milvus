@@ -6,143 +6,16 @@ import (
 )
 
 var (
-	// RootCoordProxyLister counts the num of registered proxy nodes
-	RootCoordProxyLister = prometheus.NewGaugeVec(
+	// RootCoordProxyCounter counts the num of registered proxy nodes
+	RootCoordProxyCounter = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: milvusNamespace,
 			Subsystem: typeutil.RootCoordRole,
-			Name:      "list_of_proxy",
-			Help:      "List of proxy nodes which have registered with etcd",
-		}, []string{nodeIDLabelName})
+			Name:      "proxy_num",
+			Help:      "number of proxy nodes managered by rootcoord",
+		}, []string{})
 
 	////////////////////////////////////////////////////////////////////////////
-	// for grpc
-
-	// RootCoordCreateCollectionCounter counts the num of calls of CreateCollection
-	RootCoordCreateCollectionCounter = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: milvusNamespace,
-			Subsystem: typeutil.RootCoordRole,
-			Name:      "create_collection_total",
-			Help:      "Counter of create collection",
-		}, []string{statusLabelName})
-
-	// RootCoordDropCollectionCounter counts the num of calls of DropCollection
-	RootCoordDropCollectionCounter = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: milvusNamespace,
-			Subsystem: typeutil.RootCoordRole,
-			Name:      "drop_collection_total",
-			Help:      "Counter of drop collection",
-		}, []string{statusLabelName})
-
-	// RootCoordHasCollectionCounter counts the num of calls of HasCollection
-	RootCoordHasCollectionCounter = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: milvusNamespace,
-			Subsystem: typeutil.RootCoordRole,
-			Name:      "has_collection_total",
-			Help:      "Counter of has collection",
-		}, []string{statusLabelName})
-
-	// RootCoordDescribeCollectionCounter counts the num of calls of DescribeCollection
-	RootCoordDescribeCollectionCounter = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: milvusNamespace,
-			Subsystem: typeutil.RootCoordRole,
-			Name:      "describe_collection_total",
-			Help:      "Counter of describe collection",
-		}, []string{statusLabelName})
-
-	// RootCoordShowCollectionsCounter counts the num of calls of ShowCollections
-	RootCoordShowCollectionsCounter = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: milvusNamespace,
-			Subsystem: typeutil.RootCoordRole,
-			Name:      "show_collections_total",
-			Help:      "Counter of show collections",
-		}, []string{statusLabelName})
-
-	// RootCoordCreatePartitionCounter counts the num of calls of CreatePartition
-	RootCoordCreatePartitionCounter = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: milvusNamespace,
-			Subsystem: typeutil.RootCoordRole,
-			Name:      "create_partition_total",
-			Help:      "Counter of create partition",
-		}, []string{statusLabelName})
-
-	// RootCoordDropPartitionCounter counts the num of calls of DropPartition
-	RootCoordDropPartitionCounter = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: milvusNamespace,
-			Subsystem: typeutil.RootCoordRole,
-			Name:      "drop_partition_total",
-			Help:      "Counter of drop partition",
-		}, []string{statusLabelName})
-
-	// RootCoordHasPartitionCounter counts the num of calls of HasPartition
-	RootCoordHasPartitionCounter = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: milvusNamespace,
-			Subsystem: typeutil.RootCoordRole,
-			Name:      "has_partition_total",
-			Help:      "Counter of has partition",
-		}, []string{statusLabelName})
-
-	// RootCoordShowPartitionsCounter counts the num of calls of ShowPartitions
-	RootCoordShowPartitionsCounter = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: milvusNamespace,
-			Subsystem: typeutil.RootCoordRole,
-			Name:      "show_partitions_total",
-			Help:      "Counter of show partitions",
-		}, []string{statusLabelName})
-
-	// RootCoordCreateIndexCounter counts the num of calls of CreateIndex
-	RootCoordCreateIndexCounter = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: milvusNamespace,
-			Subsystem: typeutil.RootCoordRole,
-			Name:      "create_index_total",
-			Help:      "Counter of create index",
-		}, []string{statusLabelName})
-
-	// RootCoordDropIndexCounter counts the num of calls of DropIndex
-	RootCoordDropIndexCounter = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: milvusNamespace,
-			Subsystem: typeutil.RootCoordRole,
-			Name:      "drop_index_total",
-			Help:      "Counter of drop index",
-		}, []string{statusLabelName})
-
-	// RootCoordDescribeIndexCounter counts the num of calls of DescribeIndex
-	RootCoordDescribeIndexCounter = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: milvusNamespace,
-			Subsystem: typeutil.RootCoordRole,
-			Name:      "describe_index_total",
-			Help:      "Counter of describe index",
-		}, []string{statusLabelName})
-
-	// RootCoordDescribeSegmentCounter counts the num of calls of DescribeSegment
-	RootCoordDescribeSegmentCounter = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: milvusNamespace,
-			Subsystem: typeutil.RootCoordRole,
-			Name:      "describe_segment_total",
-			Help:      "Counter of describe segment",
-		}, []string{statusLabelName})
-
-	// RootCoordShowSegmentsCounter counts the num of calls of ShowSegments
-	RootCoordShowSegmentsCounter = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: milvusNamespace,
-			Subsystem: typeutil.RootCoordRole,
-			Name:      "show_segments_total",
-			Help:      "Counter of show segments",
-		}, []string{statusLabelName})
 
 	////////////////////////////////////////////////////////////////////////////
 	// for time tick
@@ -152,26 +25,25 @@ var (
 		prometheus.GaugeOpts{
 			Namespace: milvusNamespace,
 			Subsystem: typeutil.RootCoordRole,
-			Name:      "insert_channel_time_tick",
-			Help:      "Time tick of insert Channel in 24H",
+			Name:      "sync_epoch_time",
+			Help:      "synchronized unix epoch per physical channel",
 		}, []string{"PChannel"})
 
-	// RootCoordDDLReadTypeLatency records the latency for read type of DDL operations.
-	RootCoordDDLReadTypeLatency = prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
+	RootCoordDDLReqCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
 			Namespace: milvusNamespace,
 			Subsystem: typeutil.RootCoordRole,
-			Name:      "ddl_read_type_latency",
-			Help:      "The latency for read type of DDL operations",
-		}, []string{functionLabelName})
+			Name:      "ddl_req_count",
+			Help:      "count of DDL operations",
+		}, []string{functionLabelName, statusLabelName})
 
-	// RootCoordDDLWriteTypeLatency records the latency for write type of DDL operations.
-	RootCoordDDLWriteTypeLatency = prometheus.NewHistogramVec(
+	//RootCoordDDLReqLatency records the latency for read type of DDL operations.
+	RootCoordDDLReqLatency = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Namespace: milvusNamespace,
 			Subsystem: typeutil.RootCoordRole,
-			Name:      "ddl_write_type_latency",
-			Help:      "The latency for write type of DDL operations",
+			Name:      "ddl_req_latency",
+			Help:      "latency of each DDL operations",
 		}, []string{functionLabelName})
 
 	// RootCoordSyncTimeTickLatency records the latency of sync time tick.
@@ -179,8 +51,8 @@ var (
 		prometheus.HistogramOpts{
 			Namespace: milvusNamespace,
 			Subsystem: typeutil.RootCoordRole,
-			Name:      "sync_time_tick_latency",
-			Help:      "The latency of sync time tick",
+			Name:      "sync_timetick_latency",
+			Help:      "latency of synchronizing timetick message",
 		})
 
 	// RootCoordIDAllocCounter records the number of global ID allocations.
@@ -189,25 +61,25 @@ var (
 			Namespace: milvusNamespace,
 			Subsystem: typeutil.RootCoordRole,
 			Name:      "id_alloc_count",
-			Help:      "The number of global ID allocations",
+			Help:      "count of ID allocated",
 		})
 
-	// RootCoordLocalTimestampAllocCounter records the number of timestamp allocations in RootCoord.
-	RootCoordTimestampAllocCounter = prometheus.NewGauge(
+	//RootCoordTimestamp records the number of timestamp allocations in RootCoord.
+	RootCoordTimestamp = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Namespace: milvusNamespace,
 			Subsystem: typeutil.RootCoordRole,
-			Name:      "timestamp_alloc_count",
-			Help:      "The number of timestamp allocations in RootCoord",
+			Name:      "timestamp",
+			Help:      "lateste timestamp allocated in memory",
 		})
 
-	// RootCoordETCDTimestampAllocCounter records the number of timestamp allocations in ETCD.
-	RootCoordETCDTimestampAllocCounter = prometheus.NewGauge(
+	// RootCoordTimestampSaved records the number of timestamp allocations in ETCD.
+	RootCoordTimestampSaved = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Namespace: milvusNamespace,
 			Subsystem: typeutil.RootCoordRole,
-			Name:      "etcd_timestamp_alloc_count",
-			Help:      "The number of timestamp allocations in ETCD",
+			Name:      "timestamp_saved",
+			Help:      "timestamp saved in meta storage",
 		})
 
 	// RootCoordNumOfCollections counts the number of collections.
@@ -215,8 +87,8 @@ var (
 		prometheus.GaugeOpts{
 			Namespace: milvusNamespace,
 			Subsystem: typeutil.RootCoordRole,
-			Name:      "num_of_collections",
-			Help:      "The number of collections",
+			Name:      "collection_num",
+			Help:      "number of collections",
 		})
 
 	// RootCoordNumOfPartitions counts the number of partitions per collection.
@@ -224,35 +96,17 @@ var (
 		prometheus.GaugeOpts{
 			Namespace: milvusNamespace,
 			Subsystem: typeutil.RootCoordRole,
-			Name:      "num_of_partitions",
-			Help:      "The number of partitions per collection",
-		}, []string{collectionIDLabelName})
-
-	// RootCoordNumOfSegments counts the number of segments per collections.
-	RootCoordNumOfSegments = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Namespace: milvusNamespace,
-			Subsystem: typeutil.RootCoordRole,
-			Name:      "num_of_segments",
-			Help:      "The number of segments per collection",
-		}, []string{collectionIDLabelName})
-
-	// RootCoordNumOfIndexedSegments counts the number of indexed segments per collection.
-	RootCoordNumOfIndexedSegments = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Namespace: milvusNamespace,
-			Subsystem: typeutil.RootCoordRole,
-			Name:      "num_of_indexed_segments",
-			Help:      "The number of indexed segments per collection",
-		}, []string{collectionIDLabelName})
+			Name:      "partition_num",
+			Help:      "number of partitions",
+		}, []string{})
 
 	// RootCoordNumOfDMLChannel counts the number of DML channels.
 	RootCoordNumOfDMLChannel = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Namespace: milvusNamespace,
 			Subsystem: typeutil.RootCoordRole,
-			Name:      "num_of_dml_channel",
-			Help:      "The number of DML channels",
+			Name:      "dml_channel_num",
+			Help:      "number of DML channels",
 		})
 
 	// RootCoordNumOfMsgStream counts the number of message streams.
@@ -260,51 +114,44 @@ var (
 		prometheus.GaugeOpts{
 			Namespace: milvusNamespace,
 			Subsystem: typeutil.RootCoordRole,
-			Name:      "num_of_msg_stream",
-			Help:      "The number of message streams",
+			Name:      "msgstream_obj_num",
+			Help:      "number of message streams",
+		})
+
+	// RootCoordNumOfCredentials counts the number of credentials.
+	RootCoordNumOfCredentials = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.RootCoordRole,
+			Name:      "credential_num",
+			Help:      "number of credentials",
 		})
 )
 
 //RegisterRootCoord registers RootCoord metrics
 func RegisterRootCoord(registry *prometheus.Registry) {
-	registry.Register(RootCoordProxyLister)
-
-	// for grpc
-	registry.MustRegister(RootCoordCreateCollectionCounter)
-	registry.MustRegister(RootCoordDropCollectionCounter)
-	registry.MustRegister(RootCoordHasCollectionCounter)
-	registry.MustRegister(RootCoordDescribeCollectionCounter)
-	registry.MustRegister(RootCoordShowCollectionsCounter)
-	registry.MustRegister(RootCoordCreatePartitionCounter)
-	registry.MustRegister(RootCoordDropPartitionCounter)
-	registry.MustRegister(RootCoordHasPartitionCounter)
-	registry.MustRegister(RootCoordShowPartitionsCounter)
-	registry.MustRegister(RootCoordCreateIndexCounter)
-	registry.MustRegister(RootCoordDropIndexCounter)
-	registry.MustRegister(RootCoordDescribeIndexCounter)
-	registry.MustRegister(RootCoordDescribeSegmentCounter)
-	registry.MustRegister(RootCoordShowSegmentsCounter)
+	registry.Register(RootCoordProxyCounter)
 
 	// for time tick
 	registry.MustRegister(RootCoordInsertChannelTimeTick)
-	//prometheus.MustRegister(PanicCounter)
 	registry.MustRegister(RootCoordSyncTimeTickLatency)
 
-	// for DDL latency
-	registry.MustRegister(RootCoordDDLReadTypeLatency)
-	registry.MustRegister(RootCoordDDLWriteTypeLatency)
+	// for DDL
+	registry.MustRegister(RootCoordDDLReqCounter)
+	registry.MustRegister(RootCoordDDLReqLatency)
 
 	// for allocator
 	registry.MustRegister(RootCoordIDAllocCounter)
-	registry.MustRegister(RootCoordTimestampAllocCounter)
-	registry.MustRegister(RootCoordETCDTimestampAllocCounter)
+	registry.MustRegister(RootCoordTimestamp)
+	registry.MustRegister(RootCoordTimestampSaved)
 
 	// for collection
 	registry.MustRegister(RootCoordNumOfCollections)
 	registry.MustRegister(RootCoordNumOfPartitions)
-	registry.MustRegister(RootCoordNumOfSegments)
-	registry.MustRegister(RootCoordNumOfIndexedSegments)
 
 	registry.MustRegister(RootCoordNumOfDMLChannel)
 	registry.MustRegister(RootCoordNumOfMsgStream)
+
+	// for credential
+	registry.MustRegister(RootCoordNumOfCredentials)
 }

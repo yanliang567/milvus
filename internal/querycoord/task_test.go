@@ -18,10 +18,17 @@ package querycoord
 
 import (
 	"context"
+	"math/rand"
 	"testing"
+	"time"
+
+	"github.com/milvus-io/milvus/internal/util/dependency"
+	"github.com/milvus-io/milvus/internal/util/etcd"
 
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/zap"
 
+	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
@@ -30,13 +37,13 @@ import (
 )
 
 func genLoadCollectionTask(ctx context.Context, queryCoord *QueryCoord) *loadCollectionTask {
-	queryCoord.meta.setDeltaChannel(defaultCollectionID, nil)
 	req := &querypb.LoadCollectionRequest{
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadCollection,
 		},
-		CollectionID: defaultCollectionID,
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	}
 	baseTask := newBaseTask(ctx, querypb.TriggerCondition_GrpcRequest)
 	loadCollectionTask := &loadCollectionTask{
@@ -50,14 +57,14 @@ func genLoadCollectionTask(ctx context.Context, queryCoord *QueryCoord) *loadCol
 }
 
 func genLoadPartitionTask(ctx context.Context, queryCoord *QueryCoord) *loadPartitionTask {
-	queryCoord.meta.setDeltaChannel(defaultCollectionID, nil)
 	req := &querypb.LoadPartitionsRequest{
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadPartitions,
 		},
-		CollectionID: defaultCollectionID,
-		PartitionIDs: []UniqueID{defaultPartitionID},
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		PartitionIDs:  []UniqueID{defaultPartitionID},
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	}
 	baseTask := newBaseTask(ctx, querypb.TriggerCondition_GrpcRequest)
 	loadPartitionTask := &loadPartitionTask{
@@ -123,6 +130,7 @@ func genReleaseSegmentTask(ctx context.Context, queryCoord *QueryCoord, nodeID i
 		baseTask:               baseTask,
 		ReleaseSegmentsRequest: req,
 		cluster:                queryCoord.cluster,
+		leaderID:               nodeID,
 	}
 	return releaseSegmentTask
 }
@@ -162,8 +170,9 @@ func genWatchDmChannelTask(ctx context.Context, queryCoord *QueryCoord, nodeID i
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadCollection,
 		},
-		CollectionID: defaultCollectionID,
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	}
 	baseParentTask := newBaseTask(ctx, querypb.TriggerCondition_GrpcRequest)
 	baseParentTask.taskID = 10
@@ -184,7 +193,6 @@ func genWatchDmChannelTask(ctx context.Context, queryCoord *QueryCoord, nodeID i
 	return watchDmChannelTask
 }
 func genLoadSegmentTask(ctx context.Context, queryCoord *QueryCoord, nodeID int64) *loadSegmentTask {
-	queryCoord.meta.setDeltaChannel(defaultCollectionID, nil)
 	schema := genDefaultCollectionSchema(false)
 	segmentInfo := &querypb.SegmentLoadInfo{
 		SegmentID:    defaultSegmentID,
@@ -206,21 +214,23 @@ func genLoadSegmentTask(ctx context.Context, queryCoord *QueryCoord, nodeID int6
 		},
 	}
 	baseTask := newBaseTask(ctx, querypb.TriggerCondition_GrpcRequest)
-	baseTask.taskID = 100
+	baseTask.taskID = rand.Int63()
 	loadSegmentTask := &loadSegmentTask{
 		baseTask:            baseTask,
 		LoadSegmentsRequest: req,
 		cluster:             queryCoord.cluster,
 		meta:                queryCoord.meta,
 		excludeNodeIDs:      []int64{},
+		broker:              queryCoord.broker,
 	}
 
 	parentReq := &querypb.LoadCollectionRequest{
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadCollection,
 		},
-		CollectionID: defaultCollectionID,
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	}
 	baseParentTask := newBaseTask(ctx, querypb.TriggerCondition_GrpcRequest)
 	baseParentTask.taskID = 10
@@ -239,26 +249,6 @@ func genLoadSegmentTask(ctx context.Context, queryCoord *QueryCoord, nodeID int6
 
 	queryCoord.meta.addCollection(defaultCollectionID, querypb.LoadType_LoadCollection, schema)
 	return loadSegmentTask
-}
-
-func genWatchQueryChannelTask(ctx context.Context, queryCoord *QueryCoord, nodeID int64) *watchQueryChannelTask {
-	queryChannelInfo := queryCoord.meta.getQueryChannelInfoByID(defaultCollectionID)
-	req := &querypb.AddQueryChannelRequest{
-		Base: &commonpb.MsgBase{
-			MsgType: commonpb.MsgType_WatchQueryChannels,
-		},
-		NodeID:             nodeID,
-		CollectionID:       defaultCollectionID,
-		QueryChannel:       queryChannelInfo.QueryChannel,
-		QueryResultChannel: queryChannelInfo.QueryResultChannel,
-	}
-	baseTask := newBaseTask(ctx, querypb.TriggerCondition_GrpcRequest)
-	baseTask.taskID = 200
-	return &watchQueryChannelTask{
-		baseTask:               baseTask,
-		AddQueryChannelRequest: req,
-		cluster:                queryCoord.cluster,
-	}
 }
 
 func genWatchDeltaChannelTask(ctx context.Context, queryCoord *QueryCoord, nodeID int64) *watchDeltaChannelTask {
@@ -297,9 +287,18 @@ func TestTriggerTask(t *testing.T) {
 	queryCoord, err := startQueryCoord(ctx)
 	assert.Nil(t, err)
 
-	node, err := startQueryNodeServer(ctx)
+	err = queryCoord.meta.addCollection(defaultCollectionID, querypb.LoadType_LoadCollection, genDefaultCollectionSchema(false))
+	assert.NoError(t, err)
+
+	node1, err := startQueryNodeServer(ctx)
 	assert.Nil(t, err)
-	waitQueryNodeOnline(queryCoord.cluster, node.queryNodeID)
+	node2, err := startQueryNodeServer(ctx)
+	assert.Nil(t, err)
+	node3, err := startQueryNodeServer(ctx)
+	assert.Nil(t, err)
+	waitQueryNodeOnline(queryCoord.cluster, node1.queryNodeID)
+	waitQueryNodeOnline(queryCoord.cluster, node2.queryNodeID)
+	waitQueryNodeOnline(queryCoord.cluster, node3.queryNodeID)
 
 	t.Run("Test LoadCollection", func(t *testing.T) {
 		loadCollectionTask := genLoadCollectionTask(ctx, queryCoord)
@@ -328,10 +327,46 @@ func TestTriggerTask(t *testing.T) {
 		assert.Nil(t, err)
 	})
 
-	err = node.stop()
-	queryCoord.Stop()
-	err = removeAllSession()
-	assert.Nil(t, err)
+	t.Run("Test LoadCollection With Replicas", func(t *testing.T) {
+		loadCollectionTask := genLoadCollectionTask(ctx, queryCoord)
+		loadCollectionTask.ReplicaNumber = 3
+		err = queryCoord.scheduler.processTask(loadCollectionTask)
+		assert.Nil(t, err)
+	})
+
+	t.Run("Test ReleaseCollection With Replicas", func(t *testing.T) {
+		releaseCollectionTask := genReleaseCollectionTask(ctx, queryCoord)
+		err = queryCoord.scheduler.processTask(releaseCollectionTask)
+		assert.Nil(t, err)
+	})
+
+	t.Run("Test ReleaseCollection with invalidateCollectionMetaCache error", func(t *testing.T) {
+		releaseCollectionTask := genReleaseCollectionTask(ctx, queryCoord)
+		queryCoord.scheduler.broker.rootCoord.(*rootCoordMock).invalidateCollMetaCacheFailed = true
+		err = queryCoord.scheduler.processTask(releaseCollectionTask)
+		assert.Error(t, err)
+		queryCoord.scheduler.broker.rootCoord.(*rootCoordMock).invalidateCollMetaCacheFailed = false
+	})
+
+	t.Run("Test LoadPartition With Replicas", func(t *testing.T) {
+		loadPartitionTask := genLoadPartitionTask(ctx, queryCoord)
+		loadPartitionTask.ReplicaNumber = 3
+		err = queryCoord.scheduler.processTask(loadPartitionTask)
+		assert.Nil(t, err)
+	})
+
+	t.Run("Test ReleasePartition With Replicas", func(t *testing.T) {
+		releasePartitionTask := genReleaseCollectionTask(ctx, queryCoord)
+
+		err = queryCoord.scheduler.processTask(releasePartitionTask)
+		assert.Nil(t, err)
+	})
+
+	assert.NoError(t, node1.stop())
+	assert.NoError(t, node2.stop())
+	assert.NoError(t, node3.stop())
+	assert.NoError(t, queryCoord.Stop())
+	assert.NoError(t, removeAllSession())
 }
 
 func Test_LoadCollectionAfterLoadPartition(t *testing.T) {
@@ -439,6 +474,30 @@ func Test_LoadCollectionExecuteFail(t *testing.T) {
 	assert.Nil(t, err)
 }
 
+func TestLoadCollectionNoEnoughNodeFail(t *testing.T) {
+	refreshParams()
+	ctx := context.Background()
+	defer removeAllSession()
+
+	queryCoord, err := startQueryCoord(ctx)
+	assert.Nil(t, err)
+	defer queryCoord.Stop()
+
+	node1, err := startQueryNodeServer(ctx)
+	assert.Nil(t, err)
+	node2, err := startQueryNodeServer(ctx)
+	assert.Nil(t, err)
+	waitQueryNodeOnline(queryCoord.cluster, node1.queryNodeID)
+	waitQueryNodeOnline(queryCoord.cluster, node2.queryNodeID)
+	defer node1.stop()
+	defer node2.stop()
+
+	loadCollectionTask := genLoadCollectionTask(ctx, queryCoord)
+	loadCollectionTask.ReplicaNumber = 3
+	err = queryCoord.scheduler.processTask(loadCollectionTask)
+	assert.Error(t, err)
+}
+
 func Test_LoadPartitionAssignTaskFail(t *testing.T) {
 	refreshParams()
 	ctx := context.Background()
@@ -522,6 +581,9 @@ func Test_ReleaseCollectionExecuteFail(t *testing.T) {
 	assert.Nil(t, err)
 	node.setRPCInterface(&node.releaseCollection, returnFailedResult)
 
+	err = queryCoord.meta.addCollection(defaultCollectionID, querypb.LoadType_LoadCollection, genDefaultCollectionSchema(false))
+	assert.NoError(t, err)
+
 	waitQueryNodeOnline(queryCoord.cluster, node.queryNodeID)
 	releaseCollectionTask := genReleaseCollectionTask(ctx, queryCoord)
 	err = queryCoord.scheduler.Enqueue(releaseCollectionTask)
@@ -577,10 +639,11 @@ func Test_RescheduleDmChannel(t *testing.T) {
 	loadCollectionTask := watchDmChannelTask.parentTask
 	queryCoord.scheduler.triggerTaskQueue.addTask(loadCollectionTask)
 
-	waitTaskFinalState(loadCollectionTask, taskExpired)
+	waitTaskFinalState(loadCollectionTask, taskFailed)
 
 	queryCoord.Stop()
 	err = removeAllSession()
+
 	assert.Nil(t, err)
 }
 
@@ -600,11 +663,10 @@ func Test_RescheduleSegment(t *testing.T) {
 
 	node1.loadSegment = returnFailedResult
 	loadSegmentTask := genLoadSegmentTask(ctx, queryCoord, node1.queryNodeID)
-	loadSegmentTask.meta.setDeltaChannel(defaultCollectionID, []*datapb.VchannelInfo{})
 	loadCollectionTask := loadSegmentTask.parentTask
 	queryCoord.scheduler.triggerTaskQueue.addTask(loadCollectionTask)
 
-	waitTaskFinalState(loadCollectionTask, taskExpired)
+	waitTaskFinalState(loadCollectionTask, taskFailed)
 
 	queryCoord.Stop()
 	err = removeAllSession()
@@ -703,7 +765,7 @@ func Test_AssignInternalTask(t *testing.T) {
 		loadSegmentRequests = append(loadSegmentRequests, req)
 	}
 
-	internalTasks, err := assignInternalTask(queryCoord.loopCtx, loadCollectionTask, queryCoord.meta, queryCoord.cluster, loadSegmentRequests, nil, false, nil, nil)
+	internalTasks, err := assignInternalTask(queryCoord.loopCtx, loadCollectionTask, queryCoord.meta, queryCoord.cluster, loadSegmentRequests, nil, false, nil, nil, -1, nil)
 	assert.Nil(t, err)
 
 	assert.NotEqual(t, 1, len(internalTasks))
@@ -722,6 +784,7 @@ func Test_reverseSealedSegmentChangeInfo(t *testing.T) {
 	node1, err := startQueryNodeServer(ctx)
 	assert.Nil(t, err)
 	waitQueryNodeOnline(queryCoord.cluster, node1.queryNodeID)
+	defer node1.stop()
 
 	loadCollectionTask := genLoadCollectionTask(ctx, queryCoord)
 	queryCoord.scheduler.Enqueue(loadCollectionTask)
@@ -730,6 +793,7 @@ func Test_reverseSealedSegmentChangeInfo(t *testing.T) {
 	node2, err := startQueryNodeServer(ctx)
 	assert.Nil(t, err)
 	waitQueryNodeOnline(queryCoord.cluster, node2.queryNodeID)
+	defer node2.stop()
 
 	loadSegmentTask := genLoadSegmentTask(ctx, queryCoord, node2.queryNodeID)
 	parentTask := loadSegmentTask.parentTask
@@ -794,6 +858,7 @@ func Test_handoffSegmentFail(t *testing.T) {
 
 	waitTaskFinalState(handoffTask, taskFailed)
 
+	node1.stop()
 	queryCoord.Stop()
 	err = removeAllSession()
 	assert.Nil(t, err)
@@ -862,7 +927,7 @@ func TestLoadBalanceSegmentsTask(t *testing.T) {
 	})
 
 	t.Run("Test LoadBalanceByNode", func(t *testing.T) {
-		baseTask := newBaseTask(ctx, querypb.TriggerCondition_LoadBalance)
+		baseTask := newBaseTask(ctx, querypb.TriggerCondition_NodeDown)
 		loadBalanceTask := &loadBalanceTask{
 			baseTask: baseTask,
 			LoadBalanceRequest: &querypb.LoadBalanceRequest{
@@ -870,6 +935,8 @@ func TestLoadBalanceSegmentsTask(t *testing.T) {
 					MsgType: commonpb.MsgType_LoadBalanceSegments,
 				},
 				SourceNodeIDs: []int64{node1.queryNodeID},
+				CollectionID:  defaultCollectionID,
+				BalanceReason: querypb.TriggerCondition_NodeDown,
 			},
 			broker:  queryCoord.broker,
 			cluster: queryCoord.cluster,
@@ -878,6 +945,7 @@ func TestLoadBalanceSegmentsTask(t *testing.T) {
 		err = queryCoord.scheduler.Enqueue(loadBalanceTask)
 		assert.Nil(t, err)
 		waitTaskFinalState(loadBalanceTask, taskExpired)
+		assert.Equal(t, commonpb.ErrorCode_Success, loadBalanceTask.result.ErrorCode)
 	})
 
 	t.Run("Test LoadBalanceWithEmptySourceNode", func(t *testing.T) {
@@ -982,32 +1050,54 @@ func TestLoadBalanceIndexedSegmentsAfterNodeDown(t *testing.T) {
 	ctx := context.Background()
 	queryCoord, err := startQueryCoord(ctx)
 	assert.Nil(t, err)
+	defer queryCoord.Stop()
 
 	node1, err := startQueryNodeServer(ctx)
 	assert.Nil(t, err)
 	waitQueryNodeOnline(queryCoord.cluster, node1.queryNodeID)
 
 	loadCollectionTask := genLoadCollectionTask(ctx, queryCoord)
-
 	err = queryCoord.scheduler.Enqueue(loadCollectionTask)
 	assert.Nil(t, err)
 	waitTaskFinalState(loadCollectionTask, taskExpired)
+	segments := queryCoord.meta.getSegmentInfosByNode(node1.queryNodeID)
+	log.Debug("get segments by node",
+		zap.Int64("nodeID", node1.queryNodeID),
+		zap.Any("segments", segments))
+
+	rootCoord := queryCoord.rootCoordClient.(*rootCoordMock)
+	rootCoord.enableIndex = true
+
+	node1.stop()
 
 	node2, err := startQueryNodeServer(ctx)
 	assert.Nil(t, err)
 	waitQueryNodeOnline(queryCoord.cluster, node2.queryNodeID)
+	defer node2.stop()
 
-	rootCoord := queryCoord.rootCoordClient.(*rootCoordMock)
-	rootCoord.enableIndex = true
-	removeNodeSession(node1.queryNodeID)
 	for {
-		if len(queryCoord.meta.getSegmentInfosByNode(node1.queryNodeID)) == 0 {
+		segments := queryCoord.meta.getSegmentInfosByNode(node1.queryNodeID)
+		if len(segments) == 0 {
 			break
 		}
+		log.Debug("node still has segments",
+			zap.Int64("nodeID", node1.queryNodeID))
+		time.Sleep(time.Second)
 	}
 
-	node2.stop()
-	queryCoord.Stop()
+	for {
+		segments := queryCoord.meta.getSegmentInfosByNode(node2.queryNodeID)
+		if len(segments) != 0 {
+			log.Debug("get segments by node",
+				zap.Int64("nodeID", node2.queryNodeID),
+				zap.Any("segments", segments))
+			break
+		}
+		log.Debug("node hasn't segments",
+			zap.Int64("nodeID", node2.queryNodeID))
+		time.Sleep(200 * time.Millisecond)
+	}
+
 	err = removeAllSession()
 	assert.Nil(t, err)
 }
@@ -1099,6 +1189,7 @@ func TestLoadBalanceAndReschedulSegmentTaskAfterNodeDown(t *testing.T) {
 }
 
 func TestLoadBalanceAndRescheduleDmChannelTaskAfterNodeDown(t *testing.T) {
+	defer removeAllSession()
 	refreshParams()
 	ctx := context.Background()
 	queryCoord, err := startQueryCoord(ctx)
@@ -1150,9 +1241,6 @@ func TestLoadBalanceAndRescheduleDmChannelTaskAfterNodeDown(t *testing.T) {
 			break
 		}
 	}
-
-	err = removeAllSession()
-	assert.Nil(t, err)
 }
 
 func TestMergeWatchDeltaChannelInfo(t *testing.T) {
@@ -1254,11 +1342,8 @@ func TestUpdateTaskProcessWhenLoadSegment(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, int64(0), collectionInfo.InMemoryPercentage)
 
-	watchQueryChannel := genWatchQueryChannelTask(ctx, queryCoord, node1.queryNodeID)
-	watchQueryChannel.setParentTask(loadCollectionTask)
 	watchDeltaChannel := genWatchDeltaChannelTask(ctx, queryCoord, node1.queryNodeID)
 	watchDeltaChannel.setParentTask(loadCollectionTask)
-	queryCoord.scheduler.processTask(watchQueryChannel)
 	queryCoord.scheduler.processTask(watchDeltaChannel)
 	collectionInfo, err = queryCoord.meta.getCollectionInfoByID(defaultCollectionID)
 	assert.Nil(t, err)
@@ -1280,19 +1365,93 @@ func TestUpdateTaskProcessWhenWatchDmChannel(t *testing.T) {
 	queryCoord.meta.addCollection(defaultCollectionID, querypb.LoadType_LoadCollection, genDefaultCollectionSchema(false))
 
 	watchDmChannel := genWatchDmChannelTask(ctx, queryCoord, node1.queryNodeID)
-	loadCollectionTask := watchDmChannel.getParentTask()
 
-	queryCoord.scheduler.processTask(watchDmChannel)
 	collectionInfo, err := queryCoord.meta.getCollectionInfoByID(defaultCollectionID)
 	assert.Nil(t, err)
 	assert.Equal(t, int64(0), collectionInfo.InMemoryPercentage)
+	queryCoord.scheduler.processTask(watchDmChannel)
 
-	watchQueryChannel := genWatchQueryChannelTask(ctx, queryCoord, node1.queryNodeID)
-	watchQueryChannel.setParentTask(loadCollectionTask)
-	queryCoord.scheduler.processTask(watchQueryChannel)
 	collectionInfo, err = queryCoord.meta.getCollectionInfoByID(defaultCollectionID)
 	assert.Nil(t, err)
 	assert.Equal(t, int64(100), collectionInfo.InMemoryPercentage)
+
+	err = removeAllSession()
+	assert.Nil(t, err)
+}
+
+func startMockCoord(ctx context.Context) (*QueryCoord, error) {
+	factory := dependency.NewDefaultFactory(true)
+
+	coord, err := NewQueryCoordTest(ctx, factory)
+	if err != nil {
+		return nil, err
+	}
+
+	rootCoord := newRootCoordMock(ctx)
+	rootCoord.createCollection(defaultCollectionID)
+	rootCoord.createPartition(defaultCollectionID, defaultPartitionID)
+
+	dataCoord := &dataCoordMock{
+		collections:         make([]UniqueID, 0),
+		col2DmChannels:      make(map[UniqueID][]*datapb.VchannelInfo),
+		partitionID2Segment: make(map[UniqueID][]UniqueID),
+		Segment2Binlog:      make(map[UniqueID]*datapb.SegmentBinlogs),
+		baseSegmentID:       defaultSegmentID,
+		channelNumPerCol:    defaultChannelNum,
+		segmentState:        commonpb.SegmentState_Flushed,
+		errLevel:            1,
+	}
+	indexCoord, err := newIndexCoordMock(queryCoordTestDir)
+	if err != nil {
+		return nil, err
+	}
+
+	coord.SetRootCoord(rootCoord)
+	coord.SetDataCoord(dataCoord)
+	coord.SetIndexCoord(indexCoord)
+	etcd, err := etcd.GetEtcdClient(&Params.EtcdCfg)
+	if err != nil {
+		return nil, err
+	}
+	coord.SetEtcdClient(etcd)
+	err = coord.Init()
+	if err != nil {
+		return nil, err
+	}
+	err = coord.Start()
+	if err != nil {
+		return nil, err
+	}
+	err = coord.Register()
+	if err != nil {
+		return nil, err
+	}
+	return coord, nil
+}
+
+func Test_LoadSegment(t *testing.T) {
+	refreshParams()
+	ctx := context.Background()
+	queryCoord, err := startMockCoord(ctx)
+	assert.Nil(t, err)
+
+	node1, err := startQueryNodeServer(ctx)
+	assert.Nil(t, err)
+
+	waitQueryNodeOnline(queryCoord.cluster, node1.queryNodeID)
+
+	loadSegmentTask := genLoadSegmentTask(ctx, queryCoord, node1.queryNodeID)
+
+	loadCollectionTask := loadSegmentTask.parentTask
+	queryCoord.scheduler.triggerTaskQueue.addTask(loadCollectionTask)
+
+	// 1. Acquire segment reference lock failed, and reschedule task.
+	// 2. Acquire segment reference lock successfully, but release reference lock failed, and retry release the lock.
+	// 3. Release segment reference lock successfully, and task done.
+	waitTaskFinalState(loadSegmentTask, taskDone)
+
+	err = queryCoord.Stop()
+	assert.Nil(t, err)
 
 	err = removeAllSession()
 	assert.Nil(t, err)

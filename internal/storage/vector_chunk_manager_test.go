@@ -22,11 +22,12 @@ import (
 	"os"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/milvus-io/milvus/internal/proto/etcdpb"
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	"github.com/stretchr/testify/assert"
 )
 
 func initMeta() *etcdpb.CollectionMeta {
@@ -179,13 +180,13 @@ func TestVectorChunkManager_GetPath(t *testing.T) {
 		key := "1"
 		err = vcm.Write(key, []byte{1})
 		assert.Nil(t, err)
-		pathGet, err := vcm.GetPath(key)
+		pathGet, err := vcm.Path(key)
 		assert.Nil(t, err)
 		assert.Equal(t, pathGet, key)
 
 		err = vcm.cacheStorage.Write(key, []byte{1})
 		assert.Nil(t, err)
-		pathGet, err = vcm.GetPath(key)
+		pathGet, err = vcm.Path(key)
 		assert.Nil(t, err)
 		assert.Equal(t, pathGet, key)
 
@@ -206,13 +207,13 @@ func TestVectorChunkManager_GetSize(t *testing.T) {
 		key := "1"
 		err = vcm.Write(key, []byte{1})
 		assert.Nil(t, err)
-		sizeGet, err := vcm.GetSize(key)
+		sizeGet, err := vcm.Size(key)
 		assert.Nil(t, err)
 		assert.EqualValues(t, sizeGet, 1)
 
 		err = vcm.cacheStorage.Write(key, []byte{1})
 		assert.Nil(t, err)
-		sizeGet, err = vcm.GetSize(key)
+		sizeGet, err = vcm.Size(key)
 		assert.Nil(t, err)
 		assert.EqualValues(t, sizeGet, 1)
 
@@ -234,8 +235,9 @@ func TestVectorChunkManager_Write(t *testing.T) {
 		err = vcm.Write(key, []byte{1})
 		assert.Nil(t, err)
 
-		exist := vcm.Exist(key)
+		exist, err := vcm.Exist(key)
 		assert.True(t, exist)
+		assert.NoError(t, err)
 
 		contents := map[string][]byte{
 			"key_1": {111},
@@ -244,10 +246,12 @@ func TestVectorChunkManager_Write(t *testing.T) {
 		err = vcm.MultiWrite(contents)
 		assert.NoError(t, err)
 
-		exist = vcm.Exist("key_1")
+		exist, err = vcm.Exist("key_1")
 		assert.True(t, exist)
-		exist = vcm.Exist("key_2")
+		assert.NoError(t, err)
+		exist, err = vcm.Exist("key_2")
 		assert.True(t, exist)
+		assert.NoError(t, err)
 
 		err = vcm.RemoveWithPrefix(localPath)
 		assert.NoError(t, err)
@@ -270,8 +274,9 @@ func TestVectorChunkManager_Remove(t *testing.T) {
 		err = vcm.Remove(key)
 		assert.Nil(t, err)
 
-		exist := vcm.Exist(key)
+		exist, err := vcm.Exist(key)
 		assert.False(t, exist)
+		assert.NoError(t, err)
 
 		contents := map[string][]byte{
 			"key_1": {111},
@@ -283,10 +288,12 @@ func TestVectorChunkManager_Remove(t *testing.T) {
 		err = vcm.MultiRemove([]string{"key_1", "key_2"})
 		assert.NoError(t, err)
 
-		exist = vcm.Exist("key_1")
+		exist, err = vcm.Exist("key_1")
 		assert.False(t, exist)
-		exist = vcm.Exist("key_2")
+		assert.NoError(t, err)
+		exist, err = vcm.Exist("key_2")
 		assert.False(t, exist)
+		assert.NoError(t, err)
 
 		err = vcm.RemoveWithPrefix(localPath)
 		assert.NoError(t, err)

@@ -7,17 +7,28 @@ image:
     pullPolicy: IfNotPresent
 
 etcd:
-  replicaCount: 1
+  replicaCount: 3
+  image:
+    repository: milvusdb/etcd
+    tag: 3.5.0-r1
+
 minio:
   resources:
     requests:
       memory: 256Mi
+
+kafka:
+  enabled: false
+  name: kafka
+  replicaCount: 3
+  defaultReplicationFactor: 2
+
 pulsar:
   enabled: true
   extra:
     bastion: no
     wsproxy: no
-  
+
   autorecovery:
     resources:
       requests:
@@ -38,7 +49,7 @@ pulsar:
         -Xms256m -Xmx256m
       PULSAR_GC: >
         -XX:MaxDirectMemorySize=512m
-      httpNumThreads: "50"      
+      httpNumThreads: "50"
 
   bookkeeper:
     replicaCount: 2
@@ -78,14 +89,14 @@ pulsar:
         -Xms512m
         -Xmx512m
       PULSAR_GC: >
-         -Dcom.sun.management.jmxremote
-         -Djute.maxbuffer=10485760
-         -XX:+ParallelRefProcEnabled
-         -XX:+UnlockExperimentalVMOptions
-         -XX:+DoEscapeAnalysis
-         -XX:+DisableExplicitGC
-         -XX:+PerfDisableSharedMem
-         -Dzookeeper.forceSync=no
+        -Dcom.sun.management.jmxremote
+        -Djute.maxbuffer=10485760
+        -XX:+ParallelRefProcEnabled
+        -XX:+UnlockExperimentalVMOptions
+        -XX:+DoEscapeAnalysis
+        -XX:+DisableExplicitGC
+        -XX:+PerfDisableSharedMem
+        -Dzookeeper.forceSync=no
   broker:
     replicaCount: 1
     resources:

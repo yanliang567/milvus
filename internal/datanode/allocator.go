@@ -54,17 +54,16 @@ func (alloc *allocator) allocID() (UniqueID, error) {
 			MsgType:   commonpb.MsgType_RequestID,
 			MsgID:     1, // GOOSE TODO
 			Timestamp: 0, // GOOSE TODO
-			SourceID:  Params.DataNodeCfg.NodeID,
+			SourceID:  Params.DataNodeCfg.GetNodeID(),
 		},
 		Count: 1,
 	})
-
-	if resp.Status.ErrorCode != commonpb.ErrorCode_Success {
-		return 0, errors.New(resp.Status.GetReason())
-	}
-
 	if err != nil {
 		return 0, err
+	}
+
+	if resp.GetStatus().GetErrorCode() != commonpb.ErrorCode_Success {
+		return 0, errors.New(resp.GetStatus().GetReason())
 	}
 
 	return resp.ID, nil
@@ -76,18 +75,19 @@ func (alloc *allocator) allocIDBatch(count uint32) (UniqueID, uint32, error) {
 	resp, err := alloc.rootCoord.AllocID(ctx, &rootcoordpb.AllocIDRequest{
 		Base: &commonpb.MsgBase{
 			MsgType:  commonpb.MsgType_RequestID,
-			SourceID: Params.DataNodeCfg.NodeID,
+			SourceID: Params.DataNodeCfg.GetNodeID(),
 		},
 		Count: count,
 	})
 
-	if resp.Status.ErrorCode != commonpb.ErrorCode_Success {
-		return 0, 0, errors.New(resp.Status.GetReason())
-	}
-
 	if err != nil {
 		return 0, 0, err
 	}
+
+	if resp.GetStatus().GetErrorCode() != commonpb.ErrorCode_Success {
+		return 0, 0, errors.New(resp.GetStatus().GetReason())
+	}
+
 	return resp.GetID(), resp.GetCount(), nil
 }
 

@@ -15,17 +15,15 @@
 #include <memory>
 #include <utility>
 #include <vector>
+#include <string>
 #include "knowhere/common/Exception.h"
 #include "index/IndexStructure.h"
-#include <string>
 #include "index/ScalarIndex.h"
 
 namespace milvus::scalar {
 
 template <typename T>
 class ScalarIndexSort : public ScalarIndex<T> {
-    static_assert(std::is_fundamental_v<T> || std::is_same_v<T, std::string>);
-
  public:
     ScalarIndexSort();
     ScalarIndexSort(size_t n, const T* values);
@@ -37,7 +35,12 @@ class ScalarIndexSort : public ScalarIndex<T> {
     Load(const BinarySet& index_binary) override;
 
     void
-    Build(const DatasetPtr& dataset) override;
+    BuildWithDataset(const DatasetPtr& dataset) override;
+
+    size_t
+    Count() override {
+        return data_.size();
+    }
 
     void
     Build(size_t n, const T* values) override;
@@ -52,11 +55,15 @@ class ScalarIndexSort : public ScalarIndex<T> {
     NotIn(size_t n, const T* values) override;
 
     const TargetBitmapPtr
-    Range(T value, OperatorType op) override;
+    Range(T value, OpType op) override;
 
     const TargetBitmapPtr
     Range(T lower_bound_value, bool lb_inclusive, T upper_bound_value, bool ub_inclusive) override;
 
+    T
+    Reverse_Lookup(size_t offset) const override;
+
+ public:
     const std::vector<IndexStructure<T>>&
     GetData() {
         return data_;
@@ -74,6 +81,7 @@ class ScalarIndexSort : public ScalarIndex<T> {
 
  private:
     bool is_built_;
+    std::vector<size_t> idx_to_offsets_;  // used to retrieve.
     std::vector<IndexStructure<T>> data_;
 };
 

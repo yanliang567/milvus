@@ -20,9 +20,8 @@ import (
 
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/stretchr/testify/assert"
+	"google.golang.org/grpc/grpclog"
 )
-
-const defaultYaml = "milvus.yaml"
 
 var baseParams = BaseTable{}
 
@@ -76,11 +75,11 @@ func TestBaseTable_LoadFromKVPair(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, "v2", v)
 
-	v, err = baseParams.Load2([]string{"k2_new"})
+	v, err = baseParams.LoadWithPriority([]string{"k2_new"})
 	assert.NotNil(t, err)
 	assert.Equal(t, "", v)
 
-	v, err = baseParams.Load2([]string{"k2_new", "k2"})
+	v, err = baseParams.LoadWithPriority([]string{"k2_new", "k2"})
 	assert.Nil(t, err)
 	assert.Equal(t, "v2", v)
 
@@ -134,6 +133,17 @@ func TestBaseTable_Remove(t *testing.T) {
 
 	err6 := baseParams.Remove("RemoveFloat")
 	assert.Nil(t, err6)
+}
+
+func TestBaseTable_Get(t *testing.T) {
+	err := baseParams.Save("key", "10")
+	assert.Nil(t, err)
+
+	v := baseParams.Get("key")
+	assert.Equal(t, "10", v)
+
+	v2 := baseParams.Get("none")
+	assert.Equal(t, "", v2)
 }
 
 func TestBaseTable_LoadYaml(t *testing.T) {
@@ -304,5 +314,15 @@ func Test_SetLogger(t *testing.T) {
 		baseParams.RoleName = "datanode"
 		baseParams.SetLogger(UniqueID(0))
 		assert.Equal(t, "datanode-0.log", baseParams.Log.File.Filename)
+	})
+
+	t.Run("TestGrpclog", func(t *testing.T) {
+		baseParams.Save("grpc.log.level", "Warning")
+		baseParams.SetLogConfig()
+
+		baseParams.SetLogger(UniqueID(1))
+		assert.Equal(t, false, grpclog.V(0))
+		assert.Equal(t, true, grpclog.V(1))
+		assert.Equal(t, true, grpclog.V(2))
 	})
 }

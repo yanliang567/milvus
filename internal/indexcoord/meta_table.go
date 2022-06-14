@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"strconv"
 	"sync"
 
@@ -68,7 +69,7 @@ func NewMetaTable(kv *etcdkv.EtcdKV) (*metaTable, error) {
 // reloadFromKV reloads the index meta from ETCD.
 func (mt *metaTable) reloadFromKV() error {
 	mt.indexBuildID2Meta = make(map[UniqueID]Meta)
-	key := "indexes"
+	key := indexFilePrefix
 	log.Debug("IndexCoord metaTable LoadWithPrefix ", zap.String("prefix", key))
 
 	_, values, versions, err := mt.client.LoadWithPrefix2(key)
@@ -99,7 +100,7 @@ func (mt *metaTable) saveIndexMeta(meta *Meta) error {
 	if err != nil {
 		return err
 	}
-	key := "indexes/" + strconv.FormatInt(meta.indexMeta.IndexBuildID, 10)
+	key := path.Join(indexFilePrefix, strconv.FormatInt(meta.indexMeta.IndexBuildID, 10))
 	err = mt.client.CompareVersionAndSwap(key, meta.revision, string(value))
 	log.Debug("IndexCoord metaTable saveIndexMeta ", zap.String("key", key), zap.Error(err))
 	if err != nil {
@@ -114,8 +115,7 @@ func (mt *metaTable) saveIndexMeta(meta *Meta) error {
 
 // reloadMeta reloads the index meta corresponding indexBuildID from ETCD.
 func (mt *metaTable) reloadMeta(indexBuildID UniqueID) (*Meta, error) {
-	key := "indexes/" + strconv.FormatInt(indexBuildID, 10)
-
+	key := path.Join(indexFilePrefix, strconv.FormatInt(indexBuildID, 10))
 	_, values, version, err := mt.client.LoadWithPrefix2(key)
 	log.Debug("IndexCoord reloadMeta mt.client.LoadWithPrefix2", zap.Any("indexBuildID", indexBuildID), zap.Error(err))
 	if err != nil {
@@ -322,11 +322,14 @@ func (mt *metaTable) GetIndexFilePathInfo(indexBuildID UniqueID) (*indexpb.Index
 	if meta.indexMeta.MarkDeleted {
 		return nil, fmt.Errorf("index not exists with ID = %d", indexBuildID)
 	}
+	if meta.indexMeta.State != commonpb.IndexState_Finished {
+		return nil, fmt.Errorf("index not finished with ID = %d", indexBuildID)
+	}
 	ret.IndexFilePaths = meta.indexMeta.IndexFilePaths
 	ret.SerializedSize = meta.indexMeta.GetSerializeSize()
 
 	log.Debug("IndexCoord get index file path successfully", zap.Int64("indexBuildID", indexBuildID),
-		zap.Strings("index file path", ret.IndexFilePaths))
+		zap.Int("index files num", len(ret.IndexFilePaths)))
 	return ret, nil
 }
 
@@ -336,7 +339,7 @@ func (mt *metaTable) DeleteIndex(indexBuildID UniqueID) {
 	defer mt.lock.Unlock()
 
 	delete(mt.indexBuildID2Meta, indexBuildID)
-	key := "indexes/" + strconv.FormatInt(indexBuildID, 10)
+	key := path.Join(indexFilePrefix, strconv.FormatInt(indexBuildID, 10))
 
 	if err := mt.client.Remove(key); err != nil {
 		log.Error("IndexCoord delete index meta from etcd failed", zap.Error(err))
@@ -431,13 +434,13 @@ func (mt *metaTable) GetUnassignedTasks(onlineNodeIDs []int64) []Meta {
 
 // HasSameReq determine whether there are same indexing tasks.
 func (mt *metaTable) HasSameReq(req *indexpb.BuildIndexRequest) (bool, UniqueID) {
-	mt.lock.Lock()
-	defer mt.lock.Unlock()
+	mt.lock.RLock()
+	defer mt.lock.RUnlock()
 
-	log.Debug("IndexCoord judges whether the same task exists in meta table", zap.Int64("indexBuildID", req.IndexBuildID),
-		zap.Int64("indexID", req.IndexID), zap.Any("index params", req.IndexParams),
-		zap.Any("type params", req.TypeParams))
 	for _, meta := range mt.indexBuildID2Meta {
+		if req.GetSegmentID() != meta.indexMeta.Req.GetSegmentID() {
+			continue
+		}
 		if meta.indexMeta.Req.IndexID != req.IndexID {
 			continue
 		}
@@ -494,7 +497,7 @@ func (mt *metaTable) HasSameReq(req *indexpb.BuildIndexRequest) (bool, UniqueID)
 		return true, meta.indexMeta.IndexBuildID
 	}
 
-	return false, -1
+	return false, 0
 }
 
 // LoadMetaFromETCD load the meta of specified indexBuildID from ETCD.

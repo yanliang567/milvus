@@ -15,21 +15,6 @@ from common import common_func as cf
 from common import common_type as ct
 
 
-class ParamInfo:
-    def __init__(self):
-        self.param_host = ""
-        self.param_port = ""
-        self.param_handler = ""
-
-    def prepare_param_info(self, host, port, handler):
-        self.param_host = host
-        self.param_port = port
-        self.param_handler = handler
-
-
-param_info = ParamInfo()
-
-
 class Base:
     """ Initialize class object """
     connection_wrap = None
@@ -65,11 +50,14 @@ class Base:
         try:
             """ Drop collection before disconnect """
             if not self.connection_wrap.has_connection(alias=DefaultConfig.DEFAULT_USING)[0]:
-                self.connection_wrap.connect(alias=DefaultConfig.DEFAULT_USING, host=param_info.param_host,
-                                             port=param_info.param_port)
+                self.connection_wrap.connect(alias=DefaultConfig.DEFAULT_USING, host=cf.param_info.param_host,
+                                             port=cf.param_info.param_port)
 
             if self.collection_wrap.collection is not None:
-                self.collection_wrap.drop(check_task=ct.CheckTasks.check_nothing)
+                if self.collection_wrap.collection.name.startswith("alias"):
+                    log.info(f"collection {self.collection_wrap.collection.name} is alias, skip drop operation")
+                else:
+                    self.collection_wrap.drop(check_task=ct.CheckTasks.check_nothing)
 
             collection_list = self.utility_wrap.list_collections()[0]
             for collection_object in self.collection_object_list:
@@ -100,8 +88,8 @@ class TestcaseBase(Base):
 
     def _connect(self):
         """ Add a connection and create the connect """
-        res, is_succ = self.connection_wrap.connect(alias=DefaultConfig.DEFAULT_USING, host=param_info.param_host,
-                                                    port=param_info.param_port)
+        res, is_succ = self.connection_wrap.connect(alias=DefaultConfig.DEFAULT_USING, host=cf.param_info.param_host,
+                                                    port=cf.param_info.param_port)
         return res
 
     def init_collection_wrap(self, name=None, schema=None, shards_num=2, check_task=None, check_items=None, **kwargs):
@@ -136,7 +124,7 @@ class TestcaseBase(Base):
 
     def init_collection_general(self, prefix, insert_data=False, nb=ct.default_nb,
                                 partition_num=0, is_binary=False, is_all_data_type=False,
-                                auto_id=False, dim=ct.default_dim, is_index=False):
+                                auto_id=False, dim=ct.default_dim, is_index=False, primary_field=ct.default_int64_field_name):
         """
         target: create specified collections
         method: 1. create collections (binary/non-binary, default/all data type, auto_id or not)
@@ -154,11 +142,11 @@ class TestcaseBase(Base):
         insert_ids = []
         time_stamp = 0
         # 1 create collection
-        default_schema = cf.gen_default_collection_schema(auto_id=auto_id, dim=dim)
+        default_schema = cf.gen_default_collection_schema(auto_id=auto_id, dim=dim, primary_field=primary_field)
         if is_binary:
-            default_schema = cf.gen_default_binary_collection_schema(auto_id=auto_id, dim=dim)
+            default_schema = cf.gen_default_binary_collection_schema(auto_id=auto_id, dim=dim, primary_field=primary_field)
         if is_all_data_type:
-            default_schema = cf.gen_collection_schema_all_datatype(auto_id=auto_id, dim=dim)
+            default_schema = cf.gen_collection_schema_all_datatype(auto_id=auto_id, dim=dim, primary_field=primary_field)
         log.info("init_collection_general: collection creation")
         collection_w = self.init_collection_wrap(name=collection_name,
                                                  schema=default_schema)

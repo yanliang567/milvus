@@ -12,17 +12,27 @@
 #pragma once
 
 #include <memory>
+#include <string>
+#include "index/ScalarIndexSort.h"
+#include "index/StringIndexSort.h"
 
 #include "common/FieldMeta.h"
 #include "common/Span.h"
-#include "knowhere/index/structured_index_simple/StructuredIndexSort.h"
 
 namespace milvus::query {
 
 template <typename T>
-inline std::unique_ptr<knowhere::scalar::StructuredIndex<T>>
+inline scalar::ScalarIndexPtr<T>
 generate_scalar_index(Span<T> data) {
-    auto indexing = std::make_unique<knowhere::scalar::StructuredIndexSort<T>>();
+    auto indexing = std::make_unique<scalar::ScalarIndexSort<T>>();
+    indexing->Build(data.row_count(), data.data());
+    return indexing;
+}
+
+template <>
+inline scalar::ScalarIndexPtr<std::string>
+generate_scalar_index(Span<std::string> data) {
+    auto indexing = scalar::CreateStringIndexSort();
     indexing->Build(data.row_count(), data.data());
     return indexing;
 }
@@ -45,6 +55,8 @@ generate_scalar_index(SpanBase data, DataType data_type) {
             return generate_scalar_index(Span<float>(data));
         case DataType::DOUBLE:
             return generate_scalar_index(Span<double>(data));
+        case DataType::VARCHAR:
+            return generate_scalar_index(Span<std::string>(data));
         default:
             PanicInfo("unsupported type");
     }

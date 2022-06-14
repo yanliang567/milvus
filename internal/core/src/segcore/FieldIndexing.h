@@ -16,11 +16,12 @@
 #include <memory>
 
 #include <tbb/concurrent_vector.h>
+#include <index/Index.h>
+#include <index/ScalarIndex.h>
 
 #include "AckResponder.h"
 #include "InsertRecord.h"
 #include "common/Schema.h"
-#include "knowhere/index/structured_index_simple/StructuredIndexSort.h"
 #include "knowhere/index/vector_index/VecIndex.h"
 #include "segcore/SegcoreConfig.h"
 
@@ -70,14 +71,14 @@ class ScalarFieldIndexing : public FieldIndexing {
     BuildIndexRange(int64_t ack_beg, int64_t ack_end, const VectorBase* vec_base) override;
 
     // concurrent
-    knowhere::scalar::StructuredIndex<T>*
+    scalar::ScalarIndex<T>*
     get_chunk_indexing(int64_t chunk_id) const override {
         Assert(!field_meta_.is_vector());
         return data_.at(chunk_id).get();
     }
 
  private:
-    tbb::concurrent_vector<std::unique_ptr<knowhere::scalar::StructuredIndex<T>>> data_;
+    tbb::concurrent_vector<scalar::ScalarIndexPtr<T>> data_;
 };
 
 class VectorFieldIndexing : public FieldIndexing {
@@ -117,22 +118,21 @@ class IndexingRecord {
     void
     Initialize() {
         int offset_id = 0;
-        for (const FieldMeta& field : schema_) {
-            auto offset = FieldOffset(offset_id);
+        for (auto& [field_id, field_meta] : schema_.get_fields()) {
             ++offset_id;
 
-            if (field.is_vector()) {
+            if (field_meta.is_vector()) {
                 // TODO: skip binary small index now, reenable after config.yaml is ready
-                if (field.get_data_type() == DataType::VECTOR_BINARY) {
+                if (field_meta.get_data_type() == DataType::VECTOR_BINARY) {
                     continue;
                 }
                 // flat should be skipped
-                if (!field.get_metric_type().has_value()) {
+                if (!field_meta.get_metric_type().has_value()) {
                     continue;
                 }
             }
 
-            field_indexings_.try_emplace(offset, CreateIndex(field, segcore_config_));
+            field_indexings_.try_emplace(field_id, CreateIndex(field_meta, segcore_config_));
         }
         assert(offset_id == schema_.size());
     }
@@ -148,28 +148,28 @@ class IndexingRecord {
     }
 
     const FieldIndexing&
-    get_field_indexing(FieldOffset field_offset) const {
-        Assert(field_indexings_.count(field_offset));
-        return *field_indexings_.at(field_offset);
+    get_field_indexing(FieldId field_id) const {
+        Assert(field_indexings_.count(field_id));
+        return *field_indexings_.at(field_id);
     }
 
     const VectorFieldIndexing&
-    get_vec_field_indexing(FieldOffset field_offset) const {
-        auto& field_indexing = get_field_indexing(field_offset);
+    get_vec_field_indexing(FieldId field_id) const {
+        auto& field_indexing = get_field_indexing(field_id);
         auto ptr = dynamic_cast<const VectorFieldIndexing*>(&field_indexing);
         AssertInfo(ptr, "invalid indexing");
         return *ptr;
     }
 
     bool
-    is_in(FieldOffset field_offset) const {
-        return field_indexings_.count(field_offset);
+    is_in(FieldId field_id) const {
+        return field_indexings_.count(field_id);
     }
 
     template <typename T>
     auto
-    get_scalar_field_indexing(FieldOffset field_offset) const -> const ScalarFieldIndexing<T>& {
-        auto& entry = get_field_indexing(field_offset);
+    get_scalar_field_indexing(FieldId field_id) const -> const ScalarFieldIndexing<T>& {
+        auto& entry = get_field_indexing(field_id);
         auto ptr = dynamic_cast<const ScalarFieldIndexing<T>*>(&entry);
         AssertInfo(ptr, "invalid indexing");
         return *ptr;
@@ -188,7 +188,7 @@ class IndexingRecord {
 
  private:
     // field_offset => indexing
-    std::map<FieldOffset, std::unique_ptr<FieldIndexing>> field_indexings_;
+    std::map<FieldId, std::unique_ptr<FieldIndexing>> field_indexings_;
 };
 
 }  // namespace milvus::segcore

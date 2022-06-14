@@ -9,6 +9,7 @@ import (
 	proto "github.com/golang/protobuf/proto"
 	commonpb "github.com/milvus-io/milvus/internal/proto/commonpb"
 	datapb "github.com/milvus-io/milvus/internal/proto/datapb"
+	etcdpb "github.com/milvus-io/milvus/internal/proto/etcdpb"
 	internalpb "github.com/milvus-io/milvus/internal/proto/internalpb"
 	milvuspb "github.com/milvus-io/milvus/internal/proto/milvuspb"
 	proxypb "github.com/milvus-io/milvus/internal/proto/proxypb"
@@ -328,83 +329,454 @@ func (m *ImportResult) GetInfos() []*commonpb.KeyValuePair {
 	return nil
 }
 
+type DescribeSegmentsRequest struct {
+	Base                 *commonpb.MsgBase `protobuf:"bytes,1,opt,name=base,proto3" json:"base,omitempty"`
+	CollectionID         int64             `protobuf:"varint,2,opt,name=collectionID,proto3" json:"collectionID,omitempty"`
+	SegmentIDs           []int64           `protobuf:"varint,3,rep,packed,name=segmentIDs,proto3" json:"segmentIDs,omitempty"`
+	XXX_NoUnkeyedLiteral struct{}          `json:"-"`
+	XXX_unrecognized     []byte            `json:"-"`
+	XXX_sizecache        int32             `json:"-"`
+}
+
+func (m *DescribeSegmentsRequest) Reset()         { *m = DescribeSegmentsRequest{} }
+func (m *DescribeSegmentsRequest) String() string { return proto.CompactTextString(m) }
+func (*DescribeSegmentsRequest) ProtoMessage()    {}
+func (*DescribeSegmentsRequest) Descriptor() ([]byte, []int) {
+	return fileDescriptor_4513485a144f6b06, []int{5}
+}
+
+func (m *DescribeSegmentsRequest) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_DescribeSegmentsRequest.Unmarshal(m, b)
+}
+func (m *DescribeSegmentsRequest) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_DescribeSegmentsRequest.Marshal(b, m, deterministic)
+}
+func (m *DescribeSegmentsRequest) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_DescribeSegmentsRequest.Merge(m, src)
+}
+func (m *DescribeSegmentsRequest) XXX_Size() int {
+	return xxx_messageInfo_DescribeSegmentsRequest.Size(m)
+}
+func (m *DescribeSegmentsRequest) XXX_DiscardUnknown() {
+	xxx_messageInfo_DescribeSegmentsRequest.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_DescribeSegmentsRequest proto.InternalMessageInfo
+
+func (m *DescribeSegmentsRequest) GetBase() *commonpb.MsgBase {
+	if m != nil {
+		return m.Base
+	}
+	return nil
+}
+
+func (m *DescribeSegmentsRequest) GetCollectionID() int64 {
+	if m != nil {
+		return m.CollectionID
+	}
+	return 0
+}
+
+func (m *DescribeSegmentsRequest) GetSegmentIDs() []int64 {
+	if m != nil {
+		return m.SegmentIDs
+	}
+	return nil
+}
+
+type SegmentBaseInfo struct {
+	CollectionID         int64    `protobuf:"varint,1,opt,name=collectionID,proto3" json:"collectionID,omitempty"`
+	PartitionID          int64    `protobuf:"varint,2,opt,name=partitionID,proto3" json:"partitionID,omitempty"`
+	SegmentID            int64    `protobuf:"varint,3,opt,name=segmentID,proto3" json:"segmentID,omitempty"`
+	XXX_NoUnkeyedLiteral struct{} `json:"-"`
+	XXX_unrecognized     []byte   `json:"-"`
+	XXX_sizecache        int32    `json:"-"`
+}
+
+func (m *SegmentBaseInfo) Reset()         { *m = SegmentBaseInfo{} }
+func (m *SegmentBaseInfo) String() string { return proto.CompactTextString(m) }
+func (*SegmentBaseInfo) ProtoMessage()    {}
+func (*SegmentBaseInfo) Descriptor() ([]byte, []int) {
+	return fileDescriptor_4513485a144f6b06, []int{6}
+}
+
+func (m *SegmentBaseInfo) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_SegmentBaseInfo.Unmarshal(m, b)
+}
+func (m *SegmentBaseInfo) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_SegmentBaseInfo.Marshal(b, m, deterministic)
+}
+func (m *SegmentBaseInfo) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_SegmentBaseInfo.Merge(m, src)
+}
+func (m *SegmentBaseInfo) XXX_Size() int {
+	return xxx_messageInfo_SegmentBaseInfo.Size(m)
+}
+func (m *SegmentBaseInfo) XXX_DiscardUnknown() {
+	xxx_messageInfo_SegmentBaseInfo.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_SegmentBaseInfo proto.InternalMessageInfo
+
+func (m *SegmentBaseInfo) GetCollectionID() int64 {
+	if m != nil {
+		return m.CollectionID
+	}
+	return 0
+}
+
+func (m *SegmentBaseInfo) GetPartitionID() int64 {
+	if m != nil {
+		return m.PartitionID
+	}
+	return 0
+}
+
+func (m *SegmentBaseInfo) GetSegmentID() int64 {
+	if m != nil {
+		return m.SegmentID
+	}
+	return 0
+}
+
+type SegmentInfos struct {
+	BaseInfo             *SegmentBaseInfo            `protobuf:"bytes,1,opt,name=base_info,json=baseInfo,proto3" json:"base_info,omitempty"`
+	IndexInfos           []*etcdpb.SegmentIndexInfo  `protobuf:"bytes,2,rep,name=index_infos,json=indexInfos,proto3" json:"index_infos,omitempty"`
+	ExtraIndexInfos      map[int64]*etcdpb.IndexInfo `protobuf:"bytes,3,rep,name=extra_index_infos,json=extraIndexInfos,proto3" json:"extra_index_infos,omitempty" protobuf_key:"varint,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
+	XXX_NoUnkeyedLiteral struct{}                    `json:"-"`
+	XXX_unrecognized     []byte                      `json:"-"`
+	XXX_sizecache        int32                       `json:"-"`
+}
+
+func (m *SegmentInfos) Reset()         { *m = SegmentInfos{} }
+func (m *SegmentInfos) String() string { return proto.CompactTextString(m) }
+func (*SegmentInfos) ProtoMessage()    {}
+func (*SegmentInfos) Descriptor() ([]byte, []int) {
+	return fileDescriptor_4513485a144f6b06, []int{7}
+}
+
+func (m *SegmentInfos) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_SegmentInfos.Unmarshal(m, b)
+}
+func (m *SegmentInfos) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_SegmentInfos.Marshal(b, m, deterministic)
+}
+func (m *SegmentInfos) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_SegmentInfos.Merge(m, src)
+}
+func (m *SegmentInfos) XXX_Size() int {
+	return xxx_messageInfo_SegmentInfos.Size(m)
+}
+func (m *SegmentInfos) XXX_DiscardUnknown() {
+	xxx_messageInfo_SegmentInfos.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_SegmentInfos proto.InternalMessageInfo
+
+func (m *SegmentInfos) GetBaseInfo() *SegmentBaseInfo {
+	if m != nil {
+		return m.BaseInfo
+	}
+	return nil
+}
+
+func (m *SegmentInfos) GetIndexInfos() []*etcdpb.SegmentIndexInfo {
+	if m != nil {
+		return m.IndexInfos
+	}
+	return nil
+}
+
+func (m *SegmentInfos) GetExtraIndexInfos() map[int64]*etcdpb.IndexInfo {
+	if m != nil {
+		return m.ExtraIndexInfos
+	}
+	return nil
+}
+
+type DescribeSegmentsResponse struct {
+	Status               *commonpb.Status        `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	CollectionID         int64                   `protobuf:"varint,2,opt,name=collectionID,proto3" json:"collectionID,omitempty"`
+	SegmentInfos         map[int64]*SegmentInfos `protobuf:"bytes,3,rep,name=segment_infos,json=segmentInfos,proto3" json:"segment_infos,omitempty" protobuf_key:"varint,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
+	XXX_NoUnkeyedLiteral struct{}                `json:"-"`
+	XXX_unrecognized     []byte                  `json:"-"`
+	XXX_sizecache        int32                   `json:"-"`
+}
+
+func (m *DescribeSegmentsResponse) Reset()         { *m = DescribeSegmentsResponse{} }
+func (m *DescribeSegmentsResponse) String() string { return proto.CompactTextString(m) }
+func (*DescribeSegmentsResponse) ProtoMessage()    {}
+func (*DescribeSegmentsResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptor_4513485a144f6b06, []int{8}
+}
+
+func (m *DescribeSegmentsResponse) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_DescribeSegmentsResponse.Unmarshal(m, b)
+}
+func (m *DescribeSegmentsResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_DescribeSegmentsResponse.Marshal(b, m, deterministic)
+}
+func (m *DescribeSegmentsResponse) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_DescribeSegmentsResponse.Merge(m, src)
+}
+func (m *DescribeSegmentsResponse) XXX_Size() int {
+	return xxx_messageInfo_DescribeSegmentsResponse.Size(m)
+}
+func (m *DescribeSegmentsResponse) XXX_DiscardUnknown() {
+	xxx_messageInfo_DescribeSegmentsResponse.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_DescribeSegmentsResponse proto.InternalMessageInfo
+
+func (m *DescribeSegmentsResponse) GetStatus() *commonpb.Status {
+	if m != nil {
+		return m.Status
+	}
+	return nil
+}
+
+func (m *DescribeSegmentsResponse) GetCollectionID() int64 {
+	if m != nil {
+		return m.CollectionID
+	}
+	return 0
+}
+
+func (m *DescribeSegmentsResponse) GetSegmentInfos() map[int64]*SegmentInfos {
+	if m != nil {
+		return m.SegmentInfos
+	}
+	return nil
+}
+
+type GetCredentialRequest struct {
+	// Not useful for now
+	Base *commonpb.MsgBase `protobuf:"bytes,1,opt,name=base,proto3" json:"base,omitempty"`
+	// username
+	Username             string   `protobuf:"bytes,2,opt,name=username,proto3" json:"username,omitempty"`
+	XXX_NoUnkeyedLiteral struct{} `json:"-"`
+	XXX_unrecognized     []byte   `json:"-"`
+	XXX_sizecache        int32    `json:"-"`
+}
+
+func (m *GetCredentialRequest) Reset()         { *m = GetCredentialRequest{} }
+func (m *GetCredentialRequest) String() string { return proto.CompactTextString(m) }
+func (*GetCredentialRequest) ProtoMessage()    {}
+func (*GetCredentialRequest) Descriptor() ([]byte, []int) {
+	return fileDescriptor_4513485a144f6b06, []int{9}
+}
+
+func (m *GetCredentialRequest) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_GetCredentialRequest.Unmarshal(m, b)
+}
+func (m *GetCredentialRequest) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_GetCredentialRequest.Marshal(b, m, deterministic)
+}
+func (m *GetCredentialRequest) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_GetCredentialRequest.Merge(m, src)
+}
+func (m *GetCredentialRequest) XXX_Size() int {
+	return xxx_messageInfo_GetCredentialRequest.Size(m)
+}
+func (m *GetCredentialRequest) XXX_DiscardUnknown() {
+	xxx_messageInfo_GetCredentialRequest.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_GetCredentialRequest proto.InternalMessageInfo
+
+func (m *GetCredentialRequest) GetBase() *commonpb.MsgBase {
+	if m != nil {
+		return m.Base
+	}
+	return nil
+}
+
+func (m *GetCredentialRequest) GetUsername() string {
+	if m != nil {
+		return m.Username
+	}
+	return ""
+}
+
+type GetCredentialResponse struct {
+	// Contain error_code and reason
+	Status *commonpb.Status `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	// username
+	Username string `protobuf:"bytes,2,opt,name=username,proto3" json:"username,omitempty"`
+	// password
+	Password             string   `protobuf:"bytes,3,opt,name=password,proto3" json:"password,omitempty"`
+	XXX_NoUnkeyedLiteral struct{} `json:"-"`
+	XXX_unrecognized     []byte   `json:"-"`
+	XXX_sizecache        int32    `json:"-"`
+}
+
+func (m *GetCredentialResponse) Reset()         { *m = GetCredentialResponse{} }
+func (m *GetCredentialResponse) String() string { return proto.CompactTextString(m) }
+func (*GetCredentialResponse) ProtoMessage()    {}
+func (*GetCredentialResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptor_4513485a144f6b06, []int{10}
+}
+
+func (m *GetCredentialResponse) XXX_Unmarshal(b []byte) error {
+	return xxx_messageInfo_GetCredentialResponse.Unmarshal(m, b)
+}
+func (m *GetCredentialResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	return xxx_messageInfo_GetCredentialResponse.Marshal(b, m, deterministic)
+}
+func (m *GetCredentialResponse) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_GetCredentialResponse.Merge(m, src)
+}
+func (m *GetCredentialResponse) XXX_Size() int {
+	return xxx_messageInfo_GetCredentialResponse.Size(m)
+}
+func (m *GetCredentialResponse) XXX_DiscardUnknown() {
+	xxx_messageInfo_GetCredentialResponse.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_GetCredentialResponse proto.InternalMessageInfo
+
+func (m *GetCredentialResponse) GetStatus() *commonpb.Status {
+	if m != nil {
+		return m.Status
+	}
+	return nil
+}
+
+func (m *GetCredentialResponse) GetUsername() string {
+	if m != nil {
+		return m.Username
+	}
+	return ""
+}
+
+func (m *GetCredentialResponse) GetPassword() string {
+	if m != nil {
+		return m.Password
+	}
+	return ""
+}
+
 func init() {
 	proto.RegisterType((*AllocTimestampRequest)(nil), "milvus.proto.rootcoord.AllocTimestampRequest")
 	proto.RegisterType((*AllocTimestampResponse)(nil), "milvus.proto.rootcoord.AllocTimestampResponse")
 	proto.RegisterType((*AllocIDRequest)(nil), "milvus.proto.rootcoord.AllocIDRequest")
 	proto.RegisterType((*AllocIDResponse)(nil), "milvus.proto.rootcoord.AllocIDResponse")
 	proto.RegisterType((*ImportResult)(nil), "milvus.proto.rootcoord.ImportResult")
+	proto.RegisterType((*DescribeSegmentsRequest)(nil), "milvus.proto.rootcoord.DescribeSegmentsRequest")
+	proto.RegisterType((*SegmentBaseInfo)(nil), "milvus.proto.rootcoord.SegmentBaseInfo")
+	proto.RegisterType((*SegmentInfos)(nil), "milvus.proto.rootcoord.SegmentInfos")
+	proto.RegisterMapType((map[int64]*etcdpb.IndexInfo)(nil), "milvus.proto.rootcoord.SegmentInfos.ExtraIndexInfosEntry")
+	proto.RegisterType((*DescribeSegmentsResponse)(nil), "milvus.proto.rootcoord.DescribeSegmentsResponse")
+	proto.RegisterMapType((map[int64]*SegmentInfos)(nil), "milvus.proto.rootcoord.DescribeSegmentsResponse.SegmentInfosEntry")
+	proto.RegisterType((*GetCredentialRequest)(nil), "milvus.proto.rootcoord.GetCredentialRequest")
+	proto.RegisterType((*GetCredentialResponse)(nil), "milvus.proto.rootcoord.GetCredentialResponse")
 }
 
 func init() { proto.RegisterFile("root_coord.proto", fileDescriptor_4513485a144f6b06) }
 
 var fileDescriptor_4513485a144f6b06 = []byte{
-	// 1031 bytes of a gzipped FileDescriptorProto
-	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xac, 0x97, 0x7f, 0x6f, 0xda, 0x46,
-	0x18, 0xc7, 0x43, 0x48, 0x48, 0xf2, 0x40, 0x48, 0x74, 0x6a, 0x52, 0x46, 0x2b, 0x8d, 0xb2, 0xad,
-	0x25, 0x4d, 0x0b, 0x15, 0x95, 0xba, 0xfd, 0x9b, 0x80, 0x96, 0xa2, 0x2d, 0x52, 0x6b, 0xda, 0x69,
-	0xbf, 0x2a, 0x74, 0xd8, 0xcf, 0xc0, 0x8a, 0xed, 0x73, 0x7c, 0xc7, 0xd2, 0xfe, 0xb9, 0xb7, 0xb6,
-	0x17, 0xb1, 0xd7, 0x33, 0x9d, 0xed, 0x33, 0xb6, 0xb1, 0x89, 0xb3, 0xf5, 0x3f, 0xce, 0xf7, 0xb9,
-	0xef, 0xf7, 0x9e, 0xe7, 0x7e, 0x3d, 0xc0, 0xa1, 0xc7, 0x98, 0x98, 0xe8, 0x8c, 0x79, 0x46, 0xd7,
-	0xf5, 0x98, 0x60, 0xe4, 0xd8, 0x36, 0xad, 0x3f, 0x17, 0x3c, 0x68, 0x75, 0x65, 0xb7, 0xdf, 0xdb,
-	0xac, 0xe9, 0xcc, 0xb6, 0x99, 0x13, 0x7c, 0x6f, 0xd6, 0xe2, 0x54, 0xb3, 0x6e, 0x3a, 0x02, 0x3d,
-	0x87, 0x5a, 0x61, 0xbb, 0xea, 0x7a, 0xec, 0xe3, 0xa7, 0xb0, 0x71, 0x68, 0x50, 0x41, 0xe3, 0x16,
-	0xed, 0x09, 0x1c, 0x9d, 0x59, 0x16, 0xd3, 0xdf, 0x99, 0x36, 0x72, 0x41, 0x6d, 0x57, 0xc3, 0xeb,
-	0x05, 0x72, 0x41, 0x5e, 0xc0, 0xd6, 0x94, 0x72, 0x6c, 0x94, 0x5a, 0xa5, 0x4e, 0xb5, 0xff, 0xb0,
-	0x9b, 0x98, 0x4a, 0xe8, 0x7f, 0xc9, 0x67, 0xe7, 0x94, 0xa3, 0xe6, 0x93, 0xe4, 0x1e, 0x6c, 0xeb,
-	0x6c, 0xe1, 0x88, 0x46, 0xb9, 0x55, 0xea, 0xec, 0x6b, 0x41, 0xa3, 0xfd, 0x57, 0x09, 0x8e, 0xd3,
-	0x0e, 0xdc, 0x65, 0x0e, 0x47, 0xf2, 0x12, 0x2a, 0x5c, 0x50, 0xb1, 0xe0, 0xa1, 0xc9, 0x83, 0x4c,
-	0x93, 0xb1, 0x8f, 0x68, 0x21, 0x4a, 0x1e, 0xc2, 0x9e, 0x50, 0x4a, 0x8d, 0xcd, 0x56, 0xa9, 0xb3,
-	0xa5, 0x2d, 0x3f, 0xe4, 0xcc, 0xe1, 0x67, 0xa8, 0xfb, 0x53, 0x18, 0x0d, 0x3f, 0x43, 0x74, 0x9b,
-	0x71, 0x65, 0x0b, 0x0e, 0x22, 0xe5, 0xff, 0x13, 0x55, 0x1d, 0x36, 0x47, 0x43, 0x5f, 0xba, 0xac,
-	0x6d, 0x8e, 0x86, 0x39, 0x71, 0xfc, 0xbd, 0x09, 0xb5, 0x91, 0xed, 0x32, 0x4f, 0x68, 0xc8, 0x17,
-	0x96, 0xf8, 0x6f, 0x5e, 0xf7, 0x61, 0x47, 0x50, 0x7e, 0x35, 0x31, 0x8d, 0xd0, 0xb0, 0x22, 0x9b,
-	0x23, 0x83, 0x7c, 0x09, 0x55, 0xb9, 0x3f, 0x1c, 0x66, 0xa0, 0xec, 0x2c, 0xfb, 0x9d, 0xa0, 0x3e,
-	0x8d, 0x0c, 0xf2, 0x0a, 0xb6, 0xa5, 0x06, 0x36, 0xb6, 0x5a, 0xa5, 0x4e, 0xbd, 0xdf, 0xca, 0x74,
-	0x0b, 0x26, 0x28, 0x3d, 0x51, 0x0b, 0x70, 0xd2, 0x84, 0x5d, 0x8e, 0x33, 0x1b, 0x1d, 0xc1, 0x1b,
-	0xdb, 0xad, 0x72, 0xa7, 0xac, 0x45, 0x6d, 0xf2, 0x05, 0xec, 0xd2, 0x85, 0x60, 0x13, 0xd3, 0xe0,
-	0x8d, 0x8a, 0xdf, 0xb7, 0x23, 0xdb, 0x23, 0x83, 0x93, 0x07, 0xb0, 0xe7, 0xb1, 0x9b, 0x49, 0x90,
-	0x88, 0x1d, 0x7f, 0x36, 0xbb, 0x1e, 0xbb, 0x19, 0xc8, 0x36, 0xf9, 0x16, 0xb6, 0x4d, 0xe7, 0x0f,
-	0xc6, 0x1b, 0xbb, 0xad, 0x72, 0xa7, 0xda, 0x7f, 0x94, 0x39, 0x97, 0x1f, 0xf0, 0xd3, 0x4f, 0xd4,
-	0x5a, 0xe0, 0x1b, 0x6a, 0x7a, 0x5a, 0xc0, 0xf7, 0xff, 0x39, 0x86, 0x3d, 0x8d, 0x31, 0x31, 0x90,
-	0xa7, 0x80, 0xb8, 0x40, 0x2e, 0x50, 0x0c, 0x98, 0xed, 0x32, 0x07, 0x9d, 0x60, 0xda, 0x9c, 0xbc,
-	0x48, 0xaa, 0x45, 0x47, 0x6a, 0x15, 0x0d, 0x37, 0x54, 0xf3, 0x71, 0xce, 0x88, 0x14, 0xde, 0xde,
-	0x20, 0xb6, 0xef, 0x28, 0x4f, 0xc3, 0x3b, 0x53, 0xbf, 0x1a, 0xcc, 0xa9, 0xe3, 0xa0, 0xb5, 0xce,
-	0x31, 0x85, 0x2a, 0xc7, 0xaf, 0x92, 0x23, 0xc2, 0xc6, 0x58, 0x78, 0xa6, 0x33, 0x53, 0x9b, 0xb1,
-	0xbd, 0x41, 0xae, 0xe1, 0xde, 0x05, 0xfa, 0xee, 0x26, 0x17, 0xa6, 0xce, 0x95, 0x61, 0x3f, 0xdf,
-	0x70, 0x05, 0xbe, 0xa3, 0xe5, 0x04, 0x0e, 0x07, 0x1e, 0x52, 0x81, 0x03, 0x66, 0x59, 0xa8, 0x0b,
-	0x93, 0x39, 0xe4, 0x59, 0xe6, 0xd0, 0x34, 0xa6, 0x8c, 0xd6, 0xed, 0xe3, 0xf6, 0x06, 0xf9, 0x0d,
-	0xea, 0x43, 0x8f, 0xb9, 0x31, 0xf9, 0xa7, 0x99, 0xf2, 0x49, 0xa8, 0xa0, 0xf8, 0x04, 0xf6, 0x5f,
-	0x53, 0x1e, 0xd3, 0x3e, 0xc9, 0xd4, 0x4e, 0x30, 0x4a, 0xfa, 0x51, 0x26, 0x7a, 0xce, 0x98, 0x15,
-	0x4b, 0xcf, 0x0d, 0x90, 0x21, 0x72, 0xdd, 0x33, 0xa7, 0xf1, 0x04, 0x75, 0xb3, 0x23, 0x58, 0x01,
-	0x95, 0x55, 0xaf, 0x30, 0x1f, 0x19, 0xbf, 0x87, 0x6a, 0x90, 0xf0, 0x33, 0xcb, 0xa4, 0x9c, 0x3c,
-	0x59, 0xb3, 0x24, 0x3e, 0x51, 0x30, 0x61, 0x6f, 0x61, 0x4f, 0x26, 0x3a, 0x10, 0xfd, 0x26, 0x77,
-	0x21, 0xee, 0x22, 0x39, 0x06, 0x38, 0xb3, 0x04, 0x7a, 0x81, 0xe6, 0xe3, 0x4c, 0xcd, 0x25, 0x50,
-	0x50, 0xd4, 0x81, 0x83, 0xf1, 0x5c, 0x5e, 0x1f, 0x2a, 0x35, 0x9c, 0x9c, 0x66, 0x6f, 0xe8, 0x24,
-	0xa5, 0xe4, 0x9f, 0x15, 0x83, 0xa3, 0x74, 0x7f, 0x80, 0x83, 0x20, 0x99, 0x6f, 0xa8, 0x27, 0x4c,
-	0x7f, 0x91, 0x4f, 0xd7, 0xa4, 0x3c, 0xa2, 0x0a, 0x86, 0xf3, 0x0b, 0xec, 0xcb, 0xb4, 0x2e, 0xc5,
-	0x4f, 0x72, 0x53, 0x7f, 0x57, 0xe9, 0x0f, 0x50, 0x7b, 0x4d, 0xf9, 0x52, 0xb9, 0x93, 0x77, 0x02,
-	0x56, 0x84, 0x0b, 0x1d, 0x80, 0x2b, 0xa8, 0xcb, 0xac, 0x45, 0x83, 0x79, 0xce, 0xf1, 0x4d, 0x42,
-	0xca, 0xe2, 0xb4, 0x10, 0x1b, 0x99, 0x39, 0x70, 0xa0, 0x0e, 0xc5, 0x38, 0x78, 0x73, 0x72, 0x56,
-	0x21, 0x45, 0xad, 0x5f, 0xf5, 0x15, 0x38, 0xf2, 0x43, 0xa8, 0xc9, 0xb9, 0x8c, 0xd5, 0xfb, 0xd6,
-	0xc9, 0x9d, 0xae, 0x42, 0x94, 0xd3, 0x49, 0x01, 0x72, 0xf5, 0x2c, 0x8f, 0x1c, 0x03, 0x3f, 0xae,
-	0x3d, 0xcb, 0x3e, 0x51, 0x70, 0xe5, 0xe7, 0xb0, 0xaf, 0x42, 0x0b, 0x84, 0x4f, 0xd6, 0x86, 0x9f,
-	0x90, 0x7e, 0x5a, 0x04, 0x8d, 0x02, 0x08, 0x6f, 0x8d, 0xc0, 0x25, 0xff, 0xd6, 0xb8, 0xcb, 0xe4,
-	0xaf, 0xc3, 0x32, 0x2f, 0xaa, 0x34, 0xc9, 0xf3, 0x6e, 0x76, 0x05, 0xdd, 0xcd, 0xac, 0x79, 0x9b,
-	0xdd, 0xa2, 0x78, 0x14, 0xc5, 0xef, 0xb0, 0x13, 0xd6, 0x7f, 0xe9, 0x5b, 0x2a, 0x35, 0x38, 0x2a,
-	0x3d, 0x9b, 0x4f, 0x6e, 0xe5, 0x22, 0x75, 0x0a, 0x47, 0xef, 0x5d, 0x43, 0xbe, 0x90, 0xc1, 0x3b,
-	0xac, 0x2a, 0x81, 0xf4, 0xaa, 0x2c, 0xab, 0x8d, 0x24, 0x77, 0xc9, 0x67, 0xb7, 0xe5, 0xcc, 0x82,
-	0xfb, 0x1a, 0x5a, 0x48, 0x39, 0x0e, 0xdf, 0xfe, 0x78, 0x89, 0x9c, 0xd3, 0x19, 0x8e, 0x85, 0x87,
-	0xd4, 0x4e, 0x57, 0x08, 0xc1, 0xff, 0x88, 0x1c, 0xb8, 0xe0, 0x0a, 0xe9, 0x70, 0x14, 0xee, 0xe5,
-	0xef, 0xad, 0x05, 0x9f, 0xcb, 0xe2, 0xc8, 0x42, 0x81, 0x46, 0xfa, 0x48, 0xca, 0x9a, 0xb3, 0x9b,
-	0x49, 0x16, 0x08, 0x69, 0x02, 0x70, 0x81, 0xe2, 0x12, 0x85, 0x67, 0xea, 0x79, 0x8f, 0xc7, 0x12,
-	0xc8, 0x59, 0x96, 0x0c, 0x2e, 0x5a, 0x96, 0x31, 0x54, 0x82, 0x22, 0x97, 0xb4, 0x33, 0x07, 0xa9,
-	0x12, 0x7d, 0x5d, 0xd1, 0x14, 0x95, 0xf1, 0xb1, 0x4b, 0xf1, 0x02, 0x45, 0xac, 0x78, 0xce, 0xb9,
-	0x14, 0x93, 0xd0, 0xfa, 0x4b, 0x31, 0xcd, 0xc6, 0x22, 0xa8, 0x69, 0x28, 0x3b, 0xc2, 0x38, 0xbe,
-	0xce, 0xdb, 0x93, 0xf1, 0x7f, 0x1b, 0xb7, 0xe4, 0xfd, 0xfc, 0xbb, 0x5f, 0x5f, 0xcd, 0x4c, 0x31,
-	0x5f, 0x4c, 0x65, 0x4f, 0x2f, 0x40, 0x9f, 0x9b, 0x2c, 0xfc, 0xd5, 0x53, 0x9b, 0xb4, 0xe7, 0x8f,
-	0xee, 0x45, 0x1e, 0xee, 0x74, 0x5a, 0xf1, 0x3f, 0xbd, 0xfc, 0x37, 0x00, 0x00, 0xff, 0xff, 0x05,
-	0xc9, 0x1e, 0x16, 0x02, 0x0f, 0x00, 0x00,
+	// 1614 bytes of a gzipped FileDescriptorProto
+	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xac, 0x58, 0x5b, 0x73, 0xd3, 0x46,
+	0x14, 0xc6, 0x36, 0xb9, 0x1d, 0x3b, 0x71, 0xd8, 0x21, 0xe0, 0x1a, 0xda, 0x1a, 0x97, 0x82, 0xc3,
+	0xc5, 0x61, 0xc2, 0x0c, 0xa5, 0xbc, 0x91, 0x98, 0x06, 0x4f, 0xc9, 0x10, 0x64, 0xe8, 0xd0, 0x0b,
+	0xe3, 0x6e, 0xa4, 0x83, 0xa3, 0x89, 0xac, 0x35, 0xda, 0x75, 0x2e, 0x6f, 0xed, 0x4c, 0xdf, 0xfb,
+	0x9f, 0xda, 0x9f, 0xd2, 0x3f, 0xd2, 0x59, 0xad, 0xb4, 0x96, 0x64, 0xc9, 0x51, 0x80, 0x37, 0xef,
+	0xea, 0xdb, 0xef, 0x3b, 0xfb, 0xed, 0xe5, 0x9c, 0x35, 0xac, 0x7a, 0x8c, 0x89, 0xbe, 0xc9, 0x98,
+	0x67, 0xb5, 0x47, 0x1e, 0x13, 0x8c, 0x5c, 0x19, 0xda, 0xce, 0xd1, 0x98, 0xab, 0x56, 0x5b, 0x7e,
+	0xf6, 0xbf, 0xd6, 0x2b, 0x26, 0x1b, 0x0e, 0x99, 0xab, 0xfa, 0xeb, 0x95, 0x28, 0xaa, 0xbe, 0x62,
+	0xbb, 0x02, 0x3d, 0x97, 0x3a, 0x41, 0xbb, 0x3c, 0xf2, 0xd8, 0xc9, 0x69, 0xd0, 0x58, 0xb5, 0xa8,
+	0xa0, 0x51, 0x89, 0x7a, 0x15, 0x85, 0x69, 0xf5, 0x87, 0x28, 0xa8, 0xea, 0x68, 0xf6, 0x61, 0xed,
+	0xa9, 0xe3, 0x30, 0xf3, 0xb5, 0x3d, 0x44, 0x2e, 0xe8, 0x70, 0x64, 0xe0, 0x87, 0x31, 0x72, 0x41,
+	0x1e, 0xc0, 0xc5, 0x7d, 0xca, 0xb1, 0x56, 0x68, 0x14, 0x5a, 0xe5, 0xcd, 0xeb, 0xed, 0x58, 0x6c,
+	0x41, 0x40, 0xbb, 0x7c, 0xb0, 0x45, 0x39, 0x1a, 0x3e, 0x92, 0x5c, 0x86, 0x39, 0x93, 0x8d, 0x5d,
+	0x51, 0x2b, 0x35, 0x0a, 0xad, 0x65, 0x43, 0x35, 0x9a, 0x7f, 0x16, 0xe0, 0x4a, 0x52, 0x81, 0x8f,
+	0x98, 0xcb, 0x91, 0x3c, 0x84, 0x79, 0x2e, 0xa8, 0x18, 0xf3, 0x40, 0xe4, 0x5a, 0xaa, 0x48, 0xcf,
+	0x87, 0x18, 0x01, 0x94, 0x5c, 0x87, 0x25, 0x11, 0x32, 0xd5, 0x8a, 0x8d, 0x42, 0xeb, 0xa2, 0x31,
+	0xe9, 0xc8, 0x88, 0xe1, 0x2d, 0xac, 0xf8, 0x21, 0x74, 0x3b, 0x9f, 0x61, 0x76, 0xc5, 0x28, 0xb3,
+	0x03, 0x55, 0xcd, 0xfc, 0x29, 0xb3, 0x5a, 0x81, 0x62, 0xb7, 0xe3, 0x53, 0x97, 0x8c, 0x62, 0xb7,
+	0x93, 0x31, 0x8f, 0x7f, 0x8a, 0x50, 0xe9, 0x0e, 0x47, 0xcc, 0x13, 0x06, 0xf2, 0xb1, 0x23, 0x3e,
+	0x4e, 0xeb, 0x2a, 0x2c, 0x08, 0xca, 0x0f, 0xfb, 0xb6, 0x15, 0x08, 0xce, 0xcb, 0x66, 0xd7, 0x22,
+	0x5f, 0x43, 0x59, 0x6e, 0x18, 0x97, 0x59, 0x28, 0x3f, 0x96, 0xfc, 0x8f, 0x10, 0x76, 0x75, 0x2d,
+	0xf2, 0x08, 0xe6, 0x24, 0x07, 0xd6, 0x2e, 0x36, 0x0a, 0xad, 0x95, 0xcd, 0x46, 0xaa, 0x9a, 0x0a,
+	0x50, 0x6a, 0xa2, 0xa1, 0xe0, 0xa4, 0x0e, 0x8b, 0x1c, 0x07, 0x43, 0x74, 0x05, 0xaf, 0xcd, 0x35,
+	0x4a, 0xad, 0x92, 0xa1, 0xdb, 0xe4, 0x0b, 0x58, 0xa4, 0x63, 0xc1, 0xfa, 0xb6, 0xc5, 0x6b, 0xf3,
+	0xfe, 0xb7, 0x05, 0xd9, 0xee, 0x5a, 0x9c, 0x5c, 0x83, 0x25, 0x8f, 0x1d, 0xf7, 0x95, 0x11, 0x0b,
+	0x7e, 0x34, 0x8b, 0x1e, 0x3b, 0xde, 0x96, 0x6d, 0xf2, 0x1d, 0xcc, 0xd9, 0xee, 0x7b, 0xc6, 0x6b,
+	0x8b, 0x8d, 0x52, 0xab, 0xbc, 0x79, 0x23, 0x35, 0x96, 0x1f, 0xf1, 0xf4, 0x27, 0xea, 0x8c, 0x71,
+	0x8f, 0xda, 0x9e, 0xa1, 0xf0, 0xcd, 0xbf, 0x0b, 0x70, 0xb5, 0x83, 0xdc, 0xf4, 0xec, 0x7d, 0xec,
+	0x05, 0x51, 0x7c, 0xfc, 0xb6, 0x68, 0x42, 0xc5, 0x64, 0x8e, 0x83, 0xa6, 0xb0, 0x99, 0xab, 0x97,
+	0x30, 0xd6, 0x47, 0xbe, 0x02, 0x08, 0xa6, 0xdb, 0xed, 0xf0, 0x5a, 0xc9, 0x9f, 0x64, 0xa4, 0xa7,
+	0x39, 0x86, 0x6a, 0x10, 0x88, 0x24, 0xee, 0xba, 0xef, 0xd9, 0x14, 0x6d, 0x21, 0x85, 0xb6, 0x01,
+	0xe5, 0x11, 0xf5, 0x84, 0x1d, 0x53, 0x8e, 0x76, 0xc9, 0xb3, 0xa2, 0x65, 0x82, 0xe5, 0x9c, 0x74,
+	0x34, 0xff, 0x2b, 0x42, 0x25, 0xd0, 0x95, 0x9a, 0x9c, 0x74, 0x60, 0x49, 0xce, 0xa9, 0x2f, 0x7d,
+	0x0a, 0x2c, 0xb8, 0xdd, 0x4e, 0xbf, 0x93, 0xda, 0x89, 0x80, 0x8d, 0xc5, 0xfd, 0x30, 0xf4, 0x0e,
+	0x94, 0x6d, 0xd7, 0xc2, 0x93, 0xbe, 0x5a, 0x9e, 0xa2, 0xbf, 0x3c, 0xdf, 0xc4, 0x79, 0xe4, 0x2d,
+	0xd4, 0xd6, 0xda, 0x16, 0x9e, 0xf8, 0x1c, 0x60, 0x87, 0x3f, 0x39, 0x41, 0xb8, 0x84, 0x27, 0xc2,
+	0xa3, 0xfd, 0x28, 0x57, 0xc9, 0xe7, 0xfa, 0xfe, 0x8c, 0x98, 0x7c, 0x82, 0xf6, 0x33, 0x39, 0x5a,
+	0x73, 0xf3, 0x67, 0xae, 0xf0, 0x4e, 0x8d, 0x2a, 0xc6, 0x7b, 0xeb, 0xbf, 0xc3, 0xe5, 0x34, 0x20,
+	0x59, 0x85, 0xd2, 0x21, 0x9e, 0x06, 0xb6, 0xcb, 0x9f, 0x64, 0x13, 0xe6, 0x8e, 0xe4, 0x56, 0xf2,
+	0x7d, 0x9e, 0xda, 0x1b, 0xfe, 0x84, 0x26, 0x33, 0x51, 0xd0, 0x27, 0xc5, 0xc7, 0x85, 0xe6, 0xbf,
+	0x45, 0xa8, 0x4d, 0x6f, 0xb7, 0x4f, 0xb9, 0x2b, 0xf2, 0x6c, 0xb9, 0x01, 0x2c, 0x07, 0x0b, 0x1d,
+	0xb3, 0x6e, 0x2b, 0xcb, 0xba, 0xac, 0x08, 0x63, 0x9e, 0x2a, 0x0f, 0x2b, 0x3c, 0xd2, 0x55, 0x47,
+	0xb8, 0x34, 0x05, 0x49, 0x71, 0xef, 0x49, 0xdc, 0xbd, 0x9b, 0x79, 0x96, 0x30, 0xea, 0xa2, 0x05,
+	0x97, 0x77, 0x50, 0x6c, 0x7b, 0x68, 0xa1, 0x2b, 0x6c, 0xea, 0x7c, 0xfc, 0x81, 0xad, 0xc3, 0xe2,
+	0x98, 0xcb, 0x8c, 0x39, 0x54, 0xc1, 0x2c, 0x19, 0xba, 0xdd, 0xfc, 0xab, 0x00, 0x6b, 0x09, 0x99,
+	0x4f, 0x59, 0xa8, 0x19, 0x52, 0xf2, 0xdb, 0x88, 0x72, 0x7e, 0xcc, 0x3c, 0x75, 0xd1, 0x2e, 0x19,
+	0xba, 0xbd, 0xf9, 0xc7, 0x4d, 0x58, 0x32, 0x18, 0x13, 0xdb, 0xd2, 0x12, 0x32, 0x02, 0x22, 0x63,
+	0x62, 0xc3, 0x11, 0x73, 0xd1, 0x55, 0x17, 0x2b, 0x27, 0x0f, 0xe2, 0x01, 0xe8, 0x2a, 0x60, 0x1a,
+	0x1a, 0x58, 0x55, 0xbf, 0x95, 0x31, 0x22, 0x01, 0x6f, 0x5e, 0x20, 0x43, 0x5f, 0x51, 0xe6, 0xeb,
+	0xd7, 0xb6, 0x79, 0xb8, 0x7d, 0x40, 0x5d, 0x17, 0x9d, 0x59, 0x8a, 0x09, 0x68, 0xa8, 0x98, 0x38,
+	0xf4, 0x41, 0xa3, 0x27, 0x3c, 0xdb, 0x1d, 0x84, 0xce, 0x36, 0x2f, 0x90, 0x0f, 0xfe, 0xda, 0x4a,
+	0x75, 0x9b, 0x0b, 0xdb, 0xe4, 0xa1, 0xe0, 0x66, 0xb6, 0xe0, 0x14, 0xf8, 0x9c, 0x92, 0x7d, 0x58,
+	0xdd, 0xf6, 0x90, 0x0a, 0xdc, 0xd6, 0x87, 0x86, 0xdc, 0x4b, 0x1d, 0x9a, 0x84, 0x85, 0x42, 0xb3,
+	0x36, 0x40, 0xf3, 0x02, 0xf9, 0x15, 0x56, 0x3a, 0x1e, 0x1b, 0x45, 0xe8, 0xef, 0xa4, 0xd2, 0xc7,
+	0x41, 0x39, 0xc9, 0xfb, 0xb0, 0xfc, 0x9c, 0xf2, 0x08, 0xf7, 0x7a, 0x2a, 0x77, 0x0c, 0x13, 0x52,
+	0xdf, 0x48, 0x85, 0x6e, 0x31, 0xe6, 0x44, 0xec, 0x39, 0x06, 0x12, 0x5e, 0x08, 0x11, 0x95, 0x76,
+	0xfa, 0x0c, 0xa6, 0x80, 0xa1, 0xd4, 0x46, 0x6e, 0xbc, 0x16, 0x7e, 0x03, 0x65, 0x65, 0xf8, 0x53,
+	0xc7, 0xa6, 0x9c, 0xdc, 0x9e, 0xb1, 0x24, 0x3e, 0x22, 0xa7, 0x61, 0xaf, 0x60, 0x49, 0x1a, 0xad,
+	0x48, 0xbf, 0xcd, 0x5c, 0x88, 0xf3, 0x50, 0xf6, 0x00, 0x9e, 0x3a, 0x02, 0x3d, 0xc5, 0x79, 0x2b,
+	0x95, 0x73, 0x02, 0xc8, 0x49, 0xea, 0x42, 0xb5, 0x77, 0x20, 0x0b, 0x9c, 0xd0, 0x1a, 0x4e, 0xee,
+	0xa6, 0x6f, 0xe8, 0x38, 0x2a, 0xa4, 0xbf, 0x97, 0x0f, 0xac, 0xed, 0x7e, 0x07, 0x55, 0x65, 0xe6,
+	0x5e, 0x58, 0x34, 0x64, 0xe8, 0x25, 0x50, 0x39, 0xa7, 0xf3, 0x33, 0x2c, 0x4b, 0x5b, 0x27, 0xe4,
+	0xeb, 0x99, 0xd6, 0x9f, 0x97, 0xfa, 0x1d, 0x54, 0x9e, 0x53, 0x3e, 0x61, 0x6e, 0x65, 0x9d, 0x80,
+	0x29, 0xe2, 0x5c, 0x07, 0xe0, 0x10, 0x56, 0xa4, 0x6b, 0x7a, 0x30, 0xcf, 0x38, 0xbe, 0x71, 0x50,
+	0x28, 0x71, 0x37, 0x17, 0x56, 0x8b, 0xb9, 0x50, 0x4d, 0xa4, 0xdf, 0x8c, 0x55, 0x48, 0xa0, 0x66,
+	0xaf, 0xfa, 0x14, 0x58, 0xeb, 0x21, 0x54, 0x64, 0x2c, 0x61, 0xaa, 0xcf, 0xf0, 0x2e, 0x0a, 0x09,
+	0x95, 0xd6, 0x73, 0x20, 0x23, 0x97, 0xc8, 0x6a, 0xb2, 0xaa, 0x20, 0x1b, 0xf9, 0xeb, 0x0f, 0xa5,
+	0xf8, 0xe0, 0xbc, 0x05, 0x4b, 0xf4, 0x12, 0xf1, 0xeb, 0xb1, 0x99, 0x97, 0x88, 0x8f, 0xc8, 0xb9,
+	0xe5, 0x0e, 0x60, 0x39, 0x14, 0x55, 0xc4, 0xeb, 0x33, 0x7d, 0x8f, 0x51, 0xdf, 0xc9, 0x03, 0xd5,
+	0x13, 0x08, 0xae, 0x2b, 0xa5, 0x92, 0x7d, 0x5d, 0x9d, 0x27, 0xf8, 0x0f, 0xc1, 0x0b, 0x58, 0x3f,
+	0xc2, 0xc9, 0xfd, 0x2c, 0x67, 0x53, 0xff, 0x0e, 0xa8, 0xb7, 0xf3, 0xc2, 0xf5, 0x2c, 0x7e, 0x83,
+	0x85, 0xe0, 0x69, 0x9c, 0xbc, 0x1e, 0x13, 0x83, 0xf5, 0xab, 0xbc, 0x7e, 0xfb, 0x4c, 0x9c, 0x66,
+	0xa7, 0xb0, 0xf6, 0x66, 0x64, 0xc9, 0xd4, 0xac, 0x0a, 0x80, 0xb0, 0x04, 0x49, 0xae, 0xca, 0xa4,
+	0xcc, 0x89, 0xe3, 0x76, 0xf9, 0xe0, 0x2c, 0xcf, 0x1c, 0xb8, 0x6a, 0xa0, 0x83, 0x94, 0x63, 0xe7,
+	0xd5, 0x8b, 0x5d, 0xe4, 0x9c, 0x0e, 0xb0, 0x27, 0x3c, 0xa4, 0xc3, 0x64, 0x69, 0xa2, 0xfe, 0x73,
+	0xc9, 0x00, 0xe7, 0x5c, 0x21, 0x0f, 0xbe, 0xec, 0xba, 0x47, 0xd4, 0xb1, 0xad, 0x58, 0xbd, 0xb1,
+	0x8b, 0x82, 0x6e, 0x53, 0xf3, 0x00, 0xd3, 0x35, 0xe3, 0x43, 0x34, 0x38, 0xa7, 0xa6, 0x09, 0x6b,
+	0xc1, 0xf9, 0xf9, 0xc1, 0x19, 0xf3, 0x03, 0x59, 0x09, 0x3a, 0x28, 0xd0, 0x4a, 0xde, 0x3f, 0x16,
+	0x15, 0xb4, 0x9d, 0x8a, 0xcc, 0x61, 0x63, 0x1f, 0x60, 0x07, 0xc5, 0x2e, 0x0a, 0xcf, 0x36, 0xb3,
+	0x32, 0xe5, 0x04, 0x90, 0xb1, 0x15, 0x52, 0x70, 0x7a, 0x2b, 0xf4, 0x60, 0x5e, 0xfd, 0xe7, 0x40,
+	0x9a, 0xa9, 0x83, 0xc2, 0x7f, 0x4c, 0x66, 0x55, 0x88, 0xfa, 0x5f, 0x95, 0x48, 0x06, 0xd8, 0x41,
+	0x11, 0xf9, 0x2f, 0x23, 0x23, 0x03, 0xc4, 0x41, 0xb3, 0x33, 0x40, 0x12, 0x1b, 0xcd, 0x00, 0x2f,
+	0x6c, 0x1e, 0x7c, 0x7c, 0x4d, 0xf9, 0x61, 0x56, 0xde, 0x4f, 0xa0, 0x66, 0x67, 0x80, 0x29, 0x70,
+	0xc4, 0xb1, 0x8a, 0x81, 0xf2, 0x43, 0xe0, 0x5b, 0xe6, 0x73, 0x2c, 0xfa, 0x67, 0xd3, 0x59, 0xeb,
+	0xfc, 0x56, 0xd7, 0xd4, 0xfa, 0xf9, 0x94, 0xbc, 0xbc, 0x26, 0x87, 0x51, 0x43, 0xe4, 0x4b, 0x2f,
+	0x07, 0x73, 0x70, 0xd6, 0x3f, 0x37, 0x73, 0x5f, 0xe6, 0x28, 0xb9, 0x91, 0x23, 0xcc, 0x59, 0xe9,
+	0x34, 0x0e, 0xcb, 0x9f, 0x34, 0xe4, 0x32, 0xc8, 0x71, 0x6f, 0x38, 0x7a, 0x3c, 0x23, 0x69, 0xc4,
+	0x30, 0xb3, 0x93, 0x46, 0x02, 0x1a, 0xd9, 0x43, 0xcb, 0xb1, 0xa7, 0x6b, 0x72, 0x1e, 0x93, 0x45,
+	0x4d, 0x7b, 0x48, 0xd7, 0xef, 0xe7, 0x44, 0x47, 0xf6, 0x10, 0xa8, 0xe5, 0x36, 0x98, 0x83, 0x19,
+	0xc7, 0x7a, 0x02, 0xc8, 0x69, 0xd7, 0x4b, 0x58, 0x94, 0x99, 0xcd, 0xa7, 0xbc, 0x99, 0x99, 0xf8,
+	0xce, 0x41, 0xf8, 0x0e, 0xaa, 0x2f, 0x47, 0xe8, 0x51, 0x81, 0xd2, 0x2f, 0x9f, 0x37, 0xfd, 0x64,
+	0x25, 0x50, 0xb9, 0x5f, 0x62, 0xd0, 0x43, 0x79, 0x53, 0xcf, 0x30, 0x61, 0x02, 0x98, 0x7d, 0xb7,
+	0x45, 0x71, 0x91, 0x87, 0x6a, 0x20, 0x20, 0x03, 0x9b, 0x29, 0xe0, 0x47, 0x9e, 0x43, 0x40, 0xe1,
+	0x62, 0x95, 0xae, 0x12, 0x46, 0xce, 0xc6, 0x9e, 0x99, 0x75, 0xcf, 0xc5, 0x41, 0x67, 0x54, 0xba,
+	0x09, 0x6c, 0xf4, 0xd9, 0x1d, 0xf8, 0xbc, 0xe7, 0xd9, 0x47, 0xb6, 0x83, 0x03, 0xcc, 0x38, 0x6e,
+	0x49, 0x58, 0xce, 0xf5, 0xd8, 0x87, 0xb2, 0x12, 0xdf, 0xf1, 0xa8, 0x2b, 0xc8, 0x2c, 0x1f, 0x7c,
+	0x44, 0x48, 0xdb, 0x3a, 0x1b, 0xa8, 0x27, 0x61, 0x02, 0xc8, 0x33, 0xb8, 0xc7, 0x1c, 0xdb, 0x3c,
+	0x4d, 0x16, 0xcf, 0xfa, 0x1e, 0x9a, 0x40, 0x32, 0x8a, 0xe7, 0x54, 0x64, 0x28, 0xb2, 0xf5, 0xf8,
+	0x97, 0x47, 0x03, 0x5b, 0x1c, 0x8c, 0xf7, 0xe5, 0x14, 0x37, 0xd4, 0xc0, 0xfb, 0x36, 0x0b, 0x7e,
+	0x6d, 0x84, 0x83, 0x37, 0x7c, 0xae, 0x0d, 0x7d, 0x5a, 0x47, 0xfb, 0xfb, 0xf3, 0x7e, 0xd7, 0xc3,
+	0xff, 0x03, 0x00, 0x00, 0xff, 0xff, 0x34, 0x40, 0xda, 0x7b, 0x5f, 0x1a, 0x00, 0x00,
 }
 
 // Reference imports to suppress errors if they are not otherwise used.
@@ -482,6 +854,7 @@ type RootCoordClient interface {
 	ShowPartitions(ctx context.Context, in *milvuspb.ShowPartitionsRequest, opts ...grpc.CallOption) (*milvuspb.ShowPartitionsResponse, error)
 	DescribeSegment(ctx context.Context, in *milvuspb.DescribeSegmentRequest, opts ...grpc.CallOption) (*milvuspb.DescribeSegmentResponse, error)
 	ShowSegments(ctx context.Context, in *milvuspb.ShowSegmentsRequest, opts ...grpc.CallOption) (*milvuspb.ShowSegmentsResponse, error)
+	DescribeSegments(ctx context.Context, in *DescribeSegmentsRequest, opts ...grpc.CallOption) (*DescribeSegmentsResponse, error)
 	CreateIndex(ctx context.Context, in *milvuspb.CreateIndexRequest, opts ...grpc.CallOption) (*commonpb.Status, error)
 	DescribeIndex(ctx context.Context, in *milvuspb.DescribeIndexRequest, opts ...grpc.CallOption) (*milvuspb.DescribeIndexResponse, error)
 	DropIndex(ctx context.Context, in *milvuspb.DropIndexRequest, opts ...grpc.CallOption) (*commonpb.Status, error)
@@ -489,13 +862,32 @@ type RootCoordClient interface {
 	AllocID(ctx context.Context, in *AllocIDRequest, opts ...grpc.CallOption) (*AllocIDResponse, error)
 	UpdateChannelTimeTick(ctx context.Context, in *internalpb.ChannelTimeTickMsg, opts ...grpc.CallOption) (*commonpb.Status, error)
 	ReleaseDQLMessageStream(ctx context.Context, in *proxypb.ReleaseDQLMessageStreamRequest, opts ...grpc.CallOption) (*commonpb.Status, error)
+	InvalidateCollectionMetaCache(ctx context.Context, in *proxypb.InvalidateCollMetaCacheRequest, opts ...grpc.CallOption) (*commonpb.Status, error)
 	SegmentFlushCompleted(ctx context.Context, in *datapb.SegmentFlushCompletedMsg, opts ...grpc.CallOption) (*commonpb.Status, error)
 	// https://wiki.lfaidata.foundation/display/MIL/MEP+8+--+Add+metrics+for+proxy
 	GetMetrics(ctx context.Context, in *milvuspb.GetMetricsRequest, opts ...grpc.CallOption) (*milvuspb.GetMetricsResponse, error)
 	// https://wiki.lfaidata.foundation/display/MIL/MEP+24+--+Support+bulk+load
 	Import(ctx context.Context, in *milvuspb.ImportRequest, opts ...grpc.CallOption) (*milvuspb.ImportResponse, error)
 	GetImportState(ctx context.Context, in *milvuspb.GetImportStateRequest, opts ...grpc.CallOption) (*milvuspb.GetImportStateResponse, error)
+	ListImportTasks(ctx context.Context, in *milvuspb.ListImportTasksRequest, opts ...grpc.CallOption) (*milvuspb.ListImportTasksResponse, error)
 	ReportImport(ctx context.Context, in *ImportResult, opts ...grpc.CallOption) (*commonpb.Status, error)
+	// https://wiki.lfaidata.foundation/display/MIL/MEP+27+--+Support+Basic+Authentication
+	CreateCredential(ctx context.Context, in *internalpb.CredentialInfo, opts ...grpc.CallOption) (*commonpb.Status, error)
+	UpdateCredential(ctx context.Context, in *internalpb.CredentialInfo, opts ...grpc.CallOption) (*commonpb.Status, error)
+	DeleteCredential(ctx context.Context, in *milvuspb.DeleteCredentialRequest, opts ...grpc.CallOption) (*commonpb.Status, error)
+	ListCredUsers(ctx context.Context, in *milvuspb.ListCredUsersRequest, opts ...grpc.CallOption) (*milvuspb.ListCredUsersResponse, error)
+	// userd by proxy, not exposed to sdk
+	GetCredential(ctx context.Context, in *GetCredentialRequest, opts ...grpc.CallOption) (*GetCredentialResponse, error)
+	// https://wiki.lfaidata.foundation/display/MIL/MEP+29+--+Support+Role-Based+Access+Control
+	CreateRole(ctx context.Context, in *milvuspb.CreateRoleRequest, opts ...grpc.CallOption) (*commonpb.Status, error)
+	DropRole(ctx context.Context, in *milvuspb.DropRoleRequest, opts ...grpc.CallOption) (*commonpb.Status, error)
+	OperateUserRole(ctx context.Context, in *milvuspb.OperateUserRoleRequest, opts ...grpc.CallOption) (*commonpb.Status, error)
+	SelectRole(ctx context.Context, in *milvuspb.SelectRoleRequest, opts ...grpc.CallOption) (*milvuspb.SelectRoleResponse, error)
+	SelectUser(ctx context.Context, in *milvuspb.SelectUserRequest, opts ...grpc.CallOption) (*milvuspb.SelectUserResponse, error)
+	SelectResource(ctx context.Context, in *milvuspb.SelectResourceRequest, opts ...grpc.CallOption) (*milvuspb.SelectResourceResponse, error)
+	OperatePrivilege(ctx context.Context, in *milvuspb.OperatePrivilegeRequest, opts ...grpc.CallOption) (*commonpb.Status, error)
+	SelectGrant(ctx context.Context, in *milvuspb.SelectGrantRequest, opts ...grpc.CallOption) (*milvuspb.SelectGrantResponse, error)
+	ListPolicy(ctx context.Context, in *internalpb.ListPolicyRequest, opts ...grpc.CallOption) (*internalpb.ListPolicyResponse, error)
 }
 
 type rootCoordClient struct {
@@ -659,6 +1051,15 @@ func (c *rootCoordClient) ShowSegments(ctx context.Context, in *milvuspb.ShowSeg
 	return out, nil
 }
 
+func (c *rootCoordClient) DescribeSegments(ctx context.Context, in *DescribeSegmentsRequest, opts ...grpc.CallOption) (*DescribeSegmentsResponse, error) {
+	out := new(DescribeSegmentsResponse)
+	err := c.cc.Invoke(ctx, "/milvus.proto.rootcoord.RootCoord/DescribeSegments", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *rootCoordClient) CreateIndex(ctx context.Context, in *milvuspb.CreateIndexRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
 	out := new(commonpb.Status)
 	err := c.cc.Invoke(ctx, "/milvus.proto.rootcoord.RootCoord/CreateIndex", in, out, opts...)
@@ -722,6 +1123,15 @@ func (c *rootCoordClient) ReleaseDQLMessageStream(ctx context.Context, in *proxy
 	return out, nil
 }
 
+func (c *rootCoordClient) InvalidateCollectionMetaCache(ctx context.Context, in *proxypb.InvalidateCollMetaCacheRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
+	out := new(commonpb.Status)
+	err := c.cc.Invoke(ctx, "/milvus.proto.rootcoord.RootCoord/InvalidateCollectionMetaCache", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *rootCoordClient) SegmentFlushCompleted(ctx context.Context, in *datapb.SegmentFlushCompletedMsg, opts ...grpc.CallOption) (*commonpb.Status, error) {
 	out := new(commonpb.Status)
 	err := c.cc.Invoke(ctx, "/milvus.proto.rootcoord.RootCoord/SegmentFlushCompleted", in, out, opts...)
@@ -758,9 +1168,144 @@ func (c *rootCoordClient) GetImportState(ctx context.Context, in *milvuspb.GetIm
 	return out, nil
 }
 
+func (c *rootCoordClient) ListImportTasks(ctx context.Context, in *milvuspb.ListImportTasksRequest, opts ...grpc.CallOption) (*milvuspb.ListImportTasksResponse, error) {
+	out := new(milvuspb.ListImportTasksResponse)
+	err := c.cc.Invoke(ctx, "/milvus.proto.rootcoord.RootCoord/ListImportTasks", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *rootCoordClient) ReportImport(ctx context.Context, in *ImportResult, opts ...grpc.CallOption) (*commonpb.Status, error) {
 	out := new(commonpb.Status)
 	err := c.cc.Invoke(ctx, "/milvus.proto.rootcoord.RootCoord/ReportImport", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rootCoordClient) CreateCredential(ctx context.Context, in *internalpb.CredentialInfo, opts ...grpc.CallOption) (*commonpb.Status, error) {
+	out := new(commonpb.Status)
+	err := c.cc.Invoke(ctx, "/milvus.proto.rootcoord.RootCoord/CreateCredential", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rootCoordClient) UpdateCredential(ctx context.Context, in *internalpb.CredentialInfo, opts ...grpc.CallOption) (*commonpb.Status, error) {
+	out := new(commonpb.Status)
+	err := c.cc.Invoke(ctx, "/milvus.proto.rootcoord.RootCoord/UpdateCredential", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rootCoordClient) DeleteCredential(ctx context.Context, in *milvuspb.DeleteCredentialRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
+	out := new(commonpb.Status)
+	err := c.cc.Invoke(ctx, "/milvus.proto.rootcoord.RootCoord/DeleteCredential", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rootCoordClient) ListCredUsers(ctx context.Context, in *milvuspb.ListCredUsersRequest, opts ...grpc.CallOption) (*milvuspb.ListCredUsersResponse, error) {
+	out := new(milvuspb.ListCredUsersResponse)
+	err := c.cc.Invoke(ctx, "/milvus.proto.rootcoord.RootCoord/ListCredUsers", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rootCoordClient) GetCredential(ctx context.Context, in *GetCredentialRequest, opts ...grpc.CallOption) (*GetCredentialResponse, error) {
+	out := new(GetCredentialResponse)
+	err := c.cc.Invoke(ctx, "/milvus.proto.rootcoord.RootCoord/GetCredential", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rootCoordClient) CreateRole(ctx context.Context, in *milvuspb.CreateRoleRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
+	out := new(commonpb.Status)
+	err := c.cc.Invoke(ctx, "/milvus.proto.rootcoord.RootCoord/CreateRole", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rootCoordClient) DropRole(ctx context.Context, in *milvuspb.DropRoleRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
+	out := new(commonpb.Status)
+	err := c.cc.Invoke(ctx, "/milvus.proto.rootcoord.RootCoord/DropRole", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rootCoordClient) OperateUserRole(ctx context.Context, in *milvuspb.OperateUserRoleRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
+	out := new(commonpb.Status)
+	err := c.cc.Invoke(ctx, "/milvus.proto.rootcoord.RootCoord/OperateUserRole", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rootCoordClient) SelectRole(ctx context.Context, in *milvuspb.SelectRoleRequest, opts ...grpc.CallOption) (*milvuspb.SelectRoleResponse, error) {
+	out := new(milvuspb.SelectRoleResponse)
+	err := c.cc.Invoke(ctx, "/milvus.proto.rootcoord.RootCoord/SelectRole", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rootCoordClient) SelectUser(ctx context.Context, in *milvuspb.SelectUserRequest, opts ...grpc.CallOption) (*milvuspb.SelectUserResponse, error) {
+	out := new(milvuspb.SelectUserResponse)
+	err := c.cc.Invoke(ctx, "/milvus.proto.rootcoord.RootCoord/SelectUser", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rootCoordClient) SelectResource(ctx context.Context, in *milvuspb.SelectResourceRequest, opts ...grpc.CallOption) (*milvuspb.SelectResourceResponse, error) {
+	out := new(milvuspb.SelectResourceResponse)
+	err := c.cc.Invoke(ctx, "/milvus.proto.rootcoord.RootCoord/SelectResource", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rootCoordClient) OperatePrivilege(ctx context.Context, in *milvuspb.OperatePrivilegeRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
+	out := new(commonpb.Status)
+	err := c.cc.Invoke(ctx, "/milvus.proto.rootcoord.RootCoord/OperatePrivilege", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rootCoordClient) SelectGrant(ctx context.Context, in *milvuspb.SelectGrantRequest, opts ...grpc.CallOption) (*milvuspb.SelectGrantResponse, error) {
+	out := new(milvuspb.SelectGrantResponse)
+	err := c.cc.Invoke(ctx, "/milvus.proto.rootcoord.RootCoord/SelectGrant", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rootCoordClient) ListPolicy(ctx context.Context, in *internalpb.ListPolicyRequest, opts ...grpc.CallOption) (*internalpb.ListPolicyResponse, error) {
+	out := new(internalpb.ListPolicyResponse)
+	err := c.cc.Invoke(ctx, "/milvus.proto.rootcoord.RootCoord/ListPolicy", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -832,6 +1377,7 @@ type RootCoordServer interface {
 	ShowPartitions(context.Context, *milvuspb.ShowPartitionsRequest) (*milvuspb.ShowPartitionsResponse, error)
 	DescribeSegment(context.Context, *milvuspb.DescribeSegmentRequest) (*milvuspb.DescribeSegmentResponse, error)
 	ShowSegments(context.Context, *milvuspb.ShowSegmentsRequest) (*milvuspb.ShowSegmentsResponse, error)
+	DescribeSegments(context.Context, *DescribeSegmentsRequest) (*DescribeSegmentsResponse, error)
 	CreateIndex(context.Context, *milvuspb.CreateIndexRequest) (*commonpb.Status, error)
 	DescribeIndex(context.Context, *milvuspb.DescribeIndexRequest) (*milvuspb.DescribeIndexResponse, error)
 	DropIndex(context.Context, *milvuspb.DropIndexRequest) (*commonpb.Status, error)
@@ -839,13 +1385,32 @@ type RootCoordServer interface {
 	AllocID(context.Context, *AllocIDRequest) (*AllocIDResponse, error)
 	UpdateChannelTimeTick(context.Context, *internalpb.ChannelTimeTickMsg) (*commonpb.Status, error)
 	ReleaseDQLMessageStream(context.Context, *proxypb.ReleaseDQLMessageStreamRequest) (*commonpb.Status, error)
+	InvalidateCollectionMetaCache(context.Context, *proxypb.InvalidateCollMetaCacheRequest) (*commonpb.Status, error)
 	SegmentFlushCompleted(context.Context, *datapb.SegmentFlushCompletedMsg) (*commonpb.Status, error)
 	// https://wiki.lfaidata.foundation/display/MIL/MEP+8+--+Add+metrics+for+proxy
 	GetMetrics(context.Context, *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error)
 	// https://wiki.lfaidata.foundation/display/MIL/MEP+24+--+Support+bulk+load
 	Import(context.Context, *milvuspb.ImportRequest) (*milvuspb.ImportResponse, error)
 	GetImportState(context.Context, *milvuspb.GetImportStateRequest) (*milvuspb.GetImportStateResponse, error)
+	ListImportTasks(context.Context, *milvuspb.ListImportTasksRequest) (*milvuspb.ListImportTasksResponse, error)
 	ReportImport(context.Context, *ImportResult) (*commonpb.Status, error)
+	// https://wiki.lfaidata.foundation/display/MIL/MEP+27+--+Support+Basic+Authentication
+	CreateCredential(context.Context, *internalpb.CredentialInfo) (*commonpb.Status, error)
+	UpdateCredential(context.Context, *internalpb.CredentialInfo) (*commonpb.Status, error)
+	DeleteCredential(context.Context, *milvuspb.DeleteCredentialRequest) (*commonpb.Status, error)
+	ListCredUsers(context.Context, *milvuspb.ListCredUsersRequest) (*milvuspb.ListCredUsersResponse, error)
+	// userd by proxy, not exposed to sdk
+	GetCredential(context.Context, *GetCredentialRequest) (*GetCredentialResponse, error)
+	// https://wiki.lfaidata.foundation/display/MIL/MEP+29+--+Support+Role-Based+Access+Control
+	CreateRole(context.Context, *milvuspb.CreateRoleRequest) (*commonpb.Status, error)
+	DropRole(context.Context, *milvuspb.DropRoleRequest) (*commonpb.Status, error)
+	OperateUserRole(context.Context, *milvuspb.OperateUserRoleRequest) (*commonpb.Status, error)
+	SelectRole(context.Context, *milvuspb.SelectRoleRequest) (*milvuspb.SelectRoleResponse, error)
+	SelectUser(context.Context, *milvuspb.SelectUserRequest) (*milvuspb.SelectUserResponse, error)
+	SelectResource(context.Context, *milvuspb.SelectResourceRequest) (*milvuspb.SelectResourceResponse, error)
+	OperatePrivilege(context.Context, *milvuspb.OperatePrivilegeRequest) (*commonpb.Status, error)
+	SelectGrant(context.Context, *milvuspb.SelectGrantRequest) (*milvuspb.SelectGrantResponse, error)
+	ListPolicy(context.Context, *internalpb.ListPolicyRequest) (*internalpb.ListPolicyResponse, error)
 }
 
 // UnimplementedRootCoordServer can be embedded to have forward compatible implementations.
@@ -903,6 +1468,9 @@ func (*UnimplementedRootCoordServer) DescribeSegment(ctx context.Context, req *m
 func (*UnimplementedRootCoordServer) ShowSegments(ctx context.Context, req *milvuspb.ShowSegmentsRequest) (*milvuspb.ShowSegmentsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ShowSegments not implemented")
 }
+func (*UnimplementedRootCoordServer) DescribeSegments(ctx context.Context, req *DescribeSegmentsRequest) (*DescribeSegmentsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DescribeSegments not implemented")
+}
 func (*UnimplementedRootCoordServer) CreateIndex(ctx context.Context, req *milvuspb.CreateIndexRequest) (*commonpb.Status, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateIndex not implemented")
 }
@@ -924,6 +1492,9 @@ func (*UnimplementedRootCoordServer) UpdateChannelTimeTick(ctx context.Context, 
 func (*UnimplementedRootCoordServer) ReleaseDQLMessageStream(ctx context.Context, req *proxypb.ReleaseDQLMessageStreamRequest) (*commonpb.Status, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ReleaseDQLMessageStream not implemented")
 }
+func (*UnimplementedRootCoordServer) InvalidateCollectionMetaCache(ctx context.Context, req *proxypb.InvalidateCollMetaCacheRequest) (*commonpb.Status, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method InvalidateCollectionMetaCache not implemented")
+}
 func (*UnimplementedRootCoordServer) SegmentFlushCompleted(ctx context.Context, req *datapb.SegmentFlushCompletedMsg) (*commonpb.Status, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SegmentFlushCompleted not implemented")
 }
@@ -936,8 +1507,53 @@ func (*UnimplementedRootCoordServer) Import(ctx context.Context, req *milvuspb.I
 func (*UnimplementedRootCoordServer) GetImportState(ctx context.Context, req *milvuspb.GetImportStateRequest) (*milvuspb.GetImportStateResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetImportState not implemented")
 }
+func (*UnimplementedRootCoordServer) ListImportTasks(ctx context.Context, req *milvuspb.ListImportTasksRequest) (*milvuspb.ListImportTasksResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListImportTasks not implemented")
+}
 func (*UnimplementedRootCoordServer) ReportImport(ctx context.Context, req *ImportResult) (*commonpb.Status, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ReportImport not implemented")
+}
+func (*UnimplementedRootCoordServer) CreateCredential(ctx context.Context, req *internalpb.CredentialInfo) (*commonpb.Status, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateCredential not implemented")
+}
+func (*UnimplementedRootCoordServer) UpdateCredential(ctx context.Context, req *internalpb.CredentialInfo) (*commonpb.Status, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateCredential not implemented")
+}
+func (*UnimplementedRootCoordServer) DeleteCredential(ctx context.Context, req *milvuspb.DeleteCredentialRequest) (*commonpb.Status, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DeleteCredential not implemented")
+}
+func (*UnimplementedRootCoordServer) ListCredUsers(ctx context.Context, req *milvuspb.ListCredUsersRequest) (*milvuspb.ListCredUsersResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListCredUsers not implemented")
+}
+func (*UnimplementedRootCoordServer) GetCredential(ctx context.Context, req *GetCredentialRequest) (*GetCredentialResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetCredential not implemented")
+}
+func (*UnimplementedRootCoordServer) CreateRole(ctx context.Context, req *milvuspb.CreateRoleRequest) (*commonpb.Status, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateRole not implemented")
+}
+func (*UnimplementedRootCoordServer) DropRole(ctx context.Context, req *milvuspb.DropRoleRequest) (*commonpb.Status, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DropRole not implemented")
+}
+func (*UnimplementedRootCoordServer) OperateUserRole(ctx context.Context, req *milvuspb.OperateUserRoleRequest) (*commonpb.Status, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method OperateUserRole not implemented")
+}
+func (*UnimplementedRootCoordServer) SelectRole(ctx context.Context, req *milvuspb.SelectRoleRequest) (*milvuspb.SelectRoleResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SelectRole not implemented")
+}
+func (*UnimplementedRootCoordServer) SelectUser(ctx context.Context, req *milvuspb.SelectUserRequest) (*milvuspb.SelectUserResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SelectUser not implemented")
+}
+func (*UnimplementedRootCoordServer) SelectResource(ctx context.Context, req *milvuspb.SelectResourceRequest) (*milvuspb.SelectResourceResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SelectResource not implemented")
+}
+func (*UnimplementedRootCoordServer) OperatePrivilege(ctx context.Context, req *milvuspb.OperatePrivilegeRequest) (*commonpb.Status, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method OperatePrivilege not implemented")
+}
+func (*UnimplementedRootCoordServer) SelectGrant(ctx context.Context, req *milvuspb.SelectGrantRequest) (*milvuspb.SelectGrantResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SelectGrant not implemented")
+}
+func (*UnimplementedRootCoordServer) ListPolicy(ctx context.Context, req *internalpb.ListPolicyRequest) (*internalpb.ListPolicyResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListPolicy not implemented")
 }
 
 func RegisterRootCoordServer(s *grpc.Server, srv RootCoordServer) {
@@ -1250,6 +1866,24 @@ func _RootCoord_ShowSegments_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RootCoord_DescribeSegments_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DescribeSegmentsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RootCoordServer).DescribeSegments(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/milvus.proto.rootcoord.RootCoord/DescribeSegments",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RootCoordServer).DescribeSegments(ctx, req.(*DescribeSegmentsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _RootCoord_CreateIndex_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(milvuspb.CreateIndexRequest)
 	if err := dec(in); err != nil {
@@ -1376,6 +2010,24 @@ func _RootCoord_ReleaseDQLMessageStream_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RootCoord_InvalidateCollectionMetaCache_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(proxypb.InvalidateCollMetaCacheRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RootCoordServer).InvalidateCollectionMetaCache(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/milvus.proto.rootcoord.RootCoord/InvalidateCollectionMetaCache",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RootCoordServer).InvalidateCollectionMetaCache(ctx, req.(*proxypb.InvalidateCollMetaCacheRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _RootCoord_SegmentFlushCompleted_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(datapb.SegmentFlushCompletedMsg)
 	if err := dec(in); err != nil {
@@ -1448,6 +2100,24 @@ func _RootCoord_GetImportState_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RootCoord_ListImportTasks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(milvuspb.ListImportTasksRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RootCoordServer).ListImportTasks(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/milvus.proto.rootcoord.RootCoord/ListImportTasks",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RootCoordServer).ListImportTasks(ctx, req.(*milvuspb.ListImportTasksRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _RootCoord_ReportImport_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ImportResult)
 	if err := dec(in); err != nil {
@@ -1462,6 +2132,258 @@ func _RootCoord_ReportImport_Handler(srv interface{}, ctx context.Context, dec f
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(RootCoordServer).ReportImport(ctx, req.(*ImportResult))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RootCoord_CreateCredential_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(internalpb.CredentialInfo)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RootCoordServer).CreateCredential(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/milvus.proto.rootcoord.RootCoord/CreateCredential",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RootCoordServer).CreateCredential(ctx, req.(*internalpb.CredentialInfo))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RootCoord_UpdateCredential_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(internalpb.CredentialInfo)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RootCoordServer).UpdateCredential(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/milvus.proto.rootcoord.RootCoord/UpdateCredential",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RootCoordServer).UpdateCredential(ctx, req.(*internalpb.CredentialInfo))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RootCoord_DeleteCredential_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(milvuspb.DeleteCredentialRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RootCoordServer).DeleteCredential(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/milvus.proto.rootcoord.RootCoord/DeleteCredential",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RootCoordServer).DeleteCredential(ctx, req.(*milvuspb.DeleteCredentialRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RootCoord_ListCredUsers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(milvuspb.ListCredUsersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RootCoordServer).ListCredUsers(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/milvus.proto.rootcoord.RootCoord/ListCredUsers",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RootCoordServer).ListCredUsers(ctx, req.(*milvuspb.ListCredUsersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RootCoord_GetCredential_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCredentialRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RootCoordServer).GetCredential(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/milvus.proto.rootcoord.RootCoord/GetCredential",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RootCoordServer).GetCredential(ctx, req.(*GetCredentialRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RootCoord_CreateRole_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(milvuspb.CreateRoleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RootCoordServer).CreateRole(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/milvus.proto.rootcoord.RootCoord/CreateRole",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RootCoordServer).CreateRole(ctx, req.(*milvuspb.CreateRoleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RootCoord_DropRole_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(milvuspb.DropRoleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RootCoordServer).DropRole(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/milvus.proto.rootcoord.RootCoord/DropRole",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RootCoordServer).DropRole(ctx, req.(*milvuspb.DropRoleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RootCoord_OperateUserRole_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(milvuspb.OperateUserRoleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RootCoordServer).OperateUserRole(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/milvus.proto.rootcoord.RootCoord/OperateUserRole",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RootCoordServer).OperateUserRole(ctx, req.(*milvuspb.OperateUserRoleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RootCoord_SelectRole_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(milvuspb.SelectRoleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RootCoordServer).SelectRole(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/milvus.proto.rootcoord.RootCoord/SelectRole",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RootCoordServer).SelectRole(ctx, req.(*milvuspb.SelectRoleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RootCoord_SelectUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(milvuspb.SelectUserRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RootCoordServer).SelectUser(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/milvus.proto.rootcoord.RootCoord/SelectUser",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RootCoordServer).SelectUser(ctx, req.(*milvuspb.SelectUserRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RootCoord_SelectResource_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(milvuspb.SelectResourceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RootCoordServer).SelectResource(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/milvus.proto.rootcoord.RootCoord/SelectResource",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RootCoordServer).SelectResource(ctx, req.(*milvuspb.SelectResourceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RootCoord_OperatePrivilege_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(milvuspb.OperatePrivilegeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RootCoordServer).OperatePrivilege(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/milvus.proto.rootcoord.RootCoord/OperatePrivilege",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RootCoordServer).OperatePrivilege(ctx, req.(*milvuspb.OperatePrivilegeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RootCoord_SelectGrant_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(milvuspb.SelectGrantRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RootCoordServer).SelectGrant(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/milvus.proto.rootcoord.RootCoord/SelectGrant",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RootCoordServer).SelectGrant(ctx, req.(*milvuspb.SelectGrantRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RootCoord_ListPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(internalpb.ListPolicyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RootCoordServer).ListPolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/milvus.proto.rootcoord.RootCoord/ListPolicy",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RootCoordServer).ListPolicy(ctx, req.(*internalpb.ListPolicyRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1539,6 +2461,10 @@ var _RootCoord_serviceDesc = grpc.ServiceDesc{
 			Handler:    _RootCoord_ShowSegments_Handler,
 		},
 		{
+			MethodName: "DescribeSegments",
+			Handler:    _RootCoord_DescribeSegments_Handler,
+		},
+		{
 			MethodName: "CreateIndex",
 			Handler:    _RootCoord_CreateIndex_Handler,
 		},
@@ -1567,6 +2493,10 @@ var _RootCoord_serviceDesc = grpc.ServiceDesc{
 			Handler:    _RootCoord_ReleaseDQLMessageStream_Handler,
 		},
 		{
+			MethodName: "InvalidateCollectionMetaCache",
+			Handler:    _RootCoord_InvalidateCollectionMetaCache_Handler,
+		},
+		{
 			MethodName: "SegmentFlushCompleted",
 			Handler:    _RootCoord_SegmentFlushCompleted_Handler,
 		},
@@ -1583,8 +2513,68 @@ var _RootCoord_serviceDesc = grpc.ServiceDesc{
 			Handler:    _RootCoord_GetImportState_Handler,
 		},
 		{
+			MethodName: "ListImportTasks",
+			Handler:    _RootCoord_ListImportTasks_Handler,
+		},
+		{
 			MethodName: "ReportImport",
 			Handler:    _RootCoord_ReportImport_Handler,
+		},
+		{
+			MethodName: "CreateCredential",
+			Handler:    _RootCoord_CreateCredential_Handler,
+		},
+		{
+			MethodName: "UpdateCredential",
+			Handler:    _RootCoord_UpdateCredential_Handler,
+		},
+		{
+			MethodName: "DeleteCredential",
+			Handler:    _RootCoord_DeleteCredential_Handler,
+		},
+		{
+			MethodName: "ListCredUsers",
+			Handler:    _RootCoord_ListCredUsers_Handler,
+		},
+		{
+			MethodName: "GetCredential",
+			Handler:    _RootCoord_GetCredential_Handler,
+		},
+		{
+			MethodName: "CreateRole",
+			Handler:    _RootCoord_CreateRole_Handler,
+		},
+		{
+			MethodName: "DropRole",
+			Handler:    _RootCoord_DropRole_Handler,
+		},
+		{
+			MethodName: "OperateUserRole",
+			Handler:    _RootCoord_OperateUserRole_Handler,
+		},
+		{
+			MethodName: "SelectRole",
+			Handler:    _RootCoord_SelectRole_Handler,
+		},
+		{
+			MethodName: "SelectUser",
+			Handler:    _RootCoord_SelectUser_Handler,
+		},
+		{
+			MethodName: "SelectResource",
+			Handler:    _RootCoord_SelectResource_Handler,
+		},
+		{
+			MethodName: "OperatePrivilege",
+			Handler:    _RootCoord_OperatePrivilege_Handler,
+		},
+		{
+			MethodName: "SelectGrant",
+			Handler:    _RootCoord_SelectGrant_Handler,
+		},
+		{
+			MethodName: "ListPolicy",
+			Handler:    _RootCoord_ListPolicy_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

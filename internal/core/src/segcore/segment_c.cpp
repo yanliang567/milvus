@@ -20,6 +20,7 @@
 #include "segcore/SegmentSealedImpl.h"
 #include "segcore/SimilarityCorelation.h"
 #include "segcore/segment_c.h"
+#include "google/protobuf/text_format.h"
 
 //////////////////////////////    common interfaces    //////////////////////////////
 CSegmentInterface
@@ -28,9 +29,12 @@ NewSegment(CCollection collection, SegmentType seg_type, int64_t segment_id) {
 
     std::unique_ptr<milvus::segcore::SegmentInterface> segment;
     switch (seg_type) {
-        case Growing:
-            segment = milvus::segcore::CreateGrowingSegment(col->get_schema(), segment_id);
+        case Growing: {
+            auto seg = milvus::segcore::CreateGrowingSegment(col->get_schema(), segment_id);
+            seg->disable_small_index();
+            segment = std::move(seg);
             break;
+        }
         case Sealed:
         case Indexing:
             segment = milvus::segcore::CreateSealedSegment(col->get_schema(), segment_id);
@@ -67,7 +71,7 @@ Search(CSegmentInterface c_segment,
         auto segment = (milvus::segcore::SegmentInterface*)c_segment;
         auto plan = (milvus::query::Plan*)c_plan;
         auto phg_ptr = reinterpret_cast<const milvus::query::PlaceholderGroup*>(c_placeholder_group);
-        auto search_result = segment->Search(plan, *phg_ptr, timestamp);
+        auto search_result = segment->Search(plan, phg_ptr, timestamp);
         if (!milvus::segcore::PositivelyRelated(plan->plan_node_->search_info_.metric_type_)) {
             for (auto& dis : search_result->distances_) {
                 dis *= -1;
@@ -133,54 +137,15 @@ Insert(CSegmentInterface c_segment,
        int64_t size,
        const int64_t* row_ids,
        const uint64_t* timestamps,
-       void* raw_data,
-       int sizeof_per_row,
-       int64_t count) {
+       const uint8_t* data_info,
+       const uint64_t data_info_len) {
     try {
         auto segment = (milvus::segcore::SegmentGrowing*)c_segment;
-        milvus::segcore::RowBasedRawData dataChunk{};
+        auto insert_data = std::make_unique<milvus::InsertData>();
+        auto suc = insert_data->ParseFromArray(data_info, data_info_len);
+        AssertInfo(suc, "failed to parse insert data from records");
 
-        dataChunk.raw_data = raw_data;
-        dataChunk.sizeof_per_row = sizeof_per_row;
-        dataChunk.count = count;
-        segment->Insert(reserved_offset, size, row_ids, timestamps, dataChunk);
-        return milvus::SuccessCStatus();
-    } catch (std::exception& e) {
-        return milvus::FailureCStatus(UnexpectedError, e.what());
-    }
-}
-
-CStatus
-InsertColumnData(CSegmentInterface c_segment,
-                 int64_t reserved_offset,
-                 int64_t size,
-                 const int64_t* row_ids,
-                 const uint64_t* timestamps,
-                 void* raw_data,
-                 int64_t count) {
-    try {
-        auto segment = (milvus::segcore::SegmentGrowing*)c_segment;
-        milvus::segcore::ColumnBasedRawData dataChunk{};
-
-        auto& schema = segment->get_schema();
-        auto sizeof_infos = schema.get_sizeof_infos();
-        dataChunk.columns_ = std::vector<milvus::aligned_vector<uint8_t>>(schema.size());
-        // reverse space for each field
-        for (int fid = 0; fid < schema.size(); ++fid) {
-            auto len = sizeof_infos[fid];
-            dataChunk.columns_[fid].resize(len * size);
-        }
-        auto col_data = reinterpret_cast<const char*>(raw_data);
-        int64_t offset = 0;
-        for (int fid = 0; fid < schema.size(); ++fid) {
-            auto len = sizeof_infos[fid] * size;
-            auto src = col_data + offset;
-            auto dst = dataChunk.columns_[fid].data();
-            memcpy(dst, src, len);
-            offset += len;
-        }
-        dataChunk.count = count;
-        segment->Insert(reserved_offset, size, row_ids, timestamps, dataChunk);
+        segment->Insert(reserved_offset, size, row_ids, timestamps, insert_data.get());
         return milvus::SuccessCStatus();
     } catch (std::exception& e) {
         return milvus::FailureCStatus(UnexpectedError, e.what());
@@ -202,12 +167,15 @@ CStatus
 Delete(CSegmentInterface c_segment,
        int64_t reserved_offset,
        int64_t size,
-       const int64_t* row_ids,
+       const uint8_t* ids,
+       const uint64_t ids_size,
        const uint64_t* timestamps) {
     auto segment = (milvus::segcore::SegmentInterface*)c_segment;
-
+    auto pks = std::make_unique<milvus::proto::schema::IDs>();
+    auto suc = pks->ParseFromArray(ids, ids_size);
+    AssertInfo(suc, "failed to parse pks from ids");
     try {
-        auto res = segment->Delete(reserved_offset, size, row_ids, timestamps);
+        auto res = segment->Delete(reserved_offset, size, pks.get(), timestamps);
         return milvus::SuccessCStatus();
     } catch (std::exception& e) {
         return milvus::FailureCStatus(UnexpectedError, e.what());
@@ -228,8 +196,11 @@ LoadFieldData(CSegmentInterface c_segment, CLoadFieldDataInfo load_field_data_in
         auto segment_interface = reinterpret_cast<milvus::segcore::SegmentInterface*>(c_segment);
         auto segment = dynamic_cast<milvus::segcore::SegmentSealed*>(segment_interface);
         AssertInfo(segment != nullptr, "segment conversion failed");
+        auto field_data = std::make_unique<milvus::DataArray>();
+        auto suc = field_data->ParseFromArray(load_field_data_info.blob, load_field_data_info.blob_size);
+        AssertInfo(suc, "unmarshal field data string failed");
         auto load_info =
-            LoadFieldDataInfo{load_field_data_info.field_id, load_field_data_info.blob, load_field_data_info.row_count};
+            LoadFieldDataInfo{load_field_data_info.field_id, field_data.get(), load_field_data_info.row_count};
         segment->LoadFieldData(load_info);
         return milvus::SuccessCStatus();
     } catch (std::exception& e) {
@@ -241,11 +212,13 @@ CStatus
 LoadDeletedRecord(CSegmentInterface c_segment, CLoadDeletedRecordInfo deleted_record_info) {
     try {
         auto segment_interface = reinterpret_cast<milvus::segcore::SegmentInterface*>(c_segment);
-        auto segment = dynamic_cast<milvus::segcore::SegmentSealed*>(segment_interface);
-        AssertInfo(segment != nullptr, "segment conversion failed");
-        auto load_info = LoadDeletedRecordInfo{deleted_record_info.timestamps, deleted_record_info.primary_keys,
-                                               deleted_record_info.row_count};
-        segment->LoadDeletedRecord(load_info);
+        AssertInfo(segment_interface != nullptr, "segment conversion failed");
+        auto pks = std::make_unique<milvus::proto::schema::IDs>();
+        auto suc = pks->ParseFromArray(deleted_record_info.primary_keys, deleted_record_info.primary_keys_size);
+        AssertInfo(suc, "unmarshal field data string failed");
+        auto load_info =
+            LoadDeletedRecordInfo{deleted_record_info.timestamps, pks.get(), deleted_record_info.row_count};
+        segment_interface->LoadDeletedRecord(load_info);
         return milvus::SuccessCStatus();
     } catch (std::exception& e) {
         return milvus::FailureCStatus(UnexpectedError, e.what());

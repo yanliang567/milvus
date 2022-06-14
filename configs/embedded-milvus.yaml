@@ -27,10 +27,20 @@ etcd:
     #  - "stderr" as os.Stderr,
     #  - "stdout" as os.Stdout,
     #  - file path to append server logs to.
+    # please adjust in embedded Milvus: /tmp/milvus/logs/etcd.log
     path: /tmp/milvus/logs/etcd.log
     level: info # Only supports debug, info, warn, error, panic, or fatal. Default 'info'.
   use:
+    # please adjust in embedded Milvus: true
     embed: true # Whether to enable embedded Etcd (an in-process EtcdServer).
+  data:
+    # Embedded Etcd only.
+    # please adjust in embedded Milvus: /tmp/milvus/etcdData/
+    dir: /tmp/milvus/etcdData/
+
+# please adjust in embedded Milvus: /tmp/milvus/data/
+localStorage:
+  path: /tmp/milvus/data/
 
 # Related configuration of minio, which is responsible for data persistence for Milvus.
 minio:
@@ -42,13 +52,23 @@ minio:
   bucketName: "a-bucket" # Bucket name in MinIO/S3
   rootPath: files # The root path where the message is stored in MinIO/S3
 
+# Milvus supports three MQ: rocksmq(based on RockDB), Pulsar and Kafka, which should be reserved in config what you use.
+# There is a note about enabling priority if we config multiple mq in this file
+# 1. standalone(local) mode: rockskmq(default) > Pulsar > Kafka
+# 2. cluster mode:  Pulsar(default) > Kafka (rocksmq is unsupported)
+
 # Related configuration of pulsar, used to manage Milvus logs of recent mutation operations, output streaming log, and provide log publish-subscribe services.
 pulsar:
   address: localhost # Address of pulsar
   port: 6650 # Port of pulsar
   maxMessageSize: 5242880 # 5 * 1024 * 1024 Bytes, Maximum size of each message in pulsar.
 
+# If you want to enable kafka, needs to comment the pulsar configs
+#kafka:
+#  brokerList: localhost1:9092,localhost2:9092,localhost3:9092
+
 rocksmq:
+  # please adjust in embedded Milvus: /tmp/milvus/rdb_data
   path: /tmp/milvus/rdb_data # The path where the message is stored in rocksmq
   rocksmqPageSize: 2147483648 # 2 GB, 2 * 1024 * 1024 * 1024 bytes, The size of each page of messages in rocksmq
   retentionTimeInMinutes: 10080 # 7 days, 7 * 24 * 60 minutes, The retention time of the message in rocksmq.
@@ -68,6 +88,22 @@ rootCoord:
   dmlChannelNum: 256 # The number of dml channels created at system startup
   maxPartitionNum: 4096 # Maximum number of partitions in a collection
   minSegmentSizeToEnableIndex: 1024 # It's a threshold. When the segment size is less than this value, the segment will not be indexed
+
+  # (in seconds) Duration after which an import task will expire (be killed). Default 3600 seconds (1 hour).
+  # Note: If default value is to be changed, change also the default in: internal/util/paramtable/component_param.go
+  importTaskExpiration: 3600
+  # (in seconds) Milvus will keep the record of import tasks for at least `importTaskRetention` seconds. Default 86400
+  # seconds (24 hours).
+  # Note: If default value is to be changed, change also the default in: internal/util/paramtable/component_param.go
+  importTaskRetention: 86400
+  # (in seconds) During index building phase of an import task, Milvus will check the building status of a task's
+  # segments' indices every `importIndexCheckInterval` seconds. Default 300 seconds (5 minutes).
+  # Note: If default value is to be changed, change also the default in: internal/util/paramtable/component_param.go
+  importIndexCheckInterval: 300
+  # (in seconds) Maximum time to wait before pushing flushed segments online (make them searchable) during importing.
+  # Default 1200 seconds (20 minutes).
+  # Note: If default value is to be changed, change also the default in: internal/util/paramtable/component_param.go
+  importIndexWaitLimit: 1200
 
 # Related configuration of proxy, used to validate client requests and reduce the returned results.
 proxy:
@@ -94,8 +130,7 @@ proxy:
   maxDimension: 32768 # Maximum dimension of a vector
   maxShardNum: 256 # Maximum number of shards in a collection
   maxTaskNum: 1024 # max task number of proxy task queue
-  bufFlagExpireTime: 3600 # second, the time to expire bufFlag from cache in collectResultLoop
-  bufFlagCleanupInterval: 600 # second, the interval to clean bufFlag cache in collectResultLoop
+  # please adjust in embedded Milvus: false
   ginLogging: false # Whether to produce gin logs.
 
 
@@ -133,15 +168,13 @@ queryNode:
     flowGraph:
       maxQueueLength: 1024 # Maximum length of task queue in flowgraph
       maxParallelism: 1024 # Maximum number of tasks executed in parallel in the flowgraph
-  msgStream:
-    search:
-      recvBufSize: 512 # msgPack channel buffer size
-      pulsarBufSize: 512 # pulsar channel buffer size
-    searchResult:
-      recvBufSize: 64 # msgPack channel buffer size
   # Segcore will divide a segment into multiple chunks.
   segcore:
     chunkRows: 32768 # The number of vectors in a chunk.
+
+  cache:
+    enabled: true
+    memoryLimit: 2147483648 # 2 GB, 2 * 1024 *1024 *1024
 
 
 indexCoord:
@@ -177,7 +210,7 @@ dataCoord:
 
   segment:
     maxSize: 512 # Maximum size of a segment in MB
-    sealProportion: 0.75 # It's the minimum proportion for a segment which can be sealed
+    sealProportion: 0.25 # It's the minimum proportion for a segment which can be sealed
     assignmentExpiration: 2000 # The time of the assignment expiration in ms
 
   compaction:
@@ -207,15 +240,11 @@ dataNode:
     # Max buffer size to flush for a single segment.
     insertBufSize: 16777216 # Bytes, 16 MB
 
-# Configure whether to store the vector and the local path when querying/searching in Querynode.
-localStorage:
-  path: /tmp/milvus/data/
-  enabled: true
-
 # Configures the system log output.
 log:
   level: info # Only supports debug, info, warn, error, panic, or fatal. Default 'info'.
   file:
+    # please adjust in embedded Milvus: /tmp/milvus/logs
     rootPath: /tmp/milvus/logs # default to stdout, stderr
     maxSize: 300 # MB
     maxAge: 10 # Maximum time for log retention in day.
@@ -256,3 +285,10 @@ common:
   # Valid values: [auto, avx512, avx2, avx, sse4_2]
   # This configuration is only used by querynode and indexnode, it selects CPU instruction set for Searching and Index-building.
   simdType: auto
+  indexSliceSize: 4 # MB
+
+  # please adjust in embedded Milvus: local
+  storageType: local
+
+  security:
+    authorizationEnabled: false

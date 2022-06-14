@@ -183,7 +183,6 @@ func (inm *Mock) Register() error {
 	if inm.Err {
 		return errors.New("IndexNode register failed")
 	}
-	Params.Init()
 	inm.etcdKV = etcdkv.NewEtcdKV(inm.etcdCli, Params.EtcdCfg.MetaRootPath)
 	if err := inm.etcdKV.RemoveWithPrefix("session/" + typeutil.IndexNodeRole); err != nil {
 		return err
@@ -307,7 +306,7 @@ func (inm *Mock) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest
 		metrics, err := getMockSystemInfoMetrics(ctx, req, inm)
 
 		log.Debug("IndexNode.GetMetrics",
-			zap.Int64("node_id", Params.IndexNodeCfg.NodeID),
+			zap.Int64("node_id", Params.IndexNodeCfg.GetNodeID()),
 			zap.String("req", req.Request),
 			zap.String("metric_type", metricType),
 			zap.Any("metrics", metrics), // TODO(dragondriver): necessary? may be very large
@@ -317,7 +316,7 @@ func (inm *Mock) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest
 	}
 
 	log.Warn("IndexNode.GetMetrics failed, request metric type is not implemented yet",
-		zap.Int64("node_id", Params.IndexNodeCfg.NodeID),
+		zap.Int64("node_id", Params.IndexNodeCfg.GetNodeID()),
 		zap.String("req", req.Request),
 		zap.String("metric_type", metricType))
 
@@ -338,11 +337,11 @@ func getMockSystemInfoMetrics(
 	// TODO(dragondriver): add more metrics
 	nodeInfos := metricsinfo.IndexNodeInfos{
 		BaseComponentInfos: metricsinfo.BaseComponentInfos{
-			Name: metricsinfo.ConstructComponentName(typeutil.IndexNodeRole, Params.IndexNodeCfg.NodeID),
+			Name: metricsinfo.ConstructComponentName(typeutil.IndexNodeRole, Params.IndexNodeCfg.GetNodeID()),
 			HardwareInfos: metricsinfo.HardwareMetrics{
 				CPUCoreCount: metricsinfo.GetCPUCoreCount(false),
 				CPUCoreUsage: metricsinfo.GetCPUUsage(),
-				Memory:       metricsinfo.GetMemoryCount(),
+				Memory:       1000,
 				MemoryUsage:  metricsinfo.GetUsedMemoryCount(),
 				Disk:         metricsinfo.GetDiskCount(),
 				DiskUsage:    metricsinfo.GetDiskUsage(),
@@ -368,6 +367,6 @@ func getMockSystemInfoMetrics(
 			Reason:    "",
 		},
 		Response:      resp,
-		ComponentName: metricsinfo.ConstructComponentName(typeutil.IndexNodeRole, Params.IndexNodeCfg.NodeID),
+		ComponentName: metricsinfo.ConstructComponentName(typeutil.IndexNodeRole, Params.IndexNodeCfg.GetNodeID()),
 	}, nil
 }

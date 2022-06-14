@@ -32,7 +32,8 @@ set(SEGCORE_FILES
         segcore_init_c.cpp
         ScalarIndex.cpp
         TimestampIndex.cpp
-        )
+        Utils.cpp
+        ConcurrentVector.cpp)
 add_library(milvus_segcore SHARED
         ${SEGCORE_FILES}
         )
@@ -44,13 +45,12 @@ set(PLATFORM_LIBS )
 endif ()
 
 target_link_libraries(milvus_segcore
+        milvus_query
+        milvus_common
         ${PLATFORM_LIBS}
         pthread
         ${TBB}
         ${OpenMP_CXX_FLAGS}
-        milvus_common
-        knowhere
-        milvus_query
 #        gperftools
         )
 

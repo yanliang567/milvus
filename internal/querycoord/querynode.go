@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -47,13 +48,10 @@ type Node interface {
 
 	watchDmChannels(ctx context.Context, in *querypb.WatchDmChannelsRequest) error
 	watchDeltaChannels(ctx context.Context, in *querypb.WatchDeltaChannelsRequest) error
+	syncReplicaSegments(ctx context.Context, in *querypb.SyncReplicaSegmentsRequest) error
 	//removeDmChannel(collectionID UniqueID, channels []string) error
 
 	hasWatchedDeltaChannel(collectionID UniqueID) bool
-	hasWatchedQueryChannel(collectionID UniqueID) bool
-	//showWatchedQueryChannels() []*querypb.QueryChannelInfo
-	addQueryChannel(ctx context.Context, in *querypb.AddQueryChannelRequest) error
-	removeQueryChannel(ctx context.Context, in *querypb.RemoveQueryChannelRequest) error
 
 	setState(state nodeState)
 	getState() nodeState
@@ -77,7 +75,6 @@ type queryNode struct {
 	kvClient *etcdkv.EtcdKV
 
 	sync.RWMutex
-	watchedQueryChannels map[UniqueID]*querypb.QueryChannelInfo
 	watchedDeltaChannels map[UniqueID][]*datapb.VchannelInfo
 	state                nodeState
 	stateLock            sync.RWMutex
@@ -89,7 +86,6 @@ type queryNode struct {
 }
 
 func newQueryNode(ctx context.Context, address string, id UniqueID, kv *etcdkv.EtcdKV) (Node, error) {
-	watchedChannels := make(map[UniqueID]*querypb.QueryChannelInfo)
 	watchedDeltaChannels := make(map[UniqueID][]*datapb.VchannelInfo)
 	childCtx, cancel := context.WithCancel(ctx)
 	client, err := nodeclient.NewClient(childCtx, address)
@@ -104,7 +100,6 @@ func newQueryNode(ctx context.Context, address string, id UniqueID, kv *etcdkv.E
 		address:              address,
 		client:               client,
 		kvClient:             kv,
-		watchedQueryChannels: watchedChannels,
 		watchedDeltaChannels: watchedDeltaChannels,
 		state:                disConnect,
 	}
@@ -127,7 +122,7 @@ func (qn *queryNode) start() error {
 		qn.state = online
 	}
 	qn.stateLock.Unlock()
-	log.Debug("start: queryNode client start success", zap.Int64("nodeID", qn.id), zap.String("address", qn.address))
+	log.Info("start: queryNode client start success", zap.Int64("nodeID", qn.id), zap.String("address", qn.address))
 	return nil
 }
 
@@ -141,17 +136,6 @@ func (qn *queryNode) stop() {
 	qn.cancel()
 }
 
-func (qn *queryNode) hasWatchedQueryChannel(collectionID UniqueID) bool {
-	qn.RLock()
-	defer qn.RUnlock()
-
-	if _, ok := qn.watchedQueryChannels[collectionID]; ok {
-		return true
-	}
-
-	return false
-}
-
 func (qn *queryNode) hasWatchedDeltaChannel(collectionID UniqueID) bool {
 	qn.RLock()
 	defer qn.RUnlock()
@@ -160,37 +144,11 @@ func (qn *queryNode) hasWatchedDeltaChannel(collectionID UniqueID) bool {
 	return ok
 }
 
-//func (qn *queryNode) showWatchedQueryChannels() []*querypb.QueryChannelInfo {
-//	qn.RLock()
-//	defer qn.RUnlock()
-//
-//	results := make([]*querypb.QueryChannelInfo, 0)
-//	for _, info := range qn.watchedQueryChannels {
-//		results = append(results, proto.Clone(info).(*querypb.QueryChannelInfo))
-//	}
-//
-//	return results
-//}
-
 func (qn *queryNode) setDeltaChannelInfo(collectionID int64, infos []*datapb.VchannelInfo) {
 	qn.Lock()
 	defer qn.Unlock()
 
 	qn.watchedDeltaChannels[collectionID] = infos
-}
-
-func (qn *queryNode) setQueryChannelInfo(info *querypb.QueryChannelInfo) {
-	qn.Lock()
-	defer qn.Unlock()
-
-	qn.watchedQueryChannels[info.CollectionID] = info
-}
-
-func (qn *queryNode) removeQueryChannelInfo(collectionID UniqueID) {
-	qn.Lock()
-	defer qn.Unlock()
-
-	delete(qn.watchedQueryChannels, collectionID)
 }
 
 func (qn *queryNode) setState(state nodeState) {
@@ -254,48 +212,9 @@ func (qn *queryNode) watchDeltaChannels(ctx context.Context, in *querypb.WatchDe
 	return err
 }
 
-func (qn *queryNode) addQueryChannel(ctx context.Context, in *querypb.AddQueryChannelRequest) error {
-	if !qn.isOnline() {
-		return errors.New("AddQueryChannel: queryNode is offline")
-	}
-
-	status, err := qn.client.AddQueryChannel(qn.ctx, in)
-	if err != nil {
-		return err
-	}
-	if status.ErrorCode != commonpb.ErrorCode_Success {
-		return errors.New(status.Reason)
-	}
-
-	queryChannelInfo := &querypb.QueryChannelInfo{
-		CollectionID:       in.CollectionID,
-		QueryChannel:       in.QueryChannel,
-		QueryResultChannel: in.QueryResultChannel,
-	}
-	qn.setQueryChannelInfo(queryChannelInfo)
-	return nil
-}
-
-func (qn *queryNode) removeQueryChannel(ctx context.Context, in *querypb.RemoveQueryChannelRequest) error {
-	if !qn.isOnline() {
-		return nil
-	}
-
-	status, err := qn.client.RemoveQueryChannel(qn.ctx, in)
-	if err != nil {
-		return err
-	}
-	if status.ErrorCode != commonpb.ErrorCode_Success {
-		return errors.New(status.Reason)
-	}
-
-	qn.removeQueryChannelInfo(in.CollectionID)
-	return nil
-}
-
 func (qn *queryNode) releaseCollection(ctx context.Context, in *querypb.ReleaseCollectionRequest) error {
 	if !qn.isOnline() {
-		log.Debug("ReleaseCollection: the QueryNode has been offline, the release request is no longer needed", zap.Int64("nodeID", qn.id))
+		log.Warn("ReleaseCollection: the QueryNode has been offline, the release request is no longer needed", zap.Int64("nodeID", qn.id))
 		return nil
 	}
 
@@ -309,7 +228,6 @@ func (qn *queryNode) releaseCollection(ctx context.Context, in *querypb.ReleaseC
 
 	qn.Lock()
 	delete(qn.watchedDeltaChannels, in.CollectionID)
-	delete(qn.watchedQueryChannels, in.CollectionID)
 	qn.Unlock()
 
 	return nil
@@ -407,8 +325,8 @@ func (qn *queryNode) releaseSegments(ctx context.Context, in *querypb.ReleaseSeg
 }
 
 func (qn *queryNode) getNodeInfo() (Node, error) {
-	qn.RLock()
-	defer qn.RUnlock()
+	qn.Lock()
+	defer qn.Unlock()
 
 	if !qn.isOnline() {
 		return nil, errors.New("getNodeInfo: queryNode is offline")
@@ -418,7 +336,10 @@ func (qn *queryNode) getNodeInfo() (Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := qn.client.GetMetrics(qn.ctx, req)
+
+	ctx, cancel := context.WithTimeout(qn.ctx, time.Second)
+	defer cancel()
+	resp, err := qn.client.GetMetrics(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -437,11 +358,27 @@ func (qn *queryNode) getNodeInfo() (Node, error) {
 	return &queryNode{
 		id:      qn.id,
 		address: qn.address,
-		state:   qn.state,
+		state:   qn.getState(),
 
 		totalMem:     qn.totalMem,
 		memUsage:     qn.memUsage,
 		memUsageRate: qn.memUsageRate,
 		cpuUsage:     qn.cpuUsage,
 	}, nil
+}
+
+func (qn *queryNode) syncReplicaSegments(ctx context.Context, in *querypb.SyncReplicaSegmentsRequest) error {
+	if !qn.isOnline() {
+		return errors.New("ReleaseSegments: queryNode is offline")
+	}
+
+	status, err := qn.client.SyncReplicaSegments(ctx, in)
+	if err != nil {
+		return err
+	}
+	if status.ErrorCode != commonpb.ErrorCode_Success {
+		return errors.New(status.Reason)
+	}
+
+	return nil
 }

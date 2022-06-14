@@ -21,6 +21,8 @@ import (
 	"errors"
 	"fmt"
 
+	"go.uber.org/zap"
+
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
@@ -28,7 +30,6 @@ import (
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
-	"go.uber.org/zap"
 )
 
 // dataSyncService controls a flowgraph for a specific collection
@@ -37,6 +38,7 @@ type dataSyncService struct {
 	cancelFn     context.CancelFunc
 	fg           *flowgraph.TimeTickedFlowGraph // internal flowgraph processes insert/delta messages
 	flushCh      chan flushMsg                  // chan to notify flush
+	resendTTCh   chan resendTTMsg               // chan to ask for resending DataNode time tick message.
 	replica      Replica                        // segment replica stores meta
 	idAllocator  allocatorInterface             // id/timestamp allocator
 	msFactory    msgstream.Factory
@@ -53,6 +55,7 @@ type dataSyncService struct {
 
 func newDataSyncService(ctx context.Context,
 	flushCh chan flushMsg,
+	resendTTCh chan resendTTMsg,
 	replica Replica,
 	alloc allocatorInterface,
 	factory msgstream.Factory,
@@ -75,6 +78,7 @@ func newDataSyncService(ctx context.Context,
 		cancelFn:         cancel,
 		fg:               nil,
 		flushCh:          flushCh,
+		resendTTCh:       resendTTCh,
 		replica:          replica,
 		idAllocator:      alloc,
 		msFactory:        factory,
@@ -130,8 +134,8 @@ func (dsService *dataSyncService) close() {
 		log.Info("dataSyncService closing flowgraph", zap.Int64("collectionID", dsService.collectionID),
 			zap.String("vChanName", dsService.vchannelName))
 		dsService.fg.Close()
-		metrics.DataNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.NodeID)).Dec()
-		metrics.DataNodeNumProducers.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.NodeID)).Sub(2) // timeTickChannel + deltaChannel
+		metrics.DataNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID())).Dec()
+		metrics.DataNodeNumProducers.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID())).Sub(2) // timeTickChannel + deltaChannel
 	}
 
 	dsService.cancelFn()
@@ -222,6 +226,7 @@ func (dsService *dataSyncService) initNodes(vchanInfo *datapb.VchannelInfo) erro
 		dsService.ctx,
 		dsService.collectionID,
 		dsService.flushCh,
+		dsService.resendTTCh,
 		dsService.flushManager,
 		dsService.flushingSegCache,
 		c,

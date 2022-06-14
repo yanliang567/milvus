@@ -18,9 +18,21 @@ package grpcproxy
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"testing"
+	"time"
 
+	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+
+	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
@@ -186,7 +198,15 @@ func (m *MockRootCoord) ShowSegments(ctx context.Context, req *milvuspb.ShowSegm
 	return nil, nil
 }
 
+func (m *MockRootCoord) DescribeSegments(ctx context.Context, req *rootcoordpb.DescribeSegmentsRequest) (*rootcoordpb.DescribeSegmentsResponse, error) {
+	return nil, nil
+}
+
 func (m *MockRootCoord) ReleaseDQLMessageStream(ctx context.Context, in *proxypb.ReleaseDQLMessageStreamRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockRootCoord) InvalidateCollectionMetaCache(ctx context.Context, in *proxypb.InvalidateCollMetaCacheRequest) (*commonpb.Status, error) {
 	return nil, nil
 }
 
@@ -206,7 +226,31 @@ func (m *MockRootCoord) GetImportState(ctx context.Context, req *milvuspb.GetImp
 	return nil, nil
 }
 
+func (m *MockRootCoord) ListImportTasks(ctx context.Context, in *milvuspb.ListImportTasksRequest) (*milvuspb.ListImportTasksResponse, error) {
+	return nil, nil
+}
+
 func (m *MockRootCoord) ReportImport(ctx context.Context, req *rootcoordpb.ImportResult) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockRootCoord) CreateCredential(ctx context.Context, req *internalpb.CredentialInfo) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockRootCoord) UpdateCredential(ctx context.Context, req *internalpb.CredentialInfo) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockRootCoord) DeleteCredential(ctx context.Context, req *milvuspb.DeleteCredentialRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockRootCoord) ListCredUsers(ctx context.Context, req *milvuspb.ListCredUsersRequest) (*milvuspb.ListCredUsersResponse, error) {
+	return nil, nil
+}
+
+func (m *MockRootCoord) GetCredential(ctx context.Context, req *rootcoordpb.GetCredentialRequest) (*rootcoordpb.GetCredentialResponse, error) {
 	return nil, nil
 }
 
@@ -340,10 +384,6 @@ func (m *MockQueryCoord) ReleasePartitions(ctx context.Context, req *querypb.Rel
 	return nil, nil
 }
 
-func (m *MockQueryCoord) CreateQueryChannel(ctx context.Context, req *querypb.CreateQueryChannelRequest) (*querypb.CreateQueryChannelResponse, error) {
-	return nil, nil
-}
-
 func (m *MockQueryCoord) GetSegmentInfo(ctx context.Context, req *querypb.GetSegmentInfoRequest) (*querypb.GetSegmentInfoResponse, error) {
 	return nil, nil
 }
@@ -353,6 +393,14 @@ func (m *MockQueryCoord) LoadBalance(ctx context.Context, req *querypb.LoadBalan
 }
 
 func (m *MockQueryCoord) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
+	return nil, nil
+}
+
+func (m *MockQueryCoord) GetReplicas(ctx context.Context, req *milvuspb.GetReplicasRequest) (*milvuspb.GetReplicasResponse, error) {
+	return nil, nil
+}
+
+func (m *MockQueryCoord) GetShardLeaders(ctx context.Context, req *querypb.GetShardLeadersRequest) (*querypb.GetShardLeadersResponse, error) {
 	return nil, nil
 }
 
@@ -387,6 +435,10 @@ func (m *MockDataCoord) GetSegmentInfo(ctx context.Context, req *datapb.GetSegme
 }
 
 func (m *MockDataCoord) Flush(ctx context.Context, req *datapb.FlushRequest) (*datapb.FlushResponse, error) {
+	return nil, nil
+}
+
+func (m *MockDataCoord) AddSegment(ctx context.Context, req *datapb.AddSegmentRequest) (*commonpb.Status, error) {
 	return nil, nil
 }
 
@@ -458,7 +510,23 @@ func (m *MockDataCoord) DropVirtualChannel(ctx context.Context, req *datapb.Drop
 	return &datapb.DropVirtualChannelResponse{}, nil
 }
 
-func (m *MockDataCoord) Import(ctx context.Context, req *datapb.ImportTask) (*datapb.ImportTaskResponse, error) {
+func (m *MockDataCoord) SetSegmentState(ctx context.Context, req *datapb.SetSegmentStateRequest) (*datapb.SetSegmentStateResponse, error) {
+	return &datapb.SetSegmentStateResponse{}, nil
+}
+
+func (m *MockDataCoord) Import(ctx context.Context, req *datapb.ImportTaskRequest) (*datapb.ImportTaskResponse, error) {
+	return nil, nil
+}
+
+func (m *MockDataCoord) UpdateSegmentStatistics(ctx context.Context, req *datapb.UpdateSegmentStatisticsRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockDataCoord) AcquireSegmentLock(ctx context.Context, req *datapb.AcquireSegmentLockRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockDataCoord) ReleaseSegmentLock(ctx context.Context, req *datapb.ReleaseSegmentLockRequest) (*commonpb.Status, error) {
 	return nil, nil
 }
 
@@ -696,6 +764,159 @@ func (m *MockProxy) GetImportState(ctx context.Context, req *milvuspb.GetImportS
 	return nil, nil
 }
 
+func (m *MockProxy) ListImportTasks(ctx context.Context, in *milvuspb.ListImportTasksRequest) (*milvuspb.ListImportTasksResponse, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) GetReplicas(ctx context.Context, req *milvuspb.GetReplicasRequest) (*milvuspb.GetReplicasResponse, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) InvalidateCredentialCache(ctx context.Context, request *proxypb.InvalidateCredCacheRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) UpdateCredentialCache(ctx context.Context, request *proxypb.UpdateCredCacheRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) ClearCredUsersCache(ctx context.Context, request *internalpb.ClearCredUsersCacheRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) CreateCredential(ctx context.Context, req *milvuspb.CreateCredentialRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) UpdateCredential(ctx context.Context, req *milvuspb.UpdateCredentialRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) DeleteCredential(ctx context.Context, req *milvuspb.DeleteCredentialRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) ListCredUsers(ctx context.Context, req *milvuspb.ListCredUsersRequest) (*milvuspb.ListCredUsersResponse, error) {
+	return nil, nil
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+type WaitOption struct {
+	Duration      time.Duration `json:"duration"`
+	Port          int           `json:"port"`
+	TLSMode       int           `json:"tls_mode"`
+	ClientPemPath string        `json:"client_pem_path"`
+	ClientKeyPath string        `json:"client_key_path"`
+	CaPath        string        `json:"ca_path"`
+}
+
+func (opt *WaitOption) String() string {
+	s, err := json.Marshal(*opt)
+	if err != nil {
+		return fmt.Sprintf("error: %s", err)
+	}
+	return string(s)
+}
+
+func newWaitOption(duration time.Duration, Port int, tlsMode int, clientPemPath, clientKeyPath, clientCaPath string) *WaitOption {
+	return &WaitOption{
+		Duration:      duration,
+		Port:          Port,
+		TLSMode:       tlsMode,
+		ClientPemPath: clientPemPath,
+		ClientKeyPath: clientKeyPath,
+		CaPath:        clientCaPath,
+	}
+}
+
+func withCredential(clientPemPath, clientKeyPath, clientCaPath string) (credentials.TransportCredentials, error) {
+	cert, err := tls.LoadX509KeyPair(clientPemPath, clientKeyPath)
+	if err != nil {
+		return nil, err
+	}
+	certPool := x509.NewCertPool()
+	ca, err := os.ReadFile(clientCaPath)
+	if err != nil {
+		return nil, err
+	}
+	if ok := certPool.AppendCertsFromPEM(ca); !ok {
+		return nil, errors.New("failed to AppendCertsFromPEM")
+	}
+	creds := credentials.NewTLS(&tls.Config{
+		Certificates: []tls.Certificate{cert},
+		ServerName:   "localhost",
+		RootCAs:      certPool,
+		MinVersion:   tls.VersionTLS13,
+	})
+	return creds, nil
+}
+
+// waitForGrpcReady block until service available or panic after times out.
+func waitForGrpcReady(opt *WaitOption) {
+	ticker := time.NewTicker(opt.Duration)
+	ch := make(chan error, 1)
+
+	go func() {
+		// just used in UT to self-check service is available.
+		address := "localhost:" + strconv.Itoa(opt.Port)
+		var err error
+
+		if opt.TLSMode == 1 || opt.TLSMode == 2 {
+			var creds credentials.TransportCredentials
+			if opt.TLSMode == 1 {
+				creds, err = credentials.NewClientTLSFromFile(Params.ServerPemPath, "localhost")
+			} else {
+				creds, err = withCredential(opt.ClientPemPath, opt.ClientKeyPath, opt.CaPath)
+			}
+			if err != nil {
+				ch <- err
+				return
+			}
+			_, err = grpc.Dial(address, grpc.WithBlock(), grpc.WithTransportCredentials(creds))
+			ch <- err
+			return
+		}
+		if _, err := grpc.Dial(address, grpc.WithBlock(), grpc.WithInsecure()); true {
+			ch <- err
+		}
+	}()
+
+	select {
+	case err := <-ch:
+		if err != nil {
+			log.Error("grpc service not ready",
+				zap.Error(err),
+				zap.Any("option", opt))
+			panic(err)
+		}
+	case <-ticker.C:
+		log.Error("grpc service not ready",
+			zap.Any("option", opt))
+		panic("grpc service not ready")
+	}
+}
+
+// TODO: should tls-related configurations be hard code here?
+var waitDuration = time.Second * 1
+var clientPemPath = "../../../configs/cert/client.pem"
+var clientKeyPath = "../../../configs/cert/client.key"
+
+// waitForServerReady wait for internal grpc service and external service to be ready, according to the params.
+func waitForServerReady() {
+	waitForGrpcReady(newWaitOption(waitDuration, Params.InternalPort, 0, "", "", ""))
+	waitForGrpcReady(newWaitOption(waitDuration, Params.Port, Params.TLSMode, clientPemPath, clientKeyPath, Params.CaPemPath))
+}
+
+func runAndWaitForServerReady(server *Server) error {
+	err := server.Run()
+	if err != nil {
+		return err
+	}
+	waitForServerReady()
+	return nil
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 func Test_NewServer(t *testing.T) {
 	ctx := context.Background()
@@ -710,7 +931,7 @@ func Test_NewServer(t *testing.T) {
 	server.dataCoordClient = &MockDataCoord{}
 
 	t.Run("Run", func(t *testing.T) {
-		err = server.Run()
+		err = runAndWaitForServerReady(server)
 		assert.Nil(t, err)
 	})
 
@@ -929,13 +1150,48 @@ func Test_NewServer(t *testing.T) {
 		assert.Nil(t, err)
 	})
 
+	t.Run("CreateCredential", func(t *testing.T) {
+		_, err := server.CreateCredential(ctx, nil)
+		assert.Nil(t, err)
+	})
+
+	t.Run("UpdateCredential", func(t *testing.T) {
+		_, err := server.UpdateCredential(ctx, nil)
+		assert.Nil(t, err)
+	})
+
+	t.Run("DeleteCredential", func(t *testing.T) {
+		_, err := server.DeleteCredential(ctx, nil)
+		assert.Nil(t, err)
+	})
+
+	t.Run("ListCredUsers", func(t *testing.T) {
+		_, err := server.ListCredUsers(ctx, nil)
+		assert.Nil(t, err)
+	})
+
+	t.Run("InvalidateCredentialCache", func(t *testing.T) {
+		_, err := server.InvalidateCredentialCache(ctx, nil)
+		assert.Nil(t, err)
+	})
+
+	t.Run("UpdateCredentialCache", func(t *testing.T) {
+		_, err := server.UpdateCredentialCache(ctx, nil)
+		assert.Nil(t, err)
+	})
+
+	t.Run("ClearCredUsersCache", func(t *testing.T) {
+		_, err := server.ClearCredUsersCache(ctx, nil)
+		assert.Nil(t, err)
+	})
+
 	err = server.Stop()
 	assert.Nil(t, err)
 
 	// Update config and start server again to test with different config set.
 	// This works as config will be initialized only once
 	proxy.Params.ProxyCfg.GinLogging = false
-	err = server.Run()
+	err = runAndWaitForServerReady(server)
 	assert.Nil(t, err)
 	err = server.Stop()
 	assert.Nil(t, err)
@@ -1078,9 +1334,85 @@ func Test_NewServer_HTTPServerDisabled(t *testing.T) {
 	HTTPParams.InitOnce()
 	HTTPParams.Enabled = false
 
-	err = server.Run()
+	err = runAndWaitForServerReady(server)
 	assert.Nil(t, err)
 	assert.Nil(t, server.httpServer)
 	err = server.Stop()
 	assert.Nil(t, err)
+}
+
+func getServer(t *testing.T) *Server {
+	ctx := context.Background()
+	server, err := NewServer(ctx, nil)
+	assert.NotNil(t, server)
+	assert.Nil(t, err)
+
+	server.proxy = &MockProxy{}
+	server.rootCoordClient = &MockRootCoord{}
+	server.indexCoordClient = &MockIndexCoord{}
+	server.queryCoordClient = &MockQueryCoord{}
+	server.dataCoordClient = &MockDataCoord{}
+	return server
+}
+
+func Test_NewServer_TLS_TwoWay(t *testing.T) {
+	server := getServer(t)
+
+	Params.InitOnce("proxy")
+	Params.TLSMode = 2
+	Params.ServerPemPath = "../../../configs/cert/server.pem"
+	Params.ServerKeyPath = "../../../configs/cert/server.key"
+	Params.CaPemPath = "../../../configs/cert/ca.pem"
+
+	err := runAndWaitForServerReady(server)
+	assert.Nil(t, err)
+	assert.NotNil(t, server.grpcExternalServer)
+	err = server.Stop()
+	assert.Nil(t, err)
+}
+
+func Test_NewServer_TLS_OneWay(t *testing.T) {
+	server := getServer(t)
+
+	Params.InitOnce("proxy")
+	Params.TLSMode = 1
+	Params.ServerPemPath = "../../../configs/cert/server.pem"
+	Params.ServerKeyPath = "../../../configs/cert/server.key"
+
+	err := runAndWaitForServerReady(server)
+	assert.Nil(t, err)
+	assert.NotNil(t, server.grpcExternalServer)
+	err = server.Stop()
+	assert.Nil(t, err)
+}
+
+func Test_NewServer_TLS_FileNotExisted(t *testing.T) {
+	server := getServer(t)
+
+	Params.InitOnce("proxy")
+	Params.TLSMode = 1
+	Params.ServerPemPath = "../not/existed/server.pem"
+	Params.ServerKeyPath = "../../../configs/cert/server.key"
+	err := runAndWaitForServerReady(server)
+	assert.NotNil(t, err)
+	server.Stop()
+
+	Params.TLSMode = 2
+	Params.ServerPemPath = "../not/existed/server.pem"
+	Params.CaPemPath = "../../../configs/cert/ca.pem"
+	err = runAndWaitForServerReady(server)
+	assert.NotNil(t, err)
+	server.Stop()
+
+	Params.ServerPemPath = "../../../configs/cert/server.pem"
+	Params.CaPemPath = "../not/existed/ca.pem"
+	err = runAndWaitForServerReady(server)
+	assert.NotNil(t, err)
+	server.Stop()
+
+	Params.ServerPemPath = "../../../configs/cert/server.pem"
+	Params.CaPemPath = "service.go"
+	err = runAndWaitForServerReady(server)
+	assert.NotNil(t, err)
+	server.Stop()
 }

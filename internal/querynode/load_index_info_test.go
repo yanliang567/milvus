@@ -19,6 +19,8 @@ package querynode
 import (
 	"testing"
 
+	"github.com/milvus-io/milvus/internal/proto/schemapb"
+
 	"github.com/stretchr/testify/assert"
 
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
@@ -44,13 +46,14 @@ func TestLoadIndexInfo(t *testing.T) {
 	loadIndexInfo, err := newLoadIndexInfo()
 	assert.Nil(t, err)
 
-	indexInfo := &querypb.VecFieldIndexInfo{
+	indexInfo := &querypb.FieldIndexInfo{
 		FieldID:        UniqueID(0),
 		IndexParams:    indexParams,
 		IndexFilePaths: indexPaths,
 	}
 
-	err = loadIndexInfo.appendIndexInfo(indexBytes, indexInfo)
+	fieldType := schemapb.DataType_FloatVector
+	err = loadIndexInfo.appendIndexInfo(indexBytes, indexInfo, fieldType)
 	assert.NoError(t, err)
 
 	deleteLoadIndexInfo(loadIndexInfo)

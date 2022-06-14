@@ -41,7 +41,7 @@ func getSystemInfoMetrics(
 	clusterTopology := metricsinfo.QueryClusterTopology{
 		Self: metricsinfo.QueryCoordInfos{
 			BaseComponentInfos: metricsinfo.BaseComponentInfos{
-				Name: metricsinfo.ConstructComponentName(typeutil.QueryCoordRole, Params.QueryCoordCfg.QueryCoordID),
+				Name: metricsinfo.ConstructComponentName(typeutil.QueryCoordRole, Params.QueryCoordCfg.GetNodeID()),
 				HardwareInfos: metricsinfo.HardwareMetrics{
 					IP:           qc.session.Address,
 					CPUCoreCount: metricsinfo.GetCPUCoreCount(false),
@@ -66,7 +66,7 @@ func getSystemInfoMetrics(
 	}
 	metricsinfo.FillDeployMetricsWithEnv(&clusterTopology.Self.SystemInfo)
 
-	nodesMetrics := qc.cluster.getMetrics(ctx, req)
+	nodesMetrics := qc.cluster.GetMetrics(ctx, req)
 	for _, nodeMetrics := range nodesMetrics {
 		if nodeMetrics.err != nil {
 			log.Warn("invalid metrics of query node was found",
@@ -119,7 +119,7 @@ func getSystemInfoMetrics(
 	coordTopology := metricsinfo.QueryCoordTopology{
 		Cluster: clusterTopology,
 		Connections: metricsinfo.ConnTopology{
-			Name: metricsinfo.ConstructComponentName(typeutil.QueryCoordRole, Params.QueryCoordCfg.QueryCoordID),
+			Name: metricsinfo.ConstructComponentName(typeutil.QueryCoordRole, Params.QueryCoordCfg.GetNodeID()),
 			// TODO(dragondriver): fill ConnectedComponents if necessary
 			ConnectedComponents: []metricsinfo.ConnectionInfo{},
 		},

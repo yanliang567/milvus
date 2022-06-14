@@ -17,6 +17,7 @@
 #include "AckResponder.h"
 #include "common/Schema.h"
 #include "segcore/Record.h"
+#include "ConcurrentVector.h"
 
 namespace milvus::segcore {
 
@@ -24,17 +25,15 @@ struct DeletedRecord {
     struct TmpBitmap {
         // Just for query
         int64_t del_barrier = 0;
-        faiss::ConcurrentBitsetPtr bitmap_ptr;
+        BitsetTypePtr bitmap_ptr;
 
         std::shared_ptr<TmpBitmap>
         clone(int64_t capacity);
     };
     static constexpr int64_t deprecated_size_per_chunk = 32 * 1024;
     DeletedRecord()
-        : lru_(std::make_shared<TmpBitmap>()),
-          timestamps_(deprecated_size_per_chunk),
-          uids_(deprecated_size_per_chunk) {
-        lru_->bitmap_ptr = std::make_shared<faiss::ConcurrentBitset>(0);
+        : lru_(std::make_shared<TmpBitmap>()), timestamps_(deprecated_size_per_chunk), pks_(deprecated_size_per_chunk) {
+        lru_->bitmap_ptr = std::make_shared<BitsetType>();
     }
 
     auto
@@ -47,7 +46,7 @@ struct DeletedRecord {
     insert_lru_entry(std::shared_ptr<TmpBitmap> new_entry, bool force = false) {
         std::lock_guard lck(shared_mutex_);
         if (new_entry->del_barrier <= lru_->del_barrier) {
-            if (!force || new_entry->bitmap_ptr->count() <= lru_->bitmap_ptr->count()) {
+            if (!force || new_entry->bitmap_ptr->size() <= lru_->bitmap_ptr->size()) {
                 // DO NOTHING
                 return;
             }
@@ -59,7 +58,7 @@ struct DeletedRecord {
     std::atomic<int64_t> reserved = 0;
     AckResponder ack_responder_;
     ConcurrentVector<Timestamp> timestamps_;
-    ConcurrentVector<idx_t> uids_;
+    ConcurrentVector<PkType> pks_;
     int64_t record_size_ = 0;
 
  private:
@@ -71,9 +70,9 @@ inline auto
 DeletedRecord::TmpBitmap::clone(int64_t capacity) -> std::shared_ptr<TmpBitmap> {
     auto res = std::make_shared<TmpBitmap>();
     res->del_barrier = this->del_barrier;
-    res->bitmap_ptr = std::make_shared<faiss::ConcurrentBitset>(capacity);
-    auto u8size = this->bitmap_ptr->size();
-    memcpy(res->bitmap_ptr->mutable_data(), this->bitmap_ptr->data(), u8size);
+    res->bitmap_ptr = std::make_shared<BitsetType>();
+    *(res->bitmap_ptr) = *(this->bitmap_ptr);
+    res->bitmap_ptr->resize(capacity, false);
     return res;
 }
 

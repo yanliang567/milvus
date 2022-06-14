@@ -16,14 +16,23 @@ extern "C" {
 #endif
 
 void
-SegcoreInit();
+SegcoreInit(const char*);
 
 void
 SegcoreSetChunkRows(const int64_t);
 
+void
+SegcoreSetNlist(const int64_t);
+
+void
+SegcoreSetNprobe(const int64_t);
+
 // return value must be freed by the caller
 char*
 SegcoreSetSimdType(const char*);
+
+void
+SegcoreSetIndexSliceSize(const int64_t);
 
 #ifdef __cplusplus
 }

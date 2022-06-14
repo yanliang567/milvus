@@ -31,14 +31,15 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/stretchr/testify/assert"
 
+	"go.uber.org/zap"
+
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
+	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/etcd"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
-	"go.uber.org/zap"
 )
 
 var queryCoordTestDir = "/tmp/milvus_test/query_coord"
@@ -53,8 +54,6 @@ func refreshParams() {
 	Params.CommonCfg.QueryNodeStats = Params.CommonCfg.QueryNodeStats + suffix
 	Params.CommonCfg.QueryCoordTimeTick = Params.CommonCfg.QueryCoordTimeTick + suffix
 	Params.EtcdCfg.MetaRootPath = Params.EtcdCfg.MetaRootPath + suffix
-	Params.CommonCfg.RootCoordDml = "Dml"
-	Params.CommonCfg.RootCoordDelta = "delta"
 	GlobalSegmentInfos = make(map[UniqueID]*querypb.SegmentInfo)
 }
 
@@ -65,7 +64,7 @@ func TestMain(m *testing.M) {
 	os.Exit(exitCode)
 }
 
-func NewQueryCoordTest(ctx context.Context, factory msgstream.Factory) (*QueryCoord, error) {
+func NewQueryCoordTest(ctx context.Context, factory dependency.Factory) (*QueryCoord, error) {
 	queryCoord, err := NewQueryCoord(ctx, factory)
 	if err != nil {
 		return nil, err
@@ -75,7 +74,7 @@ func NewQueryCoordTest(ctx context.Context, factory msgstream.Factory) (*QueryCo
 }
 
 func startQueryCoord(ctx context.Context) (*QueryCoord, error) {
-	factory := msgstream.NewPmsFactory()
+	factory := dependency.NewDefaultFactory(true)
 
 	coord, err := NewQueryCoordTest(ctx, factory)
 	if err != nil {
@@ -121,7 +120,7 @@ func createDefaultPartition(ctx context.Context, queryCoord *QueryCoord) error {
 }
 
 func startUnHealthyQueryCoord(ctx context.Context) (*QueryCoord, error) {
-	factory := msgstream.NewPmsFactory()
+	factory := dependency.NewDefaultFactory(true)
 
 	coord, err := NewQueryCoordTest(ctx, factory)
 	if err != nil {
@@ -176,7 +175,7 @@ func TestWatchNodeLoop(t *testing.T) {
 		}
 		collectionBlobs, err := proto.Marshal(collectionInfo)
 		assert.Nil(t, err)
-		nodeKey := fmt.Sprintf("%s/%d", collectionMetaPrefix, 100)
+		nodeKey := fmt.Sprintf("%s/%d", collectionMetaPrefix, defaultCollectionID)
 		kvs[nodeKey] = string(collectionBlobs)
 
 		err = kv.MultiSave(kvs)
@@ -186,7 +185,7 @@ func TestWatchNodeLoop(t *testing.T) {
 		assert.Nil(t, err)
 
 		for {
-			offlineNodeIDs := queryCoord.cluster.offlineNodeIDs()
+			offlineNodeIDs := queryCoord.cluster.OfflineNodeIDs()
 			if len(offlineNodeIDs) != 0 {
 				log.Warn("find offline Nodes", zap.Int64s("offlineNodeIDs", offlineNodeIDs))
 				break
@@ -232,7 +231,7 @@ func TestWatchNodeLoop(t *testing.T) {
 
 		nodeID := queryNode1.queryNodeID
 		waitQueryNodeOnline(queryCoord.cluster, nodeID)
-		onlineNodeIDs := queryCoord.cluster.onlineNodeIDs()
+		onlineNodeIDs := queryCoord.cluster.OnlineNodeIDs()
 		assert.Equal(t, 1, len(onlineNodeIDs))
 
 		queryNode1.stop()
@@ -581,9 +580,10 @@ func TestLoadBalanceSegmentLoop(t *testing.T) {
 			Base: &commonpb.MsgBase{
 				MsgType: commonpb.MsgType_LoadPartitions,
 			},
-			CollectionID: defaultCollectionID,
-			PartitionIDs: []UniqueID{partitionID},
-			Schema:       genDefaultCollectionSchema(false),
+			CollectionID:  defaultCollectionID,
+			PartitionIDs:  []UniqueID{partitionID},
+			Schema:        genDefaultCollectionSchema(false),
+			ReplicaNumber: 1,
 		}
 		baseTask := newBaseTask(baseCtx, querypb.TriggerCondition_GrpcRequest)
 		loadPartitionTask := &loadPartitionTask{
@@ -596,7 +596,7 @@ func TestLoadBalanceSegmentLoop(t *testing.T) {
 		err = queryCoord.scheduler.Enqueue(loadPartitionTask)
 		assert.Nil(t, err)
 		waitTaskFinalState(loadPartitionTask, taskExpired)
-		nodeInfo, err := queryCoord.cluster.getNodeInfoByID(queryNode1.queryNodeID)
+		nodeInfo, err := queryCoord.cluster.GetNodeInfoByID(queryNode1.queryNodeID)
 		assert.Nil(t, err)
 		if nodeInfo.(*queryNode).memUsageRate >= Params.QueryCoordCfg.OverloadedMemoryThresholdPercentage {
 			break
@@ -610,7 +610,7 @@ func TestLoadBalanceSegmentLoop(t *testing.T) {
 
 	// if sealed has been balance to query node2, than balance work
 	for {
-		segmentInfos, err := queryCoord.cluster.getSegmentInfoByNode(baseCtx, queryNode2.queryNodeID, &querypb.GetSegmentInfoRequest{
+		segmentInfos, err := queryCoord.cluster.GetSegmentInfoByNode(baseCtx, queryNode2.queryNodeID, &querypb.GetSegmentInfoRequest{
 			Base: &commonpb.MsgBase{
 				MsgType: commonpb.MsgType_LoadBalanceSegments,
 			},

@@ -22,6 +22,10 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/milvus-io/milvus/internal/proto/etcdpb"
+
+	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
+
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
@@ -32,7 +36,6 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
-	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
@@ -130,6 +133,8 @@ type rootCoordMock struct {
 	returnError     bool
 	returnGrpcError bool
 	enableIndex     bool
+
+	invalidateCollMetaCacheFailed bool
 }
 
 func newRootCoordMock(ctx context.Context) *rootCoordMock {
@@ -234,6 +239,30 @@ func (rc *rootCoordMock) ReleaseDQLMessageStream(ctx context.Context, in *proxyp
 	}, nil
 }
 
+func (rc *rootCoordMock) InvalidateCollectionMetaCache(ctx context.Context, in *proxypb.InvalidateCollMetaCacheRequest) (*commonpb.Status, error) {
+	if rc.returnGrpcError {
+		return nil, errors.New("InvalidateCollectionMetaCache failed")
+	}
+
+	if rc.returnError {
+		return &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_UnexpectedError,
+			Reason:    "InvalidateCollectionMetaCache failed",
+		}, nil
+	}
+
+	if rc.invalidateCollMetaCacheFailed {
+		return &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_UnexpectedError,
+			Reason:    "InvalidateCollectionMetaCache failed",
+		}, nil
+	}
+
+	return &commonpb.Status{
+		ErrorCode: commonpb.ErrorCode_Success,
+	}, nil
+}
+
 func (rc *rootCoordMock) DescribeSegment(ctx context.Context, req *milvuspb.DescribeSegmentRequest) (*milvuspb.DescribeSegmentResponse, error) {
 	if rc.returnGrpcError {
 		return nil, errors.New("describe segment failed")
@@ -256,6 +285,43 @@ func (rc *rootCoordMock) DescribeSegment(ctx context.Context, req *milvuspb.Desc
 	}, nil
 }
 
+func (rc *rootCoordMock) DescribeSegments(ctx context.Context, req *rootcoordpb.DescribeSegmentsRequest) (*rootcoordpb.DescribeSegmentsResponse, error) {
+	if rc.returnGrpcError {
+		return nil, errors.New("describe segment failed")
+	}
+
+	if rc.returnError {
+		return &rootcoordpb.DescribeSegmentsResponse{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+				Reason:    "describe segments failed",
+			},
+		}, nil
+	}
+
+	ret := &rootcoordpb.DescribeSegmentsResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+		},
+		CollectionID: req.GetCollectionID(),
+		SegmentInfos: make(map[int64]*rootcoordpb.SegmentInfos),
+	}
+
+	for _, segID := range req.GetSegmentIDs() {
+		ret.SegmentInfos[segID] = &rootcoordpb.SegmentInfos{
+			IndexInfos: []*etcdpb.SegmentIndexInfo{
+				{
+					SegmentID:   segID,
+					EnableIndex: rc.enableIndex,
+				},
+			},
+			ExtraIndexInfos: nil,
+		}
+	}
+
+	return ret, nil
+}
+
 type dataCoordMock struct {
 	types.DataCoord
 	collections         []UniqueID
@@ -267,6 +333,7 @@ type dataCoordMock struct {
 	returnError         bool
 	returnGrpcError     bool
 	segmentState        commonpb.SegmentState
+	errLevel            int
 }
 
 func newDataCoordMock(ctx context.Context) *dataCoordMock {
@@ -303,26 +370,11 @@ func (data *dataCoordMock) GetRecoveryInfo(ctx context.Context, req *datapb.GetR
 		}, nil
 	}
 
-	if _, ok := data.partitionID2Segment[partitionID]; !ok {
-		segmentIDs := make([]UniqueID, 0)
-		for i := 0; i < data.channelNumPerCol; i++ {
-			segmentID := data.baseSegmentID
-			if _, ok := data.Segment2Binlog[segmentID]; !ok {
-				segmentBinlog := generateInsertBinLog(segmentID)
-				data.Segment2Binlog[segmentID] = segmentBinlog
-			}
-			segmentIDs = append(segmentIDs, segmentID)
-			data.baseSegmentID++
-		}
-		data.partitionID2Segment[partitionID] = segmentIDs
-	}
-
 	if _, ok := data.col2DmChannels[collectionID]; !ok {
 		channelInfos := make([]*datapb.VchannelInfo, 0)
 		data.collections = append(data.collections, collectionID)
-		collectionName := funcutil.RandomString(8)
 		for i := int32(0); i < common.DefaultShardsNum; i++ {
-			vChannel := fmt.Sprintf("Dml_%s_%d_%d_v", collectionName, collectionID, i)
+			vChannel := fmt.Sprintf("%s_%d_%dv%d", Params.CommonCfg.RootCoordDml, i, collectionID, i)
 			channelInfo := &datapb.VchannelInfo{
 				CollectionID: collectionID,
 				ChannelName:  vChannel,
@@ -333,6 +385,21 @@ func (data *dataCoordMock) GetRecoveryInfo(ctx context.Context, req *datapb.GetR
 			channelInfos = append(channelInfos, channelInfo)
 		}
 		data.col2DmChannels[collectionID] = channelInfos
+	}
+
+	if _, ok := data.partitionID2Segment[partitionID]; !ok {
+		segmentIDs := make([]UniqueID, 0)
+		for i := 0; i < data.channelNumPerCol; i++ {
+			segmentID := data.baseSegmentID
+			if _, ok := data.Segment2Binlog[segmentID]; !ok {
+				segmentBinlog := generateInsertBinLog(segmentID)
+				segmentBinlog.InsertChannel = data.col2DmChannels[collectionID][i].ChannelName
+				data.Segment2Binlog[segmentID] = segmentBinlog
+			}
+			segmentIDs = append(segmentIDs, segmentID)
+			data.baseSegmentID++
+		}
+		data.partitionID2Segment[partitionID] = segmentIDs
 	}
 
 	binlogs := make([]*datapb.SegmentBinlogs, 0)
@@ -377,6 +444,42 @@ func (data *dataCoordMock) GetSegmentStates(ctx context.Context, req *datapb.Get
 			ErrorCode: commonpb.ErrorCode_Success,
 		},
 		States: segmentStates,
+	}, nil
+}
+
+func (data *dataCoordMock) AcquireSegmentLock(ctx context.Context, req *datapb.AcquireSegmentLockRequest) (*commonpb.Status, error) {
+	if data.errLevel == 2 {
+		data.errLevel++
+		return nil, errors.New("AcquireSegmentLock failed")
+
+	}
+	if data.errLevel == 1 {
+		data.errLevel++
+		return &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_UnexpectedError,
+			Reason:    "AcquireSegmentLock failed",
+		}, nil
+	}
+	return &commonpb.Status{
+		ErrorCode: commonpb.ErrorCode_Success,
+	}, nil
+}
+func (data *dataCoordMock) ReleaseSegmentLock(ctx context.Context, req *datapb.ReleaseSegmentLockRequest) (*commonpb.Status, error) {
+	if data.errLevel == 4 {
+		data.errLevel++
+		return nil, errors.New("ReleaseSegmentLock failed")
+	}
+
+	if data.errLevel == 3 {
+		data.errLevel++
+		return &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_UnexpectedError,
+			Reason:    "ReleaseSegmentLock failed",
+		}, nil
+	}
+
+	return &commonpb.Status{
+		ErrorCode: commonpb.ErrorCode_Success,
 	}, nil
 }
 

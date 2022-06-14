@@ -2,7 +2,7 @@
 String cron_timezone = 'TZ=Asia/Shanghai'
 String cron_string = BRANCH_NAME == "master" ? "05 21 * * * " : ""
 
-int total_timeout_minutes = 60
+int total_timeout_minutes = 90
 
 // pipeline
 pipeline {
@@ -40,6 +40,7 @@ pipeline {
                 container('milvus-test') {
                     dir ('tests/python_client'){
                         sh """
+                        pip install --upgrade pip
                         pip install -r requirements.txt
                         pip install --upgrade protobuf
                         """

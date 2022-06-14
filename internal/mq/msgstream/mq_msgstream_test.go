@@ -92,7 +92,8 @@ func (f *fixture) setup() []parameters {
 	rmqClient, _ := rmq.NewClientWithDefaultOptions()
 
 	parameters := []parameters{
-		{pulsarClient}, {rmqClient},
+		{pulsarClient},
+		{rmqClient},
 	}
 	return parameters
 }
@@ -600,10 +601,11 @@ func TestStream_PulsarMsgStream_DeleteRepackFunc(t *testing.T) {
 			Timestamp: 1,
 			SourceID:  1,
 		},
-		CollectionName: "Collection",
-		ShardName:      "chan-1",
-		Timestamps:     []Timestamp{1},
-		PrimaryKeys:    []int64{1},
+		CollectionName:   "Collection",
+		ShardName:        "chan-1",
+		Timestamps:       []Timestamp{1},
+		Int64PrimaryKeys: []int64{1},
+		NumRows:          1,
 	}
 	deleteMsg := &DeleteMsg{
 		BaseMsg:       baseMsg,
@@ -1858,10 +1860,11 @@ func getTsMsg(msgType MsgType, reqID UniqueID) TsMsg {
 				Timestamp: 11,
 				SourceID:  reqID,
 			},
-			CollectionName: "Collection",
-			ShardName:      "1",
-			Timestamps:     []Timestamp{time},
-			PrimaryKeys:    []int64{1},
+			CollectionName:   "Collection",
+			ShardName:        "1",
+			Timestamps:       []Timestamp{time},
+			Int64PrimaryKeys: []int64{1},
+			NumRows:          1,
 		}
 		deleteMsg := &DeleteMsg{
 			BaseMsg:       baseMsg,
@@ -1876,7 +1879,7 @@ func getTsMsg(msgType MsgType, reqID UniqueID) TsMsg {
 				Timestamp: 11,
 				SourceID:  reqID,
 			},
-			ResultChannelID: "0",
+			ReqID: 0,
 		}
 		searchMsg := &SearchMsg{
 			BaseMsg:       baseMsg,
@@ -1891,8 +1894,8 @@ func getTsMsg(msgType MsgType, reqID UniqueID) TsMsg {
 				Timestamp: 1,
 				SourceID:  reqID,
 			},
-			Status:          &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success},
-			ResultChannelID: "0",
+			Status: &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success},
+			ReqID:  0,
 		}
 		searchResultMsg := &SearchResultMsg{
 			BaseMsg:       baseMsg,

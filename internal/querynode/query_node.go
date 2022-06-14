@@ -36,6 +36,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -45,21 +46,22 @@ import (
 	"unsafe"
 
 	"github.com/golang/protobuf/proto"
+	"go.etcd.io/etcd/api/v3/mvccpb"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.uber.org/zap"
+
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util"
+	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
-	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	"go.etcd.io/etcd/api/v3/mvccpb"
-	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.uber.org/zap"
+	v3rpc "go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 )
 
 // make sure QueryNode implements types.QueryNode
@@ -89,8 +91,7 @@ type QueryNode struct {
 	initOnce sync.Once
 
 	// internal components
-	historical *historical
-	streaming  *streaming
+	metaReplica ReplicaInterface
 
 	// tSafeReplica
 	tSafeReplica TSafeReplicaInterface
@@ -99,7 +100,7 @@ type QueryNode struct {
 	dataSyncService *dataSyncService
 
 	// internal services
-	queryService *queryService
+	//queryService *queryService
 	statsService *statsService
 
 	// segment loader
@@ -108,28 +109,33 @@ type QueryNode struct {
 	// etcd client
 	etcdCli *clientv3.Client
 
-	msFactory msgstream.Factory
+	factory   dependency.Factory
 	scheduler *taskScheduler
 
-	session        *sessionutil.Session
-	eventCh        <-chan *sessionutil.SessionEvent
-	sessionManager *SessionManager
+	session *sessionutil.Session
+	eventCh <-chan *sessionutil.SessionEvent
 
-	chunkManager storage.ChunkManager
-	etcdKV       *etcdkv.EtcdKV
+	vectorStorage storage.ChunkManager
+	cacheStorage  storage.ChunkManager
+	etcdKV        *etcdkv.EtcdKV
+
+	// shard cluster service, handle shard leader functions
+	ShardClusterService *ShardClusterService
+	//shard query service, handles shard-level query & search
+	queryShardService *queryShardService
 }
 
 // NewQueryNode will return a QueryNode with abnormal state.
-func NewQueryNode(ctx context.Context, factory msgstream.Factory) *QueryNode {
+func NewQueryNode(ctx context.Context, factory dependency.Factory) *QueryNode {
 	ctx1, cancel := context.WithCancel(ctx)
 	node := &QueryNode{
 		queryNodeLoopCtx:    ctx1,
 		queryNodeLoopCancel: cancel,
-		queryService:        nil,
-		msFactory:           factory,
+		factory:             factory,
 	}
 
-	node.scheduler = newTaskScheduler(ctx1)
+	node.tSafeReplica = newTSafeReplica()
+	node.scheduler = newTaskScheduler(ctx1, node.tSafeReplica)
 	node.UpdateStateCode(internalpb.StateCode_Abnormal)
 
 	return node
@@ -141,9 +147,9 @@ func (node *QueryNode) initSession() error {
 		return fmt.Errorf("session is nil, the etcd client connection may have failed")
 	}
 	node.session.Init(typeutil.QueryNodeRole, Params.QueryNodeCfg.QueryNodeIP+":"+strconv.FormatInt(Params.QueryNodeCfg.QueryNodePort, 10), false, true)
-	Params.QueryNodeCfg.QueryNodeID = node.session.ServerID
-	Params.SetLogger(Params.QueryNodeCfg.QueryNodeID)
-	log.Debug("QueryNode", zap.Int64("nodeID", Params.QueryNodeCfg.QueryNodeID), zap.String("node address", node.session.Address))
+	Params.QueryNodeCfg.SetNodeID(node.session.ServerID)
+	Params.SetLogger(Params.QueryNodeCfg.GetNodeID())
+	log.Info("QueryNode init session", zap.Int64("nodeID", Params.QueryNodeCfg.GetNodeID()), zap.String("node address", node.session.Address))
 	return nil
 }
 
@@ -171,11 +177,19 @@ func (node *QueryNode) Register() error {
 
 // InitSegcore set init params of segCore, such as chunckRows, SIMD type...
 func (node *QueryNode) InitSegcore() {
-	C.SegcoreInit()
+	cEasyloggingYaml := C.CString(path.Join(Params.BaseTable.GetConfigDir(), paramtable.DefaultEasyloggingYaml))
+	C.SegcoreInit(cEasyloggingYaml)
+	C.free(unsafe.Pointer(cEasyloggingYaml))
 
 	// override segcore chunk size
 	cChunkRows := C.int64_t(Params.QueryNodeCfg.ChunkRows)
 	C.SegcoreSetChunkRows(cChunkRows)
+
+	nlist := C.int64_t(Params.QueryNodeCfg.SmallIndexNlist)
+	C.SegcoreSetNlist(nlist)
+
+	nprobe := C.int64_t(Params.QueryNodeCfg.SmallIndexNProbe)
+	C.SegcoreSetNprobe(nprobe)
 
 	// override segcore SIMD type
 	cSimdType := C.CString(Params.CommonCfg.SimdType)
@@ -183,80 +197,10 @@ func (node *QueryNode) InitSegcore() {
 	Params.CommonCfg.SimdType = C.GoString(cRealSimdType)
 	C.free(unsafe.Pointer(cRealSimdType))
 	C.free(unsafe.Pointer(cSimdType))
-}
 
-func (node *QueryNode) initServiceDiscovery() error {
-	if node.session == nil {
-		return errors.New("session is nil")
-	}
-
-	sessions, rev, err := node.session.GetSessions(typeutil.ProxyRole)
-	if err != nil {
-		log.Warn("QueryNode failed to init service discovery", zap.Error(err))
-		return err
-	}
-	log.Debug("QueryNode success to get Proxy sessions", zap.Any("sessions", sessions))
-
-	nodes := make([]*NodeInfo, 0, len(sessions))
-	for _, session := range sessions {
-		info := &NodeInfo{
-			NodeID:  session.ServerID,
-			Address: session.Address,
-		}
-		nodes = append(nodes, info)
-	}
-
-	node.sessionManager.Startup(nodes)
-
-	node.eventCh = node.session.WatchServices(typeutil.ProxyRole, rev+1, nil)
-	return nil
-}
-
-func (node *QueryNode) watchService(ctx context.Context) {
-	defer node.wg.Done()
-	for {
-		select {
-		case <-ctx.Done():
-			log.Debug("watch service shutdown")
-			return
-		case event, ok := <-node.eventCh:
-			if !ok {
-				// ErrCompacted is handled inside SessionWatcher
-				log.Error("Session Watcher channel closed", zap.Int64("server id", node.session.ServerID))
-				// need to call stop in separate goroutine
-				go node.Stop()
-				if node.session.TriggerKill {
-					if p, err := os.FindProcess(os.Getpid()); err == nil {
-						p.Signal(syscall.SIGINT)
-					}
-				}
-				return
-			}
-			if err := node.handleSessionEvent(ctx, event); err != nil {
-				log.Warn("handleSessionEvent", zap.Error(err))
-			}
-		}
-	}
-}
-
-func (node *QueryNode) handleSessionEvent(ctx context.Context, event *sessionutil.SessionEvent) error {
-	if event == nil {
-		return nil
-	}
-	info := &NodeInfo{
-		NodeID:  event.Session.ServerID,
-		Address: event.Session.Address,
-	}
-	switch event.EventType {
-	case sessionutil.SessionAddEvent:
-		node.sessionManager.AddSession(info)
-	case sessionutil.SessionDelEvent:
-		node.sessionManager.DeleteSession(info)
-	default:
-		log.Warn("receive unknown service event type",
-			zap.Any("type", event.EventType))
-	}
-	return nil
+	// override segcore index slice size
+	cIndexSliceSize := C.int64_t(Params.CommonCfg.IndexSliceSize)
+	C.SegcoreSetIndexSliceSize(cIndexSliceSize)
 }
 
 // Init function init historical and streaming module to manage segments
@@ -264,7 +208,7 @@ func (node *QueryNode) Init() error {
 	var initError error = nil
 	node.initOnce.Do(func() {
 		//ctx := context.Background()
-		log.Debug("QueryNode session info", zap.String("metaPath", Params.EtcdCfg.MetaRootPath))
+		log.Info("QueryNode session info", zap.String("metaPath", Params.EtcdCfg.MetaRootPath))
 		err := node.initSession()
 		if err != nil {
 			log.Error("QueryNode init session failed", zap.Error(err))
@@ -272,55 +216,39 @@ func (node *QueryNode) Init() error {
 			return
 		}
 
-		node.chunkManager, err = storage.NewMinioChunkManager(node.queryNodeLoopCtx,
-			storage.Address(Params.MinioCfg.Address),
-			storage.AccessKeyID(Params.MinioCfg.AccessKeyID),
-			storage.SecretAccessKeyID(Params.MinioCfg.SecretAccessKey),
-			storage.UseSSL(Params.MinioCfg.UseSSL),
-			storage.BucketName(Params.MinioCfg.BucketName),
-			storage.CreateBucket(true))
+		node.factory.Init(&Params)
 
+		node.vectorStorage, err = node.factory.NewVectorStorageChunkManager(node.queryNodeLoopCtx)
 		if err != nil {
-			log.Error("QueryNode init session failed", zap.Error(err))
+			log.Error("QueryNode init vector storage failed", zap.Error(err))
+			initError = err
+			return
+		}
+
+		node.cacheStorage, err = node.factory.NewCacheStorageChunkManager(node.queryNodeLoopCtx)
+		if err != nil {
+			log.Error("QueryNode init cache storage failed", zap.Error(err))
 			initError = err
 			return
 		}
 
 		node.etcdKV = etcdkv.NewEtcdKV(node.etcdCli, Params.EtcdCfg.MetaRootPath)
-		log.Debug("queryNode try to connect etcd success", zap.Any("MetaRootPath", Params.EtcdCfg.MetaRootPath))
-		node.tSafeReplica = newTSafeReplica()
+		log.Info("queryNode try to connect etcd success", zap.Any("MetaRootPath", Params.EtcdCfg.MetaRootPath))
 
-		streamingReplica := newCollectionReplica(node.etcdKV)
-		historicalReplica := newCollectionReplica(node.etcdKV)
-
-		node.historical = newHistorical(node.queryNodeLoopCtx,
-			historicalReplica,
-			node.tSafeReplica,
-		)
-		node.streaming = newStreaming(node.queryNodeLoopCtx,
-			streamingReplica,
-			node.msFactory,
-			node.etcdKV,
-			node.tSafeReplica,
-		)
+		node.metaReplica = newCollectionReplica()
 
 		node.loader = newSegmentLoader(
-			node.historical.replica,
-			node.streaming.replica,
+			node.metaReplica,
 			node.etcdKV,
-			node.chunkManager,
-			node.msFactory)
+			node.vectorStorage,
+			node.factory)
 
-		//node.statsService = newStatsService(node.queryNodeLoopCtx, node.historical.replica, node.msFactory)
-		node.dataSyncService = newDataSyncService(node.queryNodeLoopCtx, streamingReplica, historicalReplica, node.tSafeReplica, node.msFactory)
+		node.dataSyncService = newDataSyncService(node.queryNodeLoopCtx, node.metaReplica, node.tSafeReplica, node.factory)
 
 		node.InitSegcore()
 
-		// TODO: add session creator to node
-		node.sessionManager = NewSessionManager(withSessionCreator(defaultSessionCreator()))
-
-		log.Debug("query node init successfully",
-			zap.Any("queryNodeID", Params.QueryNodeCfg.QueryNodeID),
+		log.Info("query node init successfully",
+			zap.Any("queryNodeID", Params.QueryNodeCfg.GetNodeID()),
 			zap.Any("IP", Params.QueryNodeCfg.QueryNodeIP),
 			zap.Any("Port", Params.QueryNodeCfg.QueryNodePort),
 		)
@@ -331,19 +259,6 @@ func (node *QueryNode) Init() error {
 
 // Start mainly start QueryNode's query service.
 func (node *QueryNode) Start() error {
-	err := node.msFactory.Init(&Params)
-	if err != nil {
-		return err
-	}
-
-	// init services and manager
-	// TODO: pass node.streaming.replica to search service
-	node.queryService = newQueryService(node.queryNodeLoopCtx,
-		node.historical,
-		node.streaming,
-		node.msFactory,
-		qsOptWithSessionManager(node.sessionManager))
-
 	// start task scheduler
 	go node.scheduler.Start()
 
@@ -351,20 +266,18 @@ func (node *QueryNode) Start() error {
 	go node.watchChangeInfo()
 	//go node.statsService.start()
 
-	// watch proxy
-	if err := node.initServiceDiscovery(); err != nil {
-		return err
-	}
-
-	node.wg.Add(1)
-	go node.watchService(node.queryNodeLoopCtx)
+	// create shardClusterService for shardLeader functions.
+	node.ShardClusterService = newShardClusterService(node.etcdCli, node.session, node)
+	// create shard-level query service
+	node.queryShardService = newQueryShardService(node.queryNodeLoopCtx, node.metaReplica, node.tSafeReplica,
+		node.ShardClusterService, node.factory, node.scheduler)
 
 	Params.QueryNodeCfg.CreatedTime = time.Now()
 	Params.QueryNodeCfg.UpdatedTime = time.Now()
 
 	node.UpdateStateCode(internalpb.StateCode_Healthy)
-	log.Debug("query node start successfully",
-		zap.Any("queryNodeID", Params.QueryNodeCfg.QueryNodeID),
+	log.Info("query node start successfully",
+		zap.Any("queryNodeID", Params.QueryNodeCfg.GetNodeID()),
 		zap.Any("IP", Params.QueryNodeCfg.QueryNodeIP),
 		zap.Any("Port", Params.QueryNodeCfg.QueryNodePort),
 	)
@@ -373,6 +286,7 @@ func (node *QueryNode) Start() error {
 
 // Stop mainly stop QueryNode's query service, historical loop and streaming loop.
 func (node *QueryNode) Stop() error {
+	log.Warn("Query node stop..")
 	node.UpdateStateCode(internalpb.StateCode_Abnormal)
 	node.queryNodeLoopCancel()
 
@@ -380,18 +294,15 @@ func (node *QueryNode) Stop() error {
 	if node.dataSyncService != nil {
 		node.dataSyncService.close()
 	}
-	if node.historical != nil {
-		node.historical.close()
+
+	if node.metaReplica != nil {
+		node.metaReplica.freeAll()
 	}
-	if node.streaming != nil {
-		node.streaming.close()
+
+	if node.queryShardService != nil {
+		node.queryShardService.close()
 	}
-	if node.queryService != nil {
-		node.queryService.close()
-	}
-	//if node.statsService != nil {
-	//	node.statsService.close()
-	//}
+
 	node.session.Revoke(time.Second)
 	node.wg.Wait()
 	return nil
@@ -408,14 +319,30 @@ func (node *QueryNode) SetEtcdClient(client *clientv3.Client) {
 }
 
 func (node *QueryNode) watchChangeInfo() {
-	log.Debug("query node watchChangeInfo start")
+	log.Info("query node watchChangeInfo start")
 	watchChan := node.etcdKV.WatchWithPrefix(util.ChangeInfoMetaPrefix)
 	for {
 		select {
 		case <-node.queryNodeLoopCtx.Done():
-			log.Debug("query node watchChangeInfo close")
+			log.Info("query node watchChangeInfo close")
 			return
-		case resp := <-watchChan:
+		case resp, ok := <-watchChan:
+			if !ok {
+				log.Warn("querynode failed to watch channel, return")
+				return
+			}
+
+			if err := resp.Err(); err != nil {
+				log.Warn("query watch channel canceled", zap.Error(resp.Err()))
+				// https://github.com/etcd-io/etcd/issues/8980
+				if resp.Err() == v3rpc.ErrCompacted {
+					go node.watchChangeInfo()
+					return
+				}
+				// if watch loop return due to event canceled, the datanode is not functional anymore
+				log.Panic("querynoe3 is not functional for event canceled", zap.Error(err))
+				return
+			}
 			for _, event := range resp.Events {
 				switch event.Type {
 				case mvccpb.PUT:
@@ -424,7 +351,7 @@ func (node *QueryNode) watchChangeInfo() {
 						log.Warn("Parse SealedSegmentsChangeInfo id failed", zap.Any("error", err.Error()))
 						continue
 					}
-					log.Debug("get SealedSegmentsChangeInfo from etcd",
+					log.Info("get SealedSegmentsChangeInfo from etcd",
 						zap.Any("infoID", infoID),
 					)
 					info := &querypb.SealedSegmentsChangeInfo{}
@@ -433,12 +360,7 @@ func (node *QueryNode) watchChangeInfo() {
 						log.Warn("Unmarshal SealedSegmentsChangeInfo failed", zap.Any("error", err.Error()))
 						continue
 					}
-					go func() {
-						err = node.removeSegments(info)
-						if err != nil {
-							log.Warn("cleanup segments failed", zap.Any("error", err.Error()))
-						}
-					}()
+					go node.handleSealedSegmentsChangeInfo(info)
 				default:
 					// do nothing
 				}
@@ -447,94 +369,41 @@ func (node *QueryNode) watchChangeInfo() {
 	}
 }
 
-func (node *QueryNode) waitChangeInfo(segmentChangeInfos *querypb.SealedSegmentsChangeInfo) error {
-	fn := func() error {
-		for _, info := range segmentChangeInfos.Infos {
-			canDoLoadBalance := true
-			// make sure all query channel already received segment location changes
-			// Check online segments:
-			for _, segmentInfo := range info.OnlineSegments {
-				if node.queryService.hasQueryCollection(segmentInfo.CollectionID) {
-					qc, err := node.queryService.getQueryCollection(segmentInfo.CollectionID)
-					if err != nil {
-						canDoLoadBalance = false
-						break
-					}
-					if info.OnlineNodeID == Params.QueryNodeCfg.QueryNodeID && !qc.globalSegmentManager.hasGlobalSealedSegment(segmentInfo.SegmentID) {
-						canDoLoadBalance = false
-						break
-					}
-				}
-			}
-			// Check offline segments:
-			for _, segmentInfo := range info.OfflineSegments {
-				if node.queryService.hasQueryCollection(segmentInfo.CollectionID) {
-					qc, err := node.queryService.getQueryCollection(segmentInfo.CollectionID)
-					if err != nil {
-						canDoLoadBalance = false
-						break
-					}
-					if info.OfflineNodeID == Params.QueryNodeCfg.QueryNodeID && qc.globalSegmentManager.hasGlobalSealedSegment(segmentInfo.SegmentID) {
-						canDoLoadBalance = false
-						break
-					}
-				}
-			}
-			if canDoLoadBalance {
-				return nil
-			}
-			return errors.New(fmt.Sprintln("waitChangeInfo failed, infoID = ", segmentChangeInfos.Base.GetMsgID()))
+func (node *QueryNode) handleSealedSegmentsChangeInfo(info *querypb.SealedSegmentsChangeInfo) {
+	for _, line := range info.GetInfos() {
+		vchannel, err := validateChangeChannel(line)
+		if err != nil {
+			log.Warn("failed to validate vchannel for SegmentChangeInfo", zap.Error(err))
+			continue
 		}
 
-		return nil
+		node.ShardClusterService.HandoffVChannelSegments(vchannel, line)
 	}
-
-	return retry.Do(node.queryNodeLoopCtx, fn, retry.Attempts(50))
 }
 
-// remove the segments since it's already compacted or balanced to other querynodes
-func (node *QueryNode) removeSegments(segmentChangeInfos *querypb.SealedSegmentsChangeInfo) error {
-	err := node.waitChangeInfo(segmentChangeInfos)
-	if err != nil {
-		return err
+func validateChangeChannel(info *querypb.SegmentChangeInfo) (string, error) {
+	if len(info.GetOnlineSegments()) == 0 && len(info.GetOfflineSegments()) == 0 {
+		return "", errors.New("SegmentChangeInfo with no segments info")
 	}
 
-	node.streaming.replica.queryLock()
-	node.historical.replica.queryLock()
-	defer node.streaming.replica.queryUnlock()
-	defer node.historical.replica.queryUnlock()
-	for _, info := range segmentChangeInfos.Infos {
-		// For online segments:
-		for _, segmentInfo := range info.OnlineSegments {
-			// delete growing segment because these segments are loaded in historical.
-			hasGrowingSegment := node.streaming.replica.hasSegment(segmentInfo.SegmentID)
-			if hasGrowingSegment {
-				err := node.streaming.replica.removeSegment(segmentInfo.SegmentID)
-				if err != nil {
-					return err
-				}
-				log.Debug("remove growing segment in removeSegments",
-					zap.Any("collectionID", segmentInfo.CollectionID),
-					zap.Any("segmentID", segmentInfo.SegmentID),
-					zap.Any("infoID", segmentChangeInfos.Base.GetMsgID()),
-				)
-			}
-		}
+	var channelName string
 
-		// For offline segments:
-		for _, segmentInfo := range info.OfflineSegments {
-			// load balance or compaction, remove old sealed segments.
-			if info.OfflineNodeID == Params.QueryNodeCfg.QueryNodeID {
-				err := node.historical.replica.removeSegment(segmentInfo.SegmentID)
-				if err != nil {
-					return err
-				}
-				log.Debug("remove sealed segment", zap.Any("collectionID", segmentInfo.CollectionID),
-					zap.Any("segmentID", segmentInfo.SegmentID),
-					zap.Any("infoID", segmentChangeInfos.Base.GetMsgID()),
-				)
-			}
+	for _, segment := range info.GetOnlineSegments() {
+		if channelName == "" {
+			channelName = segment.GetDmChannel()
+		}
+		if segment.GetDmChannel() != channelName {
+			return "", fmt.Errorf("found multilple channel name in one SegmentChangeInfo, channel1: %s, channel 2:%s", channelName, segment.GetDmChannel())
 		}
 	}
-	return nil
+	for _, segment := range info.GetOfflineSegments() {
+		if channelName == "" {
+			channelName = segment.GetDmChannel()
+		}
+		if segment.GetDmChannel() != channelName {
+			return "", fmt.Errorf("found multilple channel name in one SegmentChangeInfo, channel1: %s, channel 2:%s", channelName, segment.GetDmChannel())
+		}
+	}
+
+	return channelName, nil
 }

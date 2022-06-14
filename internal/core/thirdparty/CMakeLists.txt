@@ -61,3 +61,15 @@ endif()
 
 add_subdirectory( protobuf )
 add_subdirectory( boost_ext )
+add_subdirectory( arrow )
+
+# ******************************* Thridparty marisa ********************************
+# TODO: support win.
+if ( LINUX OR APPLE)
+    add_subdirectory( marisa )
+endif()
+
+# ******************************* Thridparty jemalloc ********************************
+#if ( LINUX )
+#    add_subdirectory( jemalloc )
+#endif()

@@ -50,6 +50,9 @@ func NewClient(ctx context.Context, addr string) (*Client, error) {
 		grpcClient: &grpcclient.ClientBase{
 			ClientMaxRecvSize: ClientParams.ClientMaxRecvSize,
 			ClientMaxSendSize: ClientParams.ClientMaxSendSize,
+			DialTimeout:       ClientParams.DialTimeout,
+			KeepAliveTime:     ClientParams.KeepAliveTime,
+			KeepAliveTimeout:  ClientParams.KeepAliveTimeout,
 		},
 	}
 	client.grpcClient.SetRole(typeutil.DataNodeRole)
@@ -183,12 +186,39 @@ func (c *Client) Compaction(ctx context.Context, req *datapb.CompactionPlan) (*c
 }
 
 // Import data files(json, numpy, etc.) on MinIO/S3 storage, read and parse them into sealed segments
-func (c *Client) Import(ctx context.Context, req *datapb.ImportTask) (*commonpb.Status, error) {
+func (c *Client) Import(ctx context.Context, req *datapb.ImportTaskRequest) (*commonpb.Status, error) {
 	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
 		if !funcutil.CheckCtxValid(ctx) {
 			return nil, ctx.Err()
 		}
 		return client.(datapb.DataNodeClient).Import(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*commonpb.Status), err
+}
+
+func (c *Client) ResendSegmentStats(ctx context.Context, req *datapb.ResendSegmentStatsRequest) (*datapb.ResendSegmentStatsResponse, error) {
+	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(datapb.DataNodeClient).ResendSegmentStats(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*datapb.ResendSegmentStatsResponse), err
+}
+
+// AddSegment is the DataNode client side code for AddSegment call.
+func (c *Client) AddSegment(ctx context.Context, req *datapb.AddSegmentRequest) (*commonpb.Status, error) {
+	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(datapb.DataNodeClient).AddSegment(ctx, req)
 	})
 	if err != nil || ret == nil {
 		return nil, err

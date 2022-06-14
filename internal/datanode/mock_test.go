@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"math"
 	"math/rand"
 	"sync"
@@ -33,6 +34,7 @@ import (
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	s "github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 
@@ -53,8 +55,8 @@ const debug = false
 var emptyFlushAndDropFunc flushAndDropFunc = func(_ []*segmentFlushPack) {}
 
 func newIDLEDataNodeMock(ctx context.Context, pkType schemapb.DataType) *DataNode {
-	msFactory := msgstream.NewRmsFactory()
-	node := NewDataNode(ctx, msFactory)
+	factory := dependency.NewDefaultFactory(true)
+	node := NewDataNode(ctx, factory)
 
 	rc := &RootCoordFactory{
 		ID:             0,
@@ -85,8 +87,8 @@ func newHEALTHDataNodeMock(dmChannelName string) *DataNode {
 		}()
 	}
 
-	msFactory := msgstream.NewPmsFactory()
-	node := NewDataNode(ctx, msFactory)
+	factory := dependency.NewDefaultFactory(true)
+	node := NewDataNode(ctx, factory)
 
 	ms := &RootCoordFactory{
 		ID:             0,
@@ -162,14 +164,27 @@ type RootCoordFactory struct {
 type DataCoordFactory struct {
 	types.DataCoord
 
-	SaveBinlogPathError      bool
-	SaveBinlogPathNotSuccess bool
+	SaveBinlogPathError  bool
+	SaveBinlogPathStatus commonpb.ErrorCode
 
 	CompleteCompactionError      bool
 	CompleteCompactionNotSuccess bool
 
-	DropVirtualChannelError      bool
-	DropVirtualChannelNotSuccess bool
+	DropVirtualChannelError  bool
+	DropVirtualChannelStatus commonpb.ErrorCode
+}
+
+func (ds *DataCoordFactory) AssignSegmentID(ctx context.Context, req *datapb.AssignSegmentIDRequest) (*datapb.AssignSegmentIDResponse, error) {
+	return &datapb.AssignSegmentIDResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+		},
+		SegIDAssignments: []*datapb.SegmentIDAssignment{
+			{
+				SegID: 666,
+			},
+		},
+	}, nil
 }
 
 func (ds *DataCoordFactory) CompleteCompaction(ctx context.Context, req *datapb.CompactionResult) (*commonpb.Status, error) {
@@ -187,28 +202,29 @@ func (ds *DataCoordFactory) SaveBinlogPaths(ctx context.Context, req *datapb.Sav
 	if ds.SaveBinlogPathError {
 		return nil, errors.New("Error")
 	}
-	if ds.SaveBinlogPathNotSuccess {
-		return &commonpb.Status{ErrorCode: commonpb.ErrorCode_UnexpectedError}, nil
-	}
-
-	return &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success}, nil
+	return &commonpb.Status{ErrorCode: ds.SaveBinlogPathStatus}, nil
 }
 
 func (ds *DataCoordFactory) DropVirtualChannel(ctx context.Context, req *datapb.DropVirtualChannelRequest) (*datapb.DropVirtualChannelResponse, error) {
 	if ds.DropVirtualChannelError {
 		return nil, errors.New("error")
 	}
-	if ds.DropVirtualChannelNotSuccess {
-		return &datapb.DropVirtualChannelResponse{
-			Status: &commonpb.Status{
-				ErrorCode: commonpb.ErrorCode_UnexpectedError,
-			},
-		}, nil
-	}
 	return &datapb.DropVirtualChannelResponse{
 		Status: &commonpb.Status{
-			ErrorCode: commonpb.ErrorCode_Success,
+			ErrorCode: ds.DropVirtualChannelStatus,
 		},
+	}, nil
+}
+
+func (ds *DataCoordFactory) UpdateSegmentStatistics(ctx context.Context, req *datapb.UpdateSegmentStatisticsRequest) (*commonpb.Status, error) {
+	return &commonpb.Status{
+		ErrorCode: commonpb.ErrorCode_Success,
+	}, nil
+}
+
+func (ds *DataCoordFactory) AddSegment(ctx context.Context, req *datapb.AddSegmentRequest) (*commonpb.Status, error) {
+	return &commonpb.Status{
+		ErrorCode: commonpb.ErrorCode_Success,
 	}, nil
 }
 
@@ -359,7 +375,7 @@ func (mf *MetaFactory) GetFieldSchema() []*schemapb.FieldSchema {
 			DataType:    schemapb.DataType_VarChar,
 			TypeParams: []*commonpb.KeyValuePair{
 				{
-					Key:   "max_length_per_row",
+					Key:   "max_length",
 					Value: "100",
 				},
 			},
@@ -683,7 +699,7 @@ func (df *DataFactory) GetMsgStreamInsertMsgs(n int) (msgs []*msgstream.InsertMs
 	return
 }
 
-func (df *DataFactory) GenMsgStreamDeleteMsg(pks []int64, chanName string) *msgstream.DeleteMsg {
+func (df *DataFactory) GenMsgStreamDeleteMsg(pks []primaryKey, chanName string) *msgstream.DeleteMsg {
 	idx := 100
 	timestamps := make([]Timestamp, len(pks))
 	for i := 0; i < len(pks); i++ {
@@ -703,8 +719,9 @@ func (df *DataFactory) GenMsgStreamDeleteMsg(pks []int64, chanName string) *msgs
 			CollectionName: "col1",
 			PartitionName:  "default",
 			ShardName:      chanName,
-			PrimaryKeys:    pks,
+			PrimaryKeys:    s.ParsePrimaryKeys2IDs(pks),
 			Timestamps:     timestamps,
+			NumRows:        int64(len(pks)),
 		},
 	}
 	return msg
@@ -740,7 +757,7 @@ func genFlowGraphInsertMsg(chanName string) flowGraphMsg {
 	return *fgMsg
 }
 
-func genFlowGraphDeleteMsg(pks []int64, chanName string) flowGraphMsg {
+func genFlowGraphDeleteMsg(pks []primaryKey, chanName string) flowGraphMsg {
 	timeRange := TimeRange{
 		timestampMin: 0,
 		timestampMax: math.MaxUint64,
@@ -841,14 +858,19 @@ func (m *RootCoordFactory) AllocID(ctx context.Context, in *rootcoordpb.AllocIDR
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 		}}
 
+	if in.Count == 12 {
+		resp.Status.ErrorCode = commonpb.ErrorCode_Success
+		resp.ID = 1
+		resp.Count = 12
+	}
+
 	if m.ID == 0 {
 		resp.Status.Reason = "Zero ID"
 		return resp, nil
 	}
 
 	if m.ID == -1 {
-		resp.Status.ErrorCode = commonpb.ErrorCode_Success
-		return resp, errors.New(resp.Status.GetReason())
+		return nil, errors.New(resp.Status.GetReason())
 	}
 
 	resp.ID = m.ID
@@ -862,6 +884,13 @@ func (m *RootCoordFactory) AllocTimestamp(ctx context.Context, in *rootcoordpb.A
 		Status:    &commonpb.Status{},
 		Timestamp: 1000,
 	}
+
+	v := ctx.Value(ctxKey{})
+	if v != nil && v.(string) == returnError {
+		resp.Status.ErrorCode = commonpb.ErrorCode_UnexpectedError
+		return resp, fmt.Errorf("injected error")
+	}
+
 	return resp, nil
 }
 
@@ -895,6 +924,7 @@ func (m *RootCoordFactory) DescribeCollection(ctx context.Context, in *milvuspb.
 
 	resp.CollectionID = m.collectionID
 	resp.Schema = meta.Schema
+	resp.ShardsNum = 2
 	resp.Status.ErrorCode = commonpb.ErrorCode_Success
 	return resp, nil
 }
@@ -909,9 +939,19 @@ func (m *RootCoordFactory) GetComponentStates(ctx context.Context) (*internalpb.
 	}, nil
 }
 
+func (m *RootCoordFactory) ReportImport(ctx context.Context, req *rootcoordpb.ImportResult) (*commonpb.Status, error) {
+	v := ctx.Value(ctxKey{}).(string)
+	if v == returnError {
+		return nil, fmt.Errorf("injected error")
+	}
+	return &commonpb.Status{
+		ErrorCode: commonpb.ErrorCode_Success,
+	}, nil
+}
+
 // FailMessageStreamFactory mock MessageStreamFactory failure
 type FailMessageStreamFactory struct {
-	msgstream.Factory
+	dependency.Factory
 }
 
 func (f *FailMessageStreamFactory) NewMsgStream(ctx context.Context) (msgstream.MsgStream, error) {
@@ -922,10 +962,24 @@ func (f *FailMessageStreamFactory) NewTtMsgStream(ctx context.Context) (msgstrea
 	return nil, errors.New("mocked failure")
 }
 
-func genInsertDataWithPKs(PKs [2]int64) *InsertData {
+func genInsertDataWithPKs(PKs [2]primaryKey, dataType schemapb.DataType) *InsertData {
 	iD := genInsertData()
-	iD.Data[106].(*s.Int64FieldData).Data = PKs[:]
-
+	switch dataType {
+	case schemapb.DataType_Int64:
+		values := make([]int64, len(PKs))
+		for index, pk := range PKs {
+			values[index] = pk.(*int64PrimaryKey).Value
+		}
+		iD.Data[106].(*s.Int64FieldData).Data = values
+	case schemapb.DataType_VarChar:
+		values := make([]string, len(PKs))
+		for index, pk := range PKs {
+			values[index] = pk.(*varCharPrimaryKey).Value
+		}
+		iD.Data[109].(*s.StringFieldData).Data = values
+	default:
+		//TODO::
+	}
 	return iD
 }
 

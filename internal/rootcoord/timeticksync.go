@@ -219,7 +219,7 @@ func (t *timetickSync) updateTimeTick(in *internalpb.ChannelTimeTickMsg, reason 
 		return nil
 	}
 	if len(in.Timestamps) != len(in.ChannelNames) {
-		return fmt.Errorf("invalid TimeTickMsg")
+		return fmt.Errorf("invalid TimeTickMsg, timestamp and channelname size mismatch")
 	}
 
 	prev, ok := t.sess2ChanTsMap[in.Base.SourceID]
@@ -230,7 +230,7 @@ func (t *timetickSync) updateTimeTick(in *internalpb.ChannelTimeTickMsg, reason 
 	// if ddl operation not finished, skip current ts update
 	ddlMinTs := t.getDdlMinTimeTick()
 	if in.DefaultTimestamp > ddlMinTs {
-		log.Debug("ddl not finished", zap.Int64("source id", in.Base.SourceID),
+		log.Info("ddl not finished", zap.Int64("source id", in.Base.SourceID),
 			zap.Uint64("curr ts", in.DefaultTimestamp),
 			zap.Uint64("ddlMinTs", ddlMinTs),
 			zap.String("reason", reason))
@@ -239,7 +239,7 @@ func (t *timetickSync) updateTimeTick(in *internalpb.ChannelTimeTickMsg, reason 
 
 	if in.Base.SourceID == t.sourceID {
 		if prev != nil && in.DefaultTimestamp <= prev.defaultTs {
-			log.Debug("timestamp go back", zap.Int64("source id", in.Base.SourceID),
+			log.Warn("timestamp go back", zap.Int64("source id", in.Base.SourceID),
 				zap.Uint64("curr ts", in.DefaultTimestamp),
 				zap.Uint64("prev ts", prev.defaultTs),
 				zap.String("reason", reason))
@@ -252,7 +252,6 @@ func (t *timetickSync) updateTimeTick(in *internalpb.ChannelTimeTickMsg, reason 
 	} else {
 		t.sess2ChanTsMap[in.Base.SourceID] = newChanTsMsg(in, prev.cnt+1)
 	}
-
 	t.sendToChannel()
 	return nil
 }
@@ -283,7 +282,7 @@ func (t *timetickSync) initSessions(sess []*sessionutil.Session) {
 	}
 }
 
-// StartWatch watch session change and process all channels' timetick msg
+// StartWatch watches on session changes and processes timeTick messages of all channels.
 func (t *timetickSync) startWatch(wg *sync.WaitGroup) {
 	defer wg.Done()
 
@@ -326,7 +325,7 @@ func (t *timetickSync) startWatch(wg *sync.WaitGroup) {
 						}
 					}
 					if err := t.sendTimeTickToChannel([]string{chanName}, mints); err != nil {
-						log.Debug("SendTimeTickToChannel fail", zap.Error(err))
+						log.Warn("SendTimeTickToChannel fail", zap.Error(err))
 					}
 					wg.Done()
 				}(chanName, ts)
@@ -364,13 +363,13 @@ func (t *timetickSync) sendTimeTickToChannel(chanNames []string, ts typeutil.Tim
 		TimeTickMsg: timeTickResult,
 	}
 	msgPack.Msgs = append(msgPack.Msgs, timeTickMsg)
-
 	if err := t.dmlChannels.broadcast(chanNames, &msgPack); err != nil {
 		return err
 	}
 
+	physicalTs, _ := tsoutil.ParseHybridTs(ts)
 	for _, chanName := range chanNames {
-		metrics.RootCoordInsertChannelTimeTick.WithLabelValues(chanName).Set(float64(tsoutil.Mod24H(ts)))
+		metrics.RootCoordInsertChannelTimeTick.WithLabelValues(chanName).Set(float64(physicalTs))
 	}
 	return nil
 }

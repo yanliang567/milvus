@@ -86,37 +86,6 @@ func newMockIDAllocatorInterface() idAllocatorInterface {
 	return &mockIDAllocatorInterface{}
 }
 
-type mockGetChannelsService struct {
-	collectionID2Channels map[UniqueID]map[vChan]pChan
-	f                     getChannelsFuncType
-}
-
-func newMockGetChannelsService() *mockGetChannelsService {
-	return &mockGetChannelsService{
-		collectionID2Channels: make(map[UniqueID]map[vChan]pChan),
-	}
-}
-
-func (m *mockGetChannelsService) GetChannels(collectionID UniqueID) (map[vChan]pChan, error) {
-	if m.f != nil {
-		return m.f(collectionID)
-	}
-
-	channels, ok := m.collectionID2Channels[collectionID]
-	if ok {
-		return channels, nil
-	}
-
-	channels = make(map[vChan]pChan)
-	l := rand.Uint64()%10 + 1
-	for i := 0; uint64(i) < l; i++ {
-		channels[funcutil.GenRandomStr()] = funcutil.GenRandomStr()
-	}
-
-	m.collectionID2Channels[collectionID] = channels
-	return channels, nil
-}
-
 type mockTask struct {
 	*TaskCondition
 	id    UniqueID
@@ -395,11 +364,10 @@ func newSimpleMockMsgStreamFactory() *simpleMockMsgStreamFactory {
 	return &simpleMockMsgStreamFactory{}
 }
 
-func generateFieldData(dataType schemapb.DataType, fieldName string, fieldID int64, numRows int) *schemapb.FieldData {
+func generateFieldData(dataType schemapb.DataType, fieldName string, numRows int) *schemapb.FieldData {
 	fieldData := &schemapb.FieldData{
 		Type:      dataType,
 		FieldName: fieldName,
-		FieldId:   fieldID,
 	}
 	switch dataType {
 	case schemapb.DataType_Bool:
@@ -458,7 +426,16 @@ func generateFieldData(dataType schemapb.DataType, fieldName string, fieldID int
 			},
 		}
 	case schemapb.DataType_VarChar:
-		//TODO::
+		fieldData.FieldName = testVarCharField
+		fieldData.Field = &schemapb.FieldData_Scalars{
+			Scalars: &schemapb.ScalarField{
+				Data: &schemapb.ScalarField_StringData{
+					StringData: &schemapb.StringArray{
+						Data: generateVarCharArray(numRows, maxTestStringLen),
+					},
+				},
+			},
+		}
 	case schemapb.DataType_FloatVector:
 		fieldData.FieldName = testFloatVecField
 		fieldData.Field = &schemapb.FieldData_Vectors{

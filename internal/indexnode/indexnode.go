@@ -25,6 +25,7 @@ package indexnode
 #cgo windows LDFLAGS: -L${SRCDIR}/../core/output/lib -lmilvus_indexbuilder -Wl,-rpath=${SRCDIR}/../core/output/lib
 
 #include <stdlib.h>
+#include <stdint.h>
 #include "indexbuilder/init_c.h"
 
 */
@@ -35,6 +36,7 @@ import (
 	"io"
 	"math/rand"
 	"os"
+	"path"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -44,6 +46,10 @@ import (
 
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/storage"
+	"github.com/milvus-io/milvus/internal/util/dependency"
+
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/common"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
@@ -58,8 +64,6 @@ import (
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 	"github.com/milvus-io/milvus/internal/util/trace"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.uber.org/zap"
 )
 
 // UniqueID is an alias of int64, is used as a unique identifier for the request.
@@ -85,6 +89,7 @@ type IndexNode struct {
 
 	once sync.Once
 
+	factory      dependency.Factory
 	chunkManager storage.ChunkManager
 	session      *sessionutil.Session
 
@@ -102,13 +107,14 @@ type IndexNode struct {
 }
 
 // NewIndexNode creates a new IndexNode component.
-func NewIndexNode(ctx context.Context) (*IndexNode, error) {
+func NewIndexNode(ctx context.Context, factory dependency.Factory) (*IndexNode, error) {
 	log.Debug("New IndexNode ...")
 	rand.Seed(time.Now().UnixNano())
 	ctx1, cancel := context.WithCancel(ctx)
 	b := &IndexNode{
 		loopCtx:    ctx1,
 		loopCancel: cancel,
+		factory:    factory,
 	}
 	b.UpdateStateCode(internalpb.StateCode_Abnormal)
 	sc, err := NewTaskScheduler(b.loopCtx, b.chunkManager)
@@ -141,7 +147,9 @@ func (i *IndexNode) Register() error {
 }
 
 func (i *IndexNode) initKnowhere() {
-	C.IndexBuilderInit()
+	cEasyloggingYaml := C.CString(path.Join(Params.BaseTable.GetConfigDir(), paramtable.DefaultEasyloggingYaml))
+	C.IndexBuilderInit(cEasyloggingYaml)
+	C.free(unsafe.Pointer(cEasyloggingYaml))
 
 	// override index builder SIMD type
 	cSimdType := C.CString(Params.CommonCfg.SimdType)
@@ -149,6 +157,10 @@ func (i *IndexNode) initKnowhere() {
 	Params.CommonCfg.SimdType = C.GoString(cRealSimdType)
 	C.free(unsafe.Pointer(cRealSimdType))
 	C.free(unsafe.Pointer(cSimdType))
+
+	// override segcore index slice size
+	cIndexSliceSize := C.int64_t(Params.CommonCfg.IndexSliceSize)
+	C.IndexBuilderSetIndexSliceSize(cIndexSliceSize)
 }
 
 func (i *IndexNode) initSession() error {
@@ -157,8 +169,8 @@ func (i *IndexNode) initSession() error {
 		return errors.New("failed to initialize session")
 	}
 	i.session.Init(typeutil.IndexNodeRole, Params.IndexNodeCfg.IP+":"+strconv.Itoa(Params.IndexNodeCfg.Port), false, true)
-	Params.IndexNodeCfg.NodeID = i.session.ServerID
-	Params.SetLogger(Params.IndexNodeCfg.NodeID)
+	Params.IndexNodeCfg.SetNodeID(i.session.ServerID)
+	Params.SetLogger(i.session.ServerID)
 	return nil
 }
 
@@ -167,6 +179,8 @@ func (i *IndexNode) Init() error {
 	var initErr error = nil
 	i.initOnce.Do(func() {
 		Params.Init()
+
+		i.factory.Init(&Params)
 
 		i.UpdateStateCode(internalpb.StateCode_Initializing)
 		log.Debug("IndexNode init", zap.Any("State", i.stateCode.Load().(internalpb.StateCode)))
@@ -181,13 +195,7 @@ func (i *IndexNode) Init() error {
 		etcdKV := etcdkv.NewEtcdKV(i.etcdCli, Params.EtcdCfg.MetaRootPath)
 		i.etcdKV = etcdKV
 
-		chunkManager, err := storage.NewMinioChunkManager(i.loopCtx,
-			storage.Address(Params.MinioCfg.Address),
-			storage.AccessKeyID(Params.MinioCfg.AccessKeyID),
-			storage.SecretAccessKeyID(Params.MinioCfg.SecretAccessKey),
-			storage.UseSSL(Params.MinioCfg.UseSSL),
-			storage.BucketName(Params.MinioCfg.BucketName),
-			storage.CreateBucket(true))
+		chunkManager, err := i.factory.NewVectorStorageChunkManager(i.loopCtx)
 
 		if err != nil {
 			log.Error("IndexNode NewMinIOKV failed", zap.Error(err))
@@ -277,14 +285,14 @@ func (i *IndexNode) CreateIndex(ctx context.Context, request *indexpb.CreateInde
 		zap.Int64("IndexID", request.IndexID),
 		zap.Int64("Version", request.Version),
 		zap.String("MetaPath", request.MetaPath),
-		zap.Strings("DataPaths", request.DataPaths),
+		zap.Int("binlog paths num", len(request.DataPaths)),
 		zap.Any("TypeParams", request.TypeParams),
 		zap.Any("IndexParams", request.IndexParams))
 
 	sp, ctx2 := trace.StartSpanFromContextWithOperationName(i.loopCtx, "IndexNode-CreateIndex")
 	defer sp.Finish()
 	sp.SetTag("IndexBuildID", strconv.FormatInt(request.IndexBuildID, 10))
-	metrics.IndexNodeBuildIndexTaskCounter.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10), metrics.TotalLabel).Inc()
+	metrics.IndexNodeBuildIndexTaskCounter.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.GetNodeID(), 10), metrics.TotalLabel).Inc()
 
 	t := &IndexBuildTask{
 		BaseTask: BaseTask{
@@ -294,7 +302,7 @@ func (i *IndexNode) CreateIndex(ctx context.Context, request *indexpb.CreateInde
 		req:            request,
 		cm:             i.chunkManager,
 		etcdKV:         i.etcdKV,
-		nodeID:         Params.IndexNodeCfg.NodeID,
+		nodeID:         Params.IndexNodeCfg.GetNodeID(),
 		serializedSize: 0,
 	}
 
@@ -307,12 +315,12 @@ func (i *IndexNode) CreateIndex(ctx context.Context, request *indexpb.CreateInde
 		log.Warn("IndexNode failed to schedule", zap.Int64("indexBuildID", request.IndexBuildID), zap.Error(err))
 		ret.ErrorCode = commonpb.ErrorCode_UnexpectedError
 		ret.Reason = err.Error()
-		metrics.IndexNodeBuildIndexTaskCounter.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10), metrics.FailLabel).Inc()
+		metrics.IndexNodeBuildIndexTaskCounter.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.GetNodeID(), 10), metrics.FailLabel).Inc()
 		return ret, nil
 	}
 	log.Info("IndexNode successfully scheduled", zap.Int64("indexBuildID", request.IndexBuildID))
 
-	metrics.IndexNodeBuildIndexTaskCounter.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.NodeID, 10), metrics.SuccessLabel).Inc()
+	metrics.IndexNodeBuildIndexTaskCounter.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.GetNodeID(), 10), metrics.SuccessLabel).Inc()
 	return ret, nil
 }
 
@@ -371,14 +379,14 @@ func (i *IndexNode) GetStatisticsChannel(ctx context.Context) (*milvuspb.StringR
 func (i *IndexNode) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
 	if !i.isHealthy() {
 		log.Warn("IndexNode.GetMetrics failed",
-			zap.Int64("node_id", Params.IndexNodeCfg.NodeID),
+			zap.Int64("node_id", Params.IndexNodeCfg.GetNodeID()),
 			zap.String("req", req.Request),
-			zap.Error(errIndexNodeIsUnhealthy(Params.IndexNodeCfg.NodeID)))
+			zap.Error(errIndexNodeIsUnhealthy(Params.IndexNodeCfg.GetNodeID())))
 
 		return &milvuspb.GetMetricsResponse{
 			Status: &commonpb.Status{
 				ErrorCode: commonpb.ErrorCode_UnexpectedError,
-				Reason:    msgIndexNodeIsUnhealthy(Params.IndexNodeCfg.NodeID),
+				Reason:    msgIndexNodeIsUnhealthy(Params.IndexNodeCfg.GetNodeID()),
 			},
 			Response: "",
 		}, nil
@@ -387,7 +395,7 @@ func (i *IndexNode) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequ
 	metricType, err := metricsinfo.ParseMetricType(req.Request)
 	if err != nil {
 		log.Warn("IndexNode.GetMetrics failed to parse metric type",
-			zap.Int64("node_id", Params.IndexNodeCfg.NodeID),
+			zap.Int64("node_id", Params.IndexNodeCfg.GetNodeID()),
 			zap.String("req", req.Request),
 			zap.Error(err))
 
@@ -404,7 +412,7 @@ func (i *IndexNode) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequ
 		metrics, err := getSystemInfoMetrics(ctx, req, i)
 
 		log.Debug("IndexNode.GetMetrics",
-			zap.Int64("node_id", Params.IndexNodeCfg.NodeID),
+			zap.Int64("node_id", Params.IndexNodeCfg.GetNodeID()),
 			zap.String("req", req.Request),
 			zap.String("metric_type", metricType),
 			zap.Error(err))
@@ -413,7 +421,7 @@ func (i *IndexNode) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequ
 	}
 
 	log.Warn("IndexNode.GetMetrics failed, request metric type is not implemented yet",
-		zap.Int64("node_id", Params.IndexNodeCfg.NodeID),
+		zap.Int64("node_id", Params.IndexNodeCfg.GetNodeID()),
 		zap.String("req", req.Request),
 		zap.String("metric_type", metricType))
 

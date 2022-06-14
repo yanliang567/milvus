@@ -20,6 +20,8 @@
 #include <knowhere/index/vector_index/helpers/IndexParameter.h>
 #include <knowhere/index/vector_index/adapter/VectorAdapter.h>
 #include <knowhere/index/vector_index/VecIndexFactory.h>
+#include <index/ScalarIndex.h>
+#include <index/StringIndex.h>
 
 #include "pb/index_cgo_msg.pb.h"
 
@@ -28,7 +30,6 @@
 #include "DataGen.h"
 #include "indexbuilder/utils.h"
 #include "indexbuilder/helper.h"
-#define private public
 #include "indexbuilder/ScalarIndexCreator.h"
 
 constexpr int64_t DIM = 8;
@@ -42,8 +43,9 @@ namespace indexcgo = milvus::proto::indexcgo;
 namespace schemapb = milvus::proto::schema;
 using milvus::indexbuilder::MapParams;
 using milvus::indexbuilder::ScalarIndexCreator;
-using knowhere::scalar::OperatorType;
 using ScalarTestParams = std::pair<MapParams, MapParams>;
+using milvus::scalar::ScalarIndexPtr;
+using milvus::scalar::StringIndexPtr;
 
 namespace {
 auto
@@ -53,7 +55,7 @@ generate_conf(const knowhere::IndexType& index_type, const knowhere::MetricType&
             {knowhere::meta::DIM, DIM},
             {knowhere::meta::TOPK, K},
             {knowhere::Metric::TYPE, metric_type},
-            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, 4},
+            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, knowhere::index_file_slice_size},
         };
     } else if (index_type == knowhere::IndexEnum::INDEX_FAISS_IVFPQ) {
         return knowhere::Config{
@@ -64,7 +66,7 @@ generate_conf(const knowhere::IndexType& index_type, const knowhere::MetricType&
             {knowhere::IndexParams::m, 4},
             {knowhere::IndexParams::nbits, 8},
             {knowhere::Metric::TYPE, metric_type},
-            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, 4},
+            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, knowhere::index_file_slice_size},
         };
     } else if (index_type == knowhere::IndexEnum::INDEX_FAISS_IVFFLAT) {
         return knowhere::Config{
@@ -73,7 +75,7 @@ generate_conf(const knowhere::IndexType& index_type, const knowhere::MetricType&
             {knowhere::IndexParams::nlist, 16},
             {knowhere::IndexParams::nprobe, 4},
             {knowhere::Metric::TYPE, metric_type},
-            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, 4},
+            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, knowhere::index_file_slice_size},
 #ifdef MILVUS_GPU_VERSION
             {knowhere::meta::DEVICEID, DEVICEID},
 #endif
@@ -86,7 +88,7 @@ generate_conf(const knowhere::IndexType& index_type, const knowhere::MetricType&
             {knowhere::IndexParams::nprobe, 4},
             {knowhere::IndexParams::nbits, 8},
             {knowhere::Metric::TYPE, metric_type},
-            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, 4},
+            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, knowhere::index_file_slice_size},
 #ifdef MILVUS_GPU_VERSION
             {knowhere::meta::DEVICEID, DEVICEID},
 #endif
@@ -100,7 +102,7 @@ generate_conf(const knowhere::IndexType& index_type, const knowhere::MetricType&
             {knowhere::IndexParams::m, 4},
             {knowhere::IndexParams::nbits, 8},
             {knowhere::Metric::TYPE, metric_type},
-            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, 4},
+            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, knowhere::index_file_slice_size},
         };
     } else if (index_type == knowhere::IndexEnum::INDEX_FAISS_BIN_IDMAP) {
         return knowhere::Config{
@@ -108,6 +110,7 @@ generate_conf(const knowhere::IndexType& index_type, const knowhere::MetricType&
             {knowhere::meta::TOPK, K},
             {knowhere::Metric::TYPE, metric_type},
         };
+#ifdef MILVUS_SUPPORT_NSG
     } else if (index_type == knowhere::IndexEnum::INDEX_NSG) {
         return knowhere::Config{
             {knowhere::meta::DIM, DIM},
@@ -120,20 +123,21 @@ generate_conf(const knowhere::IndexType& index_type, const knowhere::MetricType&
             {knowhere::IndexParams::candidate, 100},
             {knowhere::Metric::TYPE, metric_type},
         };
+#endif
 #ifdef MILVUS_SUPPORT_SPTAG
     } else if (index_type == knowhere::IndexEnum::INDEX_SPTAG_KDT_RNT) {
         return knowhere::Config{
             {knowhere::meta::DIM, DIM},
             // {knowhere::meta::TOPK, 10},
             {knowhere::Metric::TYPE, metric_type},
-            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, 4},
+            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, knowhere::index_file_slice_size},
         };
     } else if (index_type == knowhere::IndexEnum::INDEX_SPTAG_BKT_RNT) {
         return knowhere::Config{
             {knowhere::meta::DIM, DIM},
             // {knowhere::meta::TOPK, 10},
             {knowhere::Metric::TYPE, metric_type},
-            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, 4},
+            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, knowhere::index_file_slice_size},
         };
 #endif
     } else if (index_type == knowhere::IndexEnum::INDEX_HNSW) {
@@ -149,7 +153,7 @@ generate_conf(const knowhere::IndexType& index_type, const knowhere::MetricType&
             {knowhere::IndexParams::n_trees, 4},
             {knowhere::IndexParams::search_k, 100},
             {knowhere::Metric::TYPE, metric_type},
-            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, 4},
+            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, knowhere::index_file_slice_size},
         };
     } else if (index_type == knowhere::IndexEnum::INDEX_RHNSWFlat) {
         return knowhere::Config{
@@ -159,7 +163,7 @@ generate_conf(const knowhere::IndexType& index_type, const knowhere::MetricType&
             {knowhere::IndexParams::efConstruction, 200},
             {knowhere::IndexParams::ef, 200},
             {knowhere::Metric::TYPE, metric_type},
-            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, 4},
+            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, knowhere::index_file_slice_size},
         };
     } else if (index_type == knowhere::IndexEnum::INDEX_RHNSWPQ) {
         return knowhere::Config{
@@ -169,7 +173,7 @@ generate_conf(const knowhere::IndexType& index_type, const knowhere::MetricType&
             {knowhere::IndexParams::efConstruction, 200},
             {knowhere::IndexParams::ef, 200},
             {knowhere::Metric::TYPE, metric_type},
-            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, 4},
+            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, knowhere::index_file_slice_size},
             {knowhere::IndexParams::PQM, 8},
         };
     } else if (index_type == knowhere::IndexEnum::INDEX_RHNSWSQ) {
@@ -180,8 +184,9 @@ generate_conf(const knowhere::IndexType& index_type, const knowhere::MetricType&
             {knowhere::IndexParams::efConstruction, 200},
             {knowhere::IndexParams::ef, 200},
             {knowhere::Metric::TYPE, metric_type},
-            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, 4},
+            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, knowhere::index_file_slice_size},
         };
+#ifdef MILVUS_SUPPORT_NGT
     } else if (index_type == knowhere::IndexEnum::INDEX_NGTPANNG) {
         return knowhere::Config{
             {knowhere::meta::DIM, DIM},
@@ -192,7 +197,7 @@ generate_conf(const knowhere::IndexType& index_type, const knowhere::MetricType&
             {knowhere::IndexParams::max_search_edges, 50},
             {knowhere::IndexParams::forcedly_pruned_edge_size, 60},
             {knowhere::IndexParams::selectively_pruned_edge_size, 30},
-            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, 4},
+            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, knowhere::index_file_slice_size},
         };
     } else if (index_type == knowhere::IndexEnum::INDEX_NGTONNG) {
         return knowhere::Config{
@@ -204,8 +209,9 @@ generate_conf(const knowhere::IndexType& index_type, const knowhere::MetricType&
             {knowhere::IndexParams::max_search_edges, 50},
             {knowhere::IndexParams::outgoing_edge_size, 5},
             {knowhere::IndexParams::incoming_edge_size, 40},
-            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, 4},
+            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, knowhere::index_file_slice_size},
         };
+#endif
     }
     return knowhere::Config();
 }
@@ -237,10 +243,10 @@ GenDataset(int64_t N, const knowhere::MetricType& metric_type, bool is_binary, i
     auto schema = std::make_shared<milvus::Schema>();
     auto faiss_metric_type = knowhere::GetMetricType(metric_type);
     if (!is_binary) {
-        schema->AddDebugField("fakevec", milvus::engine::DataType::VECTOR_FLOAT, dim, faiss_metric_type);
+        schema->AddDebugField("fakevec", milvus::DataType::VECTOR_FLOAT, dim, faiss_metric_type);
         return milvus::segcore::DataGen(schema, N);
     } else {
-        schema->AddDebugField("fakebinvec", milvus::engine::DataType::VECTOR_BINARY, dim, faiss_metric_type);
+        schema->AddDebugField("fakebinvec", milvus::DataType::VECTOR_BINARY, dim, faiss_metric_type);
         return milvus::segcore::DataGen(schema, N);
     }
 }
@@ -301,11 +307,8 @@ Jaccard(const uint8_t* point_a, const uint8_t* point_b, int dim) {
 }
 
 float
-CountDistance(const void* point_a,
-              const void* point_b,
-              int dim,
-              const knowhere::MetricType& metric,
-              bool is_binary = false) {
+CountDistance(
+    const void* point_a, const void* point_b, int dim, const knowhere::MetricType& metric, bool is_binary = false) {
     if (point_a == nullptr || point_b == nullptr) {
         return std::numeric_limits<float>::max();
     }
@@ -400,15 +403,6 @@ GenArr<std::string>(int64_t n) {
     return GenStrArr(n);
 }
 
-template <typename T, typename = typename std::enable_if_t<std::is_arithmetic_v<T>>>
-inline std::vector<ScalarTestParams>
-GenParams() {
-    std::vector<ScalarTestParams> ret;
-    ret.emplace_back(ScalarTestParams(MapParams(), {{"index_type", "inverted_index"}}));
-    ret.emplace_back(ScalarTestParams(MapParams(), {{"index_type", "flat"}}));
-    return ret;
-}
-
 std::vector<ScalarTestParams>
 GenBoolParams() {
     std::vector<ScalarTestParams> ret;
@@ -420,7 +414,24 @@ GenBoolParams() {
 std::vector<ScalarTestParams>
 GenStringParams() {
     std::vector<ScalarTestParams> ret;
-    ret.emplace_back(ScalarTestParams(MapParams(), {{"index_type", "marisa-trie"}}));
+    ret.emplace_back(ScalarTestParams(MapParams(), {{"index_type", "marisa"}}));
+    return ret;
+}
+
+template <typename T, typename = typename std::enable_if_t<std::is_arithmetic_v<T> | std::is_same_v<std::string, T>>>
+inline std::vector<ScalarTestParams>
+GenParams() {
+    if (std::is_same_v<std::string, T>) {
+        return GenStringParams();
+    }
+
+    if (std::is_same_v<T, bool>) {
+        return GenBoolParams();
+    }
+
+    std::vector<ScalarTestParams> ret;
+    ret.emplace_back(ScalarTestParams(MapParams(), {{"index_type", "inverted_index"}}));
+    ret.emplace_back(ScalarTestParams(MapParams(), {{"index_type", "flat"}}));
     return ret;
 }
 
@@ -441,14 +452,6 @@ PrintMapParams(const std::vector<ScalarTestParams>& tps) {
     }
 }
 
-template <typename T>
-inline void
-build_index(const std::unique_ptr<ScalarIndexCreator<T>>& creator, const std::vector<T>& arr) {
-    const int64_t dim = 8;  // not important here
-    auto dataset = knowhere::GenDataset(arr.size(), dim, arr.data());
-    creator->Build(dataset);
-}
-
 // memory generated by this function should be freed by the caller.
 auto
 GenDsFromPB(const google::protobuf::Message& msg) {
@@ -456,4 +459,17 @@ GenDsFromPB(const google::protobuf::Message& msg) {
     msg.SerializeToArray(data, msg.ByteSize());
     return knowhere::GenDataset(msg.ByteSize(), 8, data);
 }
+
+template <typename T>
+inline std::vector<std::string>
+GetIndexTypes() {
+    return std::vector<std::string>{"inverted_index"};
+}
+
+template <>
+inline std::vector<std::string>
+GetIndexTypes<std::string>() {
+    return std::vector<std::string>{"marisa"};
+}
+
 }  // namespace

@@ -51,16 +51,48 @@ generate_data(int N) {
 }
 }  // namespace
 
+Status
+merge_into(int64_t queries,
+           int64_t topk,
+           float* distances,
+           int64_t* uids,
+           const float* new_distances,
+           const int64_t* new_uids) {
+    for (int64_t qn = 0; qn < queries; ++qn) {
+        auto base = qn * topk;
+        auto src2_dis = distances + base;
+        auto src2_uids = uids + base;
+
+        auto src1_dis = new_distances + base;
+        auto src1_uids = new_uids + base;
+
+        std::vector<float> buf_dis(topk);
+        std::vector<int64_t> buf_uids(topk);
+
+        auto it1 = 0;
+        auto it2 = 0;
+
+        for (auto buf = 0; buf < topk; ++buf) {
+            if (src1_dis[it1] <= src2_dis[it2]) {
+                buf_dis[buf] = src1_dis[it1];
+                buf_uids[buf] = src1_uids[it1];
+                ++it1;
+            } else {
+                buf_dis[buf] = src2_dis[it2];
+                buf_uids[buf] = src2_uids[it2];
+                ++it2;
+            }
+        }
+        std::copy_n(buf_dis.data(), topk, src2_dis);
+        std::copy_n(buf_uids.data(), topk, src2_uids);
+    }
+    return Status::OK();
+}
+
 TEST(Indexing, SmartBruteForce) {
     constexpr int N = 100000;
     constexpr int DIM = 16;
     constexpr int TOPK = 10;
-
-    auto bitmap = std::make_shared<faiss::ConcurrentBitset>(N);
-    // exclude the first
-    for (int i = 0; i < N / 2; ++i) {
-        bitmap->set(i);
-    }
 
     auto [raw_data, timestamps, uids] = generate_data<DIM>(N);
     auto total_count = DIM * TOPK;
@@ -157,16 +189,16 @@ TEST(Indexing, Naive) {
         index->AddWithoutIds(ds, conf);
     }
 
-    auto bitmap = std::make_shared<faiss::ConcurrentBitset>(N);
+    auto bitmap = BitsetType(N, false);
     // exclude the first
     for (int i = 0; i < N / 2; ++i) {
-        bitmap->set(i);
+        bitmap.set(i);
     }
 
     //    index->SetBlacklist(bitmap);
+    BitsetView view = bitmap;
     auto query_ds = knowhere::GenDataset(1, DIM, raw_data.data());
-
-    auto final = index->Query(query_ds, conf, bitmap);
+    auto final = index->Query(query_ds, conf, view);
     auto ids = final->Get<idx_t*>(knowhere::meta::IDS);
     auto distances = final->Get<float*>(knowhere::meta::DISTANCE);
     for (int i = 0; i < TOPK; ++i) {
@@ -274,10 +306,10 @@ TEST(Indexing, BinaryBruteForce) {
     int64_t dim = 8192;
     auto result_count = topk * num_queries;
     auto schema = std::make_shared<Schema>();
-    schema->AddDebugField("vecbin", DataType::VECTOR_BINARY, dim, MetricType::METRIC_Jaccard);
-    schema->AddDebugField("age", DataType::INT64);
+    auto vec_fid = schema->AddDebugField("vecbin", DataType::VECTOR_BINARY, dim, MetricType::METRIC_Jaccard);
+    auto i64_fid = schema->AddDebugField("age", DataType::INT64);
     auto dataset = DataGen(schema, N, 10);
-    auto bin_vec = dataset.get_col<uint8_t>(0);
+    auto bin_vec = dataset.get_col<uint8_t>(vec_fid);
     auto query_data = 1024 * dim / 8 + bin_vec.data();
     query::dataset::SearchDataset search_dataset{
         faiss::MetricType::METRIC_Jaccard,  //
@@ -291,89 +323,48 @@ TEST(Indexing, BinaryBruteForce) {
     auto sub_result = query::BinarySearchBruteForce(search_dataset, bin_vec.data(), N, nullptr);
 
     SearchResult sr;
-    sr.num_queries_ = num_queries;
-    sr.topk_ = topk;
-    sr.ids_ = std::move(sub_result.mutable_ids());
+    sr.total_nq_ = num_queries;
+    sr.unity_topK_ = topk;
+    sr.seg_offsets_ = std::move(sub_result.mutable_seg_offsets());
     sr.distances_ = std::move(sub_result.mutable_distances());
 
     auto json = SearchResultToJson(sr);
     std::cout << json.dump(2);
+#ifdef __linux__
     auto ref = json::parse(R"(
 [
   [
-    [
-      "1024->0.000000",
-      "48942->0.642000",
-      "18494->0.644000",
-      "68225->0.644000",
-      "93557->0.644000"
-    ],
-    [
-      "1025->0.000000",
-      "73557->0.641000",
-      "53086->0.643000",
-      "9737->0.643000",
-      "62855->0.644000"
-    ],
-    [
-      "1026->0.000000",
-      "62904->0.644000",
-      "46758->0.644000",
-      "57969->0.645000",
-      "98113->0.646000"
-    ],
-    [
-      "1027->0.000000",
-      "92446->0.638000",
-      "96034->0.640000",
-      "92129->0.644000",
-      "45887->0.644000"
-    ],
-    [
-      "1028->0.000000",
-      "22992->0.643000",
-      "73903->0.644000",
-      "19969->0.645000",
-      "65178->0.645000"
-    ],
-    [
-      "1029->0.000000",
-      "19776->0.641000",
-      "15166->0.642000",
-      "85470->0.642000",
-      "16730->0.643000"
-    ],
-    [
-      "1030->0.000000",
-      "55939->0.640000",
-      "84253->0.643000",
-      "31958->0.644000",
-      "11667->0.646000"
-    ],
-    [
-      "1031->0.000000",
-      "89536->0.637000",
-      "61622->0.638000",
-      "9275->0.639000",
-      "91403->0.640000"
-    ],
-    [
-      "1032->0.000000",
-      "69504->0.642000",
-      "23414->0.644000",
-      "48770->0.645000",
-      "23231->0.645000"
-    ],
-    [
-      "1033->0.000000",
-      "33540->0.636000",
-      "25310->0.640000",
-      "18576->0.640000",
-      "73729->0.642000"
-    ]
+    [ "1024->0.000000", "48942->0.642000", "18494->0.644000", "68225->0.644000", "93557->0.644000" ],
+    [ "1025->0.000000", "73557->0.641000", "53086->0.643000", "9737->0.643000", "62855->0.644000" ],
+    [ "1026->0.000000", "62904->0.644000", "46758->0.644000", "57969->0.645000", "98113->0.646000" ],
+    [ "1027->0.000000", "92446->0.638000", "96034->0.640000", "92129->0.644000", "45887->0.644000" ],
+    [ "1028->0.000000", "22992->0.643000", "73903->0.644000", "19969->0.645000", "65178->0.645000" ],
+    [ "1029->0.000000", "19776->0.641000", "15166->0.642000", "85470->0.642000", "16730->0.643000" ],
+    [ "1030->0.000000", "55939->0.640000", "84253->0.643000", "31958->0.644000", "11667->0.646000" ],
+    [ "1031->0.000000", "89536->0.637000", "61622->0.638000", "9275->0.639000", "91403->0.640000" ],
+    [ "1032->0.000000", "69504->0.642000", "23414->0.644000", "48770->0.645000", "23231->0.645000" ],
+    [ "1033->0.000000", "33540->0.636000", "25310->0.640000", "18576->0.640000", "73729->0.642000" ]
   ]
 ]
 )");
+#else  // for mac
+    auto ref = json::parse(R"(
+[
+  [
+    [ "1024->0.000000", "59169->0.645000", "98548->0.646000", "3356->0.646000", "90373->0.647000" ],
+    [ "1025->0.000000", "61245->0.638000", "95271->0.639000", "31087->0.639000", "31549->0.640000" ],
+    [ "1026->0.000000", "65225->0.648000", "35750->0.648000", "14971->0.649000", "75385->0.649000" ],
+    [ "1027->0.000000", "70158->0.640000", "27076->0.640000", "3407->0.641000", "59527->0.641000" ],
+    [ "1028->0.000000", "45757->0.645000", "3356->0.645000", "77230->0.646000", "28690->0.647000" ],
+    [ "1029->0.000000", "13291->0.642000", "24960->0.643000", "83770->0.643000", "88244->0.643000" ],
+    [ "1030->0.000000", "96807->0.641000", "39920->0.643000", "62943->0.644000", "12603->0.644000" ],
+    [ "1031->0.000000", "65769->0.648000", "60493->0.648000", "48738->0.648000", "4353->0.648000" ],
+    [ "1032->0.000000", "57827->0.637000", "8213->0.638000", "22221->0.639000", "23328->0.640000" ],
+    [ "1033->0.000000", "676->0.645000", "91430->0.646000", "85353->0.646000", "6014->0.646000" ]
+  ]
+]
+)");
+#endif
     auto json_str = json.dump(2);
     auto ref_str = ref.dump(2);
     ASSERT_EQ(json_str, ref_str);

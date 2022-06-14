@@ -23,7 +23,10 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/milvus-io/milvus/internal/common"
+	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 
 	"github.com/stretchr/testify/assert"
@@ -92,6 +95,21 @@ func waitLoadCollectionDone(ctx context.Context, queryCoord *QueryCoord, collect
 	return nil
 }
 
+func waitLoadCollectionRollbackDone(queryCoord *QueryCoord, collectionID UniqueID) bool {
+	maxRetryNum := 100
+
+	for cnt := 0; cnt < maxRetryNum; cnt++ {
+		_, err := queryCoord.meta.getCollectionInfoByID(collectionID)
+		if err != nil {
+			return true
+		}
+		log.Debug("waiting for rollback done...")
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	return false
+}
+
 func TestGrpcTask(t *testing.T) {
 	refreshParams()
 	ctx := context.Background()
@@ -120,8 +138,9 @@ func TestGrpcTask(t *testing.T) {
 			Base: &commonpb.MsgBase{
 				MsgType: commonpb.MsgType_LoadPartitions,
 			},
-			CollectionID: defaultCollectionID,
-			Schema:       genDefaultCollectionSchema(false),
+			CollectionID:  defaultCollectionID,
+			Schema:        genDefaultCollectionSchema(false),
+			ReplicaNumber: 1,
 		})
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
 		assert.Nil(t, err)
@@ -132,9 +151,10 @@ func TestGrpcTask(t *testing.T) {
 			Base: &commonpb.MsgBase{
 				MsgType: commonpb.MsgType_LoadPartitions,
 			},
-			CollectionID: defaultCollectionID,
-			PartitionIDs: []UniqueID{defaultPartitionID},
-			Schema:       genDefaultCollectionSchema(false),
+			CollectionID:  defaultCollectionID,
+			PartitionIDs:  []UniqueID{defaultPartitionID},
+			Schema:        genDefaultCollectionSchema(false),
+			ReplicaNumber: 1,
 		})
 		assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
 		assert.Nil(t, err)
@@ -227,8 +247,9 @@ func TestGrpcTask(t *testing.T) {
 			Base: &commonpb.MsgBase{
 				MsgType: commonpb.MsgType_LoadCollection,
 			},
-			CollectionID: defaultCollectionID,
-			Schema:       genDefaultCollectionSchema(false),
+			CollectionID:  defaultCollectionID,
+			Schema:        genDefaultCollectionSchema(false),
+			ReplicaNumber: 1,
 		})
 		assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
 		assert.Nil(t, err)
@@ -280,6 +301,10 @@ func TestGrpcTask(t *testing.T) {
 	})
 
 	t.Run("Test GetSegmentInfo", func(t *testing.T) {
+		err := waitLoadCollectionDone(ctx, queryCoord, defaultCollectionID)
+		assert.NoError(t, err)
+		time.Sleep(3 * time.Second)
+
 		res, err := queryCoord.GetSegmentInfo(ctx, &querypb.GetSegmentInfoRequest{
 			Base: &commonpb.MsgBase{
 				MsgType: commonpb.MsgType_SegmentInfo,
@@ -338,14 +363,6 @@ func TestGrpcTask(t *testing.T) {
 		states, err := queryCoord.GetComponentStates(ctx)
 		assert.Equal(t, commonpb.ErrorCode_Success, states.Status.ErrorCode)
 		assert.Equal(t, internalpb.StateCode_Healthy, states.State.StateCode)
-		assert.Nil(t, err)
-	})
-
-	t.Run("Test CreateQueryChannel", func(t *testing.T) {
-		res, err := queryCoord.CreateQueryChannel(ctx, &querypb.CreateQueryChannelRequest{
-			CollectionID: defaultCollectionID,
-		})
-		assert.Equal(t, commonpb.ErrorCode_Success, res.Status.ErrorCode)
 		assert.Nil(t, err)
 	})
 
@@ -424,16 +441,17 @@ func TestGrpcTaskEnqueueFail(t *testing.T) {
 	queryCoord.scheduler.taskIDAllocator = failedAllocator
 
 	waitQueryNodeOnline(queryCoord.cluster, queryNode.queryNodeID)
-	assert.NotEmpty(t, queryCoord.cluster.onlineNodeIDs())
+	assert.NotEmpty(t, queryCoord.cluster.OnlineNodeIDs())
 
 	t.Run("Test LoadPartition", func(t *testing.T) {
 		status, err := queryCoord.LoadPartitions(ctx, &querypb.LoadPartitionsRequest{
 			Base: &commonpb.MsgBase{
 				MsgType: commonpb.MsgType_LoadPartitions,
 			},
-			CollectionID: defaultCollectionID,
-			PartitionIDs: []UniqueID{defaultPartitionID},
-			Schema:       genDefaultCollectionSchema(false),
+			CollectionID:  defaultCollectionID,
+			PartitionIDs:  []UniqueID{defaultPartitionID},
+			Schema:        genDefaultCollectionSchema(false),
+			ReplicaNumber: 1,
 		})
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
 		assert.Nil(t, err)
@@ -444,8 +462,9 @@ func TestGrpcTaskEnqueueFail(t *testing.T) {
 			Base: &commonpb.MsgBase{
 				MsgType: commonpb.MsgType_LoadCollection,
 			},
-			CollectionID: defaultCollectionID,
-			Schema:       genDefaultCollectionSchema(false),
+			CollectionID:  defaultCollectionID,
+			Schema:        genDefaultCollectionSchema(false),
+			ReplicaNumber: 1,
 		})
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
 		assert.Nil(t, err)
@@ -456,8 +475,9 @@ func TestGrpcTaskEnqueueFail(t *testing.T) {
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadCollection,
 		},
-		CollectionID: defaultCollectionID,
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	})
 	assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
 	assert.Nil(t, err)
@@ -489,9 +509,10 @@ func TestGrpcTaskEnqueueFail(t *testing.T) {
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadPartitions,
 		},
-		CollectionID: defaultCollectionID,
-		PartitionIDs: []UniqueID{defaultPartitionID},
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		PartitionIDs:  []UniqueID{defaultPartitionID},
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	})
 
 	assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
@@ -543,8 +564,9 @@ func TestLoadBalanceTask(t *testing.T) {
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadCollection,
 		},
-		CollectionID: defaultCollectionID,
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	})
 	assert.Nil(t, err)
 	assert.Equal(t, commonpb.ErrorCode_Success, res.ErrorCode)
@@ -557,7 +579,7 @@ func TestLoadBalanceTask(t *testing.T) {
 		}
 	}
 	nodeID := queryNode1.queryNodeID
-	queryCoord.cluster.stopNode(nodeID)
+	queryCoord.cluster.StopNode(nodeID)
 	loadBalanceSegment := &querypb.LoadBalanceRequest{
 		Base: &commonpb.MsgBase{
 			MsgType:  commonpb.MsgType_LoadBalanceSegments,
@@ -606,9 +628,10 @@ func TestGrpcTaskBeforeHealthy(t *testing.T) {
 			Base: &commonpb.MsgBase{
 				MsgType: commonpb.MsgType_LoadPartitions,
 			},
-			CollectionID: defaultCollectionID,
-			PartitionIDs: []UniqueID{defaultPartitionID},
-			Schema:       genDefaultCollectionSchema(false),
+			CollectionID:  defaultCollectionID,
+			PartitionIDs:  []UniqueID{defaultPartitionID},
+			Schema:        genDefaultCollectionSchema(false),
+			ReplicaNumber: 1,
 		})
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
 		assert.Nil(t, err)
@@ -654,8 +677,9 @@ func TestGrpcTaskBeforeHealthy(t *testing.T) {
 			Base: &commonpb.MsgBase{
 				MsgType: commonpb.MsgType_LoadCollection,
 			},
-			CollectionID: defaultCollectionID,
-			Schema:       genDefaultCollectionSchema(false),
+			CollectionID:  defaultCollectionID,
+			Schema:        genDefaultCollectionSchema(false),
+			ReplicaNumber: 1,
 		})
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
 		assert.Nil(t, err)
@@ -734,14 +758,6 @@ func TestGrpcTaskBeforeHealthy(t *testing.T) {
 		assert.Nil(t, err)
 	})
 
-	t.Run("Test CreateQueryChannel", func(t *testing.T) {
-		res, err := unHealthyCoord.CreateQueryChannel(ctx, &querypb.CreateQueryChannelRequest{
-			CollectionID: defaultCollectionID,
-		})
-		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, res.Status.ErrorCode)
-		assert.Nil(t, err)
-	})
-
 	t.Run("Test GetMetrics", func(t *testing.T) {
 		metricReq := make(map[string]string)
 		metricReq[metricsinfo.MetricTypeKey] = "system_info"
@@ -754,6 +770,24 @@ func TestGrpcTaskBeforeHealthy(t *testing.T) {
 
 		assert.Nil(t, err)
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, res.Status.ErrorCode)
+	})
+
+	t.Run("Test GetReplicas", func(t *testing.T) {
+		resp, err := unHealthyCoord.GetReplicas(ctx, &milvuspb.GetReplicasRequest{
+			Base:         &commonpb.MsgBase{},
+			CollectionID: defaultCollectionID,
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp.Status.ErrorCode)
+	})
+
+	t.Run("Test GetShardLeaders", func(t *testing.T) {
+		resp, err := unHealthyCoord.GetShardLeaders(ctx, &querypb.GetShardLeadersRequest{
+			Base:         &commonpb.MsgBase{},
+			CollectionID: defaultCollectionID,
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp.Status.ErrorCode)
 	})
 
 	unHealthyCoord.Stop()
@@ -789,8 +823,9 @@ func Test_RepeatedLoadSameCollection(t *testing.T) {
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadCollection,
 		},
-		CollectionID: defaultCollectionID,
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	}
 
 	//first load defaultCollectionID
@@ -824,17 +859,19 @@ func Test_LoadCollectionAndLoadPartitions(t *testing.T) {
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadCollection,
 		},
-		CollectionID: defaultCollectionID,
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	}
 
 	loadPartitionReq := &querypb.LoadPartitionsRequest{
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadPartitions,
 		},
-		CollectionID: defaultCollectionID,
-		PartitionIDs: []UniqueID{defaultPartitionID},
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		PartitionIDs:  []UniqueID{defaultPartitionID},
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	}
 
 	//first load defaultCollectionID
@@ -854,6 +891,180 @@ func Test_LoadCollectionAndLoadPartitions(t *testing.T) {
 	assert.Nil(t, err)
 }
 
+func TestLoadCollectionWithReplicas(t *testing.T) {
+	refreshParams()
+	ctx := context.Background()
+	queryCoord, err := startQueryCoord(ctx)
+	assert.Nil(t, err)
+
+	node1, err := startQueryNodeServer(ctx)
+	assert.Nil(t, err)
+	node2, err := startQueryNodeServer(ctx)
+	assert.Nil(t, err)
+
+	waitQueryNodeOnline(queryCoord.cluster, node1.queryNodeID)
+	waitQueryNodeOnline(queryCoord.cluster, node2.queryNodeID)
+	loadCollectionReq := &querypb.LoadCollectionRequest{
+		Base: &commonpb.MsgBase{
+			MsgType: commonpb.MsgType_LoadCollection,
+		},
+		CollectionID:  defaultCollectionID,
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 3,
+	}
+
+	// load collection with 3 replicas, but no enough querynodes
+	assert.Equal(t, 2, len(queryCoord.cluster.OnlineNodeIDs()))
+	status, err := queryCoord.LoadCollection(ctx, loadCollectionReq)
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
+
+	// Now it should can load collection with 3 replicas
+	node3, err := startQueryNodeServer(ctx)
+	assert.Nil(t, err)
+	waitQueryNodeOnline(queryCoord.cluster, node3.queryNodeID)
+
+	status, err = queryCoord.LoadCollection(ctx, loadCollectionReq)
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
+	waitLoadCollectionDone(ctx, queryCoord, defaultCollectionID)
+	replicas, err := queryCoord.meta.getReplicasByCollectionID(loadCollectionReq.CollectionID)
+	assert.NoError(t, err)
+	for i := range replicas {
+		log.Info("replicas",
+			zap.Int64("collectionID", replicas[i].CollectionID),
+			zap.Int64("id", replicas[i].ReplicaID),
+			zap.Int64s("nodeIds", replicas[i].NodeIds))
+	}
+	assert.Equal(t, 3, len(replicas))
+	for i := range replicas {
+		assert.Equal(t, loadCollectionReq.CollectionID, replicas[i].CollectionID)
+	}
+
+	// Load the loaded collection with different replica number should fail
+	loadCollectionReq.ReplicaNumber = 2
+	status, err = queryCoord.LoadCollection(ctx, loadCollectionReq)
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_IllegalArgument, status.ErrorCode)
+
+	status, err = queryCoord.ReleaseCollection(ctx, &querypb.ReleaseCollectionRequest{
+		Base: &commonpb.MsgBase{
+			MsgType: commonpb.MsgType_ReleaseCollection,
+		},
+		CollectionID: loadCollectionReq.CollectionID,
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
+
+	node1.stop()
+	node2.stop()
+	node3.stop()
+	queryCoord.Stop()
+	err = removeAllSession()
+	assert.Nil(t, err)
+}
+
+func TestLoadPartitionsWithReplicas(t *testing.T) {
+	refreshParams()
+	ctx := context.Background()
+	queryCoord, err := startQueryCoord(ctx)
+	assert.Nil(t, err)
+
+	node1, err := startQueryNodeServer(ctx)
+	assert.Nil(t, err)
+	node2, err := startQueryNodeServer(ctx)
+	assert.Nil(t, err)
+
+	waitQueryNodeOnline(queryCoord.cluster, node1.queryNodeID)
+	waitQueryNodeOnline(queryCoord.cluster, node2.queryNodeID)
+	loadPartitionsReq := &querypb.LoadPartitionsRequest{
+		Base: &commonpb.MsgBase{
+			MsgType: commonpb.MsgType_LoadPartitions,
+		},
+		CollectionID:  defaultCollectionID,
+		PartitionIDs:  []UniqueID{defaultPartitionID},
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 3,
+	}
+
+	// load collection with 3 replicas, but no enough querynodes
+	assert.Equal(t, 2, len(queryCoord.cluster.OnlineNodeIDs()))
+	status, err := queryCoord.LoadPartitions(ctx, loadPartitionsReq)
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
+
+	// Now it should can load collection with 3 replicas
+	node3, err := startQueryNodeServer(ctx)
+	assert.Nil(t, err)
+	waitQueryNodeOnline(queryCoord.cluster, node3.queryNodeID)
+
+	status, err = queryCoord.LoadPartitions(ctx, loadPartitionsReq)
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
+	waitLoadPartitionDone(ctx, queryCoord,
+		loadPartitionsReq.CollectionID, loadPartitionsReq.PartitionIDs)
+
+	// Load the loaded partitions with different replica number should fail
+	loadPartitionsReq.ReplicaNumber = 2
+	status, err = queryCoord.LoadPartitions(ctx, loadPartitionsReq)
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_IllegalArgument, status.ErrorCode)
+
+	status, err = queryCoord.ReleasePartitions(ctx, &querypb.ReleasePartitionsRequest{
+		Base: &commonpb.MsgBase{
+			MsgType: commonpb.MsgType_ReleaseCollection,
+		},
+		CollectionID: loadPartitionsReq.CollectionID,
+		PartitionIDs: loadPartitionsReq.PartitionIDs,
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
+
+	node1.stop()
+	node2.stop()
+	node3.stop()
+	queryCoord.Stop()
+	err = removeAllSession()
+	assert.Nil(t, err)
+}
+
+func TestLoadCollectionSyncSegmentsFail(t *testing.T) {
+	refreshParams()
+	ctx := context.Background()
+	defer removeAllSession()
+
+	queryCoord, err := startQueryCoord(ctx)
+	assert.Nil(t, err)
+	defer queryCoord.Stop()
+
+	node1, err := startQueryNodeServer(ctx)
+	assert.Nil(t, err)
+	waitQueryNodeOnline(queryCoord.cluster, node1.queryNodeID)
+	defer node1.stop()
+	node1.syncReplicaSegments = returnFailedResult
+
+	// Failed to sync segments should cause rollback
+	loadCollectionReq := &querypb.LoadCollectionRequest{
+		Base: &commonpb.MsgBase{
+			MsgType: commonpb.MsgType_LoadCollection,
+		},
+		CollectionID:  defaultCollectionID,
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
+	}
+	status, err := queryCoord.LoadCollection(ctx, loadCollectionReq)
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
+
+	// Wait for rollback done
+	rollbackDone := waitLoadCollectionRollbackDone(queryCoord, loadCollectionReq.CollectionID)
+	assert.True(t, rollbackDone)
+
+	assert.NoError(t, node1.stop())
+	assert.NoError(t, queryCoord.Stop())
+	assert.NoError(t, removeAllSession())
+}
+
 func Test_RepeatedLoadSamePartitions(t *testing.T) {
 	refreshParams()
 	ctx := context.Background()
@@ -868,9 +1079,10 @@ func Test_RepeatedLoadSamePartitions(t *testing.T) {
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadPartitions,
 		},
-		CollectionID: defaultCollectionID,
-		PartitionIDs: []UniqueID{defaultPartitionID},
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		PartitionIDs:  []UniqueID{defaultPartitionID},
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	}
 
 	//first load defaultPartitionID
@@ -904,9 +1116,10 @@ func Test_RepeatedLoadDifferentPartitions(t *testing.T) {
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadPartitions,
 		},
-		CollectionID: defaultCollectionID,
-		PartitionIDs: []UniqueID{defaultPartitionID},
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		PartitionIDs:  []UniqueID{defaultPartitionID},
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	}
 
 	//first load defaultPartitionID
@@ -920,9 +1133,10 @@ func Test_RepeatedLoadDifferentPartitions(t *testing.T) {
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadPartitions,
 		},
-		CollectionID: defaultCollectionID,
-		PartitionIDs: []UniqueID{defaultPartitionID + 1},
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		PartitionIDs:  []UniqueID{defaultPartitionID + 1},
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	}
 	status, err = queryCoord.LoadPartitions(ctx, failLoadRequest)
 	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
@@ -948,17 +1162,19 @@ func Test_LoadPartitionsAndLoadCollection(t *testing.T) {
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadCollection,
 		},
-		CollectionID: defaultCollectionID,
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	}
 
 	loadPartitionReq := &querypb.LoadPartitionsRequest{
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadPartitions,
 		},
-		CollectionID: defaultCollectionID,
-		PartitionIDs: []UniqueID{defaultPartitionID},
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		PartitionIDs:  []UniqueID{defaultPartitionID},
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	}
 
 	//first load defaultPartitionID
@@ -992,8 +1208,9 @@ func Test_LoadAndReleaseCollection(t *testing.T) {
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadCollection,
 		},
-		CollectionID: defaultCollectionID,
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	}
 
 	releaseCollectionReq := &querypb.ReleaseCollectionRequest{
@@ -1034,9 +1251,10 @@ func Test_LoadAndReleasePartitions(t *testing.T) {
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadPartitions,
 		},
-		CollectionID: defaultCollectionID,
-		PartitionIDs: []UniqueID{defaultPartitionID},
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		PartitionIDs:  []UniqueID{defaultPartitionID},
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	}
 
 	releasePartitionReq := &querypb.ReleasePartitionsRequest{
@@ -1078,8 +1296,9 @@ func Test_LoadCollectionAndReleasePartitions(t *testing.T) {
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadCollection,
 		},
-		CollectionID: defaultCollectionID,
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	}
 
 	releasePartitionReq := &querypb.ReleasePartitionsRequest{
@@ -1121,9 +1340,10 @@ func Test_LoadPartitionsAndReleaseCollection(t *testing.T) {
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadPartitions,
 		},
-		CollectionID: defaultCollectionID,
-		PartitionIDs: []UniqueID{defaultPartitionID},
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		PartitionIDs:  []UniqueID{defaultPartitionID},
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	}
 	releaseCollectionReq := &querypb.ReleaseCollectionRequest{
 		Base: &commonpb.MsgBase{
@@ -1163,8 +1383,9 @@ func Test_RepeatedReleaseCollection(t *testing.T) {
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadCollection,
 		},
-		CollectionID: defaultCollectionID,
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	}
 
 	releaseCollectionReq := &querypb.ReleaseCollectionRequest{
@@ -1210,9 +1431,10 @@ func Test_RepeatedReleaseSamePartitions(t *testing.T) {
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadPartitions,
 		},
-		CollectionID: defaultCollectionID,
-		PartitionIDs: []UniqueID{defaultPartitionID},
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		PartitionIDs:  []UniqueID{defaultPartitionID},
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	}
 
 	releasePartitionReq := &querypb.ReleasePartitionsRequest{
@@ -1259,9 +1481,10 @@ func Test_RepeatedReleaseDifferentPartitions(t *testing.T) {
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_LoadPartitions,
 		},
-		CollectionID: defaultCollectionID,
-		PartitionIDs: []UniqueID{defaultPartitionID, defaultPartitionID + 1},
-		Schema:       genDefaultCollectionSchema(false),
+		CollectionID:  defaultCollectionID,
+		PartitionIDs:  []UniqueID{defaultPartitionID, defaultPartitionID + 1},
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 1,
 	}
 
 	releasePartitionReq := &querypb.ReleasePartitionsRequest{
@@ -1293,4 +1516,202 @@ func Test_RepeatedReleaseDifferentPartitions(t *testing.T) {
 	queryCoord.Stop()
 	err = removeAllSession()
 	assert.Nil(t, err)
+}
+
+func TestGetReplicas(t *testing.T) {
+	refreshParams()
+	ctx := context.Background()
+	queryCoord, err := startQueryCoord(ctx)
+	assert.Nil(t, err)
+
+	node1, err := startQueryNodeServer(ctx)
+	assert.Nil(t, err)
+	node2, err := startQueryNodeServer(ctx)
+	assert.Nil(t, err)
+	node3, err := startQueryNodeServer(ctx)
+	assert.Nil(t, err)
+	node4, err := startQueryNodeServer(ctx)
+	assert.Nil(t, err)
+	waitQueryNodeOnline(queryCoord.cluster, node1.queryNodeID)
+	waitQueryNodeOnline(queryCoord.cluster, node2.queryNodeID)
+	waitQueryNodeOnline(queryCoord.cluster, node3.queryNodeID)
+	waitQueryNodeOnline(queryCoord.cluster, node4.queryNodeID)
+
+	// First, load collection with replicas
+	loadCollectionReq := &querypb.LoadCollectionRequest{
+		Base: &commonpb.MsgBase{
+			MsgType: commonpb.MsgType_LoadCollection,
+		},
+		CollectionID:  defaultCollectionID,
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 3,
+	}
+	status, err := queryCoord.LoadCollection(ctx, loadCollectionReq)
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
+	waitLoadCollectionDone(ctx, queryCoord, defaultCollectionID)
+	time.Sleep(200 * time.Millisecond)
+
+	getReplicasReq := &milvuspb.GetReplicasRequest{
+		Base:         &commonpb.MsgBase{},
+		CollectionID: loadCollectionReq.CollectionID,
+	}
+	resp, err := queryCoord.GetReplicas(ctx, getReplicasReq)
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
+	assert.Equal(t, 3, len(resp.Replicas))
+	for i := range resp.Replicas {
+		for j := 0; j < i; j++ {
+			assert.NotEqual(t,
+				resp.Replicas[i].NodeIds[0],
+				resp.Replicas[j].NodeIds[0])
+		}
+	}
+
+	getReplicasReq.WithShardNodes = true
+	resp, err = queryCoord.GetReplicas(ctx, getReplicasReq)
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
+	assert.Equal(t, 3, len(resp.Replicas))
+	sawNodes := make(map[UniqueID]struct{})
+	for i, replica := range resp.Replicas {
+		addNodes := make(map[UniqueID]struct{})
+		assert.Greater(t, len(replica.NodeIds), 0)
+		assert.Greater(t, len(replica.ShardReplicas), 0)
+		for _, shard := range replica.ShardReplicas {
+			assert.Equal(t,
+				shard.NodeIds[0],
+				shard.LeaderID)
+			assert.Greater(t, len(shard.NodeIds), 0)
+
+			for _, nodeID := range shard.NodeIds {
+				_, ok := sawNodes[nodeID]
+				assert.False(t, ok)
+
+				addNodes[nodeID] = struct{}{}
+			}
+		}
+
+		for nodeID := range addNodes {
+			sawNodes[nodeID] = struct{}{}
+		}
+
+		for j := 0; j < i; j++ {
+			assert.NotEqual(t,
+				replica.NodeIds[0],
+				resp.Replicas[j].NodeIds[0])
+		}
+	}
+
+	// GetReplicas after release collection, it should return meta failed
+	status, err = queryCoord.ReleaseCollection(ctx, &querypb.ReleaseCollectionRequest{
+		Base:         &commonpb.MsgBase{},
+		CollectionID: loadCollectionReq.CollectionID,
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
+
+	resp, err = queryCoord.GetReplicas(ctx, getReplicasReq)
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_MetaFailed, resp.Status.ErrorCode)
+
+	node1.stop()
+	node2.stop()
+	node3.stop()
+	node4.stop()
+	queryCoord.Stop()
+}
+
+func TestGetShardLeaders(t *testing.T) {
+	refreshParams()
+	ctx := context.Background()
+	queryCoord, err := startQueryCoord(ctx)
+	assert.Nil(t, err)
+	defer queryCoord.Stop()
+
+	node1, err := startQueryNodeServer(ctx)
+	assert.Nil(t, err)
+	node2, err := startQueryNodeServer(ctx)
+	assert.Nil(t, err)
+	node3, err := startQueryNodeServer(ctx)
+	assert.Nil(t, err)
+	waitQueryNodeOnline(queryCoord.cluster, node1.queryNodeID)
+	waitQueryNodeOnline(queryCoord.cluster, node2.queryNodeID)
+	waitQueryNodeOnline(queryCoord.cluster, node3.queryNodeID)
+	defer node1.stop()
+	defer node2.stop()
+	defer node3.stop()
+	defer removeAllSession()
+
+	// First, load collection with replicas
+	loadCollectionReq := &querypb.LoadCollectionRequest{
+		Base: &commonpb.MsgBase{
+			MsgType: commonpb.MsgType_LoadCollection,
+		},
+		CollectionID:  defaultCollectionID,
+		Schema:        genDefaultCollectionSchema(false),
+		ReplicaNumber: 3,
+	}
+	status, err := queryCoord.LoadCollection(ctx, loadCollectionReq)
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
+	waitLoadCollectionDone(ctx, queryCoord, defaultCollectionID)
+
+	getShardLeadersReq := &querypb.GetShardLeadersRequest{
+		Base:         &commonpb.MsgBase{},
+		CollectionID: loadCollectionReq.CollectionID,
+	}
+	resp, err := queryCoord.GetShardLeaders(ctx, getShardLeadersReq)
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
+
+	totalLeaders := 0
+	for i := 0; i < len(resp.Shards); i++ {
+		totalLeaders += len(resp.Shards[i].NodeIds)
+		assert.Equal(t, 3, len(resp.Shards[i].NodeIds))
+	}
+	assert.Equal(t, 0, totalLeaders%3)
+
+	// mock replica all down, without triggering load balance
+	mockCluster := NewMockCluster(queryCoord.cluster)
+	mockCluster.isOnlineHandler = func(nodeID int64) (bool, error) {
+		return false, nil
+	}
+	queryCoord.cluster = mockCluster
+	resp, err = queryCoord.GetShardLeaders(ctx, getShardLeadersReq)
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_NoReplicaAvailable, resp.Status.ErrorCode)
+
+	// TODO(yah01): Disable the unit test case for now,
+	// restore it after the rebalance between replicas feature is implemented
+
+	// Filter out unavailable shard
+	// err = node1.stop()
+	// assert.NoError(t, err)
+	// err = removeNodeSession(node1.queryNodeID)
+	// assert.NoError(t, err)
+	// waitAllQueryNodeOffline(queryCoord.cluster, []int64{node1.queryNodeID})
+	// resp, err = queryCoord.GetShardLeaders(ctx, getShardLeadersReq)
+	// assert.NoError(t, err)
+	// assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
+	// for i := 0; i < len(resp.Shards); i++ {
+	// 	assert.Equal(t, 2, len(resp.Shards[i].NodeIds))
+	// }
+
+	// node4, err := startQueryNodeServer(ctx)
+	// assert.NoError(t, err)
+	// waitQueryNodeOnline(queryCoord.cluster, node4.queryNodeID)
+	// defer node4.stop()
+
+	// GetShardLeaders after release collection, it should return meta failed
+	status, err = queryCoord.ReleaseCollection(ctx, &querypb.ReleaseCollectionRequest{
+		Base:         &commonpb.MsgBase{},
+		CollectionID: loadCollectionReq.CollectionID,
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
+
+	resp, err = queryCoord.GetShardLeaders(ctx, getShardLeadersReq)
+	assert.NoError(t, err)
+	assert.Equal(t, commonpb.ErrorCode_MetaFailed, resp.Status.ErrorCode)
 }

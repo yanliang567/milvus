@@ -30,6 +30,7 @@ import (
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
+	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 )
 
@@ -44,6 +45,7 @@ type channelUnsubscribeHandler struct {
 	kvClient *etcdkv.EtcdKV
 	factory  msgstream.Factory
 
+	mut          sync.RWMutex // mutex for channelInfos, since container/list is not goroutine-safe
 	channelInfos *list.List
 	downNodeChan chan int64
 
@@ -51,7 +53,7 @@ type channelUnsubscribeHandler struct {
 }
 
 // newChannelUnsubscribeHandler create a new handler service to unsubscribe channels
-func newChannelUnsubscribeHandler(ctx context.Context, kv *etcdkv.EtcdKV, factory msgstream.Factory) (*channelUnsubscribeHandler, error) {
+func newChannelUnsubscribeHandler(ctx context.Context, kv *etcdkv.EtcdKV, factory dependency.Factory) (*channelUnsubscribeHandler, error) {
 	childCtx, cancel := context.WithCancel(ctx)
 	handler := &channelUnsubscribeHandler{
 		ctx:      childCtx,
@@ -72,9 +74,16 @@ func newChannelUnsubscribeHandler(ctx context.Context, kv *etcdkv.EtcdKV, factor
 	return handler, nil
 }
 
+// appendUnsubInfo pushes unsub info safely
+func (csh *channelUnsubscribeHandler) appendUnsubInfo(info *querypb.UnsubscribeChannelInfo) {
+	csh.mut.Lock()
+	defer csh.mut.Unlock()
+	csh.channelInfos.PushBack(info)
+}
+
 // reloadFromKV reload unsolved channels to unsubscribe
 func (csh *channelUnsubscribeHandler) reloadFromKV() error {
-	log.Debug("start reload unsubscribe channelInfo from kv")
+	log.Info("start reload unsubscribe channelInfo from kv")
 	_, channelInfoValues, err := csh.kvClient.LoadWithPrefix(unsubscribeChannelInfoPrefix)
 	if err != nil {
 		return err
@@ -85,7 +94,7 @@ func (csh *channelUnsubscribeHandler) reloadFromKV() error {
 		if err != nil {
 			return err
 		}
-		csh.channelInfos.PushBack(channelInfo)
+		csh.appendUnsubInfo(channelInfo)
 		csh.downNodeChan <- channelInfo.NodeID
 	}
 
@@ -101,11 +110,14 @@ func (csh *channelUnsubscribeHandler) addUnsubscribeChannelInfo(info *querypb.Un
 	}
 	// when queryCoord is restarted multiple times, the nodeID of added channelInfo may be the same
 	hasEnqueue := false
+	// reduce the lock range to iteration here, since `addUnsubscribeChannelInfo` is called one by one
+	csh.mut.RLock()
 	for e := csh.channelInfos.Back(); e != nil; e = e.Prev() {
 		if e.Value.(*querypb.UnsubscribeChannelInfo).NodeID == nodeID {
 			hasEnqueue = true
 		}
 	}
+	csh.mut.RUnlock()
 
 	if !hasEnqueue {
 		channelInfoKey := fmt.Sprintf("%s/%d", unsubscribeChannelInfoPrefix, nodeID)
@@ -113,9 +125,9 @@ func (csh *channelUnsubscribeHandler) addUnsubscribeChannelInfo(info *querypb.Un
 		if err != nil {
 			panic(err)
 		}
-		csh.channelInfos.PushBack(info)
+		csh.appendUnsubInfo(info)
 		csh.downNodeChan <- info.NodeID
-		log.Debug("add unsubscribeChannelInfo to handler", zap.Int64("nodeID", info.NodeID))
+		log.Info("add unsubscribeChannelInfo to handler", zap.Int64("nodeID", info.NodeID))
 	}
 }
 
@@ -125,28 +137,30 @@ func (csh *channelUnsubscribeHandler) handleChannelUnsubscribeLoop() {
 	for {
 		select {
 		case <-csh.ctx.Done():
-			log.Debug("channelUnsubscribeHandler ctx done, handleChannelUnsubscribeLoop end")
+			log.Info("channelUnsubscribeHandler ctx done, handleChannelUnsubscribeLoop end")
 			return
 		case <-csh.downNodeChan:
+			csh.mut.RLock()
+			e := csh.channelInfos.Front()
 			channelInfo := csh.channelInfos.Front().Value.(*querypb.UnsubscribeChannelInfo)
+			csh.mut.RUnlock()
 			nodeID := channelInfo.NodeID
 			for _, collectionChannels := range channelInfo.CollectionChannels {
 				collectionID := collectionChannels.CollectionID
 				subName := funcutil.GenChannelSubName(Params.CommonCfg.QueryNodeSubName, collectionID, nodeID)
-				err := unsubscribeChannels(csh.ctx, csh.factory, subName, collectionChannels.Channels)
-				if err != nil {
-					log.Debug("unsubscribe channels failed", zap.Int64("nodeID", nodeID))
-					panic(err)
-				}
+				msgstream.UnsubscribeChannels(csh.ctx, csh.factory, subName, collectionChannels.Channels)
 			}
-
 			channelInfoKey := fmt.Sprintf("%s/%d", unsubscribeChannelInfoPrefix, nodeID)
 			err := csh.kvClient.Remove(channelInfoKey)
 			if err != nil {
 				log.Error("remove unsubscribe channelInfo from etcd failed", zap.Int64("nodeID", nodeID))
 				panic(err)
 			}
-			log.Debug("unsubscribe channels success", zap.Int64("nodeID", nodeID))
+
+			csh.mut.Lock()
+			csh.channelInfos.Remove(e)
+			csh.mut.Unlock()
+			log.Info("unsubscribe channels success", zap.Int64("nodeID", nodeID))
 		}
 	}
 }
@@ -159,16 +173,4 @@ func (csh *channelUnsubscribeHandler) start() {
 func (csh *channelUnsubscribeHandler) close() {
 	csh.cancel()
 	csh.wg.Wait()
-}
-
-// unsubscribeChannels create consumer fist, and unsubscribe channel through msgStream.close()
-func unsubscribeChannels(ctx context.Context, factory msgstream.Factory, subName string, channels []string) error {
-	msgStream, err := factory.NewMsgStream(ctx)
-	if err != nil {
-		return err
-	}
-
-	msgStream.AsConsumer(channels, subName)
-	msgStream.Close()
-	return nil
 }

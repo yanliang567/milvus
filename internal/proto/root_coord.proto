@@ -8,6 +8,7 @@ import "milvus.proto";
 import "internal.proto";
 import "proxy.proto";
 import "data_coord.proto";
+import "etcd_meta.proto";
 
 service RootCoord {
   rpc GetComponentStates(internal.GetComponentStatesRequest) returns (internal.ComponentStates) {}
@@ -92,6 +93,7 @@ service RootCoord {
 
     rpc DescribeSegment(milvus.DescribeSegmentRequest) returns (milvus.DescribeSegmentResponse) {}
     rpc ShowSegments(milvus.ShowSegmentsRequest) returns (milvus.ShowSegmentsResponse) {}
+    rpc DescribeSegments(DescribeSegmentsRequest) returns (DescribeSegmentsResponse) {}
 
     rpc CreateIndex(milvus.CreateIndexRequest) returns (common.Status) {}
     rpc DescribeIndex(milvus.DescribeIndexRequest) returns (milvus.DescribeIndexResponse) {}
@@ -101,6 +103,7 @@ service RootCoord {
     rpc AllocID(AllocIDRequest) returns (AllocIDResponse) {}
     rpc UpdateChannelTimeTick(internal.ChannelTimeTickMsg) returns (common.Status) {}
     rpc ReleaseDQLMessageStream(proxy.ReleaseDQLMessageStreamRequest) returns (common.Status) {}
+    rpc InvalidateCollectionMetaCache(proxy.InvalidateCollMetaCacheRequest) returns (common.Status) {}
     rpc SegmentFlushCompleted(data.SegmentFlushCompletedMsg) returns (common.Status) {}
 
     // https://wiki.lfaidata.foundation/display/MIL/MEP+8+--+Add+metrics+for+proxy
@@ -109,7 +112,27 @@ service RootCoord {
     // https://wiki.lfaidata.foundation/display/MIL/MEP+24+--+Support+bulk+load
     rpc Import(milvus.ImportRequest) returns (milvus.ImportResponse) {}
     rpc GetImportState(milvus.GetImportStateRequest) returns (milvus.GetImportStateResponse) {}
+    rpc ListImportTasks(milvus.ListImportTasksRequest) returns (milvus.ListImportTasksResponse) {}
     rpc ReportImport(ImportResult) returns (common.Status) {}
+
+    // https://wiki.lfaidata.foundation/display/MIL/MEP+27+--+Support+Basic+Authentication
+    rpc CreateCredential(internal.CredentialInfo) returns (common.Status) {}
+    rpc UpdateCredential(internal.CredentialInfo) returns (common.Status) {}
+    rpc DeleteCredential(milvus.DeleteCredentialRequest) returns (common.Status) {}
+    rpc ListCredUsers(milvus.ListCredUsersRequest) returns (milvus.ListCredUsersResponse) {}
+    // userd by proxy, not exposed to sdk
+    rpc GetCredential(GetCredentialRequest) returns (GetCredentialResponse) {}
+
+    // https://wiki.lfaidata.foundation/display/MIL/MEP+29+--+Support+Role-Based+Access+Control
+    rpc CreateRole(milvus.CreateRoleRequest) returns (common.Status) {}
+    rpc DropRole(milvus.DropRoleRequest) returns (common.Status) {}
+    rpc OperateUserRole(milvus.OperateUserRoleRequest) returns (common.Status) {}
+    rpc SelectRole(milvus.SelectRoleRequest) returns (milvus.SelectRoleResponse) {}
+    rpc SelectUser(milvus.SelectUserRequest) returns (milvus.SelectUserResponse) {}
+    rpc SelectResource(milvus.SelectResourceRequest) returns (milvus.SelectResourceResponse) {}
+    rpc OperatePrivilege(milvus.OperatePrivilegeRequest) returns (common.Status) {}
+    rpc SelectGrant(milvus.SelectGrantRequest) returns (milvus.SelectGrantResponse) {}
+    rpc ListPolicy(internal.ListPolicyRequest) returns (internal.ListPolicyResponse) {}
 }
 
 message AllocTimestampRequest {
@@ -143,4 +166,46 @@ message ImportResult {
   repeated int64 auto_ids = 6;             // auto-generated ids for auto-id primary key
   int64 row_count = 7;                     // how many rows are imported by this task
   repeated common.KeyValuePair infos = 8;  // more informations about the task, file path, failed reason, etc.
+}
+
+// TODO: find a proper place for these segment-related messages.
+
+message DescribeSegmentsRequest {
+  common.MsgBase base = 1;
+  int64 collectionID = 2;
+  repeated int64 segmentIDs = 3;
+}
+
+message SegmentBaseInfo {
+  int64 collectionID = 1; // in which collection.
+  int64 partitionID = 2;  // in which partition.
+  int64 segmentID = 3;
+}
+
+message SegmentInfos {
+  SegmentBaseInfo base_info = 1;                    // base information.
+  repeated etcd.SegmentIndexInfo index_infos = 2;   // multiple index infos.
+  map<int64, etcd.IndexInfo> extra_index_infos = 3; // index_id -> IndexInfo{index_name, index_id, index_params}
+}
+
+message DescribeSegmentsResponse {
+  common.Status status = 1;
+  int64 collectionID = 2;
+  map<int64, SegmentInfos> segment_infos = 3; // segment_id -> segment infos
+}
+
+message GetCredentialRequest {
+  // Not useful for now
+  common.MsgBase base = 1;
+  // username
+  string username = 2;
+}
+
+message GetCredentialResponse {
+  // Contain error_code and reason
+  common.Status status = 1;
+  // username
+  string username = 2;
+  // password
+  string password = 3;
 }

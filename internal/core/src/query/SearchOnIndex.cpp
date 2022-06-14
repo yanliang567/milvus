@@ -17,7 +17,7 @@ SubSearchResult
 SearchOnIndex(const dataset::SearchDataset& search_dataset,
               const knowhere::VecIndex& indexing,
               const knowhere::Config& search_conf,
-              const faiss::BitsetView& bitset) {
+              const BitsetView& bitset) {
     auto num_queries = search_dataset.num_queries;
     auto topK = search_dataset.topk;
     auto dim = search_dataset.dim;
@@ -35,7 +35,7 @@ SearchOnIndex(const dataset::SearchDataset& search_dataset,
 
     SubSearchResult sub_qr(num_queries, topK, metric_type, round_decimal);
     std::copy_n(dis, num_queries * topK, sub_qr.get_distances());
-    std::copy_n(uids, num_queries * topK, sub_qr.get_ids());
+    std::copy_n(uids, num_queries * topK, sub_qr.get_seg_offsets());
     sub_qr.round_values();
     return sub_qr;
 }

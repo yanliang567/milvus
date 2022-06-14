@@ -7,13 +7,12 @@ if [[ "${MSYSTEM}" != "MINGW64" ]] ; then
     exit 1
 fi
 
-pacman -Su --noconfirm --needed \
+pacman -S --noconfirm --needed \
     git make tar dos2unix zip unzip patch \
     mingw-w64-x86_64-toolchain \
     mingw-w64-x86_64-make \
     mingw-w64-x86_64-ccache \
     mingw-w64-x86_64-cmake \
-    mingw-w64-x86_64-go \
     mingw-w64-x86_64-boost \
     mingw-w64-x86_64-intel-tbb \
     mingw-w64-x86_64-openblas \
@@ -22,6 +21,7 @@ pacman -Su --noconfirm --needed \
     mingw-w64-x86_64-python2 \
     mingw-w64-x86_64-diffutils \
     mingw-w64-x86_64-arrow \
+    mingw-w64-x86_64-go \
     mingw-w64-x86_64-rocksdb
 
 

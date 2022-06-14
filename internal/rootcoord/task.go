@@ -24,11 +24,11 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/etcdpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
+	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
@@ -324,9 +324,6 @@ func (t *DropCollectionReqTask) Execute(ctx context.Context) error {
 		return fmt.Errorf("encodeDdOperation fail, error = %w", err)
 	}
 
-	// get all aliases before meta table updated
-	aliases := t.core.MetaTable.ListAliases(collMeta.ID)
-
 	// use lambda function here to guarantee all resources to be released
 	dropCollectionFn := func() error {
 		// lock for ddl operation
@@ -375,8 +372,11 @@ func (t *DropCollectionReqTask) Execute(ctx context.Context) error {
 		return err
 	}
 
-	t.core.ExpireMetaCache(ctx, []string{t.Req.CollectionName}, ts)
-	t.core.ExpireMetaCache(ctx, aliases, ts)
+	// invalidate all the collection meta cache with the specified collectionID
+	err = t.core.ExpireMetaCache(ctx, nil, collMeta.ID, ts)
+	if err != nil {
+		return err
+	}
 
 	// Update DDOperation in etcd
 	return t.core.MetaTable.txn.Save(DDMsgSendPrefix, strconv.FormatBool(true))
@@ -571,7 +571,11 @@ func (t *CreatePartitionReqTask) Execute(ctx context.Context) error {
 		return err
 	}
 
-	t.core.ExpireMetaCache(ctx, []string{t.Req.CollectionName}, ts)
+	// invalidate all the collection meta cache with the specified collectionID
+	err = t.core.ExpireMetaCache(ctx, nil, collMeta.ID, ts)
+	if err != nil {
+		return err
+	}
 
 	// Update DDOperation in etcd
 	return t.core.MetaTable.txn.Save(DDMsgSendPrefix, strconv.FormatBool(true))
@@ -658,7 +662,11 @@ func (t *DropPartitionReqTask) Execute(ctx context.Context) error {
 		return err
 	}
 
-	t.core.ExpireMetaCache(ctx, []string{t.Req.CollectionName}, ts)
+	// invalidate all the collection meta cache with the specified collectionID
+	err = t.core.ExpireMetaCache(ctx, nil, collInfo.ID, ts)
+	if err != nil {
+		return err
+	}
 
 	//notify query service to release partition
 	// TODO::xige-16, reOpen when queryCoord support release partitions after load collection
@@ -829,6 +837,88 @@ func (t *ShowSegmentReqTask) Execute(ctx context.Context) error {
 	return nil
 }
 
+type DescribeSegmentsReqTask struct {
+	baseReqTask
+	Req *rootcoordpb.DescribeSegmentsRequest
+	Rsp *rootcoordpb.DescribeSegmentsResponse
+}
+
+func (t *DescribeSegmentsReqTask) Type() commonpb.MsgType {
+	return t.Req.GetBase().GetMsgType()
+}
+
+func (t *DescribeSegmentsReqTask) Execute(ctx context.Context) error {
+	collectionID := t.Req.GetCollectionID()
+	segIDs, err := t.core.CallGetFlushedSegmentsService(ctx, collectionID, -1)
+	if err != nil {
+		log.Error("failed to get flushed segments",
+			zap.Error(err),
+			zap.Int64("collection", collectionID))
+		return err
+	}
+
+	t.Rsp.CollectionID = collectionID
+	t.Rsp.SegmentInfos = make(map[typeutil.UniqueID]*rootcoordpb.SegmentInfos)
+
+	segIDsMap := make(map[typeutil.UniqueID]struct{})
+	for _, segID := range segIDs {
+		segIDsMap[segID] = struct{}{}
+	}
+
+	for _, segID := range t.Req.SegmentIDs {
+		if _, ok := segIDsMap[segID]; !ok {
+			log.Warn("requested segment not found",
+				zap.Int64("collection", collectionID),
+				zap.Int64("segment", segID))
+			return fmt.Errorf("segment not found, collection: %d, segment: %d",
+				collectionID, segID)
+		}
+
+		if _, ok := t.Rsp.SegmentInfos[segID]; !ok {
+			t.Rsp.SegmentInfos[segID] = &rootcoordpb.SegmentInfos{
+				BaseInfo: &rootcoordpb.SegmentBaseInfo{
+					CollectionID: collectionID,
+					PartitionID:  0, // TODO: change this after MetaTable.partID2SegID been fixed.
+					SegmentID:    segID,
+				},
+				IndexInfos:      nil,
+				ExtraIndexInfos: make(map[typeutil.UniqueID]*etcdpb.IndexInfo),
+			}
+		}
+
+		segmentInfo, err := t.core.MetaTable.GetSegmentIndexInfos(segID)
+		if err != nil {
+			continue
+		}
+
+		for indexID, indexInfo := range segmentInfo {
+			t.Rsp.SegmentInfos[segID].IndexInfos =
+				append(t.Rsp.SegmentInfos[segID].IndexInfos,
+					&etcdpb.SegmentIndexInfo{
+						CollectionID: indexInfo.CollectionID,
+						PartitionID:  indexInfo.PartitionID,
+						SegmentID:    indexInfo.SegmentID,
+						FieldID:      indexInfo.FieldID,
+						IndexID:      indexInfo.IndexID,
+						BuildID:      indexInfo.BuildID,
+						EnableIndex:  indexInfo.EnableIndex,
+					})
+			extraIndexInfo, err := t.core.MetaTable.GetIndexByID(indexID)
+			if err != nil {
+				log.Error("index not found in meta table",
+					zap.Error(err),
+					zap.Int64("indexID", indexID),
+					zap.Int64("collection", collectionID),
+					zap.Int64("segment", segID))
+				return err
+			}
+			t.Rsp.SegmentInfos[segID].ExtraIndexInfos[indexID] = extraIndexInfo
+		}
+	}
+
+	return nil
+}
+
 // CreateIndexReqTask create index request task
 type CreateIndexReqTask struct {
 	baseReqTask
@@ -869,7 +959,7 @@ func (t *CreateIndexReqTask) Execute(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	segID2PartID, err := t.core.getSegments(ctx, collMeta.ID)
+	segID2PartID, segID2Binlog, err := t.core.getSegments(ctx, collMeta.ID)
 	flushedSegs := make([]typeutil.UniqueID, 0, len(segID2PartID))
 	for k := range segID2PartID {
 		flushedSegs = append(flushedSegs, k)
@@ -888,10 +978,6 @@ func (t *CreateIndexReqTask) Execute(ctx context.Context) error {
 	collectionID := collMeta.ID
 	cnt := 0
 
-	defer func() {
-		metrics.RootCoordNumOfIndexedSegments.WithLabelValues(strconv.FormatInt(collectionID, 10)).Add(float64(cnt))
-	}()
-
 	for _, segID := range segIDs {
 		info := etcdpb.SegmentIndexInfo{
 			CollectionID: collectionID,
@@ -901,7 +987,7 @@ func (t *CreateIndexReqTask) Execute(ctx context.Context) error {
 			IndexID:      idxInfo.IndexID,
 			EnableIndex:  false,
 		}
-		info.BuildID, err = t.core.BuildIndex(ctx, segID, &field, idxInfo, false)
+		info.BuildID, err = t.core.BuildIndex(ctx, segID, segID2Binlog[segID].GetNumOfRows(), segID2Binlog[segID].GetFieldBinlogs(), &field, idxInfo, false)
 		if err != nil {
 			return err
 		}
@@ -1033,9 +1119,7 @@ func (t *DropAliasReqTask) Execute(ctx context.Context) error {
 		return fmt.Errorf("meta table drop alias failed, error = %w", err)
 	}
 
-	t.core.ExpireMetaCache(ctx, []string{t.Req.Alias}, ts)
-
-	return nil
+	return t.core.ExpireMetaCache(ctx, []string{t.Req.Alias}, InvalidCollectionID, ts)
 }
 
 // AlterAliasReqTask alter alias request task
@@ -1064,7 +1148,5 @@ func (t *AlterAliasReqTask) Execute(ctx context.Context) error {
 		return fmt.Errorf("meta table alter alias failed, error = %w", err)
 	}
 
-	t.core.ExpireMetaCache(ctx, []string{t.Req.Alias}, ts)
-
-	return nil
+	return t.core.ExpireMetaCache(ctx, []string{t.Req.Alias}, InvalidCollectionID, ts)
 }

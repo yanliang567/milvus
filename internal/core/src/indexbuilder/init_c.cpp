@@ -14,8 +14,8 @@
 #include "indexbuilder/init_c.h"
 
 void
-IndexBuilderInit() {
-    milvus::config::KnowhereInitImpl();
+IndexBuilderInit(const char* conf_file) {
+    milvus::config::KnowhereInitImpl(conf_file);
 }
 
 // return value must be freed by the caller
@@ -26,4 +26,9 @@ IndexBuilderSetSimdType(const char* value) {
     memcpy(ret, real_type.c_str(), real_type.length());
     ret[real_type.length()] = 0;
     return ret;
+}
+
+void
+IndexBuilderSetIndexSliceSize(const int64_t value) {
+    milvus::config::KnowhereSetIndexSliceSize(value);
 }

@@ -31,10 +31,14 @@ package querynode
 import "C"
 import (
 	"fmt"
-	"github.com/milvus-io/milvus/internal/metrics"
 	"math"
 	"sync"
+	"sync/atomic"
 	"unsafe"
+
+	"github.com/milvus-io/milvus/internal/util/typeutil"
+
+	"github.com/milvus-io/milvus/internal/metrics"
 
 	"go.uber.org/zap"
 
@@ -46,6 +50,7 @@ import (
 
 // Collection is a wrapper of the underlying C-structure C.CCollection
 type Collection struct {
+	sync.RWMutex  // protects colllectionPtr
 	collectionPtr C.CCollection
 	id            UniqueID
 	partitionIDs  []UniqueID
@@ -57,11 +62,12 @@ type Collection struct {
 	vDeltaChannels []Channel
 	pDeltaChannels []Channel
 
-	loadType loadType
+	loadType int32
 
 	releaseMu          sync.RWMutex // guards release
 	releasedPartitions map[UniqueID]struct{}
 	releaseTime        Timestamp
+	released           bool
 }
 
 // ID returns collection id
@@ -74,11 +80,15 @@ func (c *Collection) Schema() *schemapb.CollectionSchema {
 	return c.schema
 }
 
+// getPartitionIDs return partitionIDs of collection
+func (c *Collection) getPartitionIDs() []UniqueID {
+	dst := make([]UniqueID, len(c.partitionIDs))
+	copy(dst, c.partitionIDs)
+	return dst
+}
+
 // addPartitionID would add a partition id to partition id list of collection
 func (c *Collection) addPartitionID(partitionID UniqueID) {
-	c.releaseMu.Lock()
-	defer c.releaseMu.Unlock()
-
 	c.partitionIDs = append(c.partitionIDs, partitionID)
 	log.Info("queryNode collection info after add a partition",
 		zap.Int64("partitionID", partitionID), zap.Int64("collectionID", c.id),
@@ -87,7 +97,7 @@ func (c *Collection) addPartitionID(partitionID UniqueID) {
 
 // removePartitionID removes the partition id from partition id list of collection
 func (c *Collection) removePartitionID(partitionID UniqueID) {
-	tmpIDs := make([]UniqueID, 0)
+	tmpIDs := make([]UniqueID, 0, len(c.partitionIDs))
 	for _, id := range c.partitionIDs {
 		if id != partitionID {
 			tmpIDs = append(tmpIDs, id)
@@ -104,21 +114,21 @@ OUTER:
 	for _, dstChan := range channels {
 		for _, srcChan := range c.vChannels {
 			if dstChan == srcChan {
-				log.Debug("vChannel has been existed in collection's vChannels",
-					zap.Any("collectionID", c.ID()),
-					zap.Any("vChannel", dstChan),
+				log.Warn("vChannel has been existed in collection's vChannels",
+					zap.Int64("collectionID", c.ID()),
+					zap.String("vChannel", dstChan),
 				)
 				continue OUTER
 			}
 		}
-		log.Debug("add vChannel to collection",
-			zap.Any("collectionID", c.ID()),
-			zap.Any("vChannel", dstChan),
+		log.Info("add vChannel to collection",
+			zap.Int64("collectionID", c.ID()),
+			zap.String("vChannel", dstChan),
 		)
 		c.vChannels = append(c.vChannels, dstChan)
 	}
 
-	metrics.QueryNodeNumDmlChannels.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Add(float64(len(c.vChannels)))
+	metrics.QueryNodeNumDmlChannels.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID())).Add(float64(len(c.vChannels)))
 }
 
 // getVChannels get virtual channels of collection
@@ -141,12 +151,12 @@ func (c *Collection) removeVChannel(channel Channel) {
 		}
 	}
 	c.vChannels = tmpChannels
-	log.Debug("remove vChannel from collection",
-		zap.Any("collectionID", c.ID()),
-		zap.Any("channel", channel),
+	log.Info("remove vChannel from collection",
+		zap.Int64("collectionID", c.ID()),
+		zap.String("channel", channel),
 	)
 
-	metrics.QueryNodeNumDmlChannels.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Sub(float64(len(c.vChannels)))
+	metrics.QueryNodeNumDmlChannels.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID())).Sub(float64(len(c.vChannels)))
 }
 
 // addPChannels add physical channels to physical channels of collection
@@ -157,16 +167,16 @@ OUTER:
 	for _, dstChan := range channels {
 		for _, srcChan := range c.pChannels {
 			if dstChan == srcChan {
-				log.Debug("pChannel has been existed in collection's pChannels",
-					zap.Any("collectionID", c.ID()),
-					zap.Any("pChannel", dstChan),
+				log.Info("pChannel has been existed in collection's pChannels",
+					zap.Int64("collectionID", c.ID()),
+					zap.String("pChannel", dstChan),
 				)
 				continue OUTER
 			}
 		}
-		log.Debug("add pChannel to collection",
-			zap.Any("collectionID", c.ID()),
-			zap.Any("pChannel", dstChan),
+		log.Info("add pChannel to collection",
+			zap.Int64("collectionID", c.ID()),
+			zap.String("pChannel", dstChan),
 		)
 		c.pChannels = append(c.pChannels, dstChan)
 	}
@@ -189,16 +199,16 @@ OUTER:
 	for _, dstChan := range channels {
 		for _, srcChan := range c.pDeltaChannels {
 			if dstChan == srcChan {
-				log.Debug("pChannel has been existed in collection's pChannels",
-					zap.Any("collectionID", c.ID()),
-					zap.Any("pChannel", dstChan),
+				log.Info("pChannel has been existed in collection's pChannels",
+					zap.Int64("collectionID", c.ID()),
+					zap.String("pChannel", dstChan),
 				)
 				continue OUTER
 			}
 		}
-		log.Debug("add pChannel to collection",
-			zap.Any("collectionID", c.ID()),
-			zap.Any("pChannel", dstChan),
+		log.Info("add pChannel to collection",
+			zap.Int64("collectionID", c.ID()),
+			zap.String("pChannel", dstChan),
 		)
 		c.pDeltaChannels = append(c.pDeltaChannels, dstChan)
 	}
@@ -229,21 +239,21 @@ OUTER:
 	for _, dstChan := range channels {
 		for _, srcChan := range c.vDeltaChannels {
 			if dstChan == srcChan {
-				log.Debug("vDeltaChannel has been existed in collection's vDeltaChannels",
-					zap.Any("collectionID", c.ID()),
-					zap.Any("vChannel", dstChan),
+				log.Info("vDeltaChannel has been existed in collection's vDeltaChannels",
+					zap.Int64("collectionID", c.ID()),
+					zap.String("vChannel", dstChan),
 				)
 				continue OUTER
 			}
 		}
-		log.Debug("add vDeltaChannel to collection",
-			zap.Any("collectionID", c.ID()),
-			zap.Any("vDeltaChannel", dstChan),
+		log.Info("add vDeltaChannel to collection",
+			zap.Int64("collectionID", c.ID()),
+			zap.String("vDeltaChannel", dstChan),
 		)
 		c.vDeltaChannels = append(c.vDeltaChannels, dstChan)
 	}
 
-	metrics.QueryNodeNumDeltaChannels.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Add(float64(len(c.vDeltaChannels)))
+	metrics.QueryNodeNumDeltaChannels.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID())).Add(float64(len(c.vDeltaChannels)))
 }
 
 func (c *Collection) removeVDeltaChannel(channel Channel) {
@@ -256,36 +266,51 @@ func (c *Collection) removeVDeltaChannel(channel Channel) {
 		}
 	}
 	c.vDeltaChannels = tmpChannels
-	log.Debug("remove vDeltaChannel from collection",
-		zap.Any("collectionID", c.ID()),
-		zap.Any("channel", channel),
+	log.Info("remove vDeltaChannel from collection",
+		zap.Int64("collectionID", c.ID()),
+		zap.String("channel", channel),
 	)
 
-	metrics.QueryNodeNumDeltaChannels.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.QueryNodeID)).Sub(float64(len(c.vDeltaChannels)))
+	metrics.QueryNodeNumDeltaChannels.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID())).Sub(float64(len(c.vDeltaChannels)))
 }
 
 // setReleaseTime records when collection is released
-func (c *Collection) setReleaseTime(t Timestamp) {
+func (c *Collection) setReleaseTime(t Timestamp, released bool) {
 	c.releaseMu.Lock()
 	defer c.releaseMu.Unlock()
 	c.releaseTime = t
+	c.released = released
 }
 
 // getReleaseTime gets the time when collection is released
-func (c *Collection) getReleaseTime() Timestamp {
+func (c *Collection) getReleaseTime() (Timestamp, bool) {
 	c.releaseMu.RLock()
 	defer c.releaseMu.RUnlock()
-	return c.releaseTime
+	return c.releaseTime, c.released
 }
 
 // setLoadType set the loading type of collection, which is loadTypeCollection or loadTypePartition
 func (c *Collection) setLoadType(l loadType) {
-	c.loadType = l
+	atomic.StoreInt32(&c.loadType, int32(l))
 }
 
 // getLoadType get the loadType of collection, which is loadTypeCollection or loadTypePartition
 func (c *Collection) getLoadType() loadType {
-	return c.loadType
+	l := atomic.LoadInt32(&c.loadType)
+	return loadType(l)
+}
+
+// getFieldType get the field type according to the field id.
+func (c *Collection) getFieldType(fieldID FieldID) (schemapb.DataType, error) {
+	helper, err := typeutil.CreateSchemaHelper(c.schema)
+	if err != nil {
+		return schemapb.DataType_None, err
+	}
+	field, err := helper.GetFieldFromID(fieldID)
+	if err != nil {
+		return schemapb.DataType_None, err
+	}
+	return field.GetDataType(), nil
 }
 
 // newCollection returns a new Collection
@@ -303,17 +328,13 @@ func newCollection(collectionID UniqueID, schema *schemapb.CollectionSchema) *Co
 		collectionPtr:      collection,
 		id:                 collectionID,
 		schema:             schema,
-		vChannels:          make([]Channel, 0),
-		pChannels:          make([]Channel, 0),
-		vDeltaChannels:     make([]Channel, 0),
-		pDeltaChannels:     make([]Channel, 0),
 		releasedPartitions: make(map[UniqueID]struct{}),
 	}
 	C.free(unsafe.Pointer(cSchemaBlob))
 
-	log.Debug("create collection", zap.Int64("collectionID", collectionID))
+	log.Info("create collection", zap.Int64("collectionID", collectionID))
 
-	newCollection.setReleaseTime(Timestamp(math.MaxUint64))
+	newCollection.setReleaseTime(Timestamp(math.MaxUint64), false)
 	return newCollection
 }
 
@@ -328,7 +349,7 @@ func deleteCollection(collection *Collection) {
 
 	collection.collectionPtr = nil
 
-	log.Debug("delete collection", zap.Int64("collectionID", collection.ID()))
+	log.Info("delete collection", zap.Int64("collectionID", collection.ID()))
 
 	collection = nil
 }

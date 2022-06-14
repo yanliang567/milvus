@@ -9,10 +9,17 @@
 // is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
+#pragma once
+
 #include "common/type_c.h"
 #include <string>
 
 namespace milvus {
+inline bool
+IsVectorType(CDataType dtype) {
+    return dtype == CDataType::FloatVector || dtype == CDataType::BinaryVector;
+}
+
 template <typename T, typename = std::enable_if_t<std::is_fundamental_v<T> || std::is_same_v<T, std::string>>>
 inline CDataType
 GetDType() {

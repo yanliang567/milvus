@@ -16,12 +16,17 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <index/ScalarIndex.h>
 
+#include "DeletedRecord.h"
 #include "FieldIndexing.h"
 #include "common/Schema.h"
 #include "common/Span.h"
 #include "common/SystemProperty.h"
 #include "common/Types.h"
+#include "common/LoadInfo.h"
+#include "common/BitsetView.h"
+#include "common/QueryResult.h"
 #include "knowhere/index/vector_index/VecIndex.h"
 #include "query/Plan.h"
 #include "query/PlanNode.h"
@@ -42,11 +47,12 @@ class SegmentInterface {
     FillTargetEntry(const query::Plan* plan, SearchResult& results) const = 0;
 
     virtual std::unique_ptr<SearchResult>
-    Search(const query::Plan* Plan, const query::PlaceholderGroup& placeholder_group, Timestamp timestamp) const = 0;
+    Search(const query::Plan* Plan, const query::PlaceholderGroup* placeholder_group, Timestamp timestamp) const = 0;
 
     virtual std::unique_ptr<proto::segcore::RetrieveResults>
     Retrieve(const query::RetrievePlan* Plan, Timestamp timestamp) const = 0;
 
+    // TODO: memory use is not correct when load string or load string index
     virtual int64_t
     GetMemoryUsageInBytes() const = 0;
 
@@ -60,7 +66,10 @@ class SegmentInterface {
     PreDelete(int64_t size) = 0;
 
     virtual Status
-    Delete(int64_t reserved_offset, int64_t size, const int64_t* row_ids, const Timestamp* timestamps) = 0;
+    Delete(int64_t reserved_offset, int64_t size, const IdArray* pks, const Timestamp* timestamps) = 0;
+
+    virtual void
+    LoadDeletedRecord(const LoadDeletedRecordInfo& info) = 0;
 };
 
 // internal API for DSL calculation
@@ -69,16 +78,16 @@ class SegmentInternalInterface : public SegmentInterface {
  public:
     template <typename T>
     Span<T>
-    chunk_data(FieldOffset field_offset, int64_t chunk_id) const {
-        return static_cast<Span<T>>(chunk_data_impl(field_offset, chunk_id));
+    chunk_data(FieldId field_id, int64_t chunk_id) const {
+        return static_cast<Span<T>>(chunk_data_impl(field_id, chunk_id));
     }
 
     template <typename T>
-    const knowhere::scalar::StructuredIndex<T>&
-    chunk_scalar_index(FieldOffset field_offset, int64_t chunk_id) const {
+    const scalar::ScalarIndex<T>&
+    chunk_scalar_index(FieldId field_id, int64_t chunk_id) const {
         static_assert(IsScalar<T>);
-        using IndexType = knowhere::scalar::StructuredIndex<T>;
-        auto base_ptr = chunk_index_impl(field_offset, chunk_id);
+        using IndexType = scalar::ScalarIndex<T>;
+        auto base_ptr = chunk_index_impl(field_id, chunk_id);
         auto ptr = dynamic_cast<const IndexType*>(base_ptr);
         AssertInfo(ptr, "entry mismatch");
         return *ptr;
@@ -86,7 +95,7 @@ class SegmentInternalInterface : public SegmentInterface {
 
     std::unique_ptr<SearchResult>
     Search(const query::Plan* Plan,
-           const query::PlaceholderGroup& placeholder_group,
+           const query::PlaceholderGroup* placeholder_group,
            Timestamp timestamp) const override;
 
     void
@@ -97,6 +106,12 @@ class SegmentInternalInterface : public SegmentInterface {
 
     std::unique_ptr<proto::segcore::RetrieveResults>
     Retrieve(const query::RetrievePlan* plan, Timestamp timestamp) const override;
+
+    virtual bool
+    HasIndex(FieldId field_id) const = 0;
+
+    virtual bool
+    HasFieldData(FieldId field_id) const = 0;
 
     virtual std::string
     debug() const = 0;
@@ -111,12 +126,16 @@ class SegmentInternalInterface : public SegmentInterface {
                   const BitsetView& bitset,
                   SearchResult& output) const = 0;
 
-    virtual BitsetView
-    get_filtered_bitmap(const BitsetView& bitset, int64_t ins_barrier, Timestamp timestamp) const = 0;
+    virtual void
+    mask_with_delete(BitsetType& bitset, int64_t ins_barrier, Timestamp timestamp) const = 0;
 
     // count of chunk that has index available
     virtual int64_t
-    num_chunk_index(FieldOffset field_offset) const = 0;
+    num_chunk_index(FieldId field_id) const = 0;
+
+    // count of chunk that has raw data
+    virtual int64_t
+    num_chunk_data(FieldId field_id) const = 0;
 
     virtual void
     mask_with_timestamps(BitsetType& bitset_chunk, Timestamp timestamp) const = 0;
@@ -138,14 +157,17 @@ class SegmentInternalInterface : public SegmentInterface {
     virtual std::vector<SegOffset>
     search_ids(const BitsetView& view, Timestamp timestamp) const = 0;
 
+    virtual std::pair<std::unique_ptr<IdArray>, std::vector<SegOffset>>
+    search_ids(const IdArray& id_array, Timestamp timestamp) const = 0;
+
  protected:
     // internal API: return chunk_data in span
     virtual SpanBase
-    chunk_data_impl(FieldOffset field_offset, int64_t chunk_id) const = 0;
+    chunk_data_impl(FieldId field_id, int64_t chunk_id) const = 0;
 
     // internal API: return chunk_index in span, support scalar index only
     virtual const knowhere::Index*
-    chunk_index_impl(FieldOffset field_offset, int64_t chunk_id) const = 0;
+    chunk_index_impl(FieldId field_id, int64_t chunk_id) const = 0;
 
     // TODO remove system fields
     // calculate output[i] = Vec[seg_offsets[i]}, where Vec binds to system_type
@@ -153,16 +175,8 @@ class SegmentInternalInterface : public SegmentInterface {
     bulk_subscript(SystemFieldType system_type, const int64_t* seg_offsets, int64_t count, void* output) const = 0;
 
     // calculate output[i] = Vec[seg_offsets[i]}, where Vec binds to field_offset
-    virtual void
-    bulk_subscript(FieldOffset field_offset, const int64_t* seg_offsets, int64_t count, void* output) const = 0;
-
-    // TODO: special hack: FieldOffset == -1 -> RowId.
-    // TODO: remove this hack when transfer is done
     virtual std::unique_ptr<DataArray>
-    BulkSubScript(FieldOffset field_offset, const SegOffset* seg_offsets, int64_t count) const;
-
-    virtual std::pair<std::unique_ptr<IdArray>, std::vector<SegOffset>>
-    search_ids(const IdArray& id_array, Timestamp timestamp) const = 0;
+    bulk_subscript(FieldId field_id, const int64_t* seg_offsets, int64_t count) const = 0;
 
     virtual void
     check_search(const query::Plan* plan) const = 0;

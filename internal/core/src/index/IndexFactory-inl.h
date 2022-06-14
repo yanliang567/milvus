@@ -10,14 +10,33 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #include <string>
-#include "ScalarIndexSort.h"
+#include "index/ScalarIndexSort.h"
+#include "index/StringIndexMarisa.h"
+#include "index/IndexType.h"
+#include "index/BoolIndex.h"
 
 namespace milvus::scalar {
 
 template <typename T>
 inline ScalarIndexPtr<T>
-IndexFactory::CreateIndex(std::string index_type) {
+IndexFactory::CreateIndex(const std::string& index_type) {
     return CreateScalarIndexSort<T>();
+}
+
+template <>
+inline ScalarIndexPtr<bool>
+IndexFactory::CreateIndex(const std::string& index_type) {
+    return CreateBoolIndex();
+}
+
+template <>
+inline ScalarIndexPtr<std::string>
+IndexFactory::CreateIndex(const std::string& index_type) {
+#if defined(__linux__) || defined(__APPLE__)
+    return CreateStringIndexMarisa();
+#else
+    throw std::runtime_error("unsupported platform");
+#endif
 }
 
 }  // namespace milvus::scalar

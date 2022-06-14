@@ -20,41 +20,43 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/milvus-io/milvus/internal/proto/schemapb"
 )
 
 func TestCollection_newCollection(t *testing.T) {
 	collectionID := UniqueID(0)
-	collectionMeta := genTestCollectionMeta(collectionID, false)
+	schema := genTestCollectionSchema()
 
-	collection := newCollection(collectionMeta.ID, collectionMeta.Schema)
+	collection := newCollection(collectionID, schema)
 	assert.Equal(t, collection.ID(), collectionID)
 }
 
 func TestCollection_deleteCollection(t *testing.T) {
 	collectionID := UniqueID(0)
-	collectionMeta := genTestCollectionMeta(collectionID, false)
+	schema := genTestCollectionSchema()
 
-	collection := newCollection(collectionMeta.ID, collectionMeta.Schema)
+	collection := newCollection(collectionID, schema)
 	assert.Equal(t, collection.ID(), collectionID)
 	deleteCollection(collection)
 }
 
 func TestCollection_schema(t *testing.T) {
 	collectionID := UniqueID(0)
-	collectionMeta := genTestCollectionMeta(collectionID, false)
+	schema := genTestCollectionSchema()
 
-	collection := newCollection(collectionMeta.ID, collectionMeta.Schema)
-	schema := collection.Schema()
-	assert.Equal(t, collectionMeta.Schema.Name, schema.Name)
-	assert.Equal(t, len(collectionMeta.Schema.Fields), len(schema.Fields))
+	collection := newCollection(collectionID, schema)
+	collectionSchema := collection.Schema()
+	assert.Equal(t, schema.Name, collectionSchema.Name)
+	assert.Equal(t, len(schema.Fields), len(collectionSchema.Fields))
 	deleteCollection(collection)
 }
 
 func TestCollection_vChannel(t *testing.T) {
 	collectionID := UniqueID(0)
-	collectionMeta := genTestCollectionMeta(collectionID, false)
+	schema := genTestCollectionSchema()
 
-	collection := newCollection(collectionMeta.ID, collectionMeta.Schema)
+	collection := newCollection(collectionID, schema)
 	collection.addVChannels([]Channel{defaultDMLChannel})
 	collection.addVChannels([]Channel{defaultDMLChannel})
 	collection.addVChannels([]Channel{"TestCollection_addVChannel_channel"})
@@ -69,9 +71,9 @@ func TestCollection_vChannel(t *testing.T) {
 
 func TestCollection_vDeltaChannel(t *testing.T) {
 	collectionID := UniqueID(0)
-	collectionMeta := genTestCollectionMeta(collectionID, false)
+	schema := genTestCollectionSchema()
 
-	collection := newCollection(collectionMeta.ID, collectionMeta.Schema)
+	collection := newCollection(collectionID, schema)
 	collection.addVDeltaChannels([]Channel{defaultDeltaChannel})
 	collection.addVDeltaChannels([]Channel{defaultDeltaChannel})
 	collection.addVDeltaChannels([]Channel{"TestCollection_addVDeltaChannel_channel"})
@@ -86,9 +88,9 @@ func TestCollection_vDeltaChannel(t *testing.T) {
 
 func TestCollection_pChannel(t *testing.T) {
 	collectionID := UniqueID(0)
-	collectionMeta := genTestCollectionMeta(collectionID, false)
+	schema := genTestCollectionSchema()
 
-	collection := newCollection(collectionMeta.ID, collectionMeta.Schema)
+	collection := newCollection(collectionID, schema)
 	collection.addPChannels([]Channel{"TestCollection_addPChannel_channel-0"})
 	collection.addPChannels([]Channel{"TestCollection_addPChannel_channel-0"})
 	collection.addPChannels([]Channel{"TestCollection_addPChannel_channel-1"})
@@ -99,9 +101,9 @@ func TestCollection_pChannel(t *testing.T) {
 
 func TestCollection_pDeltaChannel(t *testing.T) {
 	collectionID := UniqueID(0)
-	collectionMeta := genTestCollectionMeta(collectionID, false)
+	schema := genTestCollectionSchema()
 
-	collection := newCollection(collectionMeta.ID, collectionMeta.Schema)
+	collection := newCollection(collectionID, schema)
 	collection.addPDeltaChannels([]Channel{"TestCollection_addPDeltaChannel_channel-0"})
 	collection.addPDeltaChannels([]Channel{"TestCollection_addPDeltaChannel_channel-0"})
 	collection.addPDeltaChannels([]Channel{"TestCollection_addPDeltaChannel_channel-1"})
@@ -112,20 +114,21 @@ func TestCollection_pDeltaChannel(t *testing.T) {
 
 func TestCollection_releaseTime(t *testing.T) {
 	collectionID := UniqueID(0)
-	collectionMeta := genTestCollectionMeta(collectionID, false)
+	schema := genTestCollectionSchema()
 
-	collection := newCollection(collectionMeta.ID, collectionMeta.Schema)
+	collection := newCollection(collectionID, schema)
 	t0 := Timestamp(1000)
-	collection.setReleaseTime(t0)
-	t1 := collection.getReleaseTime()
+	collection.setReleaseTime(t0, true)
+	t1, released := collection.getReleaseTime()
 	assert.Equal(t, t0, t1)
+	assert.True(t, released)
 }
 
 func TestCollection_loadType(t *testing.T) {
 	collectionID := UniqueID(0)
-	collectionMeta := genTestCollectionMeta(collectionID, false)
+	schema := genTestCollectionSchema()
 
-	collection := newCollection(collectionMeta.ID, collectionMeta.Schema)
+	collection := newCollection(collectionID, schema)
 	collection.setLoadType(loadTypeCollection)
 	lt := collection.getLoadType()
 	assert.Equal(t, loadTypeCollection, lt)
@@ -133,4 +136,25 @@ func TestCollection_loadType(t *testing.T) {
 	collection.setLoadType(loadTypePartition)
 	lt = collection.getLoadType()
 	assert.Equal(t, loadTypePartition, lt)
+}
+
+func TestCollection_getFieldType(t *testing.T) {
+	coll := &Collection{schema: nil}
+	_, err := coll.getFieldType(100)
+	assert.Error(t, err)
+	coll.schema = &schemapb.CollectionSchema{
+		Fields: []*schemapb.FieldSchema{
+			{
+				Name:     "test",
+				FieldID:  100,
+				DataType: schemapb.DataType_Int64,
+			},
+		},
+	}
+	// field id not found.
+	_, err = coll.getFieldType(101)
+	assert.Error(t, err)
+	fieldType, err := coll.getFieldType(100)
+	assert.NoError(t, err)
+	assert.Equal(t, schemapb.DataType_Int64, fieldType)
 }

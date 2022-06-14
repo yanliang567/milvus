@@ -88,9 +88,54 @@ func (qc *QueryCoord) GetStatisticsChannel(ctx context.Context) (*milvuspb.Strin
 	}, nil
 }
 
+// checkAnyReplicaAvailable checks if the collection has enough distinct available shards. These shards
+// may come from different replica group. We only need these shards to form a replica that serves query
+// requests.
+func (qc *QueryCoord) checkAnyReplicaAvailable(collectionID UniqueID) bool {
+	replicas, _ := qc.meta.getReplicasByCollectionID(collectionID)
+	shardNames := qc.meta.getDmChannelNamesByCollectionID(collectionID)
+	shardNodes := getShardNodes(collectionID, qc.meta)
+	availableShards := make(map[string]struct{}, len(shardNames))
+	for _, replica := range replicas {
+		for _, shard := range replica.ShardReplicas {
+			if _, ok := availableShards[shard.DmChannelName]; ok {
+				continue
+			}
+			// check leader
+			isShardAvailable, err := qc.cluster.IsOnline(shard.LeaderID)
+			if err != nil || !isShardAvailable {
+				log.Warn("shard leader is unavailable",
+					zap.Int64("collectionID", replica.CollectionID),
+					zap.Int64("replicaID", replica.ReplicaID),
+					zap.String("DmChannel", shard.DmChannelName),
+					zap.Int64("shardLeaderID", shard.LeaderID),
+					zap.Error(err))
+				continue
+			}
+			// check other nodes
+			nodes := shardNodes[shard.DmChannelName]
+			for _, nodeID := range replica.NodeIds {
+				if _, ok := nodes[nodeID]; ok {
+					if ok, err := qc.cluster.IsOnline(nodeID); err != nil || !ok {
+						isShardAvailable = false
+						break
+					}
+				}
+			}
+			// set if available
+			if isShardAvailable {
+				availableShards[shard.DmChannelName] = struct{}{}
+			}
+		}
+	}
+
+	// check if there are enough available distinct shards
+	return len(availableShards) == len(shardNames)
+}
+
 // ShowCollections return all the collections that have been loaded
 func (qc *QueryCoord) ShowCollections(ctx context.Context, req *querypb.ShowCollectionsRequest) (*querypb.ShowCollectionsResponse, error) {
-	log.Debug("show collection start",
+	log.Info("show collection start",
 		zap.String("role", typeutil.QueryCoordRole),
 		zap.Int64s("collectionIDs", req.CollectionIDs),
 		zap.Int64("msgID", req.Base.MsgID))
@@ -106,54 +151,56 @@ func (qc *QueryCoord) ShowCollections(ctx context.Context, req *querypb.ShowColl
 			Status: status,
 		}, nil
 	}
+	// parse meta
 	collectionInfos := qc.meta.showCollections()
-	ID2collectionInfo := make(map[UniqueID]*querypb.CollectionInfo)
-	inMemoryCollectionIDs := make([]UniqueID, 0)
+	collectionID2Info := make(map[UniqueID]*querypb.CollectionInfo)
 	for _, info := range collectionInfos {
-		ID2collectionInfo[info.CollectionID] = info
-		inMemoryCollectionIDs = append(inMemoryCollectionIDs, info.CollectionID)
+		collectionID2Info[info.CollectionID] = info
 	}
-	inMemoryPercentages := make([]int64, 0)
-	if len(req.CollectionIDs) == 0 {
-		for _, id := range inMemoryCollectionIDs {
-			inMemoryPercentages = append(inMemoryPercentages, ID2collectionInfo[id].InMemoryPercentage)
-		}
-		log.Debug("show collection end",
-			zap.String("role", typeutil.QueryCoordRole),
-			zap.Int64s("collections", inMemoryCollectionIDs),
-			zap.Int64s("inMemoryPercentage", inMemoryPercentages),
-			zap.Int64("msgID", req.Base.MsgID))
-		return &querypb.ShowCollectionsResponse{
-			Status:              status,
-			CollectionIDs:       inMemoryCollectionIDs,
-			InMemoryPercentages: inMemoryPercentages,
-		}, nil
-	}
-	for _, id := range req.CollectionIDs {
-		if _, ok := ID2collectionInfo[id]; !ok {
-			status.ErrorCode = commonpb.ErrorCode_UnexpectedError
-			err := fmt.Errorf("collection %d has not been loaded to memory or load failed", id)
-			status.Reason = err.Error()
+
+	// validate collectionIDs in request
+	collectionIDs := req.CollectionIDs
+	for _, cid := range collectionIDs {
+		if _, ok := collectionID2Info[cid]; !ok {
+			err := fmt.Errorf("collection %d has not been loaded to memory or load failed", cid)
 			log.Warn("show collection failed",
 				zap.String("role", typeutil.QueryCoordRole),
-				zap.Int64("collectionID", id),
+				zap.Int64("collectionID", cid),
 				zap.Int64("msgID", req.Base.MsgID),
 				zap.Error(err))
 			return &querypb.ShowCollectionsResponse{
-				Status: status,
+				Status: &commonpb.Status{
+					ErrorCode: commonpb.ErrorCode_UnexpectedError,
+					Reason:    err.Error(),
+				},
 			}, nil
 		}
-		inMemoryPercentages = append(inMemoryPercentages, ID2collectionInfo[id].InMemoryPercentage)
 	}
-	log.Debug("show collection end",
+
+	if len(collectionIDs) == 0 {
+		for _, info := range collectionInfos {
+			collectionIDs = append(collectionIDs, info.CollectionID)
+		}
+	}
+
+	inMemoryPercentages := make([]int64, 0, len(collectionIDs))
+	queryServiceAvailable := make([]bool, 0, len(collectionIDs))
+	for _, cid := range collectionIDs {
+		inMemoryPercentages = append(inMemoryPercentages, collectionID2Info[cid].InMemoryPercentage)
+		queryServiceAvailable = append(queryServiceAvailable, qc.checkAnyReplicaAvailable(cid))
+	}
+
+	log.Info("show collection end",
 		zap.String("role", typeutil.QueryCoordRole),
-		zap.Int64s("collections", req.CollectionIDs),
+		zap.Int64s("collectionIDs", req.CollectionIDs),
 		zap.Int64("msgID", req.Base.MsgID),
-		zap.Int64s("inMemoryPercentage", inMemoryPercentages))
+		zap.Int64s("inMemoryPercentage", inMemoryPercentages),
+		zap.Bools("queryServiceAvailable", queryServiceAvailable))
 	return &querypb.ShowCollectionsResponse{
-		Status:              status,
-		CollectionIDs:       req.CollectionIDs,
-		InMemoryPercentages: inMemoryPercentages,
+		Status:                status,
+		CollectionIDs:         collectionIDs,
+		InMemoryPercentages:   inMemoryPercentages,
+		QueryServiceAvailable: queryServiceAvailable,
 	}, nil
 }
 
@@ -163,7 +210,7 @@ func (qc *QueryCoord) LoadCollection(ctx context.Context, req *querypb.LoadColle
 
 	collectionID := req.CollectionID
 	//schema := req.Schema
-	log.Debug("loadCollectionRequest received",
+	log.Info("loadCollectionRequest received",
 		zap.String("role", typeutil.QueryCoordRole),
 		zap.Int64("collectionID", collectionID),
 		zap.Int64("msgID", req.Base.MsgID))
@@ -184,7 +231,25 @@ func (qc *QueryCoord) LoadCollection(ctx context.Context, req *querypb.LoadColle
 	if collectionInfo, err := qc.meta.getCollectionInfoByID(collectionID); err == nil {
 		// if collection has been loaded by load collection request, return success
 		if collectionInfo.LoadType == querypb.LoadType_LoadCollection {
-			log.Debug("collection has already been loaded, return load success directly",
+			if collectionInfo.ReplicaNumber != req.ReplicaNumber {
+				msg := fmt.Sprintf("collection has already been loaded, and the number of replicas %v is not same as the request's %v. Should release first then reload with the new number of replicas",
+					collectionInfo.ReplicaNumber,
+					req.ReplicaNumber)
+				log.Warn(msg,
+					zap.String("role", typeutil.QueryCoordRole),
+					zap.Int64("collectionID", collectionID),
+					zap.Int64("msgID", req.Base.MsgID),
+					zap.Int32("collectionReplicaNumber", collectionInfo.ReplicaNumber),
+					zap.Int32("requestReplicaNumber", req.ReplicaNumber))
+
+				status.ErrorCode = commonpb.ErrorCode_IllegalArgument
+				status.Reason = msg
+
+				metrics.QueryCoordLoadCount.WithLabelValues(metrics.FailLabel).Inc()
+				return status, nil
+			}
+
+			log.Info("collection has already been loaded, return load success directly",
 				zap.String("role", typeutil.QueryCoordRole),
 				zap.Int64("collectionID", collectionID),
 				zap.Int64("msgID", req.Base.MsgID))
@@ -247,7 +312,7 @@ func (qc *QueryCoord) LoadCollection(ctx context.Context, req *querypb.LoadColle
 		return status, nil
 	}
 
-	log.Debug("loadCollectionRequest completed",
+	log.Info("loadCollectionRequest completed",
 		zap.String("role", typeutil.QueryCoordRole),
 		zap.Int64("collectionID", collectionID),
 		zap.Int64("msgID", req.Base.MsgID))
@@ -260,7 +325,7 @@ func (qc *QueryCoord) ReleaseCollection(ctx context.Context, req *querypb.Releas
 	metrics.QueryCoordReleaseCount.WithLabelValues(metrics.TotalLabel).Inc()
 	//dbID := req.DbID
 	collectionID := req.CollectionID
-	log.Debug("releaseCollectionRequest received",
+	log.Info("releaseCollectionRequest received",
 		zap.String("role", typeutil.QueryCoordRole),
 		zap.Int64("collectionID", collectionID),
 		zap.Int64("msgID", req.Base.MsgID))
@@ -281,7 +346,7 @@ func (qc *QueryCoord) ReleaseCollection(ctx context.Context, req *querypb.Releas
 	// if collection has not been loaded into memory, return release collection successfully
 	hasCollection := qc.meta.hasCollection(collectionID)
 	if !hasCollection {
-		log.Debug("release collection end, the collection has not been loaded into QueryNode",
+		log.Info("release collection end, the collection has not been loaded into QueryNode",
 			zap.String("role", typeutil.QueryCoordRole),
 			zap.Int64("collectionID", collectionID),
 			zap.Int64("msgID", req.Base.MsgID))
@@ -326,7 +391,7 @@ func (qc *QueryCoord) ReleaseCollection(ctx context.Context, req *querypb.Releas
 		return status, nil
 	}
 
-	log.Debug("releaseCollectionRequest completed",
+	log.Info("releaseCollectionRequest completed",
 		zap.String("role", typeutil.QueryCoordRole),
 		zap.Int64("collectionID", collectionID),
 		zap.Int64("msgID", req.Base.MsgID))
@@ -341,7 +406,7 @@ func (qc *QueryCoord) ReleaseCollection(ctx context.Context, req *querypb.Releas
 // ShowPartitions return all the partitions that have been loaded
 func (qc *QueryCoord) ShowPartitions(ctx context.Context, req *querypb.ShowPartitionsRequest) (*querypb.ShowPartitionsResponse, error) {
 	collectionID := req.CollectionID
-	log.Debug("show partitions start",
+	log.Info("show partitions start",
 		zap.String("role", typeutil.QueryCoordRole),
 		zap.Int64("collectionID", collectionID),
 		zap.Int64s("partitionIDs", req.PartitionIDs),
@@ -383,7 +448,7 @@ func (qc *QueryCoord) ShowPartitions(ctx context.Context, req *querypb.ShowParti
 		for _, id := range inMemoryPartitionIDs {
 			inMemoryPercentages = append(inMemoryPercentages, ID2PartitionState[id].InMemoryPercentage)
 		}
-		log.Debug("show partitions end",
+		log.Info("show partitions end",
 			zap.String("role", typeutil.QueryCoordRole),
 			zap.Int64("collectionID", collectionID),
 			zap.Int64("msgID", req.Base.MsgID),
@@ -413,7 +478,7 @@ func (qc *QueryCoord) ShowPartitions(ctx context.Context, req *querypb.ShowParti
 		inMemoryPercentages = append(inMemoryPercentages, ID2PartitionState[id].InMemoryPercentage)
 	}
 
-	log.Debug("show partitions end",
+	log.Info("show partitions end",
 		zap.String("role", typeutil.QueryCoordRole),
 		zap.Int64("collectionID", collectionID),
 		zap.Int64s("partitionIDs", req.PartitionIDs),
@@ -433,7 +498,7 @@ func (qc *QueryCoord) LoadPartitions(ctx context.Context, req *querypb.LoadParti
 	collectionID := req.CollectionID
 	partitionIDs := req.PartitionIDs
 
-	log.Debug("loadPartitionRequest received",
+	log.Info("loadPartitionRequest received",
 		zap.String("role", typeutil.QueryCoordRole),
 		zap.Int64("collectionID", collectionID),
 		zap.Int64s("partitionIDs", partitionIDs),
@@ -478,6 +543,24 @@ func (qc *QueryCoord) LoadPartitions(ctx context.Context, req *querypb.LoadParti
 		}
 
 		if collectionInfo.LoadType == querypb.LoadType_LoadPartition {
+			if collectionInfo.ReplicaNumber != req.ReplicaNumber {
+				msg := fmt.Sprintf("partitions has already been loaded, and the number of replicas %v is not same as the request's %v. Should release first then reload with the new number of replicas",
+					collectionInfo.ReplicaNumber,
+					req.ReplicaNumber)
+				log.Warn(msg,
+					zap.String("role", typeutil.QueryCoordRole),
+					zap.Int64("collectionID", collectionID),
+					zap.Int64("msgID", req.Base.MsgID),
+					zap.Int32("collectionReplicaNumber", collectionInfo.ReplicaNumber),
+					zap.Int32("requestReplicaNumber", req.ReplicaNumber))
+
+				status.ErrorCode = commonpb.ErrorCode_IllegalArgument
+				status.Reason = msg
+
+				metrics.QueryCoordLoadCount.WithLabelValues(metrics.FailLabel).Inc()
+				return status, nil
+			}
+
 			for _, toLoadPartitionID := range partitionIDs {
 				needLoad := true
 				for _, loadedPartitionID := range collectionInfo.PartitionIDs {
@@ -509,7 +592,7 @@ func (qc *QueryCoord) LoadPartitions(ctx context.Context, req *querypb.LoadParti
 			return status, nil
 		}
 
-		log.Debug("loadPartitionRequest completed, all partitions to load have already been loaded into memory",
+		log.Info("loadPartitionRequest completed, all partitions to load have already been loaded into memory",
 			zap.String("role", typeutil.QueryCoordRole),
 			zap.Int64("collectionID", req.CollectionID),
 			zap.Int64s("partitionIDs", partitionIDs),
@@ -557,7 +640,7 @@ func (qc *QueryCoord) LoadPartitions(ctx context.Context, req *querypb.LoadParti
 		return status, nil
 	}
 
-	log.Debug("loadPartitionRequest completed",
+	log.Info("loadPartitionRequest completed",
 		zap.String("role", typeutil.QueryCoordRole),
 		zap.Int64("collectionID", req.CollectionID),
 		zap.Int64s("partitionIDs", partitionIDs),
@@ -573,7 +656,7 @@ func (qc *QueryCoord) ReleasePartitions(ctx context.Context, req *querypb.Releas
 	//dbID := req.DbID
 	collectionID := req.CollectionID
 	partitionIDs := req.PartitionIDs
-	log.Debug("releasePartitionRequest received",
+	log.Info("releasePartitionRequest received",
 		zap.String("role", typeutil.QueryCoordRole),
 		zap.Int64("collectionID", req.CollectionID),
 		zap.Int64s("partitionIDs", partitionIDs),
@@ -586,7 +669,7 @@ func (qc *QueryCoord) ReleasePartitions(ctx context.Context, req *querypb.Releas
 		status.ErrorCode = commonpb.ErrorCode_UnexpectedError
 		err := errors.New("QueryCoord is not healthy")
 		status.Reason = err.Error()
-		log.Error("release partition failed", zap.String("role", typeutil.QueryCoordRole), zap.Int64("msgID", req.Base.MsgID), zap.Error(err))
+		log.Warn("release partition failed", zap.String("role", typeutil.QueryCoordRole), zap.Int64("msgID", req.Base.MsgID), zap.Error(err))
 
 		metrics.QueryCoordReleaseCount.WithLabelValues(metrics.FailLabel).Inc()
 		return status, nil
@@ -639,7 +722,7 @@ func (qc *QueryCoord) ReleasePartitions(ctx context.Context, req *querypb.Releas
 			}
 		}
 	} else {
-		log.Debug("release partitions end, the collection has not been loaded into QueryNode",
+		log.Info("release partitions end, the collection has not been loaded into QueryNode",
 			zap.String("role", typeutil.QueryCoordRole),
 			zap.Int64("collectionID", req.CollectionID),
 			zap.Int64("msgID", req.Base.MsgID))
@@ -649,7 +732,7 @@ func (qc *QueryCoord) ReleasePartitions(ctx context.Context, req *querypb.Releas
 	}
 
 	if len(toReleasedPartitions) == 0 {
-		log.Debug("release partitions end, the partitions has not been loaded into QueryNode",
+		log.Info("release partitions end, the partitions has not been loaded into QueryNode",
 			zap.String("role", typeutil.QueryCoordRole),
 			zap.Int64("collectionID", req.CollectionID),
 			zap.Int64s("partitionIDs", partitionIDs),
@@ -663,7 +746,7 @@ func (qc *QueryCoord) ReleasePartitions(ctx context.Context, req *querypb.Releas
 	baseTask := newBaseTask(qc.loopCtx, querypb.TriggerCondition_GrpcRequest)
 	if releaseCollection {
 		// if all loaded partitions will be released from memory, then upgrade release partitions request to release collection request
-		log.Debug(fmt.Sprintf("all partitions of collection %d will released from QueryNode, so release the collection directly", collectionID),
+		log.Info(fmt.Sprintf("all partitions of collection %d will released from QueryNode, so release the collection directly", collectionID),
 			zap.String("role", typeutil.QueryCoordRole),
 			zap.Int64("msgID", req.Base.MsgID))
 		msgBase := req.Base
@@ -690,7 +773,7 @@ func (qc *QueryCoord) ReleasePartitions(ctx context.Context, req *querypb.Releas
 	}
 	err := qc.scheduler.Enqueue(releaseTask)
 	if err != nil {
-		log.Error("releasePartitionRequest failed to add execute task to scheduler",
+		log.Warn("releasePartitionRequest failed to add execute task to scheduler",
 			zap.String("role", typeutil.QueryCoordRole),
 			zap.Int64("collectionID", collectionID),
 			zap.Int64s("partitionIDs", partitionIDs),
@@ -705,7 +788,7 @@ func (qc *QueryCoord) ReleasePartitions(ctx context.Context, req *querypb.Releas
 
 	err = releaseTask.waitToFinish()
 	if err != nil {
-		log.Error("releasePartitionRequest failed",
+		log.Warn("releasePartitionRequest failed",
 			zap.String("role", typeutil.QueryCoordRole),
 			zap.Int64("collectionID", req.CollectionID),
 			zap.Int64s("partitionIDs", partitionIDs),
@@ -718,7 +801,7 @@ func (qc *QueryCoord) ReleasePartitions(ctx context.Context, req *querypb.Releas
 		return status, nil
 	}
 
-	log.Debug("releasePartitionRequest completed",
+	log.Info("releasePartitionRequest completed",
 		zap.String("role", typeutil.QueryCoordRole),
 		zap.Int64("collectionID", collectionID),
 		zap.Int64s("partitionIDs", partitionIDs),
@@ -732,42 +815,9 @@ func (qc *QueryCoord) ReleasePartitions(ctx context.Context, req *querypb.Releas
 	return status, nil
 }
 
-// CreateQueryChannel assigns unique querychannel and resultchannel to the specified collecion
-func (qc *QueryCoord) CreateQueryChannel(ctx context.Context, req *querypb.CreateQueryChannelRequest) (*querypb.CreateQueryChannelResponse, error) {
-	log.Debug("createQueryChannelRequest received",
-		zap.String("role", typeutil.QueryCoordRole),
-		zap.Int64("collectionID", req.CollectionID))
-
-	status := &commonpb.Status{
-		ErrorCode: commonpb.ErrorCode_Success,
-	}
-	if qc.stateCode.Load() != internalpb.StateCode_Healthy {
-		status.ErrorCode = commonpb.ErrorCode_UnexpectedError
-		err := errors.New("QueryCoord is not healthy")
-		status.Reason = err.Error()
-		log.Error("createQueryChannel failed", zap.String("role", typeutil.QueryCoordRole), zap.Error(err))
-		return &querypb.CreateQueryChannelResponse{
-			Status: status,
-		}, nil
-	}
-
-	collectionID := req.CollectionID
-	info := qc.meta.getQueryChannelInfoByID(collectionID)
-	log.Debug("createQueryChannelRequest completed",
-		zap.String("role", typeutil.QueryCoordRole),
-		zap.Int64("collectionID", collectionID),
-		zap.String("request channel", info.QueryChannel),
-		zap.String("result channel", info.QueryResultChannel))
-	return &querypb.CreateQueryChannelResponse{
-		Status:             status,
-		QueryChannel:       info.QueryChannel,
-		QueryResultChannel: info.QueryResultChannel,
-	}, nil
-}
-
 // GetPartitionStates returns state of the partition, including notExist, notPresent, onDisk, partitionInMemory, inMemory, partitionInGPU, InGPU
 func (qc *QueryCoord) GetPartitionStates(ctx context.Context, req *querypb.GetPartitionStatesRequest) (*querypb.GetPartitionStatesResponse, error) {
-	log.Debug("getPartitionStatesRequest received",
+	log.Info("getPartitionStatesRequest received",
 		zap.String("role", typeutil.QueryCoordRole),
 		zap.Int64("collectionID", req.CollectionID),
 		zap.Int64s("partitionIDs", req.PartitionIDs),
@@ -780,7 +830,7 @@ func (qc *QueryCoord) GetPartitionStates(ctx context.Context, req *querypb.GetPa
 		status.ErrorCode = commonpb.ErrorCode_UnexpectedError
 		err := errors.New("QueryCoord is not healthy")
 		status.Reason = err.Error()
-		log.Error("getPartitionStates failed", zap.String("role", typeutil.QueryCoordRole), zap.Int64("msgID", req.Base.MsgID), zap.Error(err))
+		log.Warn("getPartitionStates failed", zap.String("role", typeutil.QueryCoordRole), zap.Int64("msgID", req.Base.MsgID), zap.Error(err))
 		return &querypb.GetPartitionStatesResponse{
 			Status: status,
 		}, nil
@@ -810,7 +860,7 @@ func (qc *QueryCoord) GetPartitionStates(ctx context.Context, req *querypb.GetPa
 		}
 		partitionStates = append(partitionStates, partitionState)
 	}
-	log.Debug("getPartitionStatesRequest completed",
+	log.Info("getPartitionStatesRequest completed",
 		zap.String("role", typeutil.QueryCoordRole),
 		zap.Int64("collectionID", req.CollectionID),
 		zap.Int64s("partitionIDs", req.PartitionIDs),
@@ -823,11 +873,11 @@ func (qc *QueryCoord) GetPartitionStates(ctx context.Context, req *querypb.GetPa
 
 // GetSegmentInfo returns information of all the segments on queryNodes, and the information includes memSize, numRow, indexName, indexID ...
 func (qc *QueryCoord) GetSegmentInfo(ctx context.Context, req *querypb.GetSegmentInfoRequest) (*querypb.GetSegmentInfoResponse, error) {
-	log.Debug("getSegmentInfoRequest received",
+	log.Info("getSegmentInfoRequest received",
 		zap.String("role", typeutil.QueryCoordRole),
-		zap.Int64("collectionID", req.CollectionID),
-		zap.Int64s("segmentIDs", req.SegmentIDs),
-		zap.Int64("msgID", req.Base.MsgID))
+		zap.Int64("collection ID", req.GetCollectionID()),
+		zap.Int64s("segment IDs", req.GetSegmentIDs()),
+		zap.Int64("msg ID", req.GetBase().GetMsgID()))
 
 	status := &commonpb.Status{
 		ErrorCode: commonpb.ErrorCode_Success,
@@ -836,7 +886,7 @@ func (qc *QueryCoord) GetSegmentInfo(ctx context.Context, req *querypb.GetSegmen
 		status.ErrorCode = commonpb.ErrorCode_UnexpectedError
 		err := errors.New("QueryCoord is not healthy")
 		status.Reason = err.Error()
-		log.Error("getSegmentInfo failed", zap.String("role", typeutil.QueryCoordRole), zap.Int64("msgID", req.Base.MsgID), zap.Error(err))
+		log.Warn("getSegmentInfo failed", zap.String("role", typeutil.QueryCoordRole), zap.Int64("msgID", req.Base.MsgID), zap.Error(err))
 		return &querypb.GetSegmentInfoResponse{
 			Status: status,
 		}, nil
@@ -847,7 +897,7 @@ func (qc *QueryCoord) GetSegmentInfo(ctx context.Context, req *querypb.GetSegmen
 	//TODO::get segment infos from MetaReplica
 	//segmentIDs := req.SegmentIDs
 	//segmentInfos, err := qs.MetaReplica.getSegmentInfos(segmentIDs)
-	segmentInfos, err := qc.cluster.getSegmentInfo(ctx, req)
+	segmentInfos, err := qc.cluster.GetSegmentInfo(ctx, req)
 	if err != nil {
 		status.ErrorCode = commonpb.ErrorCode_UnexpectedError
 		status.Reason = err.Error()
@@ -861,11 +911,12 @@ func (qc *QueryCoord) GetSegmentInfo(ctx context.Context, req *querypb.GetSegmen
 			Status: status,
 		}, nil
 	}
+
 	for _, info := range segmentInfos {
 		totalNumRows += info.NumRows
 		totalMemSize += info.MemSize
 	}
-	log.Debug("getSegmentInfoRequest completed",
+	log.Info("getSegmentInfoRequest completed",
 		zap.String("role", typeutil.QueryCoordRole),
 		zap.Int64("collectionID", req.CollectionID),
 		zap.Int64("msgID", req.Base.MsgID),
@@ -879,11 +930,12 @@ func (qc *QueryCoord) GetSegmentInfo(ctx context.Context, req *querypb.GetSegmen
 
 // LoadBalance would do a load balancing operation between query nodes
 func (qc *QueryCoord) LoadBalance(ctx context.Context, req *querypb.LoadBalanceRequest) (*commonpb.Status, error) {
-	log.Debug("loadBalanceRequest received",
+	log.Info("loadBalanceRequest received",
 		zap.String("role", typeutil.QueryCoordRole),
 		zap.Int64s("source nodeIDs", req.SourceNodeIDs),
 		zap.Int64s("dst nodeIDs", req.DstNodeIDs),
 		zap.Int64s("balanced segments", req.SealedSegmentIDs),
+		zap.Int64("collectionID", req.CollectionID),
 		zap.Int64("msgID", req.Base.MsgID))
 
 	status := &commonpb.Status{
@@ -893,7 +945,7 @@ func (qc *QueryCoord) LoadBalance(ctx context.Context, req *querypb.LoadBalanceR
 		status.ErrorCode = commonpb.ErrorCode_UnexpectedError
 		err := errors.New("QueryCoord is not healthy")
 		status.Reason = err.Error()
-		log.Error("loadBalance failed", zap.String("role", typeutil.QueryCoordRole), zap.Int64("msgID", req.Base.MsgID), zap.Error(err))
+		log.Warn("loadBalance failed", zap.String("role", typeutil.QueryCoordRole), zap.Int64("msgID", req.Base.MsgID), zap.Error(err))
 		return status, nil
 	}
 
@@ -908,7 +960,7 @@ func (qc *QueryCoord) LoadBalance(ctx context.Context, req *querypb.LoadBalanceR
 	}
 	err := qc.scheduler.Enqueue(loadBalanceTask)
 	if err != nil {
-		log.Error("loadBalanceRequest failed to add execute task to scheduler",
+		log.Warn("loadBalanceRequest failed to add execute task to scheduler",
 			zap.String("role", typeutil.QueryCoordRole),
 			zap.Int64("msgID", req.Base.MsgID),
 			zap.Error(err))
@@ -919,17 +971,18 @@ func (qc *QueryCoord) LoadBalance(ctx context.Context, req *querypb.LoadBalanceR
 
 	err = loadBalanceTask.waitToFinish()
 	if err != nil {
-		log.Error("loadBalanceRequest failed", zap.String("role", typeutil.QueryCoordRole), zap.Int64("msgID", req.Base.MsgID), zap.Error(err))
+		log.Warn("loadBalanceRequest failed", zap.String("role", typeutil.QueryCoordRole), zap.Int64("msgID", req.Base.MsgID), zap.Error(err))
 		status.ErrorCode = commonpb.ErrorCode_UnexpectedError
 		status.Reason = err.Error()
 		return status, nil
 	}
 
-	log.Debug("loadBalanceRequest completed",
+	log.Info("loadBalanceRequest completed",
 		zap.String("role", typeutil.QueryCoordRole),
 		zap.Int64s("source nodeIDs", req.SourceNodeIDs),
 		zap.Int64s("dst nodeIDs", req.DstNodeIDs),
 		zap.Int64s("balanced segments", req.SealedSegmentIDs),
+		zap.Int64("collectionID", req.CollectionID),
 		zap.Int64("msgID", req.Base.MsgID))
 
 	return status, nil
@@ -946,20 +999,20 @@ func (qc *QueryCoord) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRe
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 		},
-		ComponentName: metricsinfo.ConstructComponentName(typeutil.QueryCoordRole, Params.QueryCoordCfg.QueryCoordID),
+		ComponentName: metricsinfo.ConstructComponentName(typeutil.QueryCoordRole, Params.QueryCoordCfg.GetNodeID()),
 	}
 
 	if qc.stateCode.Load() != internalpb.StateCode_Healthy {
 		err := errors.New("QueryCoord is not healthy")
 		getMetricsResponse.Status.Reason = err.Error()
-		log.Error("getMetrics failed", zap.String("role", typeutil.QueryCoordRole), zap.Int64("msgID", req.Base.MsgID), zap.Error(err))
+		log.Warn("getMetrics failed", zap.String("role", typeutil.QueryCoordRole), zap.Int64("msgID", req.Base.MsgID), zap.Error(err))
 		return getMetricsResponse, nil
 	}
 
 	metricType, err := metricsinfo.ParseMetricType(req.Request)
 	if err != nil {
 		getMetricsResponse.Status.Reason = err.Error()
-		log.Error("getMetrics failed to parse metric type",
+		log.Warn("getMetrics failed to parse metric type",
 			zap.String("role", typeutil.QueryCoordRole),
 			zap.Int64("msgID", req.Base.MsgID),
 			zap.Error(err))
@@ -1007,11 +1060,180 @@ func (qc *QueryCoord) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRe
 	err = errors.New(metricsinfo.MsgUnimplementedMetric)
 	getMetricsResponse.Status.Reason = err.Error()
 
-	log.Error("getMetrics failed",
+	log.Warn("getMetrics failed",
 		zap.String("role", typeutil.QueryCoordRole),
 		zap.String("req", req.Request),
 		zap.Int64("msgID", req.Base.MsgID),
 		zap.Error(err))
 
 	return getMetricsResponse, nil
+}
+
+// GetReplicas gets replicas of a certain collection
+func (qc *QueryCoord) GetReplicas(ctx context.Context, req *milvuspb.GetReplicasRequest) (*milvuspb.GetReplicasResponse, error) {
+	log.Info("GetReplicas received",
+		zap.String("role", typeutil.QueryCoordRole),
+		zap.Int64("collectionID", req.CollectionID),
+		zap.Int64("msgID", req.Base.MsgID))
+
+	status := &commonpb.Status{
+		ErrorCode: commonpb.ErrorCode_Success,
+	}
+
+	if qc.stateCode.Load() != internalpb.StateCode_Healthy {
+		status.ErrorCode = commonpb.ErrorCode_UnexpectedError
+		err := errors.New("QueryCoord is not healthy")
+		status.Reason = err.Error()
+		log.Warn("GetReplicasResponse failed", zap.String("role", typeutil.QueryCoordRole), zap.Int64("msgID", req.Base.MsgID), zap.Error(err))
+		return &milvuspb.GetReplicasResponse{
+			Status: status,
+		}, nil
+	}
+
+	replicas, err := qc.meta.getReplicasByCollectionID(req.CollectionID)
+	if err != nil {
+		status.ErrorCode = commonpb.ErrorCode_MetaFailed
+		status.Reason = err.Error()
+		log.Warn("GetReplicasResponse failed to get replicas",
+			zap.String("role", typeutil.QueryCoordRole),
+			zap.Int64("collectionID", req.CollectionID),
+			zap.Int64("msgID", req.Base.MsgID),
+			zap.Error(err))
+
+		return &milvuspb.GetReplicasResponse{
+			Status: status,
+		}, nil
+	}
+
+	if req.WithShardNodes {
+		shardNodes := getShardNodes(req.CollectionID, qc.meta)
+
+		for _, replica := range replicas {
+			for _, shard := range replica.ShardReplicas {
+				shard.NodeIds = append(shard.NodeIds, shard.LeaderID)
+				nodes := shardNodes[shard.DmChannelName]
+				for _, nodeID := range replica.NodeIds {
+					if _, ok := nodes[nodeID]; ok && nodeID != shard.LeaderID {
+						shard.NodeIds = append(shard.NodeIds, nodeID)
+					}
+				}
+			}
+		}
+	}
+
+	log.Info("GetReplicas finished",
+		zap.String("role", typeutil.QueryCoordRole),
+		zap.Int64("collectionID", req.CollectionID),
+		zap.Any("replicas", replicas))
+
+	return &milvuspb.GetReplicasResponse{
+		Status:   status,
+		Replicas: replicas,
+	}, nil
+}
+
+// GetShardLeaders gets shard leaders of a certain collection
+func (qc *QueryCoord) GetShardLeaders(ctx context.Context, req *querypb.GetShardLeadersRequest) (*querypb.GetShardLeadersResponse, error) {
+	log.Info("GetShardLeaders received",
+		zap.String("role", typeutil.QueryCoordRole),
+		zap.Int64("collectionID", req.CollectionID),
+		zap.Int64("msgID", req.Base.MsgID))
+
+	status := &commonpb.Status{
+		ErrorCode: commonpb.ErrorCode_Success,
+	}
+
+	if qc.stateCode.Load() != internalpb.StateCode_Healthy {
+		status.ErrorCode = commonpb.ErrorCode_UnexpectedError
+		err := errors.New("QueryCoord is not healthy")
+		status.Reason = err.Error()
+		log.Warn("GetShardLeadersResponse failed", zap.String("role", typeutil.QueryCoordRole), zap.Int64("msgID", req.Base.MsgID), zap.Error(err))
+		return &querypb.GetShardLeadersResponse{
+			Status: status,
+		}, nil
+	}
+
+	replicas, err := qc.meta.getReplicasByCollectionID(req.CollectionID)
+	shardNames := qc.meta.getDmChannelNamesByCollectionID(req.CollectionID)
+
+	if err != nil {
+		status.ErrorCode = commonpb.ErrorCode_MetaFailed
+		status.Reason = err.Error()
+		log.Warn("GetShardLeadersResponse failed to get replicas",
+			zap.String("role", typeutil.QueryCoordRole),
+			zap.Int64("collectionID", req.CollectionID),
+			zap.Int64("msgID", req.Base.MsgID),
+			zap.Error(err))
+
+		return &querypb.GetShardLeadersResponse{
+			Status: status,
+		}, nil
+	}
+
+	shards := make(map[string]*querypb.ShardLeadersList)
+	shardNodes := getShardNodes(req.CollectionID, qc.meta)
+	for _, replica := range replicas {
+		for _, shard := range replica.ShardReplicas {
+			list, ok := shards[shard.DmChannelName]
+			if !ok {
+				list = &querypb.ShardLeadersList{
+					ChannelName: shard.DmChannelName,
+					NodeIds:     make([]int64, 0),
+					NodeAddrs:   make([]string, 0),
+				}
+			}
+
+			isShardAvailable, err := qc.cluster.IsOnline(shard.LeaderID)
+			if err != nil || !isShardAvailable {
+				log.Warn("shard leader is unavailable",
+					zap.Int64("collectionID", replica.CollectionID),
+					zap.Int64("replicaID", replica.ReplicaID),
+					zap.String("DmChannel", shard.DmChannelName),
+					zap.Int64("shardLeaderID", shard.LeaderID),
+					zap.Error(err))
+				continue
+			}
+
+			nodes := shardNodes[shard.DmChannelName]
+			for _, nodeID := range replica.NodeIds {
+				if _, ok := nodes[nodeID]; ok {
+					if ok, err := qc.cluster.IsOnline(nodeID); err != nil || !ok {
+						isShardAvailable = false
+						break
+					}
+				}
+			}
+
+			if isShardAvailable {
+				list.NodeIds = append(list.NodeIds, shard.LeaderID)
+				list.NodeAddrs = append(list.NodeAddrs, shard.LeaderAddr)
+				shards[shard.DmChannelName] = list
+			}
+		}
+	}
+
+	shardLeaderLists := make([]*querypb.ShardLeadersList, 0, len(shards))
+	for _, shard := range shards {
+		shardLeaderLists = append(shardLeaderLists, shard)
+	}
+
+	// check if there are enough available distinct shards
+	if len(shardLeaderLists) != len(shardNames) {
+		return &querypb.GetShardLeadersResponse{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_NoReplicaAvailable,
+				Reason:    "no replica available",
+			},
+		}, nil
+	}
+
+	log.Info("GetShardLeaders finished",
+		zap.String("role", typeutil.QueryCoordRole),
+		zap.Int64("collectionID", req.CollectionID),
+		zap.Any("replicas", shardLeaderLists))
+
+	return &querypb.GetShardLeadersResponse{
+		Status: status,
+		Shards: shardLeaderLists,
+	}, nil
 }

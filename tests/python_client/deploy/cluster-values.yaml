@@ -7,11 +7,20 @@ image:
     pullPolicy: IfNotPresent
 
 etcd:
-  replicaCount: 1
+  replicaCount: 3
+  image:
+    repository: milvusdb/etcd
+    tag: 3.5.0-r1  
+
 minio:
   resources:
     requests:
       memory: 256Mi
+
+kafka:
+  enabled: false
+  replicaCount: 3
+
 pulsar:
   enabled: true
   extra:
