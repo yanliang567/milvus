@@ -158,7 +158,7 @@ func (qc *QueryCoord) Init() error {
 		qc.factory.Init(&Params)
 
 		// init meta
-		qc.meta, initError = newMeta(qc.loopCtx, qc.kvClient, qc.factory, qc.idAllocator)
+		qc.meta, initError = newMeta(qc.loopCtx, qc.kvClient, qc.factory, qc.idAllocator, qc.dataCoordClient)
 		if initError != nil {
 			log.Error("query coordinator init meta failed", zap.Error(initError))
 			return
@@ -387,6 +387,7 @@ func (qc *QueryCoord) allocateNode(nodeID int64) error {
 	}
 	return nil
 }
+
 func (qc *QueryCoord) getUnallocatedNodes() []int64 {
 	onlines := qc.cluster.OnlineNodeIDs()
 	var ret []int64

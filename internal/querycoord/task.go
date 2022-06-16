@@ -506,12 +506,18 @@ func (lct *loadCollectionTask) execute(ctx context.Context) error {
 		for _, info := range mergedDmChannel {
 			msgBase := proto.Clone(lct.Base).(*commonpb.MsgBase)
 			msgBase.MsgType = commonpb.MsgType_WatchDmChannels
+			segmentInfos, err := generateVChannelSegmentInfos(lct.meta, info)
+			if err != nil {
+				lct.setResultInfo(err)
+				return err
+			}
 			watchRequest := &querypb.WatchDmChannelsRequest{
 				Base:         msgBase,
 				CollectionID: collectionID,
 				//PartitionIDs: toLoadPartitionIDs,
-				Infos:  []*datapb.VchannelInfo{info},
-				Schema: lct.Schema,
+				Infos:        []*datapb.VchannelInfo{info},
+				Schema:       lct.Schema,
+				SegmentInfos: segmentInfos,
 				LoadMeta: &querypb.LoadMetaInfo{
 					LoadType:     querypb.LoadType_LoadCollection,
 					CollectionID: collectionID,
@@ -936,12 +942,18 @@ func (lpt *loadPartitionTask) execute(ctx context.Context) error {
 		for _, info := range mergedDmChannel {
 			msgBase := proto.Clone(lpt.Base).(*commonpb.MsgBase)
 			msgBase.MsgType = commonpb.MsgType_WatchDmChannels
+			segmentInfos, err := generateVChannelSegmentInfos(lpt.meta, info)
+			if err != nil {
+				lpt.setResultInfo(err)
+				return err
+			}
 			watchRequest := &querypb.WatchDmChannelsRequest{
 				Base:         msgBase,
 				CollectionID: collectionID,
 				PartitionIDs: partitionIDs,
 				Infos:        []*datapb.VchannelInfo{info},
 				Schema:       lpt.Schema,
+				SegmentInfos: segmentInfos,
 				LoadMeta: &querypb.LoadMetaInfo{
 					LoadType:     querypb.LoadType_LoadPartition,
 					CollectionID: collectionID,
@@ -1239,7 +1251,7 @@ func (lst *loadSegmentTask) preExecute(ctx context.Context) error {
 		zap.Int64("loaded nodeID", lst.DstNodeID),
 		zap.Int64("taskID", lst.getTaskID()))
 
-	if err := lst.broker.acquireSegmentsReferLock(ctx, segmentIDs); err != nil {
+	if err := lst.broker.acquireSegmentsReferLock(ctx, lst.taskID, segmentIDs); err != nil {
 		log.Error("acquire reference lock on segments failed", zap.Int64s("segmentIDs", segmentIDs),
 			zap.Error(err))
 		return err
@@ -1267,7 +1279,7 @@ func (lst *loadSegmentTask) postExecute(context.Context) error {
 	for _, info := range lst.Infos {
 		segmentIDs = append(segmentIDs, info.SegmentID)
 	}
-	if err := lst.broker.releaseSegmentReferLock(lst.ctx, segmentIDs); err != nil {
+	if err := lst.broker.releaseSegmentReferLock(lst.ctx, lst.taskID, segmentIDs); err != nil {
 		panic(err)
 	}
 
@@ -1467,7 +1479,7 @@ func (wdt *watchDmChannelTask) reschedule(ctx context.Context) ([]task, error) {
 			PartitionIDs: wdt.PartitionIDs,
 			Infos:        []*datapb.VchannelInfo{info},
 			Schema:       wdt.Schema,
-			ExcludeInfos: wdt.ExcludeInfos,
+			SegmentInfos: wdt.SegmentInfos,
 			LoadMeta: &querypb.LoadMetaInfo{
 				LoadType:     wdt.GetLoadMeta().GetLoadType(),
 				CollectionID: collectionID,
@@ -2008,11 +2020,17 @@ func (lbt *loadBalanceTask) processNodeDownLoadBalance(ctx context.Context) erro
 				if _, ok := dmChannels[channelName]; ok {
 					msgBase := proto.Clone(lbt.Base).(*commonpb.MsgBase)
 					msgBase.MsgType = commonpb.MsgType_WatchDmChannels
+					channelSegmentInfos, err := generateVChannelSegmentInfos(lbt.meta, vChannelInfo)
+					if err != nil {
+						lbt.setResultInfo(err)
+						return err
+					}
 					watchRequest := &querypb.WatchDmChannelsRequest{
 						Base:         msgBase,
 						CollectionID: collectionID,
 						Infos:        []*datapb.VchannelInfo{vChannelInfo},
 						Schema:       schema,
+						SegmentInfos: channelSegmentInfos,
 						LoadMeta: &querypb.LoadMetaInfo{
 							LoadType:     collectionInfo.LoadType,
 							CollectionID: collectionID,
@@ -2029,11 +2047,10 @@ func (lbt *loadBalanceTask) processNodeDownLoadBalance(ctx context.Context) erro
 				}
 			}
 
-			tasks, err := assignInternalTask(ctx, lbt, lbt.meta, lbt.cluster, loadSegmentReqs, watchDmChannelReqs, true, lbt.SourceNodeIDs, lbt.DstNodeIDs, replica.GetReplicaID(), lbt.broker)
+			tasks, err := assignInternalTask(ctx, lbt, lbt.meta, lbt.cluster, loadSegmentReqs, watchDmChannelReqs, false, lbt.SourceNodeIDs, lbt.DstNodeIDs, replica.GetReplicaID(), lbt.broker)
 			if err != nil {
 				log.Error("loadBalanceTask: assign child task failed", zap.Int64("sourceNodeID", nodeID))
 				lbt.setResultInfo(err)
-				panic(err)
 			}
 			internalTasks = append(internalTasks, tasks...)
 		}
@@ -2251,10 +2268,14 @@ func (lbt *loadBalanceTask) globalPostExecute(ctx context.Context) error {
 	if len(lbt.getChildTask()) > 0 {
 		replicas := make(map[UniqueID]*milvuspb.ReplicaInfo)
 		segments := make(map[UniqueID]*querypb.SegmentInfo)
+		dmChannels := make(map[string]*querypb.DmChannelWatchInfo)
 
 		for _, id := range lbt.SourceNodeIDs {
 			for _, segment := range lbt.meta.getSegmentInfosByNode(id) {
 				segments[segment.SegmentID] = segment
+			}
+			for _, dmChannel := range lbt.meta.getDmChannelInfosByNodeID(id) {
+				dmChannels[dmChannel.DmChannel] = dmChannel
 			}
 
 			nodeReplicas, err := lbt.meta.getReplicasByNodeID(id)
@@ -2306,30 +2327,14 @@ func (lbt *loadBalanceTask) globalPostExecute(ctx context.Context) error {
 					return nil
 				})
 			}
-
-			// if loadBalanceTask execute failed after query node down, the lbt.getResultInfo().ErrorCode will be set to commonpb.ErrorCode_UnexpectedError
-			// then the queryCoord will panic, and the nodeInfo should not be removed immediately
-			// after queryCoord recovery, the balanceTask will redo
-			for _, offlineNodeID := range lbt.SourceNodeIDs {
-				err := lbt.cluster.RemoveNodeInfo(offlineNodeID)
-				if err != nil {
-					log.Error("loadBalanceTask: occur error when removing node info from cluster",
-						zap.Int64("nodeID", offlineNodeID),
-						zap.Error(err))
-					lbt.setResultInfo(err)
-					return err
-				}
-			}
 		}
 
+		// Remove offline nodes from segment
 		for _, segment := range segments {
 			segment := segment
 			wg.Go(func() error {
 				segment.NodeID = -1
 				segment.NodeIds = removeFromSlice(segment.NodeIds, lbt.SourceNodeIDs...)
-				if len(segment.NodeIds) > 0 {
-					segment.NodeID = segment.NodeIds[0]
-				}
 
 				err := lbt.meta.saveSegmentInfo(segment)
 				if err != nil {
@@ -2344,6 +2349,30 @@ func (lbt *loadBalanceTask) globalPostExecute(ctx context.Context) error {
 					zap.Int64("taskID", lbt.getTaskID()),
 					zap.Int64("segmentID", segment.GetSegmentID()),
 					zap.Int64s("nodeIds", segment.GetNodeIds()))
+
+				return nil
+			})
+		}
+
+		// Remove offline nodes from dmChannels
+		for _, dmChannel := range dmChannels {
+			dmChannel := dmChannel
+			wg.Go(func() error {
+				dmChannel.NodeIds = removeFromSlice(dmChannel.NodeIds, lbt.SourceNodeIDs...)
+
+				err := lbt.meta.setDmChannelInfos(dmChannel)
+				if err != nil {
+					log.Error("failed to remove offline nodes from dmChannel info",
+						zap.String("dmChannel", dmChannel.DmChannel),
+						zap.Error(err))
+
+					return err
+				}
+
+				log.Info("remove offline nodes from dmChannel",
+					zap.Int64("taskID", lbt.getTaskID()),
+					zap.String("dmChannel", dmChannel.DmChannel),
+					zap.Int64s("nodeIds", dmChannel.NodeIds))
 
 				return nil
 			})
@@ -2394,6 +2423,22 @@ func (lbt *loadBalanceTask) globalPostExecute(ctx context.Context) error {
 		err = syncReplicaSegments(ctx, lbt.cluster, lbt.getChildTask())
 		if err != nil {
 			return err
+		}
+	}
+
+	// if loadBalanceTask execute failed after query node down, the lbt.getResultInfo().ErrorCode will be set to commonpb.ErrorCode_UnexpectedError
+	// then the queryCoord will panic, and the nodeInfo should not be removed immediately
+	// after queryCoord recovery, the balanceTask will redo
+	if lbt.BalanceReason == querypb.TriggerCondition_NodeDown {
+		for _, offlineNodeID := range lbt.SourceNodeIDs {
+			err := lbt.cluster.RemoveNodeInfo(offlineNodeID)
+			if err != nil {
+				log.Error("loadBalanceTask: occur error when removing node info from cluster",
+					zap.Int64("nodeID", offlineNodeID),
+					zap.Error(err))
+				lbt.setResultInfo(err)
+				return err
+			}
 		}
 	}
 
@@ -2491,9 +2536,9 @@ func generateWatchDeltaChannelInfo(info *datapb.VchannelInfo) (*datapb.VchannelI
 	}
 	deltaChannel := proto.Clone(info).(*datapb.VchannelInfo)
 	deltaChannel.ChannelName = deltaChannelName
-	deltaChannel.UnflushedSegments = nil
-	deltaChannel.FlushedSegments = nil
-	deltaChannel.DroppedSegments = nil
+	deltaChannel.UnflushedSegmentIds = nil
+	deltaChannel.FlushedSegmentIds = nil
+	deltaChannel.DroppedSegmentIds = nil
 	return deltaChannel, nil
 }
 
@@ -2531,10 +2576,27 @@ func mergeDmChannelInfo(infos []*datapb.VchannelInfo) map[string]*datapb.Vchanne
 		if info.SeekPosition.GetTimestamp() < minPositionInfo.SeekPosition.GetTimestamp() {
 			minPositionInfo.SeekPosition = info.SeekPosition
 		}
-		minPositionInfo.DroppedSegments = append(minPositionInfo.DroppedSegments, info.DroppedSegments...)
-		minPositionInfo.UnflushedSegments = append(minPositionInfo.UnflushedSegments, info.UnflushedSegments...)
-		minPositionInfo.FlushedSegments = append(minPositionInfo.FlushedSegments, info.FlushedSegments...)
+		minPositionInfo.DroppedSegmentIds = append(minPositionInfo.DroppedSegmentIds, info.DroppedSegmentIds...)
+		minPositionInfo.UnflushedSegmentIds = append(minPositionInfo.UnflushedSegmentIds, info.UnflushedSegmentIds...)
+		minPositionInfo.FlushedSegmentIds = append(minPositionInfo.FlushedSegmentIds, info.FlushedSegmentIds...)
 	}
 
 	return minPositions
+}
+
+// generateVChannelSegmentInfos returns a map<id, SegmentInfo> contains
+// all the segment infos(flushed, unflushed and dropped) in a vChannel.
+func generateVChannelSegmentInfos(m Meta, vChannel *datapb.VchannelInfo) (map[int64]*datapb.SegmentInfo, error) {
+	segmentIds := make([]int64, 0)
+	segmentIds = append(append(append(segmentIds, vChannel.FlushedSegmentIds...), vChannel.UnflushedSegmentIds...), vChannel.DroppedSegmentIds...)
+	segmentInfos, err := m.getDataSegmentInfosByIDs(segmentIds)
+	if err != nil {
+		log.Error("Get Vchannel SegmentInfos failed", zap.String("vChannel", vChannel.String()), zap.Error(err))
+		return nil, err
+	}
+	segmentDict := make(map[int64]*datapb.SegmentInfo)
+	for _, info := range segmentInfos {
+		segmentDict[info.ID] = info
+	}
+	return segmentDict, nil
 }
