@@ -89,6 +89,10 @@ func (m *mockMetaKV) LoadWithPrefix2(key string) ([]string, []string, []int64, e
 	panic("not implemented") // TODO: Implement
 }
 
+func (m *mockMetaKV) LoadWithRevisionAndVersions(key string) ([]string, []string, []int64, int64, error) {
+	panic("not implemented") // TODO: Implement
+}
+
 func (m *mockMetaKV) LoadWithRevision(key string) ([]string, []string, int64, error) {
 	panic("not implemented") // TODO: Implement
 }
@@ -121,11 +125,11 @@ func (m *mockMetaKV) KeepAlive(id clientv3.LeaseID) (<-chan *clientv3.LeaseKeepA
 	panic("not implemented") // TODO: Implement
 }
 
-func (m *mockMetaKV) CompareValueAndSwap(key string, value string, target string, opts ...clientv3.OpOption) error {
+func (m *mockMetaKV) CompareValueAndSwap(key string, value string, target string, opts ...clientv3.OpOption) (bool, error) {
 	panic("not implemented") // TODO: Implement
 }
 
-func (m *mockMetaKV) CompareVersionAndSwap(key string, version int64, target string, opts ...clientv3.OpOption) error {
+func (m *mockMetaKV) CompareVersionAndSwap(key string, version int64, target string, opts ...clientv3.OpOption) (bool, error) {
 	panic("not implemented") // TODO: Implement
 }
 
@@ -135,7 +139,7 @@ func TestReplicaInfos_ApplyBalancePlan(t *testing.T) {
 	t.Run("source replica not exist", func(t *testing.T) {
 		replicas := NewReplicaInfos()
 		err := replicas.ApplyBalancePlan(&balancePlan{
-			nodeID:        1,
+			nodes:         []UniqueID{1},
 			sourceReplica: 1,
 			targetReplica: invalidReplicaID,
 		}, kv)
@@ -145,7 +149,7 @@ func TestReplicaInfos_ApplyBalancePlan(t *testing.T) {
 	t.Run("target replica not exist", func(t *testing.T) {
 		replicas := NewReplicaInfos()
 		err := replicas.ApplyBalancePlan(&balancePlan{
-			nodeID:        1,
+			nodes:         []UniqueID{1},
 			sourceReplica: invalidReplicaID,
 			targetReplica: 1,
 		}, kv)
@@ -162,7 +166,7 @@ func TestReplicaInfos_ApplyBalancePlan(t *testing.T) {
 		})
 
 		err := replicas.ApplyBalancePlan(&balancePlan{
-			nodeID:        2,
+			nodes:         []UniqueID{2},
 			sourceReplica: invalidReplicaID,
 			targetReplica: 1,
 		}, kv)
@@ -189,7 +193,7 @@ func TestReplicaInfos_ApplyBalancePlan(t *testing.T) {
 		})
 
 		err := replicas.ApplyBalancePlan(&balancePlan{
-			nodeID:        1,
+			nodes:         []UniqueID{1},
 			sourceReplica: 1,
 			targetReplica: invalidReplicaID,
 		}, kv)
@@ -216,7 +220,7 @@ func TestReplicaInfos_ApplyBalancePlan(t *testing.T) {
 		})
 
 		err := replicas.ApplyBalancePlan(&balancePlan{
-			nodeID:        2,
+			nodes:         []UniqueID{2},
 			sourceReplica: 1,
 			targetReplica: invalidReplicaID,
 		}, kv)
@@ -235,7 +239,7 @@ func TestReplicaInfos_ApplyBalancePlan(t *testing.T) {
 		})
 
 		err := replicas.ApplyBalancePlan(&balancePlan{
-			nodeID:        2,
+			nodes:         []UniqueID{2},
 			sourceReplica: invalidReplicaID,
 			targetReplica: 1,
 		}, kv)

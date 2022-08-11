@@ -25,9 +25,12 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"go.uber.org/zap"
 	"golang.org/x/exp/mmap"
 
+	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/util/errorutil"
 )
 
@@ -159,24 +162,50 @@ func (lcm *LocalChunkManager) MultiRead(filePaths []string) ([][]byte, error) {
 	return results, el
 }
 
-func (lcm *LocalChunkManager) ListWithPrefix(prefix string) ([]string, error) {
+func (lcm *LocalChunkManager) ListWithPrefix(prefix string, recursive bool) ([]string, []time.Time, error) {
 	var filePaths []string
-	absPrefix := path.Join(lcm.localPath, prefix)
-	dir := filepath.Dir(absPrefix)
-	err := filepath.Walk(dir, func(filePath string, f os.FileInfo, err error) error {
-		if strings.HasPrefix(filePath, absPrefix) && !f.IsDir() {
-			filePaths = append(filePaths, strings.TrimPrefix(filePath, lcm.localPath))
+	var modTimes []time.Time
+	if recursive {
+		absPrefix := path.Join(lcm.localPath, prefix)
+		dir := filepath.Dir(absPrefix)
+		err := filepath.Walk(dir, func(filePath string, f os.FileInfo, err error) error {
+			if strings.HasPrefix(filePath, absPrefix) && !f.IsDir() {
+				filePaths = append(filePaths, strings.TrimPrefix(filePath, lcm.localPath))
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, nil, err
 		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
+		for _, filePath := range filePaths {
+			modTime, err2 := lcm.getModTime(filePath)
+			if err2 != nil {
+				return filePaths, nil, err2
+			}
+			modTimes = append(modTimes, modTime)
+		}
+		return filePaths, modTimes, nil
 	}
-	return filePaths, nil
+	absPrefix := path.Join(lcm.localPath, prefix+"*")
+	absPaths, err := filepath.Glob(absPrefix)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, absPath := range absPaths {
+		filePaths = append(filePaths, strings.TrimPrefix(absPath, lcm.localPath))
+	}
+	for _, filePath := range filePaths {
+		modTime, err2 := lcm.getModTime(filePath)
+		if err2 != nil {
+			return filePaths, nil, err2
+		}
+		modTimes = append(modTimes, modTime)
+	}
+	return filePaths, modTimes, nil
 }
 
 func (lcm *LocalChunkManager) ReadWithPrefix(prefix string) ([]string, [][]byte, error) {
-	filePaths, err := lcm.ListWithPrefix(prefix)
+	filePaths, _, err := lcm.ListWithPrefix(prefix, true)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -248,9 +277,20 @@ func (lcm *LocalChunkManager) MultiRemove(filePaths []string) error {
 }
 
 func (lcm *LocalChunkManager) RemoveWithPrefix(prefix string) error {
-	filePaths, err := lcm.ListWithPrefix(prefix)
+	filePaths, _, err := lcm.ListWithPrefix(prefix, true)
 	if err != nil {
 		return err
 	}
 	return lcm.MultiRemove(filePaths)
+}
+
+func (lcm *LocalChunkManager) getModTime(filepath string) (time.Time, error) {
+	absPath := path.Join(lcm.localPath, filepath)
+	fi, err := os.Stat(absPath)
+	if err != nil {
+		log.Error("stat fileinfo error", zap.String("relative filepath", filepath))
+		return time.Time{}, err
+	}
+
+	return fi.ModTime(), nil
 }

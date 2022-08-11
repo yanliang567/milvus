@@ -49,11 +49,16 @@ func NewClient(ctx context.Context, addr string) (*Client, error) {
 	client := &Client{
 		addr: addr,
 		grpcClient: &grpcclient.ClientBase{
-			ClientMaxRecvSize: ClientParams.ClientMaxRecvSize,
-			ClientMaxSendSize: ClientParams.ClientMaxSendSize,
-			DialTimeout:       ClientParams.DialTimeout,
-			KeepAliveTime:     ClientParams.KeepAliveTime,
-			KeepAliveTimeout:  ClientParams.KeepAliveTimeout,
+			ClientMaxRecvSize:      ClientParams.ClientMaxRecvSize,
+			ClientMaxSendSize:      ClientParams.ClientMaxSendSize,
+			DialTimeout:            ClientParams.DialTimeout,
+			KeepAliveTime:          ClientParams.KeepAliveTime,
+			KeepAliveTimeout:       ClientParams.KeepAliveTimeout,
+			RetryServiceNameConfig: "milvus.proto.query.QueryNode",
+			MaxAttempts:            ClientParams.MaxAttempts,
+			InitialBackoff:         ClientParams.InitialBackoff,
+			MaxBackoff:             ClientParams.MaxBackoff,
+			BackoffMultiplier:      ClientParams.BackoffMultiplier,
 		},
 	}
 	client.grpcClient.SetRole(typeutil.QueryNodeRole)
@@ -140,20 +145,6 @@ func (c *Client) WatchDmChannels(ctx context.Context, req *querypb.WatchDmChanne
 			return nil, ctx.Err()
 		}
 		return client.(querypb.QueryNodeClient).WatchDmChannels(ctx, req)
-	})
-	if err != nil || ret == nil {
-		return nil, err
-	}
-	return ret.(*commonpb.Status), err
-}
-
-// WatchDeltaChannels watches the channels about data manipulation.
-func (c *Client) WatchDeltaChannels(ctx context.Context, req *querypb.WatchDeltaChannelsRequest) (*commonpb.Status, error) {
-	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
-		if !funcutil.CheckCtxValid(ctx) {
-			return nil, ctx.Err()
-		}
-		return client.(querypb.QueryNodeClient).WatchDeltaChannels(ctx, req)
 	})
 	if err != nil || ret == nil {
 		return nil, err
@@ -273,6 +264,21 @@ func (c *Client) SyncReplicaSegments(ctx context.Context, req *querypb.SyncRepli
 	return ret.(*commonpb.Status), err
 }
 
+// ShowConfigurations gets specified configurations para of QueryNode
+func (c *Client) ShowConfigurations(ctx context.Context, req *internalpb.ShowConfigurationsRequest) (*internalpb.ShowConfigurationsResponse, error) {
+	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(querypb.QueryNodeClient).ShowConfigurations(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+
+	return ret.(*internalpb.ShowConfigurationsResponse), err
+}
+
 // GetMetrics gets the metrics information of QueryNode.
 func (c *Client) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
 	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
@@ -285,4 +291,17 @@ func (c *Client) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest
 		return nil, err
 	}
 	return ret.(*milvuspb.GetMetricsResponse), err
+}
+
+func (c *Client) GetStatistics(ctx context.Context, request *querypb.GetStatisticsRequest) (*internalpb.GetStatisticsResponse, error) {
+	ret, err := c.grpcClient.Call(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(querypb.QueryNodeClient).GetStatistics(ctx, request)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*internalpb.GetStatisticsResponse), err
 }

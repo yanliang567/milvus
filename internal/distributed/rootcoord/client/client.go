@@ -20,6 +20,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/milvus-io/milvus/internal/proto/indexpb"
+
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
@@ -60,11 +62,16 @@ func NewClient(ctx context.Context, metaRoot string, etcdCli *clientv3.Client) (
 	ClientParams.InitOnce(typeutil.RootCoordRole)
 	client := &Client{
 		grpcClient: &grpcclient.ClientBase{
-			ClientMaxRecvSize: ClientParams.ClientMaxRecvSize,
-			ClientMaxSendSize: ClientParams.ClientMaxSendSize,
-			DialTimeout:       ClientParams.DialTimeout,
-			KeepAliveTime:     ClientParams.KeepAliveTime,
-			KeepAliveTimeout:  ClientParams.KeepAliveTimeout,
+			ClientMaxRecvSize:      ClientParams.ClientMaxRecvSize,
+			ClientMaxSendSize:      ClientParams.ClientMaxSendSize,
+			DialTimeout:            ClientParams.DialTimeout,
+			KeepAliveTime:          ClientParams.KeepAliveTime,
+			KeepAliveTimeout:       ClientParams.KeepAliveTimeout,
+			RetryServiceNameConfig: "milvus.proto.rootcoord.RootCoord",
+			MaxAttempts:            ClientParams.MaxAttempts,
+			InitialBackoff:         ClientParams.InitialBackoff,
+			MaxBackoff:             ClientParams.MaxBackoff,
+			BackoffMultiplier:      ClientParams.BackoffMultiplier,
 		},
 		sess: sess,
 	}
@@ -323,6 +330,19 @@ func (c *Client) DescribeIndex(ctx context.Context, in *milvuspb.DescribeIndexRe
 		return nil, err
 	}
 	return ret.(*milvuspb.DescribeIndexResponse), err
+}
+
+func (c *Client) GetIndexState(ctx context.Context, in *milvuspb.GetIndexStateRequest) (*indexpb.GetIndexStatesResponse, error) {
+	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(rootcoordpb.RootCoordClient).GetIndexState(ctx, in)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*indexpb.GetIndexStatesResponse), err
 }
 
 // AllocTimestamp global timestamp allocator
@@ -690,19 +710,6 @@ func (c *Client) SelectUser(ctx context.Context, req *milvuspb.SelectUserRequest
 		return nil, err
 	}
 	return ret.(*milvuspb.SelectUserResponse), err
-}
-
-func (c *Client) SelectResource(ctx context.Context, req *milvuspb.SelectResourceRequest) (*milvuspb.SelectResourceResponse, error) {
-	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
-		if !funcutil.CheckCtxValid(ctx) {
-			return nil, ctx.Err()
-		}
-		return client.(rootcoordpb.RootCoordClient).SelectResource(ctx, req)
-	})
-	if err != nil {
-		return nil, err
-	}
-	return ret.(*milvuspb.SelectResourceResponse), err
 }
 
 func (c *Client) OperatePrivilege(ctx context.Context, req *milvuspb.OperatePrivilegeRequest) (*commonpb.Status, error) {

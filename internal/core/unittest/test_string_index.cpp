@@ -39,7 +39,7 @@ class StringIndexBaseTest : public ::testing::Test {
 
     void
     TearDown() override {
-        delete[](char*)(str_ds->Get<const void*>(knowhere::meta::TENSOR));
+        delete[](char*)(knowhere::GetDatasetTensor(str_ds));
     }
 
  protected:
@@ -208,6 +208,7 @@ TEST_F(StringIndexMarisaTest, Codec) {
     str_ds = GenDsFromPB(str_arr);
     index->BuildWithDataset(str_ds);
 
+    std::vector<std::string> invalid_strings = {std::to_string(nb)};
     auto copy_index = milvus::scalar::CreateStringIndexMarisa();
 
     {
@@ -219,6 +220,12 @@ TEST_F(StringIndexMarisaTest, Codec) {
         auto bitset = copy_index->In(nb, strings.data());
         ASSERT_EQ(bitset->size(), nb);
         ASSERT_TRUE(bitset->any());
+    }
+
+    {
+        auto bitset = copy_index->In(1, invalid_strings.data());
+        ASSERT_EQ(bitset->size(), nb);
+        ASSERT_TRUE(bitset->none());
     }
 
     {

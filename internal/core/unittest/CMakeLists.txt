@@ -17,6 +17,7 @@ add_definitions(-DMILVUS_TEST_SEGCORE_YAML_PATH="${CMAKE_SOURCE_DIR}/unittest/te
 # TODO: better to use ls/find pattern
 set(MILVUS_TEST_FILES
         init_gtest.cpp
+        test_bf.cpp
         test_binary.cpp
         test_bitmap.cpp
         test_bool_index.cpp
@@ -25,10 +26,12 @@ set(MILVUS_TEST_FILES
         test_conf_adapter_mgr.cpp
         test_c_api.cpp
         test_expr.cpp
+        test_growing.cpp
         test_indexing.cpp
         test_index_c_api.cpp
         test_index_wrapper.cpp
         test_init.cpp
+        test_parquet_c.cpp
         test_plan_proto.cpp
         test_query.cpp
         test_reduce.cpp
@@ -87,6 +90,7 @@ target_link_libraries(all_tests
         milvus_indexbuilder
         milvus_index
         milvus_log
+        milvus_storage
         pthread
         )
 

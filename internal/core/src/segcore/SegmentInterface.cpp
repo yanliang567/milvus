@@ -32,9 +32,7 @@ SegmentInternalInterface::FillPrimaryKeys(const query::Plan* plan, SearchResult&
     auto field_data = bulk_subscript(pk_field_id, results.seg_offsets_.data(), size);
     results.pk_type_ = DataType(field_data->type());
 
-    std::vector<PkType> pks(size);
-    ParsePksFromFieldData(pks, *field_data.get());
-    results.primary_keys_ = std::move(pks);
+    ParsePksFromFieldData(results.primary_keys_, *field_data.get());
 }
 
 void
@@ -107,4 +105,14 @@ SegmentInternalInterface::Retrieve(const query::RetrievePlan* plan, Timestamp ti
     }
     return results;
 }
+
+int64_t
+SegmentInternalInterface::get_real_count() const {
+    auto insert_cnt = get_row_count();
+    BitsetType bitset_holder;
+    bitset_holder.resize(insert_cnt, false);
+    mask_with_delete(bitset_holder, insert_cnt, MAX_TIMESTAMP);
+    return bitset_holder.size() - bitset_holder.count();
+}
+
 }  // namespace milvus::segcore

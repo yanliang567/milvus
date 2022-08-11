@@ -67,6 +67,10 @@ type Server struct {
 	closer io.Closer
 }
 
+func (s *Server) GetStatistics(ctx context.Context, request *querypb.GetStatisticsRequest) (*internalpb.GetStatisticsResponse, error) {
+	return s.querynode.GetStatistics(ctx, request)
+}
+
 // NewServer create a new QueryNode grpc server.
 func NewServer(ctx context.Context, factory dependency.Factory) (*Server, error) {
 	ctx1, cancel := context.WithCancel(ctx)
@@ -258,12 +262,6 @@ func (s *Server) WatchDmChannels(ctx context.Context, req *querypb.WatchDmChanne
 	return s.querynode.WatchDmChannels(ctx, req)
 }
 
-// WatchDeltaChannels watches the channels about data manipulation.
-func (s *Server) WatchDeltaChannels(ctx context.Context, req *querypb.WatchDeltaChannelsRequest) (*commonpb.Status, error) {
-	// ignore ctx
-	return s.querynode.WatchDeltaChannels(ctx, req)
-}
-
 // LoadSegments loads the segments to search.
 func (s *Server) LoadSegments(ctx context.Context, req *querypb.LoadSegmentsRequest) (*commonpb.Status, error) {
 	// ignore ctx
@@ -306,6 +304,11 @@ func (s *Server) Query(ctx context.Context, req *querypb.QueryRequest) (*interna
 // SyncReplicaSegments syncs replica segment information to shard leader
 func (s *Server) SyncReplicaSegments(ctx context.Context, req *querypb.SyncReplicaSegmentsRequest) (*commonpb.Status, error) {
 	return s.querynode.SyncReplicaSegments(ctx, req)
+}
+
+// ShowConfigurations gets specified configurations para of QueryNode
+func (s *Server) ShowConfigurations(ctx context.Context, req *internalpb.ShowConfigurationsRequest) (*internalpb.ShowConfigurationsResponse, error) {
+	return s.querynode.ShowConfigurations(ctx, req)
 }
 
 // GetMetrics gets the metrics information of QueryNode.

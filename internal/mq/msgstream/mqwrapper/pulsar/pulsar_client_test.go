@@ -20,7 +20,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"math/rand"
 	"net/url"
@@ -47,6 +46,16 @@ func TestMain(m *testing.M) {
 	Params.Init()
 	exitCode := m.Run()
 	os.Exit(exitCode)
+}
+
+func getPulsarAddress() string {
+	pulsarHost := Params.LoadWithDefault("pulsar.address", "")
+	port := Params.LoadWithDefault("pulsar.port", "")
+	log.Info("pulsar address", zap.String("host", pulsarHost), zap.String("port", port))
+	if len(pulsarHost) != 0 && len(port) != 0 {
+		return "pulsar://" + pulsarHost + ":" + port
+	}
+	panic("invalid pulsar address")
 }
 
 func IntToBytes(n int) []byte {
@@ -194,7 +203,7 @@ func Consume3(ctx context.Context, t *testing.T, pc *pulsarClient, topic string,
 }
 
 func TestPulsarClient_Consume1(t *testing.T) {
-	pulsarAddress, _ := Params.Load("_PulsarAddress")
+	pulsarAddress := getPulsarAddress()
 	pc, err := NewClient(pulsar.ClientOptions{URL: pulsarAddress})
 	defer pc.Close()
 	assert.NoError(t, err)
@@ -345,7 +354,7 @@ func Consume23(ctx context.Context, t *testing.T, pc *pulsarClient, topic string
 }
 
 func TestPulsarClient_Consume2(t *testing.T) {
-	pulsarAddress, _ := Params.Load("_PulsarAddress")
+	pulsarAddress := getPulsarAddress()
 	pc, err := NewClient(pulsar.ClientOptions{URL: pulsarAddress})
 	defer pc.Close()
 	assert.NoError(t, err)
@@ -395,7 +404,7 @@ func TestPulsarClient_Consume2(t *testing.T) {
 }
 
 func TestPulsarClient_SeekPosition(t *testing.T) {
-	pulsarAddress, _ := Params.Load("_PulsarAddress")
+	pulsarAddress := getPulsarAddress()
 	pc, err := NewClient(pulsar.ClientOptions{URL: pulsarAddress})
 	defer pc.Close()
 	assert.NoError(t, err)
@@ -468,7 +477,7 @@ func TestPulsarClient_SeekPosition(t *testing.T) {
 }
 
 func TestPulsarClient_SeekLatest(t *testing.T) {
-	pulsarAddress, _ := Params.Load("_PulsarAddress")
+	pulsarAddress := getPulsarAddress()
 	pc, err := NewClient(pulsar.ClientOptions{URL: pulsarAddress})
 	defer pc.Close()
 	assert.NoError(t, err)
@@ -531,7 +540,7 @@ func TestPulsarClient_SeekLatest(t *testing.T) {
 }
 
 func TestPulsarClient_EarliestMessageID(t *testing.T) {
-	pulsarAddress, _ := Params.Load("_PulsarAddress")
+	pulsarAddress := getPulsarAddress()
 	client, _ := NewClient(pulsar.ClientOptions{URL: pulsarAddress})
 	defer client.Close()
 
@@ -540,7 +549,7 @@ func TestPulsarClient_EarliestMessageID(t *testing.T) {
 }
 
 func TestPulsarClient_StringToMsgID(t *testing.T) {
-	pulsarAddress, _ := Params.Load("_PulsarAddress")
+	pulsarAddress := getPulsarAddress()
 	client, _ := NewClient(pulsar.ClientOptions{URL: pulsarAddress})
 	defer client.Close()
 
@@ -558,7 +567,7 @@ func TestPulsarClient_StringToMsgID(t *testing.T) {
 }
 
 func TestPulsarClient_BytesToMsgID(t *testing.T) {
-	pulsarAddress, _ := Params.Load("_PulsarAddress")
+	pulsarAddress := getPulsarAddress()
 	client, _ := NewClient(pulsar.ClientOptions{URL: pulsarAddress})
 	defer client.Close()
 
@@ -585,42 +594,16 @@ func hackPulsarError(result pulsar.Result) *pulsar.Error {
 	// use unsafe to generate test case
 	/* #nosec G103 */
 	mpe := (*mPulsarError)(unsafe.Pointer(pe))
+	// this what we tested
+	if result == pulsar.ConsumerBusy {
+		mpe.msg = "server error: ConsumerBusy: Exclusive consumer is already connected"
+	}
+
+	if result == pulsar.ConsumerNotFound {
+		mpe.msg = "server error: MetadataError: Consumer not found"
+	}
 	mpe.result = result
 	return pe
-}
-
-func TestIsPulsarError(t *testing.T) {
-	type testCase struct {
-		err      error
-		results  []pulsar.Result
-		expected bool
-	}
-	cases := []testCase{
-		{
-			err:      errors.New(""),
-			results:  []pulsar.Result{},
-			expected: false,
-		},
-		{
-			err:      errors.New(""),
-			results:  []pulsar.Result{pulsar.ConnectError},
-			expected: false,
-		},
-		{
-			err:      hackPulsarError(pulsar.ConsumerBusy),
-			results:  []pulsar.Result{pulsar.ConnectError},
-			expected: false,
-		},
-		{
-			err:      hackPulsarError(pulsar.ConsumerBusy),
-			results:  []pulsar.Result{pulsar.ConnectError, pulsar.ConsumerBusy},
-			expected: true,
-		},
-	}
-
-	for _, tc := range cases {
-		assert.Equal(t, tc.expected, isPulsarError(tc.err, tc.results...))
-	}
 }
 
 type mockPulsarClient struct{}
@@ -677,7 +660,7 @@ func TestPulsarCtl(t *testing.T) {
 	topic := "test"
 	subName := "hello"
 
-	pulsarAddress, _ := Params.Load("_PulsarAddress")
+	pulsarAddress := getPulsarAddress()
 	pc, err := NewClient(pulsar.ClientOptions{URL: pulsarAddress})
 	assert.Nil(t, err)
 	consumer, err := pc.Subscribe(mqwrapper.ConsumerOptions{

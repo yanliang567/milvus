@@ -41,7 +41,6 @@ service QueryNode {
   rpc GetStatisticsChannel(internal.GetStatisticsChannelRequest) returns(milvus.StringResponse){}
 
   rpc WatchDmChannels(WatchDmChannelsRequest) returns (common.Status) {}
-  rpc WatchDeltaChannels(WatchDeltaChannelsRequest) returns (common.Status) {}
   rpc LoadSegments(LoadSegmentsRequest) returns (common.Status) {}
   rpc ReleaseCollection(ReleaseCollectionRequest) returns (common.Status) {}
   rpc ReleasePartitions(ReleasePartitionsRequest) returns (common.Status) {}
@@ -49,9 +48,11 @@ service QueryNode {
   rpc GetSegmentInfo(GetSegmentInfoRequest) returns (GetSegmentInfoResponse) {}
   rpc SyncReplicaSegments(SyncReplicaSegmentsRequest) returns (common.Status) {}
 
+  rpc GetStatistics(GetStatisticsRequest) returns (internal.GetStatisticsResponse) {}
   rpc Search(SearchRequest) returns (internal.SearchResults) {}
   rpc Query(QueryRequest) returns (internal.RetrieveResults) {}
 
+  rpc ShowConfigurations(internal.ShowConfigurationsRequest) returns (internal.ShowConfigurationsResponse){}
   // https://wiki.lfaidata.foundation/display/MIL/MEP+8+--+Add+metrics+for+proxy
   rpc GetMetrics(milvus.GetMetricsRequest) returns (milvus.GetMetricsResponse) {}
 }
@@ -97,6 +98,14 @@ message ReleaseCollectionRequest {
   int64 dbID = 2;
   int64 collectionID = 3;
   int64 nodeID = 4;
+}
+
+message GetStatisticsRequest {
+  internal.GetStatisticsRequest req = 1;
+  repeated string dml_channels = 2;
+  repeated int64 segmentIDs = 3;
+  bool from_shard_leader = 4;
+  DataScope scope = 5; // All, Streaming, Historical
 }
 
 message LoadPartitionsRequest {
@@ -175,15 +184,6 @@ message WatchDmChannelsRequest {
   map<int64, data.SegmentInfo> segment_infos = 10;
 }
 
-message WatchDeltaChannelsRequest {
-  common.MsgBase base = 1;
-  int64 nodeID = 2;
-  int64 collectionID = 3;
-  repeated data.VchannelInfo infos = 4;
-  int64 replica_id = 5;
-  LoadMetaInfo load_meta = 9;
-}
-
 message SegmentLoadInfo {
   int64 segmentID = 1;
   int64 partitionID = 2;
@@ -231,11 +231,12 @@ message ReleaseSegmentsRequest {
   int64 collectionID = 4;
   repeated int64 partitionIDs = 5;
   repeated int64 segmentIDs = 6;
+  DataScope scope = 7; // All, Streaming, Historical
 }
 
 message SearchRequest {
   internal.SearchRequest req = 1;
-  string dml_channel = 2;
+  repeated string dml_channels = 2;
   repeated int64 segmentIDs = 3;
   bool from_shard_leader = 4;
   DataScope scope = 5; // All, Streaming, Historical
@@ -243,7 +244,7 @@ message SearchRequest {
 
 message QueryRequest {
   internal.RetrieveRequest req = 1;
-  string dml_channel = 2;
+  repeated string dml_channels = 2;
   repeated int64 segmentIDs = 3;
   bool from_shard_leader = 4;
   DataScope scope = 5; // All, Streaming, Historical
@@ -265,6 +266,7 @@ message ReplicaSegmentsInfo {
 message HandoffSegmentsRequest {
   common.MsgBase base = 1;
   repeated SegmentInfo segmentInfos = 2;
+  repeated int64 released_segments = 3;
 }
 
 message LoadBalanceRequest {

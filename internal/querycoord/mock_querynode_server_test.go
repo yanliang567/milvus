@@ -22,6 +22,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -172,6 +173,9 @@ func (qs *queryNodeServerMock) start() error {
 
 func (qs *queryNodeServerMock) stop() error {
 	qs.cancel()
+	if qs.session != nil {
+		qs.session.Revoke(time.Second)
+	}
 	if qs.grpcServer != nil {
 		qs.grpcServer.GracefulStop()
 	}
@@ -201,10 +205,6 @@ func (qs *queryNodeServerMock) GetComponentStates(ctx context.Context, req *inte
 
 func (qs *queryNodeServerMock) WatchDmChannels(ctx context.Context, req *querypb.WatchDmChannelsRequest) (*commonpb.Status, error) {
 	return qs.watchDmChannels()
-}
-
-func (qs *queryNodeServerMock) WatchDeltaChannels(ctx context.Context, req *querypb.WatchDeltaChannelsRequest) (*commonpb.Status, error) {
-	return qs.watchDeltaChannels()
 }
 
 func (qs *queryNodeServerMock) LoadSegments(ctx context.Context, req *querypb.LoadSegmentsRequest) (*commonpb.Status, error) {
@@ -271,16 +271,24 @@ func (qs *queryNodeServerMock) GetMetrics(ctx context.Context, req *milvuspb.Get
 	if err != nil {
 		return nil, err
 	}
+
+	// check whether the memory usage has been set
+	if len(response.Response) > 0 {
+		return response, nil
+	}
+
 	if response.Status.ErrorCode != commonpb.ErrorCode_Success {
 		return nil, errors.New("query node do task failed")
 	}
 
 	totalMemUsage := uint64(0)
+	globalSegInfosMutex.RLock()
 	for _, info := range qs.segmentInfos {
-		if info.NodeID == qs.queryNodeID {
+		if nodeIncluded(qs.queryNodeID, info.NodeIds) {
 			totalMemUsage += uint64(info.MemSize)
 		}
 	}
+	globalSegInfosMutex.RUnlock()
 	nodeInfos := metricsinfo.QueryNodeInfos{
 		BaseComponentInfos: metricsinfo.BaseComponentInfos{
 			Name: metricsinfo.ConstructComponentName(typeutil.QueryNodeRole, qs.queryNodeID),

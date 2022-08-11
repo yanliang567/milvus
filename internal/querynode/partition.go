@@ -17,11 +17,7 @@
 package querynode
 
 /*
-
-#cgo CFLAGS: -I${SRCDIR}/../core/output/include
-
-#cgo darwin LDFLAGS: -L${SRCDIR}/../core/output/lib -lmilvus_segcore -Wl,-rpath,"${SRCDIR}/../core/output/lib"
-#cgo linux LDFLAGS: -L${SRCDIR}/../core/output/lib -lmilvus_segcore -Wl,-rpath=${SRCDIR}/../core/output/lib
+#cgo pkg-config: milvus_segcore
 
 #include "segcore/collection_c.h"
 #include "segcore/segment_c.h"
@@ -101,7 +97,11 @@ func (p *Partition) removeSegmentID(segmentID UniqueID, segType segmentType) {
 	default:
 		return
 	}
-	log.Info("remove a segment from replica", zap.Int64("collectionID", p.collectionID), zap.Int64("partitionID", p.partitionID), zap.Int64("segmentID", segmentID))
+	log.Info("remove a segment from replica",
+		zap.Int64("collectionID", p.collectionID),
+		zap.Int64("partitionID", p.partitionID),
+		zap.Int64("segmentID", segmentID),
+		zap.String("segmentType", segType.String()))
 }
 
 // newPartition returns a new Partition

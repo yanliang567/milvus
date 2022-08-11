@@ -298,7 +298,7 @@ func (ibNode *insertBufferNode) Operate(in []Msg) []Msg {
 		for _, segToFlush := range seg2Upload {
 			// If full, auto flush
 			if bd, ok := ibNode.insertBuffer.Load(segToFlush); ok && bd.(*BufferData).effectiveCap() <= 0 {
-				log.Info("Auto flush",
+				log.Info("(Auto Flush)",
 					zap.Int64("segment id", segToFlush),
 					zap.String("vchannel name", ibNode.channelName),
 				)
@@ -315,48 +315,75 @@ func (ibNode *insertBufferNode) Operate(in []Msg) []Msg {
 			}
 		}
 
-		// Manual Flush
-		select {
-		case fmsg := <-ibNode.flushChan:
-
-			log.Info("receiving flush message",
-				zap.Int64("segmentID", fmsg.segmentID),
-				zap.Int64("collectionID", fmsg.collectionID),
-				zap.String("v-channel name", ibNode.channelName),
-			)
-			// merging auto&manual flush segment same segment id
+		mergeFlushTask := func(segmentID UniqueID, setupTask func(task *flushTask)) {
+			// Merge auto & manual flush tasks with the same segment ID.
 			dup := false
 			for i, task := range flushTaskList {
-				if task.segmentID == fmsg.segmentID {
-					flushTaskList[i].flushed = fmsg.flushed
+				if task.segmentID == segmentID {
+					log.Info("merging flush task, updating flushed flag",
+						zap.Int64("segment ID", segmentID))
+					setupTask(&flushTaskList[i])
 					dup = true
 					break
 				}
 			}
-			// if merged, skip load buffer and create task
+			// Load buffer and create new flush task if there's no existing flush task for this segment.
 			if !dup {
-				currentSegID := fmsg.segmentID
-				bd, ok := ibNode.insertBuffer.Load(currentSegID)
+				bd, ok := ibNode.insertBuffer.Load(segmentID)
 				var buf *BufferData
 				if ok {
 					buf = bd.(*BufferData)
 				}
-				flushTaskList = append(flushTaskList, flushTask{
+				task := flushTask{
 					buffer:    buf,
-					segmentID: currentSegID,
-					flushed:   fmsg.flushed,
+					segmentID: segmentID,
 					dropped:   false,
+				}
+				setupTask(&task)
+				flushTaskList = append(flushTaskList, task)
+			}
+		}
+
+		// Manual Flush
+		select {
+		case fmsg := <-ibNode.flushChan:
+			log.Info("(Manual Flush) receiving flush message",
+				zap.Int64("segmentID", fmsg.segmentID),
+				zap.Int64("collectionID", fmsg.collectionID),
+				zap.Bool("flushed", fmsg.flushed),
+				zap.String("v-channel name", ibNode.channelName),
+			)
+			mergeFlushTask(fmsg.segmentID, func(task *flushTask) {
+				task.flushed = fmsg.flushed
+			})
+		default:
+		}
+
+		// process drop partition
+		for _, partitionDrop := range fgMsg.dropPartitions {
+			segmentIDs := ibNode.replica.listPartitionSegments(partitionDrop)
+			log.Info("(Drop Partition) process drop partition",
+				zap.Int64("collectionID", ibNode.replica.getCollectionID()),
+				zap.Int64("partitionID", partitionDrop),
+				zap.Int64s("segmentIDs", segmentIDs),
+				zap.String("v-channel name", ibNode.channelName),
+			)
+			for _, segID := range segmentIDs {
+				mergeFlushTask(segID, func(task *flushTask) {
+					task.flushed = true
+					task.dropped = true
 				})
 			}
-		case resendTTMsg := <-ibNode.resendTTChan:
-			log.Info("resend TT msg received in insertBufferNode",
-				zap.Int64s("segment IDs", resendTTMsg.segmentIDs))
-			ibNode.writeHardTimeTick(fgMsg.timeRange.timestampMax, resendTTMsg.segmentIDs)
-		default:
 		}
 	}
 
 	for _, task := range flushTaskList {
+		log.Debug("insertBufferNode flushing BufferData",
+			zap.Int64("segment ID", task.segmentID),
+			zap.Bool("flushed", task.flushed),
+			zap.Bool("dropped", task.dropped),
+			zap.Any("pos", endPositions[0]),
+		)
 		err = retry.Do(ibNode.ctx, func() error {
 			return ibNode.flushManager.flushBufferData(task.buffer,
 				task.segmentID,
@@ -385,6 +412,13 @@ func (ibNode *insertBufferNode) Operate(in []Msg) []Msg {
 		}
 	}
 
+	select {
+	case resendTTMsg := <-ibNode.resendTTChan:
+		log.Info("resend TT msg received in insertBufferNode",
+			zap.Int64s("segment IDs", resendTTMsg.segmentIDs))
+		seg2Upload = append(seg2Upload, resendTTMsg.segmentIDs...)
+	default:
+	}
 	ibNode.writeHardTimeTick(fgMsg.timeRange.timestampMax, seg2Upload)
 
 	res := flowGraphMsg{

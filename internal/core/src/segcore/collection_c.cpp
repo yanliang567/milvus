@@ -9,7 +9,7 @@
 // is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
-#ifndef __APPLE__
+#ifdef __linux__
 #include <malloc.h>
 #endif
 
@@ -28,9 +28,6 @@ void
 DeleteCollection(CCollection collection) {
     auto col = (milvus::segcore::Collection*)collection;
     delete col;
-#ifdef __linux__
-    malloc_trim(0);
-#endif
 }
 
 const char*

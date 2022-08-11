@@ -17,11 +17,7 @@
 package querynode
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../core/output/include
-
-#cgo darwin LDFLAGS: -L${SRCDIR}/../core/output/lib -lmilvus_segcore -Wl,-rpath,"${SRCDIR}/../core/output/lib"
-#cgo linux LDFLAGS: -L${SRCDIR}/../core/output/lib -lmilvus_segcore -Wl,-rpath=${SRCDIR}/../core/output/lib
-#cgo windows LDFLAGS: -L${SRCDIR}/../core/output/lib -lmilvus_segcore -Wl,-rpath=${SRCDIR}/../core/output/lib
+#cgo pkg-config: milvus_segcore
 
 #include "segcore/collection_c.h"
 #include "segcore/plan_c.h"
@@ -36,6 +32,7 @@ import (
 	"sync"
 	"unsafe"
 
+	"github.com/milvus-io/milvus/internal/util/concurrency"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 
 	"github.com/milvus-io/milvus/internal/metrics"
@@ -88,7 +85,7 @@ type Segment struct {
 	rmMutex          sync.RWMutex // guards recentlyModified
 	recentlyModified bool
 
-	typeMu      sync.Mutex // guards builtIndex
+	typeMu      sync.RWMutex // guards segmentType
 	segmentType segmentType
 
 	idBinlogRowSizes []int64
@@ -97,6 +94,8 @@ type Segment struct {
 	indexedFieldInfos map[UniqueID]*IndexedFieldInfo
 
 	pkFilter *bloom.BloomFilter //  bloom filter of pk inside a segment
+
+	pool *concurrency.Pool
 }
 
 // ID returns the identity number.
@@ -131,8 +130,8 @@ func (s *Segment) setType(segType segmentType) {
 }
 
 func (s *Segment) getType() segmentType {
-	s.typeMu.Lock()
-	defer s.typeMu.Unlock()
+	s.typeMu.RLock()
+	defer s.typeMu.RUnlock()
 	return s.segmentType
 }
 
@@ -165,7 +164,7 @@ func (s *Segment) hasLoadIndexForIndexedField(fieldID int64) bool {
 	return false
 }
 
-func newSegment(collection *Collection, segmentID UniqueID, partitionID UniqueID, collectionID UniqueID, vChannelID Channel, segType segmentType) (*Segment, error) {
+func newSegment(collection *Collection, segmentID UniqueID, partitionID UniqueID, collectionID UniqueID, vChannelID Channel, segType segmentType, pool *concurrency.Pool) (*Segment, error) {
 	/*
 		CSegmentInterface
 		NewSegment(CCollection collection, uint64_t segment_id, SegmentType seg_type);
@@ -173,16 +172,22 @@ func newSegment(collection *Collection, segmentID UniqueID, partitionID UniqueID
 	var segmentPtr C.CSegmentInterface
 	switch segType {
 	case segmentTypeSealed:
-		segmentPtr = C.NewSegment(collection.collectionPtr, C.Sealed, C.int64_t(segmentID))
+		pool.Submit(func() (interface{}, error) {
+			segmentPtr = C.NewSegment(collection.collectionPtr, C.Sealed, C.int64_t(segmentID))
+			return nil, nil
+		}).Await()
 	case segmentTypeGrowing:
-		segmentPtr = C.NewSegment(collection.collectionPtr, C.Growing, C.int64_t(segmentID))
+		pool.Submit(func() (interface{}, error) {
+			segmentPtr = C.NewSegment(collection.collectionPtr, C.Growing, C.int64_t(segmentID))
+			return nil, nil
+		}).Await()
 	default:
 		err := fmt.Errorf("illegal segment type %d when create segment  %d", segType, segmentID)
 		log.Error("create new segment error",
 			zap.Int64("collectionID", collectionID),
 			zap.Int64("partitionID", partitionID),
 			zap.Int64("segmentID", segmentID),
-			zap.Int32("segment type", int32(segType)),
+			zap.String("segmentType", segType.String()),
 			zap.Error(err))
 		return nil, err
 	}
@@ -191,7 +196,7 @@ func newSegment(collection *Collection, segmentID UniqueID, partitionID UniqueID
 		zap.Int64("collectionID", collectionID),
 		zap.Int64("partitionID", partitionID),
 		zap.Int64("segmentID", segmentID),
-		zap.Int32("segmentType", int32(segType)))
+		zap.String("segmentType", segType.String()))
 
 	var segment = &Segment{
 		segmentPtr:        segmentPtr,
@@ -203,6 +208,7 @@ func newSegment(collection *Collection, segmentID UniqueID, partitionID UniqueID
 		indexedFieldInfos: make(map[UniqueID]*IndexedFieldInfo),
 
 		pkFilter: bloom.NewWithEstimates(bloomFilterSize, maxBloomFalsePositive),
+		pool:     pool,
 	}
 
 	return segment, nil
@@ -218,10 +224,34 @@ func deleteSegment(segment *Segment) {
 	}
 
 	cPtr := segment.segmentPtr
-	C.DeleteSegment(cPtr)
+	segment.pool.Submit(func() (interface{}, error) {
+		C.DeleteSegment(cPtr)
+		return nil, nil
+	}).Await()
 	segment.segmentPtr = nil
 
-	log.Info("delete segment from memory", zap.Int64("collectionID", segment.collectionID), zap.Int64("partitionID", segment.partitionID), zap.Int64("segmentID", segment.ID()))
+	log.Info("delete segment from memory",
+		zap.Int64("collectionID", segment.collectionID),
+		zap.Int64("partitionID", segment.partitionID),
+		zap.Int64("segmentID", segment.ID()),
+		zap.String("segmentType", segment.getType().String()))
+}
+
+func (s *Segment) getRealCount() int64 {
+	/*
+		int64_t
+		GetRealCount(CSegmentInterface c_segment);
+	*/
+	if s.segmentPtr == nil {
+		return -1
+	}
+	var rowCount C.int64_t
+	s.pool.Submit(func() (interface{}, error) {
+		rowCount = C.GetRealCount(s.segmentPtr)
+		return nil, nil
+	}).Await()
+
+	return int64(rowCount)
 }
 
 func (s *Segment) getRowCount() int64 {
@@ -232,7 +262,12 @@ func (s *Segment) getRowCount() int64 {
 	if s.segmentPtr == nil {
 		return -1
 	}
-	var rowCount = C.GetRowCount(s.segmentPtr)
+	var rowCount C.int64_t
+	s.pool.Submit(func() (interface{}, error) {
+		rowCount = C.GetRowCount(s.segmentPtr)
+		return nil, nil
+	}).Await()
+
 	return int64(rowCount)
 }
 
@@ -244,7 +279,13 @@ func (s *Segment) getDeletedCount() int64 {
 	if s.segmentPtr == nil {
 		return -1
 	}
-	var deletedCount = C.GetDeletedCount(s.segmentPtr)
+
+	var deletedCount C.int64_t
+	s.pool.Submit(func() (interface{}, error) {
+		deletedCount = C.GetRowCount(s.segmentPtr)
+		return nil, nil
+	}).Await()
+
 	return int64(deletedCount)
 }
 
@@ -256,7 +297,11 @@ func (s *Segment) getMemSize() int64 {
 	if s.segmentPtr == nil {
 		return -1
 	}
-	var memoryUsageInBytes = C.GetMemoryUsageInBytes(s.segmentPtr)
+	var memoryUsageInBytes C.int64_t
+	s.pool.Submit(func() (interface{}, error) {
+		memoryUsageInBytes = C.GetMemoryUsageInBytes(s.segmentPtr)
+		return nil, nil
+	}).Await()
 
 	return int64(memoryUsageInBytes)
 }
@@ -279,15 +324,30 @@ func (s *Segment) search(searchReq *searchRequest) (*SearchResult, error) {
 		return nil, fmt.Errorf("nil search plan")
 	}
 
+	loadIndex := s.hasLoadIndexForIndexedField(searchReq.searchFieldID)
 	var searchResult SearchResult
-	log.Debug("do search on segment", zap.Int64("segmentID", s.segmentID), zap.String("segmentType", s.segmentType.String()))
-	tr := timerecord.NewTimeRecorder("cgoSearch")
-	status := C.Search(s.segmentPtr, searchReq.plan.cSearchPlan, searchReq.cPlaceholderGroup,
-		C.uint64_t(searchReq.timestamp), &searchResult.cSearchResult, C.int64_t(s.segmentID))
-	metrics.QueryNodeSQSegmentLatencyInCore.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID()), metrics.SearchLabel).Observe(float64(tr.ElapseSpan().Milliseconds()))
+	log.Debug("start do search on segment",
+		zap.Int64("msgID", searchReq.msgID),
+		zap.Int64("segmentID", s.segmentID),
+		zap.String("segmentType", s.segmentType.String()),
+		zap.Bool("loadIndex", loadIndex))
+
+	var status C.CStatus
+	s.pool.Submit(func() (interface{}, error) {
+		tr := timerecord.NewTimeRecorder("cgoSearch")
+		status = C.Search(s.segmentPtr, searchReq.plan.cSearchPlan, searchReq.cPlaceholderGroup,
+			C.uint64_t(searchReq.timestamp), &searchResult.cSearchResult, C.int64_t(s.segmentID))
+		metrics.QueryNodeSQSegmentLatencyInCore.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID()), metrics.SearchLabel).Observe(float64(tr.ElapseSpan().Milliseconds()))
+		return nil, nil
+	}).Await()
 	if err := HandleCStatus(&status, "Search failed"); err != nil {
 		return nil, err
 	}
+	log.Debug("do search on segment done",
+		zap.Int64("msgID", searchReq.msgID),
+		zap.Int64("segmentID", s.segmentID),
+		zap.String("segmentType", s.segmentType.String()),
+		zap.Bool("loadIndex", loadIndex))
 	return &searchResult, nil
 }
 
@@ -298,11 +358,20 @@ func (s *Segment) retrieve(plan *RetrievePlan) (*segcorepb.RetrieveResults, erro
 
 	var retrieveResult RetrieveResult
 	ts := C.uint64_t(plan.Timestamp)
-	tr := timerecord.NewTimeRecorder("cgoRetrieve")
-	status := C.Retrieve(s.segmentPtr, plan.cRetrievePlan, ts, &retrieveResult.cRetrieveResult)
-	metrics.QueryNodeSQSegmentLatencyInCore.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID()),
-		metrics.QueryLabel).Observe(float64(tr.ElapseSpan().Milliseconds()))
-	log.Debug("do retrieve on segment", zap.Int64("segmentID", s.segmentID), zap.String("segmentType", s.segmentType.String()))
+
+	var status C.CStatus
+	s.pool.Submit(func() (interface{}, error) {
+		tr := timerecord.NewTimeRecorder("cgoRetrieve")
+		status = C.Retrieve(s.segmentPtr, plan.cRetrievePlan, ts, &retrieveResult.cRetrieveResult)
+		metrics.QueryNodeSQSegmentLatencyInCore.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID()),
+			metrics.QueryLabel).Observe(float64(tr.ElapseSpan().Milliseconds()))
+		log.Debug("do retrieve on segment",
+			zap.Int64("msgID", plan.msgID),
+			zap.Int64("segmentID", s.segmentID), zap.String("segmentType", s.segmentType.String()))
+
+		return nil, nil
+	}).Await()
+
 	if err := HandleCStatus(&status, "Retrieve failed"); err != nil {
 		return nil, err
 	}
@@ -543,8 +612,12 @@ func (s *Segment) segmentPreInsert(numOfRecords int) (int64, error) {
 		return 0, nil
 	}
 	var offset int64
+	var status C.CStatus
 	cOffset := (*C.int64_t)(&offset)
-	status := C.PreInsert(s.segmentPtr, C.int64_t(int64(numOfRecords)), cOffset)
+	s.pool.Submit(func() (interface{}, error) {
+		status = C.PreInsert(s.segmentPtr, C.int64_t(int64(numOfRecords)), cOffset)
+		return nil, nil
+	}).Await()
 	if err := HandleCStatus(&status, "PreInsert failed"); err != nil {
 		return 0, err
 	}
@@ -556,7 +629,13 @@ func (s *Segment) segmentPreDelete(numOfRecords int) int64 {
 		long int
 		PreDelete(CSegmentInterface c_segment, long int size);
 	*/
-	var offset = C.PreDelete(s.segmentPtr, C.int64_t(int64(numOfRecords)))
+
+	var offset C.int64_t
+	s.pool.Submit(func() (interface{}, error) {
+		offset = C.PreDelete(s.segmentPtr, C.int64_t(int64(numOfRecords)))
+
+		return nil, nil
+	}).Await()
 
 	return int64(offset)
 }
@@ -581,13 +660,20 @@ func (s *Segment) segmentInsert(offset int64, entityIDs []UniqueID, timestamps [
 	var cEntityIdsPtr = (*C.int64_t)(&(entityIDs)[0])
 	var cTimestampsPtr = (*C.uint64_t)(&(timestamps)[0])
 
-	status := C.Insert(s.segmentPtr,
-		cOffset,
-		cNumOfRows,
-		cEntityIdsPtr,
-		cTimestampsPtr,
-		(*C.uint8_t)(unsafe.Pointer(&insertRecordBlob[0])),
-		(C.uint64_t)(len(insertRecordBlob)))
+	var status C.CStatus
+
+	s.pool.Submit(func() (interface{}, error) {
+		status = C.Insert(s.segmentPtr,
+			cOffset,
+			cNumOfRows,
+			cEntityIdsPtr,
+			cTimestampsPtr,
+			(*C.uint8_t)(unsafe.Pointer(&insertRecordBlob[0])),
+			(C.uint64_t)(len(insertRecordBlob)))
+
+		return nil, nil
+	}).Await()
+
 	if err := HandleCStatus(&status, "Insert failed"); err != nil {
 		return err
 	}
@@ -653,7 +739,13 @@ func (s *Segment) segmentDelete(offset int64, entityIDs []primaryKey, timestamps
 		return fmt.Errorf("failed to marshal ids: %s", err)
 	}
 
-	status := C.Delete(s.segmentPtr, cOffset, cSize, (*C.uint8_t)(unsafe.Pointer(&dataBlob[0])), (C.uint64_t)(len(dataBlob)), cTimestampsPtr)
+	var status C.CStatus
+	s.pool.Submit(func() (interface{}, error) {
+		status = C.Delete(s.segmentPtr, cOffset, cSize, (*C.uint8_t)(unsafe.Pointer(&dataBlob[0])), (C.uint64_t)(len(dataBlob)), cTimestampsPtr)
+
+		return nil, nil
+	}).Await()
+
 	if err := HandleCStatus(&status, "Delete failed"); err != nil {
 		return err
 	}
@@ -687,7 +779,12 @@ func (s *Segment) segmentLoadFieldData(fieldID int64, rowCount int64, data *sche
 		row_count: C.int64_t(rowCount),
 	}
 
-	status := C.LoadFieldData(s.segmentPtr, loadInfo)
+	var status C.CStatus
+	s.pool.Submit(func() (interface{}, error) {
+		status = C.LoadFieldData(s.segmentPtr, loadInfo)
+		return nil, nil
+	}).Await()
+
 	if err := HandleCStatus(&status, "LoadFieldData failed"); err != nil {
 		return err
 	}
@@ -750,14 +847,20 @@ func (s *Segment) segmentLoadDeletedRecord(primaryKeys []primaryKey, timestamps 
 		CStatus
 		LoadDeletedRecord(CSegmentInterface c_segment, CLoadDeletedRecordInfo deleted_record_info)
 	*/
-	status := C.LoadDeletedRecord(s.segmentPtr, loadInfo)
+	var status C.CStatus
+	s.pool.Submit(func() (interface{}, error) {
+		status = C.LoadDeletedRecord(s.segmentPtr, loadInfo)
+		return nil, nil
+	}).Await()
+
 	if err := HandleCStatus(&status, "LoadDeletedRecord failed"); err != nil {
 		return err
 	}
 
 	log.Info("load deleted record done",
 		zap.Int64("row count", rowCount),
-		zap.Int64("segmentID", s.ID()))
+		zap.Int64("segmentID", s.ID()),
+		zap.String("segmentType", s.getType().String()))
 	return nil
 }
 
@@ -782,7 +885,12 @@ func (s *Segment) segmentLoadIndexData(bytesIndex [][]byte, indexInfo *querypb.F
 		return errors.New(errMsg)
 	}
 
-	status := C.UpdateSealedSegmentIndex(s.segmentPtr, loadIndexInfo.cLoadIndexInfo)
+	var status C.CStatus
+	s.pool.Submit(func() (interface{}, error) {
+		status = C.UpdateSealedSegmentIndex(s.segmentPtr, loadIndexInfo.cLoadIndexInfo)
+		return nil, nil
+	}).Await()
+
 	if err := HandleCStatus(&status, "UpdateSealedSegmentIndex failed"); err != nil {
 		return err
 	}

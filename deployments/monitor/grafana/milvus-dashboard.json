@@ -53,7 +53,7 @@
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
   "id": null,
-  "iteration": 1654687349785,
+  "iteration": 1658142588152,
   "links": [],
   "liveNow": false,
   "panels": [
@@ -258,7 +258,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for search request over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of search request over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -300,11 +300,23 @@
                 "uid": "$datasource"
               },
               "exemplar": true,
-              "expr": "histogram_quantile(0.99, sum by (le, query_type, pod, node_id) (rate(milvus_proxy_sq_lantency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
+              "expr": "histogram_quantile(0.99, sum by (le, query_type, pod, node_id) (rate(milvus_proxy_sq_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "hide": false,
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}-{{query_type}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}-{{query_type}}",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_proxy_sq_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (pod, node_id, query_type) / sum(increase(milvus_proxy_sq_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (pod, node_id, query_type)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}-{{query_type}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -349,7 +361,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for waiting search result over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of wait search result over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -391,11 +403,23 @@
                 "uid": "$datasource"
               },
               "exemplar": true,
-              "expr": "histogram_quantile(0.99, sum by (le, query_type, pod, node_id) (rate(milvus_proxy_sq_wait_result_lantency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
+              "expr": "histogram_quantile(0.99, sum by (le, query_type, pod, node_id) (rate(milvus_proxy_sq_wait_result_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "hide": false,
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}{{query_type}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}-{{query_type}}",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_proxy_sq_wait_result_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (pod, node_id, query_type) / sum(increase(milvus_proxy_sq_wait_result_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (pod, node_id, query_type)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}-{{query_type}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -440,7 +464,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for reducing search result over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of reduce search result over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -484,9 +508,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, query_type, pod, node_id) (rate(milvus_proxy_sq_reduce_result_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}-{{query_type}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}-{{query_type}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_proxy_sq_reduce_result_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (pod, node_id, query_type) / sum(increase(milvus_proxy_sq_reduce_result_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (pod, node_id, query_type)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}-{{query_type}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -531,7 +567,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for decoding search result over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of decode search result over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -576,9 +612,21 @@
               "expr": "histogram_quantile(0.99, sum by (le, query_type, pod, node_id) (rate(milvus_proxy_sq_decode_result_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "hide": false,
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}-{{query_type}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}-{{query_type}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_proxy_sq_decode_result_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (pod, node_id, query_type) / sum(increase(milvus_proxy_sq_decode_resultlatency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (pod, node_id, query_type)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}-{{query_type}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -739,7 +787,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for mutation request over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of mutation request over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -783,9 +831,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, msg_type, pod, node_id) (rate(milvus_proxy_mutation_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}-{{msg_type}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}-{{msg_type}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_proxy_mutation_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (pod, node_id, msg_type) / sum(increase(milvus_proxy_mutation_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (pod, node_id, msg_type)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}-{{msg_type}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -830,7 +890,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for sending mutation over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of send mutation over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -874,9 +934,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, msg_type, pod, node_id) (rate(milvus_proxy_mutation_send_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}-{{msg_type}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}-{{msg_type}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_proxy_mutation_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (pod, node_id, msg_type) / sum(increase(milvus_proxy_mutation_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (pod, node_id, msg_type)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}-{{msg_type}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -1013,7 +1085,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for updating cache over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of update cache over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -1057,9 +1129,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, pod, node_id) (rate(milvus_proxy_cache_update_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_proxy_cache_update_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (pod, node_id) / sum(increase(milvus_proxy_cache_update_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (pod, node_id)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -1264,9 +1348,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, pod, node_id) (rate(milvus_proxy_apply_pk_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_proxy_apply_pk_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (pod, node_id) / sum(increase(milvus_proxy_apply_pk_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (pod, node_id)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -1311,7 +1407,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for applying over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of apply timestamp over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -1355,9 +1451,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, pod, node_id) (rate(milvus_proxy_apply_timestamp_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_proxy_apply_timestamp_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (pod, node_id) / sum(increase(milvus_proxy_apply_timestamp_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (pod, node_id)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -1675,7 +1783,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for DQL request over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of DQL request over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -1719,9 +1827,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, function_name, pod, node_id) (rate(milvus_proxy_dql_req_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}-{{function_name}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}-{{function_name}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_proxy_dql_req_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (function_name, pod, node_id) / sum(increase(milvus_proxy_dql_req_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (function_name, pod, node_id)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}-{{function_name}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -1766,7 +1886,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for DML request over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of DML request over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -1810,9 +1930,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, function_name, pod, node_id) (rate(milvus_proxy_dml_req_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}-{{function_name}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}-{{function_name}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_proxy_dml_req_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (function_name, pod, node_id) / sum(increase(milvus_proxy_dml_req_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (function_name, pod, node_id)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}-{{function_name}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -1857,7 +1989,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for DDL request over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of DDL request over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -1901,9 +2033,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, function_name, pod, node_id) (rate(milvus_proxy_ddl_req_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}-{{function_name}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}-{{function_name}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_proxy_ddl_req_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (function_name, pod, node_id) / sum(increase(milvus_proxy_ddl_req_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (function_name, pod, node_id)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}-{{function_name}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -1930,6 +2074,188 @@
             },
             {
               "$$hashKey": "object:3539",
+              "format": "short",
+              "logBase": 1,
+              "show": true
+            }
+          ],
+          "yaxis": {
+            "align": false
+          }
+        },
+        {
+          "aliasColors": {},
+          "bars": false,
+          "dashLength": 10,
+          "dashes": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "description": "per-minute increasing rate of Insert or Delete request byte.",
+          "fill": 1,
+          "fillGradient": 0,
+          "gridPos": {
+            "h": 6,
+            "w": 8,
+            "x": 16,
+            "y": 37
+          },
+          "hiddenSeries": false,
+          "id": 123368,
+          "legend": {
+            "avg": false,
+            "current": false,
+            "max": false,
+            "min": false,
+            "show": true,
+            "total": false,
+            "values": false
+          },
+          "lines": true,
+          "linewidth": 1,
+          "nullPointMode": "null",
+          "options": {
+            "alertThreshold": true
+          },
+          "percentage": false,
+          "pluginVersion": "8.3.2",
+          "pointradius": 2,
+          "points": false,
+          "renderer": "flot",
+          "seriesOverrides": [],
+          "spaceLength": 10,
+          "stack": false,
+          "steppedLine": false,
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_proxy_receive_bytes_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])/2) by(pod, node_id)",
+              "interval": "",
+              "legendFormat": "{{pod}}-{{node_id}}",
+              "queryType": "randomWalk",
+              "refId": "A"
+            }
+          ],
+          "thresholds": [],
+          "timeRegions": [],
+          "title": "Insert/Delete Request Byte Rate",
+          "tooltip": {
+            "shared": true,
+            "sort": 0,
+            "value_type": "individual"
+          },
+          "type": "graph",
+          "xaxis": {
+            "mode": "time",
+            "show": true,
+            "values": []
+          },
+          "yaxes": [
+            {
+              "$$hashKey": "object:3414",
+              "format": "short",
+              "logBase": 1,
+              "min": "0",
+              "show": true
+            },
+            {
+              "$$hashKey": "object:3415",
+              "format": "short",
+              "logBase": 1,
+              "show": true
+            }
+          ],
+          "yaxis": {
+            "align": false
+          }
+        },
+        {
+          "aliasColors": {},
+          "bars": false,
+          "dashLength": 10,
+          "dashes": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "description": "per-minute increasing rate of bytes sent back to the client by the Proxy in response to a Search orQuery request.",
+          "fill": 1,
+          "fillGradient": 0,
+          "gridPos": {
+            "h": 6,
+            "w": 8,
+            "x": 0,
+            "y": 43
+          },
+          "hiddenSeries": false,
+          "id": 123369,
+          "legend": {
+            "avg": false,
+            "current": false,
+            "max": false,
+            "min": false,
+            "show": true,
+            "total": false,
+            "values": false
+          },
+          "lines": true,
+          "linewidth": 1,
+          "nullPointMode": "null",
+          "options": {
+            "alertThreshold": true
+          },
+          "percentage": false,
+          "pluginVersion": "8.3.2",
+          "pointradius": 2,
+          "points": false,
+          "renderer": "flot",
+          "seriesOverrides": [],
+          "spaceLength": 10,
+          "stack": false,
+          "steppedLine": false,
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_proxy_send_bytes_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])/2) by(pod, node_id)",
+              "interval": "",
+              "legendFormat": "{{pod}}-{{node_id}}",
+              "queryType": "randomWalk",
+              "refId": "A"
+            }
+          ],
+          "thresholds": [],
+          "timeRegions": [],
+          "title": "Send Byte Rate",
+          "tooltip": {
+            "shared": true,
+            "sort": 0,
+            "value_type": "individual"
+          },
+          "type": "graph",
+          "xaxis": {
+            "mode": "time",
+            "show": true,
+            "values": []
+          },
+          "yaxes": [
+            {
+              "$$hashKey": "object:3414",
+              "format": "short",
+              "logBase": 1,
+              "min": "0",
+              "show": true
+            },
+            {
+              "$$hashKey": "object:3415",
               "format": "short",
               "logBase": 1,
               "show": true
@@ -2261,7 +2587,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for DDL request over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of DDL request over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -2305,9 +2631,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, function_name) (rate(milvus_rootcoord_ddl_req_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{function_name}}",
+              "legendFormat": "p99-{{function_name}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_rootcoord_ddl_req_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (function_name) / sum(increase(milvus_rootcoord_ddl_req_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by (function_name)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{function_name}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -2352,7 +2690,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for rootcoord to finish synchronizing timestamp messages to all pchanels.",
+          "description": "The 99th percentile and average latency for rootcoord to finish synchronizing timestamp messages to all pchanels.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -2396,9 +2734,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le) (rate(milvus_rootcoord_sync_timetick_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "latency",
+              "legendFormat": "p99-latency",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_rootcoord_sync_timetick_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) / sum(increase(milvus_rootcoord_sync_timetick_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m]))",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-latency",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -3558,7 +3908,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for load request over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of load request over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -3602,9 +3952,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le) (rate(milvus_querycoord_load_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "latency",
+              "legendFormat": "p99-latency",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_querycoord_load_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) / sum(increase(milvus_querycoord_load_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m]))",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-latency",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -3649,7 +4011,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for DQL release over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of release request over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -3693,9 +4055,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le) (rate(milvus_querycoord_release_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "latency",
+              "legendFormat": "p99-latency",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_querycoord_release_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) / sum(increase(milvus_querycoord_release_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m]))",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-latency",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -3924,7 +4298,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for sub-load task request over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of sub-load task request over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -3968,9 +4342,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le) (rate(milvus_querycoord_child_task_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "latency",
+              "legendFormat": "p99-latency",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_querycoord_child_task_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) / sum(increase(milvus_querycoord_child_task_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m]))",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-latency",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -4400,13 +4786,106 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "Total number of dml virtual channels for QueryNode watch",
+          "description": "Total number of the queryable entities  in QueryNode.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
             "h": 6,
             "w": 8,
             "x": 0,
+            "y": 10
+          },
+          "hiddenSeries": false,
+          "id": 123365,
+          "legend": {
+            "avg": false,
+            "current": false,
+            "max": false,
+            "min": false,
+            "show": true,
+            "total": false,
+            "values": false
+          },
+          "lines": true,
+          "linewidth": 1,
+          "nullPointMode": "null",
+          "options": {
+            "alertThreshold": true
+          },
+          "percentage": false,
+          "pluginVersion": "8.3.2",
+          "pointradius": 2,
+          "points": false,
+          "renderer": "flot",
+          "seriesOverrides": [],
+          "spaceLength": 10,
+          "stack": false,
+          "steppedLine": false,
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "exemplar": true,
+              "expr": "sum(milvus_querynode_entity_num{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}) by (pod, node_id)",
+              "interval": "",
+              "intervalFactor": 2,
+              "legendFormat": "{{pod}}-{{node_id}}",
+              "queryType": "randomWalk",
+              "refId": "A"
+            }
+          ],
+          "thresholds": [],
+          "timeRegions": [],
+          "title": "Queryable Entity Num",
+          "tooltip": {
+            "shared": true,
+            "sort": 0,
+            "value_type": "individual"
+          },
+          "type": "graph",
+          "xaxis": {
+            "mode": "time",
+            "show": true,
+            "values": []
+          },
+          "yaxes": [
+            {
+              "$$hashKey": "object:536",
+              "decimals": 0,
+              "format": "short",
+              "logBase": 1,
+              "min": "0",
+              "show": true
+            },
+            {
+              "$$hashKey": "object:537",
+              "format": "short",
+              "logBase": 1,
+              "show": true
+            }
+          ],
+          "yaxis": {
+            "align": false
+          }
+        },
+        {
+          "aliasColors": {},
+          "bars": false,
+          "dashLength": 10,
+          "dashes": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "description": "Total number of dml virtual channels for QueryNode watch",
+          "fill": 1,
+          "fillGradient": 0,
+          "gridPos": {
+            "h": 6,
+            "w": 8,
+            "x": 8,
             "y": 10
           },
           "hiddenSeries": false,
@@ -4498,7 +4977,7 @@
           "gridPos": {
             "h": 6,
             "w": 8,
-            "x": 8,
+            "x": 16,
             "y": 10
           },
           "hiddenSeries": false,
@@ -4591,8 +5070,8 @@
           "gridPos": {
             "h": 6,
             "w": 8,
-            "x": 16,
-            "y": 10
+            "x": 0,
+            "y": 16
           },
           "hiddenSeries": false,
           "id": 123307,
@@ -4684,7 +5163,7 @@
           "gridPos": {
             "h": 6,
             "w": 8,
-            "x": 0,
+            "x": 8,
             "y": 16
           },
           "hiddenSeries": false,
@@ -4769,17 +5248,223 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for searching segment over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of search and query request over the last 2 minutes.",
+          "fill": 1,
+          "fillGradient": 0,
+          "gridPos": {
+            "h": 6,
+            "w": 8,
+            "x": 16,
+            "y": 16
+          },
+          "hiddenSeries": false,
+          "id": 123366,
+          "legend": {
+            "avg": false,
+            "current": false,
+            "max": false,
+            "min": false,
+            "show": true,
+            "total": false,
+            "values": false
+          },
+          "lines": true,
+          "linewidth": 1,
+          "nullPointMode": "null",
+          "options": {
+            "alertThreshold": true
+          },
+          "percentage": false,
+          "pluginVersion": "8.3.2",
+          "pointradius": 2,
+          "points": false,
+          "renderer": "flot",
+          "seriesOverrides": [],
+          "spaceLength": 10,
+          "stack": false,
+          "steppedLine": false,
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "exemplar": true,
+              "expr": "histogram_quantile(0.99, sum by (le, pod, node_id, query_type) (rate(milvus_querynode_sq_req_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
+              "interval": "",
+              "legendFormat": "p99-{{pod}}-{{node_id}}-{{query_type}}",
+              "queryType": "randomWalk",
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_querynode_sq_req_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id, query_type) / sum(increase(milvus_querynode_sq_req_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id, query_type)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}-{{query_type}}",
+              "refId": "B"
+            }
+          ],
+          "thresholds": [],
+          "timeRegions": [],
+          "title": "Search Request Latency",
+          "tooltip": {
+            "shared": true,
+            "sort": 0,
+            "value_type": "individual"
+          },
+          "type": "graph",
+          "xaxis": {
+            "mode": "time",
+            "show": true,
+            "values": []
+          },
+          "yaxes": [
+            {
+              "$$hashKey": "object:161",
+              "format": "short",
+              "logBase": 1,
+              "min": "0",
+              "show": true
+            },
+            {
+              "$$hashKey": "object:162",
+              "format": "short",
+              "logBase": 1,
+              "show": true
+            }
+          ],
+          "yaxis": {
+            "align": false
+          }
+        },
+        {
+          "aliasColors": {},
+          "bars": false,
+          "dashLength": 10,
+          "dashes": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "description": "The 99th percentile and average latency of search or query in queue over the last 2 minutes.",
+          "fill": 1,
+          "fillGradient": 0,
+          "gridPos": {
+            "h": 6,
+            "w": 8,
+            "x": 0,
+            "y": 22
+          },
+          "hiddenSeries": false,
+          "id": 123372,
+          "legend": {
+            "avg": false,
+            "current": false,
+            "max": false,
+            "min": false,
+            "show": true,
+            "total": false,
+            "values": false
+          },
+          "lines": true,
+          "linewidth": 1,
+          "nullPointMode": "null",
+          "options": {
+            "alertThreshold": true
+          },
+          "percentage": false,
+          "pluginVersion": "8.3.2",
+          "pointradius": 2,
+          "points": false,
+          "renderer": "flot",
+          "seriesOverrides": [],
+          "spaceLength": 10,
+          "stack": false,
+          "steppedLine": false,
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "exemplar": true,
+              "expr": "histogram_quantile(0.99, sum by (le, pod, node_id, query_type) (rate(milvus_querynode_sq_queue_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
+              "interval": "",
+              "legendFormat": "p99-{{pod}}-{{node_id}}-{{query_type}}",
+              "queryType": "randomWalk",
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_querynode_sq_queue_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id, query_type) / sum(increase(milvus_querynode_sq_queue_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id, query_type)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}-{{query_type}}",
+              "refId": "B"
+            }
+          ],
+          "thresholds": [],
+          "timeRegions": [],
+          "title": "Search in Queue Latency",
+          "tooltip": {
+            "shared": true,
+            "sort": 0,
+            "value_type": "individual"
+          },
+          "type": "graph",
+          "xaxis": {
+            "mode": "time",
+            "show": true,
+            "values": []
+          },
+          "yaxes": [
+            {
+              "$$hashKey": "object:161",
+              "format": "short",
+              "logBase": 1,
+              "min": "0",
+              "show": true
+            },
+            {
+              "$$hashKey": "object:162",
+              "format": "short",
+              "logBase": 1,
+              "show": true
+            }
+          ],
+          "yaxis": {
+            "align": false
+          }
+        },
+        {
+          "aliasColors": {},
+          "bars": false,
+          "dashLength": 10,
+          "dashes": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "description": "The 99th percentile and average latency of search segment over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
             "h": 6,
             "w": 8,
             "x": 8,
-            "y": 16
+            "y": 22
           },
           "hiddenSeries": false,
-          "id": 123300,
+          "id": 123374,
           "legend": {
             "avg": false,
             "current": false,
@@ -4811,12 +5496,23 @@
                 "uid": "${DS_PROMETHEUS}"
               },
               "exemplar": false,
-              "expr": "histogram_quantile(0.99, sum by (le, query_type, segment_state, pod, node_id) (rate(milvus_querynode_sq_segment_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
-              "instant": true,
+              "expr": "histogram_quantile(0.99, sum by (le, pod, node_id, query_type, segment_state) (rate(milvus_querynode_sq_segment_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}-{{query_type}}-{{segment_state}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}-{{query_type}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_querynode_sq_segment_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id, query_type, segment_state) / sum(increase(milvus_querynode_sq_segment_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id, query_type, segment_state)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}-{{query_type}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -4861,14 +5557,14 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for searching at the segcore step over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of search at the segcore step over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
             "h": 6,
             "w": 8,
             "x": 16,
-            "y": 16
+            "y": 22
           },
           "hiddenSeries": false,
           "id": 123310,
@@ -4905,9 +5601,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, query_type, pod, node_id) (rate(milvus_querynode_sq_core_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}-{{query_type}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}-{{query_type}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_querynode_sq_core_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id, query_type) / sum(increase(milvus_querynode_sq_core_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id, query_type)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}-{{query_type}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -4952,14 +5660,117 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for loading segment over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of search or query reduce over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
             "h": 6,
             "w": 8,
             "x": 0,
-            "y": 22
+            "y": 28
+          },
+          "hiddenSeries": false,
+          "id": 123367,
+          "legend": {
+            "avg": false,
+            "current": false,
+            "max": false,
+            "min": false,
+            "show": true,
+            "total": false,
+            "values": false
+          },
+          "lines": true,
+          "linewidth": 1,
+          "nullPointMode": "null",
+          "options": {
+            "alertThreshold": true
+          },
+          "percentage": false,
+          "pluginVersion": "8.3.2",
+          "pointradius": 2,
+          "points": false,
+          "renderer": "flot",
+          "seriesOverrides": [],
+          "spaceLength": 10,
+          "stack": false,
+          "steppedLine": false,
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "exemplar": true,
+              "expr": "histogram_quantile(0.99, sum by (le, pod, node_id, query_type) (rate(milvus_querynode_sq_reduce_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
+              "interval": "",
+              "legendFormat": "p99-{{pod}}-{{node_id}}-{{query_type}}",
+              "queryType": "randomWalk",
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_querynode_sq_reduce_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id, query_type) / sum(increase(milvus_querynode_sq_reduce_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id, query_type)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}-{{query_type}}",
+              "refId": "B"
+            }
+          ],
+          "thresholds": [],
+          "timeRegions": [],
+          "title": "Search Reduce Latency",
+          "tooltip": {
+            "shared": true,
+            "sort": 0,
+            "value_type": "individual"
+          },
+          "type": "graph",
+          "xaxis": {
+            "mode": "time",
+            "show": true,
+            "values": []
+          },
+          "yaxes": [
+            {
+              "$$hashKey": "object:161",
+              "format": "short",
+              "logBase": 1,
+              "min": "0",
+              "show": true
+            },
+            {
+              "$$hashKey": "object:162",
+              "format": "short",
+              "logBase": 1,
+              "show": true
+            }
+          ],
+          "yaxis": {
+            "align": false
+          }
+        },
+        {
+          "aliasColors": {},
+          "bars": false,
+          "dashLength": 10,
+          "dashes": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "description": "The 99th percentile and average latency of load segment over the last 2 minutes.",
+          "fill": 1,
+          "fillGradient": 0,
+          "gridPos": {
+            "h": 6,
+            "w": 8,
+            "x": 8,
+            "y": 28
           },
           "hiddenSeries": false,
           "id": 123311,
@@ -4996,9 +5807,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, pod, node_id) (rate(milvus_querynode_load_segment_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_querynode_load_segment_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id) / sum(increase(milvus_querynode_load_segment_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -5049,8 +5872,8 @@
           "gridPos": {
             "h": 6,
             "w": 8,
-            "x": 8,
-            "y": 22
+            "x": 16,
+            "y": 28
           },
           "hiddenSeries": false,
           "id": 123312,
@@ -5141,8 +5964,8 @@
           "gridPos": {
             "h": 6,
             "w": 8,
-            "x": 16,
-            "y": 22
+            "x": 0,
+            "y": 34
           },
           "hiddenSeries": false,
           "id": 123351,
@@ -5233,8 +6056,8 @@
           "gridPos": {
             "h": 6,
             "w": 8,
-            "x": 0,
-            "y": 28
+            "x": 8,
+            "y": 34
           },
           "hiddenSeries": false,
           "id": 123356,
@@ -5325,8 +6148,8 @@
           "gridPos": {
             "h": 6,
             "w": 8,
-            "x": 8,
-            "y": 28
+            "x": 16,
+            "y": 34
           },
           "hiddenSeries": false,
           "id": 123357,
@@ -5417,8 +6240,8 @@
           "gridPos": {
             "h": 6,
             "w": 8,
-            "x": 16,
-            "y": 28
+            "x": 0,
+            "y": 40
           },
           "hiddenSeries": false,
           "id": 123358,
@@ -5503,14 +6326,14 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The number of original tasks contained in the merged search tas",
+          "description": "The number of original tasks contained in the merged search task",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
             "h": 6,
             "w": 8,
-            "x": 0,
-            "y": 34
+            "x": 8,
+            "y": 40
           },
           "hiddenSeries": false,
           "id": 123352,
@@ -5547,9 +6370,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, pod, node_id) (rate(milvus_querynode_search_group_size_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_querynode_search_group_size_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id) / sum(increase(milvus_querynode_search_group_size_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -5600,8 +6435,8 @@
           "gridPos": {
             "h": 6,
             "w": 8,
-            "x": 8,
-            "y": 34
+            "x": 16,
+            "y": 40
           },
           "hiddenSeries": false,
           "id": 123361,
@@ -5638,9 +6473,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, pod, node_id) (rate(milvus_querynode_search_nq_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_querynode_search_nq_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id) / sum(increase(milvus_querynode_search_nq_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -5691,8 +6538,8 @@
           "gridPos": {
             "h": 6,
             "w": 8,
-            "x": 16,
-            "y": 34
+            "x": 0,
+            "y": 46
           },
           "hiddenSeries": false,
           "id": 123360,
@@ -5729,9 +6576,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, pod, node_id) (rate(milvus_querynode_search_group_nq_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_querynode_search_group_nq_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id) / sum(increase(milvus_querynode_search_group_nq_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-milvus_querynode_search_group_nq",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -5782,8 +6641,8 @@
           "gridPos": {
             "h": 6,
             "w": 8,
-            "x": 0,
-            "y": 40
+            "x": 8,
+            "y": 46
           },
           "hiddenSeries": false,
           "id": 123359,
@@ -5820,9 +6679,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, pod, node_id) (rate(milvus_querynode_search_topk_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_querynode_search_topk_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id) / sum(increase(milvus_querynode_search_topk_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -5873,8 +6744,8 @@
           "gridPos": {
             "h": 6,
             "w": 8,
-            "x": 8,
-            "y": 40
+            "x": 16,
+            "y": 46
           },
           "hiddenSeries": false,
           "id": 123362,
@@ -5911,9 +6782,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, pod, node_id) (rate(milvus_querynode_search_group_topk_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_querynode_search_group_topk_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id) / sum(increase(milvus_querynode_search_group_topk_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -5964,8 +6847,8 @@
           "gridPos": {
             "h": 6,
             "w": 8,
-            "x": 16,
-            "y": 40
+            "x": 0,
+            "y": 52
           },
           "hiddenSeries": false,
           "id": 123364,
@@ -6247,7 +7130,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The number of collections recorded in DataCoord Meta",
+          "description": "The number of rows of valid data accumulated in DataCoord that flushed.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -6255,98 +7138,6 @@
             "w": 8,
             "x": 16,
             "y": 5
-          },
-          "hiddenSeries": false,
-          "id": 123268,
-          "legend": {
-            "avg": false,
-            "current": false,
-            "max": false,
-            "min": false,
-            "show": true,
-            "total": false,
-            "values": false
-          },
-          "lines": true,
-          "linewidth": 1,
-          "nullPointMode": "null",
-          "options": {
-            "alertThreshold": true
-          },
-          "percentage": false,
-          "pluginVersion": "8.3.2",
-          "pointradius": 2,
-          "points": false,
-          "renderer": "flot",
-          "seriesOverrides": [],
-          "spaceLength": 10,
-          "stack": false,
-          "steppedLine": false,
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "${DS_PROMETHEUS}"
-              },
-              "exemplar": true,
-              "expr": "sum(milvus_datacoord_collection_num{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}) by (app_kubernetes_io_instance)",
-              "interval": "",
-              "intervalFactor": 2,
-              "legendFormat": "total",
-              "queryType": "randomWalk",
-              "refId": "A"
-            }
-          ],
-          "thresholds": [],
-          "timeRegions": [],
-          "title": "Collection Num",
-          "tooltip": {
-            "shared": true,
-            "sort": 0,
-            "value_type": "individual"
-          },
-          "type": "graph",
-          "xaxis": {
-            "mode": "time",
-            "show": true,
-            "values": []
-          },
-          "yaxes": [
-            {
-              "$$hashKey": "object:536",
-              "format": "short",
-              "logBase": 1,
-              "min": "0",
-              "show": true
-            },
-            {
-              "$$hashKey": "object:537",
-              "format": "short",
-              "logBase": 1,
-              "show": true
-            }
-          ],
-          "yaxis": {
-            "align": false
-          }
-        },
-        {
-          "aliasColors": {},
-          "bars": false,
-          "dashLength": 10,
-          "dashes": false,
-          "datasource": {
-            "type": "prometheus",
-            "uid": "$datasource"
-          },
-          "description": "The number of rows of valid data accumulated in DataCoord that flushed.",
-          "fill": 1,
-          "fillGradient": 0,
-          "gridPos": {
-            "h": 6,
-            "w": 8,
-            "x": 0,
-            "y": 11
           },
           "hiddenSeries": false,
           "id": 123269,
@@ -6413,6 +7204,97 @@
             },
             {
               "$$hashKey": "object:537",
+              "format": "short",
+              "logBase": 1,
+              "show": true
+            }
+          ],
+          "yaxis": {
+            "align": false
+          }
+        },
+        {
+          "aliasColors": {},
+          "bars": false,
+          "dashLength": 10,
+          "dashes": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "description": "per-minute increasing rate of data flushed.",
+          "fill": 1,
+          "fillGradient": 0,
+          "gridPos": {
+            "h": 6,
+            "w": 8,
+            "x": 0,
+            "y": 11
+          },
+          "hiddenSeries": false,
+          "id": 123371,
+          "legend": {
+            "avg": false,
+            "current": false,
+            "max": false,
+            "min": false,
+            "show": true,
+            "total": false,
+            "values": false
+          },
+          "lines": true,
+          "linewidth": 1,
+          "nullPointMode": "null",
+          "options": {
+            "alertThreshold": true
+          },
+          "percentage": false,
+          "pluginVersion": "8.3.2",
+          "pointradius": 2,
+          "points": false,
+          "renderer": "flot",
+          "seriesOverrides": [],
+          "spaceLength": 10,
+          "stack": false,
+          "steppedLine": false,
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_datacoord_stored_rows_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])/2) by (pod, node_id)",
+              "interval": "",
+              "legendFormat": "{{pod}}-{{node_id}}",
+              "queryType": "randomWalk",
+              "refId": "A"
+            }
+          ],
+          "thresholds": [],
+          "timeRegions": [],
+          "title": "Stored Rows Rate",
+          "tooltip": {
+            "shared": true,
+            "sort": 0,
+            "value_type": "individual"
+          },
+          "type": "graph",
+          "xaxis": {
+            "mode": "time",
+            "show": true,
+            "values": []
+          },
+          "yaxes": [
+            {
+              "$$hashKey": "object:3414",
+              "format": "short",
+              "logBase": 1,
+              "min": "0",
+              "show": true
+            },
+            {
+              "$$hashKey": "object:3415",
               "format": "short",
               "logBase": 1,
               "show": true
@@ -7228,7 +8110,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for encoding the data in the buffer over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of encode the data in the buffer over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -7272,9 +8154,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, pod, node_id) (rate(milvus_datanode_encode_buffer_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_datanode_encode_buffer_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id) / sum(increase(milvus_datanode_encode_buffer_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -7319,7 +8213,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for writting the data in buffer to storage  over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of writte the data in buffer to storage  over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -7363,9 +8257,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, pod, node_id) (rate(milvus_datanode_save_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_datanode_save_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id) / sum(increase(milvus_datanode_save_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -7683,7 +8589,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for compaction over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of compaction over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -7727,9 +8633,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, pod, node_id) (rate(milvus_datanode_compaction_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_datanode_compaction_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id) / sum(increase(milvus_datanode_compaction_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -8169,7 +9087,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for loading the FieldData over the last 2 minutes.",
+          "description": "The 99th percentile and average latency ofr load the FieldData over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -8213,9 +9131,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, pod, node_id) (rate(milvus_indexnode_load_field_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_indexnode_load_field_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id) / sum(increase(milvus_indexnode_load_field_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -8259,7 +9189,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for decoding the FieldData over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of decod the FieldData over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -8303,9 +9233,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, pod, node_id) (rate(milvus_indexnode_decode_field_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_indexnode_decode_field_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id) / sum(increase(milvus_indexnode_decode_field_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -8350,7 +9292,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for building index over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of build index over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -8394,9 +9336,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, pod, node_id) (rate(milvus_indexnode_build_index_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_indexnode_build_index_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id) / sum(increase(milvus_indexnode_build_index_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -8441,7 +9395,7 @@
             "type": "prometheus",
             "uid": "$datasource"
           },
-          "description": "The 99th percentile of latency for encoding index over the last 2 minutes.",
+          "description": "The 99th percentile and average latency of encode index over the last 2 minutes.",
           "fill": 1,
           "fillGradient": 0,
           "gridPos": {
@@ -8485,9 +9439,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, pod, node_id) (rate(milvus_indexnode_encode_index_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_indexnode_encode_index_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id) / sum(increase(milvus_indexnode_encode_index_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -8576,9 +9542,21 @@
               "exemplar": true,
               "expr": "histogram_quantile(0.99, sum by (le, pod, node_id) (rate(milvus_indexnode_save_index_latency_bucket{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])))",
               "interval": "",
-              "legendFormat": "{{pod}}-{{node_id}}",
+              "legendFormat": "p99-{{pod}}-{{node_id}}",
               "queryType": "randomWalk",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "exemplar": true,
+              "expr": "sum(increase(milvus_indexnode_save_index_latency_sum{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id) / sum(increase(milvus_indexnode_save_index_latency_count{app_kubernetes_io_instance=~\"$instance\", app_kubernetes_io_name=\"$app_name\", namespace=\"$namespace\"}[2m])) by(pod, node_id)",
+              "hide": false,
+              "interval": "",
+              "legendFormat": "avg-{{pod}}-{{node_id}}",
+              "refId": "B"
             }
           ],
           "thresholds": [],
@@ -10174,7 +11152,7 @@
       "type": "row"
     }
   ],
-  "refresh": false,
+  "refresh": "",
   "schemaVersion": 33,
   "style": "dark",
   "tags": [
@@ -10351,6 +11329,6 @@
   "timezone": "browser",
   "title": "Milvus2.0",
   "uid": "uLf5cJ3Gz",
-  "version": 5,
+  "version": 42,
   "weekStart": ""
 }

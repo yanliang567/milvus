@@ -16,8 +16,6 @@ var (
 		}, []string{})
 
 	////////////////////////////////////////////////////////////////////////////
-
-	////////////////////////////////////////////////////////////////////////////
 	// for time tick
 
 	// RootCoordInsertChannelTimeTick counts the time tick num of insert channel in 24H
@@ -27,7 +25,7 @@ var (
 			Subsystem: typeutil.RootCoordRole,
 			Name:      "sync_epoch_time",
 			Help:      "synchronized unix epoch per physical channel",
-		}, []string{"PChannel"})
+		}, []string{channelNameLabelName})
 
 	RootCoordDDLReqCounter = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -126,6 +124,15 @@ var (
 			Name:      "credential_num",
 			Help:      "number of credentials",
 		})
+
+	// RootCoordNumOfRoles counts the number of credentials.
+	RootCoordNumOfRoles = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.RootCoordRole,
+			Name:      "num_of_roles",
+			Help:      "The number of roles",
+		})
 )
 
 //RegisterRootCoord registers RootCoord metrics
@@ -154,4 +161,6 @@ func RegisterRootCoord(registry *prometheus.Registry) {
 
 	// for credential
 	registry.MustRegister(RootCoordNumOfCredentials)
+
+	registry.MustRegister(RootCoordNumOfRoles)
 }

@@ -9,6 +9,7 @@ import "internal.proto";
 import "proxy.proto";
 import "data_coord.proto";
 import "etcd_meta.proto";
+import "index_coord.proto";
 
 service RootCoord {
   rpc GetComponentStates(internal.GetComponentStatesRequest) returns (internal.ComponentStates) {}
@@ -98,6 +99,7 @@ service RootCoord {
     rpc CreateIndex(milvus.CreateIndexRequest) returns (common.Status) {}
     rpc DescribeIndex(milvus.DescribeIndexRequest) returns (milvus.DescribeIndexResponse) {}
     rpc DropIndex(milvus.DropIndexRequest) returns (common.Status) {}
+    rpc GetIndexState(milvus.GetIndexStateRequest) returns (index.GetIndexStatesResponse) {}
 
     rpc AllocTimestamp(AllocTimestampRequest) returns (AllocTimestampResponse) {}
     rpc AllocID(AllocIDRequest) returns (AllocIDResponse) {}
@@ -129,7 +131,6 @@ service RootCoord {
     rpc OperateUserRole(milvus.OperateUserRoleRequest) returns (common.Status) {}
     rpc SelectRole(milvus.SelectRoleRequest) returns (milvus.SelectRoleResponse) {}
     rpc SelectUser(milvus.SelectUserRequest) returns (milvus.SelectUserResponse) {}
-    rpc SelectResource(milvus.SelectResourceRequest) returns (milvus.SelectResourceResponse) {}
     rpc OperatePrivilege(milvus.OperatePrivilegeRequest) returns (common.Status) {}
     rpc SelectGrant(milvus.SelectGrantRequest) returns (milvus.SelectGrantResponse) {}
     rpc ListPolicy(internal.ListPolicyRequest) returns (internal.ListPolicyResponse) {}
@@ -206,6 +207,6 @@ message GetCredentialResponse {
   common.Status status = 1;
   // username
   string username = 2;
-  // password
+  // password stored in etcd/mysql
   string password = 3;
 }

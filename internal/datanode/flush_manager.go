@@ -18,6 +18,7 @@ package datanode
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"strconv"
@@ -117,7 +118,7 @@ func (q *orderFlushQueue) init() {
 }
 
 func (q *orderFlushQueue) getFlushTaskRunner(pos *internalpb.MsgPosition) *flushTaskRunner {
-	actual, loaded := q.working.LoadOrStore(string(pos.MsgID), newFlushTaskRunner(q.segmentID, q.injectCh))
+	actual, loaded := q.working.LoadOrStore(string(pos.GetMsgID()), newFlushTaskRunner(q.segmentID, q.injectCh))
 	t := actual.(*flushTaskRunner)
 	// not loaded means the task runner is new, do initializtion
 	if !loaded {
@@ -130,6 +131,10 @@ func (q *orderFlushQueue) getFlushTaskRunner(pos *internalpb.MsgPosition) *flush
 		t.init(q.notifyFunc, q.postTask, q.tailCh)
 		q.tailCh = t.finishSignal
 		q.tailMut.Unlock()
+		log.Debug("new flush task runner created and initialized",
+			zap.Int64("segment ID", q.segmentID),
+			zap.String("pos message ID", string(pos.GetMsgID())),
+		)
 	}
 	return t
 }
@@ -274,6 +279,12 @@ func (m *rendezvousFlushManager) getFlushQueue(segmentID UniqueID) *orderFlushQu
 }
 
 func (m *rendezvousFlushManager) handleInsertTask(segmentID UniqueID, task flushInsertTask, binlogs, statslogs map[UniqueID]*datapb.Binlog, flushed bool, dropped bool, pos *internalpb.MsgPosition) {
+	log.Debug("handling insert task",
+		zap.Int64("segment ID", segmentID),
+		zap.Bool("flushed", flushed),
+		zap.Bool("dropped", dropped),
+		zap.Any("position", pos),
+	)
 	// in dropping mode
 	if m.dropping.Load() {
 		r := &flushTaskRunner{
@@ -321,12 +332,11 @@ func (m *rendezvousFlushManager) handleDeleteTask(segmentID UniqueID, task flush
 	m.getFlushQueue(segmentID).enqueueDelFlush(task, deltaLogs, pos)
 }
 
-// notify flush manager insert buffer data
+// flushBufferData notifies flush manager insert buffer data.
+// This method will be retired on errors. Final errors will be propagated upstream and logged.
 func (m *rendezvousFlushManager) flushBufferData(data *BufferData, segmentID UniqueID, flushed bool,
 	dropped bool, pos *internalpb.MsgPosition) error {
-
 	tr := timerecord.NewTimeRecorder("flushDuration")
-
 	// empty flush
 	if data == nil || data.buffer == nil {
 		//m.getFlushQueue(segmentID).enqueueInsertFlush(&flushBufferInsertTask{},
@@ -339,6 +349,11 @@ func (m *rendezvousFlushManager) flushBufferData(data *BufferData, segmentID Uni
 	collID, partID, meta, err := m.getSegmentMeta(segmentID, pos)
 	if err != nil {
 		return err
+	}
+	// get memory size of buffer data
+	fieldMemorySize := make(map[int64]int)
+	for fieldID, fieldData := range data.buffer.Data {
+		fieldMemorySize[fieldID] = fieldData.GetMemorySize()
 	}
 
 	// encode data and convert output data
@@ -376,7 +391,7 @@ func (m *rendezvousFlushManager) flushBufferData(data *BufferData, segmentID Uni
 			TimestampFrom: 0, //TODO
 			TimestampTo:   0, //TODO,
 			LogPath:       key,
-			LogSize:       int64(len(blob.Value)),
+			LogSize:       int64(fieldMemorySize[fieldID]),
 		}
 		field2Logidx[fieldID] = logidx
 	}
@@ -679,6 +694,13 @@ func dropVirtualChannelFunc(dsService *dataSyncService, opts ...retry.Option) fl
 			segment.StartPosition = pos.GetStartPosition()
 		}
 
+		// assign segments to request
+		segments := make([]*datapb.DropVirtualChannelSegment, 0, len(segmentPack))
+		for _, segment := range segmentPack {
+			segments = append(segments, segment)
+		}
+		req.Segments = segments
+
 		err := retry.Do(context.Background(), func() error {
 			rsp, err := dsService.dataCoord.DropVirtualChannel(context.Background(), req)
 			// should be network issue, return error and retry
@@ -778,6 +800,16 @@ func flushNotifyFunc(dsService *dataSyncService, opts ...retry.Option) notifyMet
 				return fmt.Errorf(err.Error())
 			}
 
+			// Segment not found during stale segment flush. Segment might get compacted already.
+			// Stop retry and still proceed to the end, ignoring this error.
+			if !pack.flushed && rsp.GetErrorCode() == commonpb.ErrorCode_SegmentNotFound {
+				log.Warn("stale segment not found, could be compacted",
+					zap.Int64("segment ID", pack.segmentID))
+				log.Warn("failed to SaveBinlogPaths",
+					zap.Int64("segment ID", pack.segmentID),
+					zap.Error(errors.New(rsp.GetReason())))
+				return nil
+			}
 			// meta error, datanode handles a virtual channel does not belong here
 			if rsp.GetErrorCode() == commonpb.ErrorCode_MetaFailed {
 				log.Warn("meta error found, skip sync and start to drop virtual channel", zap.String("channel", dsService.vchannelName))
@@ -790,11 +822,12 @@ func flushNotifyFunc(dsService *dataSyncService, opts ...retry.Option) notifyMet
 			return nil
 		}, opts...)
 		if err != nil {
-			log.Warn("failed to SaveBinlogPaths", zap.Error(err))
+			log.Warn("failed to SaveBinlogPaths",
+				zap.Int64("segment ID", pack.segmentID),
+				zap.Error(err))
 			// TODO change to graceful stop
 			panic(err)
 		}
-
 		if pack.flushed || pack.dropped {
 			dsService.replica.segmentFlushed(pack.segmentID)
 		}

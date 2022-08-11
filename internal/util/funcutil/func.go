@@ -28,7 +28,10 @@ import (
 	"net/http"
 	"reflect"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 
 	"go.uber.org/zap"
 
@@ -243,32 +246,22 @@ func GetAvailablePort() int {
 
 // ToPhysicalChannel get physical channel name from virtual channel name
 func ToPhysicalChannel(vchannel string) string {
-	var idx int
-	for idx = len(vchannel) - 1; idx >= 0; idx-- {
-		if vchannel[idx] == '_' {
-			break
-		}
-	}
-	if idx < 0 {
+	index := strings.LastIndex(vchannel, "_")
+	if index < 0 {
 		return vchannel
 	}
-	return vchannel[:idx]
+	return vchannel[:index]
 }
 
 // ConvertChannelName assembles channel name according to parameters.
 func ConvertChannelName(chanName string, tokenFrom string, tokenTo string) (string, error) {
-	chanNameLen := len(chanName)
-	tokenFromLen := len(tokenFrom)
-	if chanNameLen < tokenFromLen {
+	if tokenFrom == "" {
+		return "", fmt.Errorf("the tokenFrom is empty")
+	}
+	if !strings.Contains(chanName, tokenFrom) {
 		return "", fmt.Errorf("cannot find token '%s' in '%s'", tokenFrom, chanName)
 	}
-
-	for i := 0; i < (chanNameLen - tokenFromLen); i++ {
-		if chanName[i:i+tokenFromLen] == tokenFrom {
-			return chanName[0:i] + tokenTo + chanName[i+tokenFromLen:], nil
-		}
-	}
-	return "", fmt.Errorf("cannot find token '%s' in '%s'", tokenFrom, chanName)
+	return strings.Replace(chanName, tokenFrom, tokenTo, 1), nil
 }
 
 func getNumRowsOfScalarField(datas interface{}) uint64 {
@@ -367,4 +360,41 @@ func IsGrpcErr(err error) bool {
 		}
 		err = errors.Unwrap(err)
 	}
+}
+
+func IsEmptyString(str string) bool {
+	return strings.TrimSpace(str) == ""
+}
+
+func HandleTenantForEtcdKey(prefix string, tenant string, key string) string {
+	res := prefix
+	if tenant != "" {
+		res += "/" + tenant
+	}
+	if key != "" {
+		res += "/" + key
+	}
+	return res
+}
+
+func IsRevoke(operateType milvuspb.OperatePrivilegeType) bool {
+	return operateType == milvuspb.OperatePrivilegeType_Revoke
+}
+
+func IsGrant(operateType milvuspb.OperatePrivilegeType) bool {
+	return operateType == milvuspb.OperatePrivilegeType_Grant
+}
+
+func EncodeUserRoleCache(user string, role string) string {
+	return fmt.Sprintf("%s/%s", user, role)
+}
+
+func DecodeUserRoleCache(cache string) (string, string, error) {
+	index := strings.LastIndex(cache, "/")
+	if index == -1 {
+		return "", "", fmt.Errorf("invalid param, cache: [%s]", cache)
+	}
+	user := cache[:index]
+	role := cache[index+1:]
+	return user, role, nil
 }

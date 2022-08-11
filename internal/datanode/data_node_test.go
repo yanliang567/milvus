@@ -757,10 +757,9 @@ func TestWatchChannel(t *testing.T) {
 				chPut <- struct{}{}
 				return r
 			},
-			func(vChan string) bool {
+			func(vChan string) {
 				node.handleDeleteEvent(vChan)
 				chDel <- struct{}{}
-				return true
 			}, time.Millisecond*100,
 		)
 		node.eventManagerMap.Store(ch, m)
@@ -795,10 +794,9 @@ func TestWatchChannel(t *testing.T) {
 				chPut <- struct{}{}
 				return r
 			},
-			func(vChan string) bool {
+			func(vChan string) {
 				node.handleDeleteEvent(vChan)
 				chDel <- struct{}{}
-				return true
 			}, time.Millisecond*100,
 		)
 		node.eventManagerMap.Store(ch, m)
@@ -820,6 +818,33 @@ func TestWatchChannel(t *testing.T) {
 		<-chPut
 		exist := node.flowgraphManager.exist("test3")
 		assert.False(t, exist)
+	})
+
+	t.Run("handle watchinfo compatibility", func(t *testing.T) {
+		info := datapb.ChannelWatchInfo{
+			Vchan: &datapb.VchannelInfo{
+				CollectionID:        1,
+				ChannelName:         "delta-channel1",
+				UnflushedSegments:   []*datapb.SegmentInfo{{ID: 1}},
+				FlushedSegments:     []*datapb.SegmentInfo{{ID: 2}},
+				DroppedSegments:     []*datapb.SegmentInfo{{ID: 3}},
+				UnflushedSegmentIds: []int64{1},
+			},
+			State:     datapb.ChannelWatchState_Uncomplete,
+			TimeoutTs: time.Now().Add(time.Minute).UnixNano(),
+		}
+		bs, err := proto.Marshal(&info)
+		assert.NoError(t, err)
+
+		newWatchInfo, err := parsePutEventData(bs)
+		assert.NoError(t, err)
+
+		assert.Equal(t, []*datapb.SegmentInfo{}, newWatchInfo.GetVchan().GetUnflushedSegments())
+		assert.Equal(t, []*datapb.SegmentInfo{}, newWatchInfo.GetVchan().GetFlushedSegments())
+		assert.Equal(t, []*datapb.SegmentInfo{}, newWatchInfo.GetVchan().GetDroppedSegments())
+		assert.NotEmpty(t, newWatchInfo.GetVchan().GetUnflushedSegmentIds())
+		assert.NotEmpty(t, newWatchInfo.GetVchan().GetFlushedSegmentIds())
+		assert.NotEmpty(t, newWatchInfo.GetVchan().GetDroppedSegmentIds())
 	})
 }
 

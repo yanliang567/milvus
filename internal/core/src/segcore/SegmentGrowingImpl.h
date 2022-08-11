@@ -30,7 +30,6 @@
 #include "SegmentGrowing.h"
 
 #include "exceptions/EasyAssert.h"
-#include "knowhere/index/vector_index/VecIndex.h"
 #include "query/PlanNode.h"
 #include "query/deprecated/GeneralQuery.h"
 #include "utils/Status.h"
@@ -64,6 +63,11 @@ class SegmentGrowingImpl : public SegmentGrowing {
 
     std::string
     debug() const override;
+
+    int64_t
+    get_segment_id() const override {
+        return id_;
+    }
 
  public:
     const InsertRecord&
@@ -127,9 +131,9 @@ class SegmentGrowingImpl : public SegmentGrowing {
         return insert_record_.ack_responder_.GetAck();
     }
 
-    ssize_t
+    int64_t
     get_deleted_count() const override {
-        return 0;
+        return deleted_record_.ack_responder_.GetAck();
     }
 
     int64_t
@@ -171,7 +175,7 @@ class SegmentGrowingImpl : public SegmentGrowing {
 
     void
     vector_search(int64_t vec_count,
-                  query::SearchInfo search_info,
+                  query::SearchInfo& search_info,
                   const void* query_data,
                   int64_t query_count,
                   Timestamp timestamp,

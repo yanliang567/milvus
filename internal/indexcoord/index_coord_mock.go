@@ -20,6 +20,9 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"time"
+
+	"github.com/milvus-io/milvus/internal/kv"
 
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/storage"
@@ -252,6 +255,17 @@ func (icm *Mock) GetMetrics(ctx context.Context, request *milvuspb.GetMetricsReq
 	}, nil
 }
 
+func (icm *Mock) RemoveIndex(ctx context.Context, request *indexpb.RemoveIndexRequest) (*commonpb.Status, error) {
+	if icm.Failure {
+		return &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_UnexpectedError,
+		}, errors.New("IndexCoordinator RemoveIndex failed")
+	}
+	return &commonpb.Status{
+		ErrorCode: commonpb.ErrorCode_Success,
+	}, nil
+}
+
 type DataCoordMock struct {
 	types.DataCoord
 
@@ -345,6 +359,8 @@ func (dcm *DataCoordMock) ReleaseSegmentLock(ctx context.Context, req *datapb.Re
 	}, nil
 }
 
+// ChunkManagerMock is mock
+// deprecated
 type ChunkManagerMock struct {
 	storage.ChunkManager
 
@@ -370,4 +386,54 @@ func (cmm *ChunkManagerMock) RemoveWithPrefix(prefix string) error {
 		return nil
 	}
 	return nil
+}
+
+type mockETCDKV struct {
+	kv.MetaKv
+
+	remove                      func(string) error
+	watchWithRevision           func(string, int64) clientv3.WatchChan
+	loadWithRevisionAndVersions func(string) ([]string, []string, []int64, int64, error)
+	compareVersionAndSwap       func(key string, version int64, target string, opts ...clientv3.OpOption) (bool, error)
+	loadWithPrefix2             func(key string) ([]string, []string, []int64, error)
+}
+
+func (mk *mockETCDKV) Remove(key string) error {
+	return mk.remove(key)
+}
+
+func (mk *mockETCDKV) LoadWithRevisionAndVersions(prefix string) ([]string, []string, []int64, int64, error) {
+	return mk.loadWithRevisionAndVersions(prefix)
+}
+
+func (mk *mockETCDKV) CompareVersionAndSwap(key string, version int64, target string, opts ...clientv3.OpOption) (bool, error) {
+	return mk.compareVersionAndSwap(key, version, target, opts...)
+}
+
+func (mk *mockETCDKV) LoadWithPrefix2(key string) ([]string, []string, []int64, error) {
+	return mk.loadWithPrefix2(key)
+}
+
+func (mk *mockETCDKV) WatchWithRevision(key string, revision int64) clientv3.WatchChan {
+	return mk.watchWithRevision(key, revision)
+}
+
+type chunkManagerMock struct {
+	storage.ChunkManager
+
+	removeWithPrefix func(string) error
+	listWithPrefix   func(string, bool) ([]string, []time.Time, error)
+	remove           func(string) error
+}
+
+func (cmm *chunkManagerMock) RemoveWithPrefix(prefix string) error {
+	return cmm.removeWithPrefix(prefix)
+}
+
+func (cmm *chunkManagerMock) ListWithPrefix(prefix string, recursive bool) ([]string, []time.Time, error) {
+	return cmm.listWithPrefix(prefix, recursive)
+}
+
+func (cmm *chunkManagerMock) Remove(key string) error {
+	return cmm.remove(key)
 }

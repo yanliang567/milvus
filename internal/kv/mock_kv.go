@@ -107,6 +107,10 @@ func (m *MockMetaKV) LoadWithPrefix2(key string) ([]string, []string, []int64, e
 	panic("not implemented") // TODO: Implement
 }
 
+func (m *MockMetaKV) LoadWithRevisionAndVersions(key string) ([]string, []string, []int64, int64, error) {
+	panic("not implemented") // TODO: Implement
+}
+
 func (m *MockMetaKV) LoadWithRevision(key string) ([]string, []string, int64, error) {
 	panic("not implemented") // TODO: Implement
 }
@@ -143,10 +147,10 @@ func (m *MockMetaKV) KeepAlive(id clientv3.LeaseID) (<-chan *clientv3.LeaseKeepA
 	panic("not implemented") // TODO: Implement
 }
 
-func (m *MockMetaKV) CompareValueAndSwap(key, value, target string, opts ...clientv3.OpOption) error {
+func (m *MockMetaKV) CompareValueAndSwap(key, value, target string, opts ...clientv3.OpOption) (bool, error) {
 	panic("not implemented") // TODO: Implement
 }
 
-func (m *MockMetaKV) CompareVersionAndSwap(key string, version int64, target string, opts ...clientv3.OpOption) error {
+func (m *MockMetaKV) CompareVersionAndSwap(key string, version int64, target string, opts ...clientv3.OpOption) (bool, error) {
 	panic("not implemented") // TODO: Implement
 }

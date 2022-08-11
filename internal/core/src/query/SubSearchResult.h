@@ -12,6 +12,7 @@
 #pragma once
 
 #include <limits>
+#include <utility>
 #include <vector>
 #include "common/Types.h"
 
@@ -19,25 +20,34 @@ namespace milvus::query {
 
 class SubSearchResult {
  public:
-    SubSearchResult(int64_t num_queries, int64_t topk, MetricType metric_type, int64_t round_decimal)
-        : metric_type_(metric_type),
-          num_queries_(num_queries),
+    SubSearchResult(int64_t num_queries, int64_t topk, const knowhere::MetricType& metric_type, int64_t round_decimal)
+        : num_queries_(num_queries),
           topk_(topk),
+          round_decimal_(round_decimal),
+          metric_type_(metric_type),
           seg_offsets_(num_queries * topk, -1),
-          distances_(num_queries * topk, init_value(metric_type)),
-          round_decimal_(round_decimal) {
+          distances_(num_queries * topk, init_value(metric_type)) {
+    }
+
+    SubSearchResult(SubSearchResult&& other)
+        : num_queries_(other.num_queries_),
+          topk_(other.topk_),
+          round_decimal_(other.round_decimal_),
+          metric_type_(other.metric_type_),
+          seg_offsets_(std::move(other.seg_offsets_)),
+          distances_(std::move(other.distances_)) {
     }
 
  public:
-    static constexpr float
-    init_value(MetricType metric_type) {
+    static float
+    init_value(const knowhere::MetricType& metric_type) {
         return (is_descending(metric_type) ? -1 : 1) * std::numeric_limits<float>::max();
     }
 
-    static constexpr bool
-    is_descending(MetricType metric_type) {
+    static bool
+    is_descending(const knowhere::MetricType& metric_type) {
         // TODO(dog): more types
-        if (metric_type == MetricType::METRIC_INNER_PRODUCT) {
+        if (metric_type == knowhere::metric::IP) {
             return true;
         } else {
             return false;
@@ -88,9 +98,6 @@ class SubSearchResult {
     void
     round_values();
 
-    static SubSearchResult
-    merge(const SubSearchResult& left, const SubSearchResult& right);
-
     void
     merge(const SubSearchResult& sub_result);
 
@@ -103,7 +110,7 @@ class SubSearchResult {
     int64_t num_queries_;
     int64_t topk_;
     int64_t round_decimal_;
-    MetricType metric_type_;
+    knowhere::MetricType metric_type_;
     std::vector<int64_t> seg_offsets_;
     std::vector<float> distances_;
 };

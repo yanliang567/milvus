@@ -18,12 +18,18 @@ class ParamInfo:
         self.param_host = ""
         self.param_port = ""
         self.param_handler = ""
+        self.param_user = ""
+        self.param_password = ""
+        self.param_secure = False
         self.param_replica_num = ct.default_replica_num
 
-    def prepare_param_info(self, host, port, handler, replica_num):
+    def prepare_param_info(self, host, port, handler, replica_num, user, password, secure):
         self.param_host = host
         self.param_port = port
         self.param_handler = handler
+        self.param_user = user
+        self.param_password = password
+        self.param_secure = secure
         self.param_replica_num = replica_num
 
 
@@ -112,7 +118,15 @@ def gen_default_collection_schema(description=ct.default_desc, primary_field=ct.
                                                                     primary_field=primary_field, auto_id=auto_id)
     return schema
 
-
+def gen_general_collection_schema(description=ct.default_desc, primary_field=ct.default_int64_field_name,
+                                  auto_id=False, is_binary=False, dim=ct.default_dim):
+    if is_binary:
+        fields = [gen_int64_field(), gen_float_field(), gen_string_field(), gen_binary_vec_field(dim=dim)]
+    else:
+        fields = [gen_int64_field(), gen_float_field(), gen_string_field(), gen_float_vec_field(dim=dim)]
+    schema, _ = ApiCollectionSchemaWrapper().init_collection_schema(fields=fields, description=description,
+                                                                    primary_field=primary_field, auto_id=auto_id)
+    return schema
 
 def gen_string_pk_default_collection_schema(description=ct.default_desc, primary_field=ct.default_string_field_name,
                                   auto_id=False, dim=ct.default_dim):
@@ -386,11 +400,18 @@ def gen_invaild_search_params_type():
 
 def gen_search_param(index_type, metric_type="L2"):
     search_params = []
-    if index_type in ["FLAT", "IVF_FLAT", "IVF_SQ8", "IVF_SQ8H", "IVF_PQ"] \
-            or index_type in ["BIN_FLAT", "BIN_IVF_FLAT"]:
+    if index_type in ["FLAT", "IVF_FLAT", "IVF_SQ8", "IVF_SQ8H", "IVF_PQ"]:
         for nprobe in [64, 128]:
             ivf_search_params = {"metric_type": metric_type, "params": {"nprobe": nprobe}}
             search_params.append(ivf_search_params)
+    elif index_type in ["BIN_FLAT", "BIN_IVF_FLAT"]:
+        if metric_type not in ct.binary_metrics:
+            log.error("Metric type error: binary index only supports distance type in (%s)" % ct.binary_metrics)
+            # default metric type for binary index
+            metric_type = "JACCARD"
+        for nprobe in [64, 128]:
+            binary_search_params = {"metric_type": metric_type, "params": {"nprobe": nprobe}}
+            search_params.append(binary_search_params)
     elif index_type in ["HNSW", "RHNSW_FLAT", "RHNSW_PQ", "RHNSW_SQ"]:
         for ef in [64, 32768]:
             hnsw_search_param = {"metric_type": metric_type, "params": {"ef": ef}}
@@ -401,6 +422,31 @@ def gen_search_param(index_type, metric_type="L2"):
             search_params.append(nsg_search_param)
     elif index_type == "ANNOY":
         for search_k in [1000, 5000]:
+            annoy_search_param = {"metric_type": metric_type, "params": {"search_k": search_k}}
+            search_params.append(annoy_search_param)
+    else:
+        log.error("Invalid index_type.")
+        raise Exception("Invalid index_type.")
+    return search_params
+
+
+def gen_invalid_search_param(index_type, metric_type="L2"):
+    search_params = []
+    if index_type in ["FLAT", "IVF_FLAT", "IVF_SQ8", "IVF_SQ8H", "IVF_PQ"] \
+            or index_type in ["BIN_FLAT", "BIN_IVF_FLAT"]:
+        for nprobe in [-1]:
+            ivf_search_params = {"metric_type": metric_type, "params": {"nprobe": nprobe}}
+            search_params.append(ivf_search_params)
+    elif index_type in ["HNSW", "RHNSW_FLAT", "RHNSW_PQ", "RHNSW_SQ"]:
+        for ef in [-1]:
+            hnsw_search_param = {"metric_type": metric_type, "params": {"ef": ef}}
+            search_params.append(hnsw_search_param)
+    elif index_type in ["NSG", "RNSG"]:
+        for search_length in [100, 300]:
+            nsg_search_param = {"metric_type": metric_type, "params": {"search_length": search_length}}
+            search_params.append(nsg_search_param)
+    elif index_type == "ANNOY":
+        for search_k in ["-1"]:
             annoy_search_param = {"metric_type": metric_type, "params": {"search_k": search_k}}
             search_params.append(annoy_search_param)
     else:
@@ -605,8 +651,7 @@ def insert_data(collection_w, nb=3000, is_binary=False, is_all_data_type=False,
     binary_raw_vectors = []
     insert_ids = []
     start = insert_offset
-    log.info("insert_data: inserting data into collection %s (num_entities: %s)"
-             % (collection_w.name, nb))
+    log.info(f"inserted {nb} data into collection {collection_w.name}")
     for i in range(num):
         default_data = gen_default_dataframe_data(nb // num, dim=dim, start=start)
         if is_binary:
@@ -639,18 +684,11 @@ def get_segment_distribution(res):
     Get segment distribution
     """
     from collections import defaultdict
-    segment_distribution = defaultdict(lambda: {"growing": [], "sealed": []})
+    segment_distribution = defaultdict(lambda: {"sealed": []})
     for r in res:
         for node_id in r.nodeIds:
-            if node_id not in segment_distribution:
-                segment_distribution[node_id] = {
-                    "growing": [],
-                    "sealed": []
-                }
             if r.state == 3:
                 segment_distribution[node_id]["sealed"].append(r.segmentID)
-            if r.state == 2:
-                segment_distribution[node_id]["growing"].append(r.segmentID)
 
     return segment_distribution
 

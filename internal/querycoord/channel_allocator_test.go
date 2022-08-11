@@ -18,6 +18,7 @@ package querycoord
 
 import (
 	"context"
+	"errors"
 	"math/rand"
 	"sync/atomic"
 	"testing"
@@ -48,7 +49,7 @@ func TestShuffleChannelsToQueryNode(t *testing.T) {
 		newID := atomic.AddInt64(&id, 1)
 		return newID, nil
 	}
-	meta, err := newMeta(baseCtx, kv, nil, idAllocator, nil)
+	meta, err := newMeta(baseCtx, kv, nil, idAllocator)
 	assert.Nil(t, err)
 	var cluster Cluster = &queryNodeCluster{
 		ctx:         baseCtx,
@@ -95,6 +96,28 @@ func TestShuffleChannelsToQueryNode(t *testing.T) {
 
 	assert.Equal(t, nodeID, firstReq.NodeID)
 	assert.Equal(t, nodeID, secondReq.NodeID)
+	t.Run("shuffeChannelsToQueryNode no online node ctx done", func(t *testing.T) {
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err = shuffleChannelsToQueryNode(ctx, reqs, cluster, meta, true, []int64{nodeID}, nil, -1)
+		assert.Error(t, err)
+
+		assert.True(t, errors.Is(err, context.Canceled))
+	})
+
+	t.Run("shuffeChannelsToQueryNode no online node ctx done", func(t *testing.T) {
+		cluster.StopNode(nodeID)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err = shuffleChannelsToQueryNode(ctx, reqs, cluster, meta, true, nil, nil, -1)
+		assert.Error(t, err)
+
+		assert.True(t, errors.Is(err, context.Canceled))
+	})
 
 	err = removeAllSession()
 	assert.Nil(t, err)

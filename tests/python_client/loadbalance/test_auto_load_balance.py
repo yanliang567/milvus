@@ -1,10 +1,11 @@
 from time import sleep
 from pymilvus import connections, list_collections, utility
 from chaos.checker import (CreateChecker, InsertFlushChecker,
-                           SearchChecker, QueryChecker, IndexChecker, Op, assert_statistic)
+                           SearchChecker, QueryChecker, IndexChecker, Op)
 from common.milvus_sys import MilvusSys
 from utils.util_log import test_log as log
 from chaos import chaos_commons as cc
+from chaos.chaos_commons import assert_statistic
 from common.common_type import CaseLabel
 from common import common_func as cf
 from chaos import constants
@@ -16,7 +17,7 @@ namespace = "chaos-testing"
 
 
 def install_milvus(release_name):
-    cus_configs = {'spec.components.image': 'milvusdb/milvus-dev:master-20211206-b20a238',
+    cus_configs = {'spec.components.image': 'milvusdb/milvus:master-20211206-b20a238',
                    'metadata.namespace': namespace,
                    'metadata.name': release_name,
                    'spec.components.proxy.serviceType': 'LoadBalancer'
@@ -89,7 +90,6 @@ class TestAutoLoadBalance(object):
             seg_distribution = cf.get_segment_distribution(seg_info)
             for k in seg_distribution.keys():
                 log.info(f"collection {c}'s segment distribution in node {k} is {seg_distribution[k]['sealed']}")
-                log.info(f"collection {c}'s growing segment distribution in node {k} is {seg_distribution[k]['growing']}")
         # first assert
         log.info("first assert")
         assert_statistic(self.health_checkers)
@@ -106,7 +106,6 @@ class TestAutoLoadBalance(object):
             seg_distribution = cf.get_segment_distribution(seg_info)
             for k in seg_distribution.keys():
                 log.info(f"collection {c}'s sealed segment distribution in node {k} is {seg_distribution[k]['sealed']}")
-                log.info(f"collection {c}'s growing segment distribution in node {k} is {seg_distribution[k]['growing']}")
         # second assert
         log.info("second assert")
         assert_statistic(self.health_checkers)

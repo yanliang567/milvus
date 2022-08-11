@@ -56,6 +56,7 @@ type Replica interface {
 
 	listAllSegmentIDs() []UniqueID
 	listNotFlushedSegmentIDs() []UniqueID
+	listPartitionSegments(partID UniqueID) []UniqueID
 	addNewSegment(segID, collID, partitionID UniqueID, channelName string, startPos, endPos *internalpb.MsgPosition) error
 	addNormalSegment(segID, collID, partitionID UniqueID, channelName string, numOfRows int64, statsBinlog []*datapb.FieldBinlog, cp *segmentCheckPoint, recoverTs Timestamp) error
 	filterSegments(channelName string, partitionID UniqueID) []*Segment
@@ -93,9 +94,8 @@ type Segment struct {
 	endPos     *internalpb.MsgPosition
 
 	pkFilter *bloom.BloomFilter //  bloom filter of pk inside a segment
-	// TODO silverxia, needs to change to interface to support `string` type PK
-	minPK primaryKey //	minimal pk value, shortcut for checking whether a pk is inside this segment
-	maxPK primaryKey //  maximal pk value, same above
+	minPK    primaryKey         //	minimal pk value, shortcut for checking whether a pk is inside this segment
+	maxPK    primaryKey         //  maximal pk value, same above
 }
 
 // SegmentReplica is the data replication of persistent data in datanode.
@@ -215,7 +215,7 @@ func (replica *SegmentReplica) new2FlushedSegment(segID UniqueID) {
 	replica.flushedSegments[segID] = &seg
 
 	delete(replica.newSegments, segID)
-	metrics.DataNodeNumUnflushedSegments.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.NodeID)).Dec()
+	metrics.DataNodeNumUnflushedSegments.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID())).Dec()
 }
 
 // normal2FlushedSegment transfers a segment from *normal* to *flushed* by changing *isFlushed*
@@ -287,7 +287,7 @@ func (replica *SegmentReplica) addNewSegment(segID, collID, partitionID UniqueID
 	replica.segMu.Lock()
 	defer replica.segMu.Unlock()
 	replica.newSegments[segID] = seg
-	metrics.DataNodeNumUnflushedSegments.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.NodeID)).Inc()
+	metrics.DataNodeNumUnflushedSegments.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID())).Inc()
 	return nil
 }
 
@@ -298,14 +298,7 @@ func (replica *SegmentReplica) listCompactedSegmentIDs() map[UniqueID][]UniqueID
 	compactedTo2From := make(map[UniqueID][]UniqueID)
 
 	for segID, seg := range replica.compactedSegments {
-		var from []UniqueID
-		from, ok := compactedTo2From[seg.compactedTo]
-		if !ok {
-			from = []UniqueID{}
-		}
-
-		from = append(from, segID)
-		compactedTo2From[seg.compactedTo] = from
+		compactedTo2From[seg.compactedTo] = append(compactedTo2From[seg.compactedTo], segID)
 	}
 
 	return compactedTo2From
@@ -381,7 +374,7 @@ func (replica *SegmentReplica) addNormalSegment(segID, collID, partitionID Uniqu
 	replica.segMu.Lock()
 	replica.normalSegments[segID] = seg
 	replica.segMu.Unlock()
-	metrics.DataNodeNumUnflushedSegments.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.NodeID)).Inc()
+	metrics.DataNodeNumUnflushedSegments.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID())).Inc()
 
 	return nil
 }
@@ -579,7 +572,7 @@ func (replica *SegmentReplica) removeSegments(segIDs ...UniqueID) {
 			cnt++
 		}
 	}
-	metrics.DataNodeNumUnflushedSegments.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.NodeID)).Sub(float64(cnt))
+	metrics.DataNodeNumUnflushedSegments.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID())).Sub(float64(cnt))
 
 	for _, segID := range segIDs {
 		delete(replica.newSegments, segID)
@@ -819,6 +812,33 @@ func (replica *SegmentReplica) listAllSegmentIDs() []UniqueID {
 
 	for _, seg := range replica.flushedSegments {
 		segIDs = append(segIDs, seg.segmentID)
+	}
+
+	return segIDs
+}
+
+func (replica *SegmentReplica) listPartitionSegments(partID UniqueID) []UniqueID {
+	replica.segMu.RLock()
+	defer replica.segMu.RUnlock()
+
+	var segIDs []UniqueID
+
+	for _, seg := range replica.newSegments {
+		if seg.partitionID == partID {
+			segIDs = append(segIDs, seg.segmentID)
+		}
+	}
+
+	for _, seg := range replica.normalSegments {
+		if seg.partitionID == partID {
+			segIDs = append(segIDs, seg.segmentID)
+		}
+	}
+
+	for _, seg := range replica.flushedSegments {
+		if seg.partitionID == partID {
+			segIDs = append(segIDs, seg.segmentID)
+		}
 	}
 
 	return segIDs

@@ -11,7 +11,8 @@
 
 GO		  ?= go
 PWD 	  := $(shell pwd)
-GOPATH 	  := $(shell $(GO) env GOPATH)
+GOPATH	:= $(shell $(GO) env GOPATH)
+SHELL 	:= /bin/bash
 OBJPREFIX := "github.com/milvus-io/milvus/cmd/milvus"
 
 INSTALL_PATH := $(PWD)/bin
@@ -22,24 +23,13 @@ mode = Release
 
 all: build-cpp build-go
 
-pre-proc:
-	@echo "Running pre-processing"
-ifeq ($(OS),Darwin) # MacOS X
-	@echo "MacOS system identified. Switching to customized gorocksdb fork..."
-	@go mod edit -replace=github.com/tecbot/gorocksdb=github.com/soothing-rain/gorocksdb@v0.0.1
-endif
-ifeq ($(MSYSTEM), MINGW64) # MSYS
-	@echo "MSYS. Switching to customized gorocksdb fork..."
-	@go mod edit -replace=github.com/tecbot/gorocksdb=github.com/soothing-rain/gorocksdb@v0.0.1
-endif
-
 get-build-deps:
 	@(env bash $(PWD)/scripts/install_deps.sh)
 
 # attention: upgrade golangci-lint should also change Dockerfiles in build/docker/builder/cpu/<os>
 getdeps:
 	@mkdir -p ${GOPATH}/bin
-	@which golangci-lint 1>/dev/null || (echo "Installing golangci-lint" && curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(GOPATH)/bin v1.43.0)
+	@which golangci-lint 1>/dev/null || (echo "Installing golangci-lint" && curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(GOPATH)/bin v1.46.2)
 
 tools/bin/revive: tools/check/go.mod
 	cd tools/check; \
@@ -76,8 +66,8 @@ lint: tools/bin/revive
 static-check:
 	@echo "Running $@ check"
 	@GO111MODULE=on ${GOPATH}/bin/golangci-lint cache clean
-	@GO111MODULE=on ${GOPATH}/bin/golangci-lint run --timeout=30m --config ./.golangci.yml ./internal/...
-	@GO111MODULE=on ${GOPATH}/bin/golangci-lint run --timeout=30m --config ./.golangci.yml ./cmd/...
+	@source $(PWD)/scripts/setenv.sh && GO111MODULE=on ${GOPATH}/bin/golangci-lint run --timeout=30m --config ./.golangci.yml ./internal/...
+	@source $(PWD)/scripts/setenv.sh && GO111MODULE=on ${GOPATH}/bin/golangci-lint run --timeout=30m --config ./.golangci.yml ./cmd/...
 #	@GO111MODULE=on ${GOPATH}/bin/golangci-lint run --timeout=30m --config ./.golangci.yml ./tests/go_client/...
 
 verifiers: build-cpp getdeps cppcheck fmt static-check
@@ -85,7 +75,8 @@ verifiers: build-cpp getdeps cppcheck fmt static-check
 # Build various components locally.
 binlog:
 	@echo "Building binlog ..."
-	@mkdir -p $(INSTALL_PATH) && go env -w CGO_ENABLED="1" && GO111MODULE=on $(GO) build -o $(INSTALL_PATH)/binlog $(PWD)/cmd/tools/binlog/main.go 1>/dev/null
+	@source $(PWD)/scripts/setenv.sh && \
+		mkdir -p $(INSTALL_PATH) && go env -w CGO_ENABLED="1" && GO111MODULE=on $(GO) build -o $(INSTALL_PATH)/binlog $(PWD)/cmd/tools/binlog/main.go 1>/dev/null
 
 BUILD_TAGS = $(shell git describe --tags --always --dirty="-dev")
 BUILD_TIME = $(shell date -u)
@@ -105,48 +96,39 @@ print-build-info:
 
 milvus: build-cpp print-build-info
 	@echo "Building Milvus ..."
-	@echo "if build fails on Mac M1 machines, you probably need to rerun scripts/install_deps.sh and then run: \`export PKG_CONFIG_PATH=\"/opt/homebrew/opt/openssl@3/lib/pkgconfig\"\`"
-	@mkdir -p $(INSTALL_PATH) && go env -w CGO_ENABLED="1" && GO111MODULE=on $(GO) build \
-		-ldflags="-X '$(OBJPREFIX).BuildTags=$(BUILD_TAGS)' -X '$(OBJPREFIX).BuildTime=$(BUILD_TIME)' -X '$(OBJPREFIX).GitCommit=$(GIT_COMMIT)' -X '$(OBJPREFIX).GoVersion=$(GO_VERSION)'" \
-		${APPLE_SILICON_FLAG}  -o $(INSTALL_PATH)/milvus $(PWD)/cmd/main.go 1>/dev/null
+	@source $(PWD)/scripts/setenv.sh && \
+		mkdir -p $(INSTALL_PATH) && go env -w CGO_ENABLED="1" && \
+		GO111MODULE=on $(GO) build -ldflags="-r $${RPATH} -X '$(OBJPREFIX).BuildTags=$(BUILD_TAGS)' -X '$(OBJPREFIX).BuildTime=$(BUILD_TIME)' -X '$(OBJPREFIX).GitCommit=$(GIT_COMMIT)' -X '$(OBJPREFIX).GoVersion=$(GO_VERSION)'" \
+		${APPLE_SILICON_FLAG} -o $(INSTALL_PATH)/milvus $(PWD)/cmd/main.go 1>/dev/null
 
 embd-milvus: build-cpp-embd print-build-info
 	@echo "Building **Embedded** Milvus ..."
-	@echo "if build fails on Mac M1 machines, rerun scripts/install_deps.sh and then run: \`export PKG_CONFIG_PATH=\"/opt/homebrew/opt/openssl@3/lib/pkgconfig\"\`"
-	@mkdir -p $(INSTALL_PATH) && go env -w CGO_ENABLED="1" && GO111MODULE=on $(GO) build \
-		-ldflags="-r /tmp/milvus/lib/ -X '$(OBJPREFIX).BuildTags=$(BUILD_TAGS)' -X '$(OBJPREFIX).BuildTime=$(BUILD_TIME)' -X '$(OBJPREFIX).GitCommit=$(GIT_COMMIT)' -X '$(OBJPREFIX).GoVersion=$(GO_VERSION)'" \
+	@source $(PWD)/scripts/setenv.sh && \
+		mkdir -p $(INSTALL_PATH) && go env -w CGO_ENABLED="1" && \
+		GO111MODULE=on $(GO) build -ldflags="-r /tmp/milvus/lib/ -X '$(OBJPREFIX).BuildTags=$(BUILD_TAGS)' -X '$(OBJPREFIX).BuildTime=$(BUILD_TIME)' -X '$(OBJPREFIX).GitCommit=$(GIT_COMMIT)' -X '$(OBJPREFIX).GoVersion=$(GO_VERSION)'" \
 		${APPLE_SILICON_FLAG} -buildmode=c-shared -o $(INSTALL_PATH)/embd-milvus.so $(PWD)/pkg/embedded/embedded.go 1>/dev/null
 
 build-go: milvus
 
-build-cpp: pre-proc
+build-cpp: 
 	@echo "Building Milvus cpp library ..."
 	@(env bash $(PWD)/scripts/core_build.sh -t ${mode} -f "$(CUSTOM_THIRDPARTY_PATH)")
-	@(env bash $(PWD)/scripts/cwrapper_build.sh -t ${mode} -f "$(CUSTOM_THIRDPARTY_PATH)")
-	@(env bash $(PWD)/scripts/cwrapper_rocksdb_build.sh -t ${mode} -f "$(CUSTOM_THIRDPARTY_PATH)")
 
-build-cpp-embd: pre-proc
+build-cpp-embd: 
 	@echo "Building **Embedded** Milvus cpp library ..."
 	@(env bash $(PWD)/scripts/core_build.sh -b -t ${mode} -f "$(CUSTOM_THIRDPARTY_PATH)")
-	@(env bash $(PWD)/scripts/cwrapper_build.sh -b -t ${mode} -f "$(CUSTOM_THIRDPARTY_PATH)")
-	@(env bash $(PWD)/scripts/cwrapper_rocksdb_build.sh -b -t ${mode} -f "$(CUSTOM_THIRDPARTY_PATH)")
 
-build-cpp-with-unittest: pre-proc
+build-cpp-with-unittest: 
 	@echo "Building Milvus cpp library with unittest ..."
 	@(env bash $(PWD)/scripts/core_build.sh -t ${mode} -u -f "$(CUSTOM_THIRDPARTY_PATH)")
-	@(env bash $(PWD)/scripts/cwrapper_build.sh -t ${mode} -f "$(CUSTOM_THIRDPARTY_PATH)")
-	@(env bash $(PWD)/scripts/cwrapper_rocksdb_build.sh -t ${mode} -f "$(CUSTOM_THIRDPARTY_PATH)")
 
-build-cpp-with-coverage: pre-proc
+build-cpp-with-coverage: 
 	@echo "Building Milvus cpp library with coverage and unittest ..."
 	@(env bash $(PWD)/scripts/core_build.sh -t ${mode} -u -c -f "$(CUSTOM_THIRDPARTY_PATH)")
-	@(env bash $(PWD)/scripts/cwrapper_build.sh -t ${mode} -f "$(CUSTOM_THIRDPARTY_PATH)")
-	@(env bash $(PWD)/scripts/cwrapper_rocksdb_build.sh -t ${mode} -f "$(CUSTOM_THIRDPARTY_PATH)")
 
 
 # Run the tests.
 unittest: test-cpp test-go
-	@echo "if test fails on Mac M1 machines, you probably need to rerun scripts/install_deps.sh and then run: \`export PKG_CONFIG_PATH=\"/opt/homebrew/opt/openssl@3/lib/pkgconfig\"\`"
 
 test-indexnode:
 	@echo "Running go unittests..."
@@ -175,28 +157,23 @@ test-querycoord:
 
 test-go: build-cpp-with-unittest
 	@echo "Running go unittests..."
-	@echo "if test fails on Mac M1 machines, you probably need to rerun scripts/install_deps.sh and then run: \`export PKG_CONFIG_PATH=\"/opt/homebrew/opt/openssl@3/lib/pkgconfig\"\`"
 	@(env bash $(PWD)/scripts/run_go_unittest.sh)
 
 test-cpp: build-cpp-with-unittest
 	@echo "Running cpp unittests..."
-	@echo "if test fails on Mac M1 machines, you probably need to rerun scripts/install_deps.sh and then run: \`export PKG_CONFIG_PATH=\"/opt/homebrew/opt/openssl@3/lib/pkgconfig\"\`"
 	@(env bash $(PWD)/scripts/run_cpp_unittest.sh)
 
 # Run code coverage.
 codecov: codecov-go codecov-cpp
-	@echo "if test fails on Mac M1 machines, you probably need to rerun scripts/install_deps.sh and then run: \`export PKG_CONFIG_PATH=\"/opt/homebrew/opt/openssl@3/lib/pkgconfig\"\`"
 
 # Run codecov-go
 codecov-go: build-cpp-with-coverage
 	@echo "Running go coverage..."
-	@echo "if test fails on Mac M1 machines, you probably need to rerun scripts/install_deps.sh and then run: \`export PKG_CONFIG_PATH=\"/opt/homebrew/opt/openssl@3/lib/pkgconfig\"\`"
 	@(env bash $(PWD)/scripts/run_go_codecov.sh)
 
 # Run codecov-cpp
 codecov-cpp: build-cpp-with-coverage
 	@echo "Running cpp coverage..."
-	@echo "if test fails on Mac M1 machines, you probably need to rerun scripts/install_deps.sh and then run: \`export PKG_CONFIG_PATH=\"/opt/homebrew/opt/openssl@3/lib/pkgconfig\"\`"
 	@(env bash $(PWD)/scripts/run_cpp_codecov.sh)
 
 # Package docker image locally.
@@ -208,7 +185,7 @@ docker: install
 install: all
 	@echo "Installing binary to './bin'"
 	@mkdir -p $(GOPATH)/bin && cp -f $(PWD)/bin/milvus $(GOPATH)/bin/milvus
-	@mkdir -p $(LIBRARY_PATH) && cp -r -P $(PWD)/internal/core/output/lib/* $(LIBRARY_PATH)
+	@mkdir -p $(LIBRARY_PATH) && cp -r -P $(PWD)/internal/core/output/lib/*.so* $(LIBRARY_PATH)
 	@echo "Installation successful."
 
 clean:
@@ -219,11 +196,8 @@ clean:
 	@rm -rf lib/
 	@rm -rf $(GOPATH)/bin/milvus
 	@rm -rf cmake_build
-	@rm -rf cwrapper_rocksdb_build
 	@rm -rf cwrapper_build
-	@rm -rf internal/storage/cwrapper/output
 	@rm -rf internal/core/output
-	@rm -rf internal/kv/rocksdb/cwrapper/output
 
 milvus-tools: print-build-info
 	@echo "Building tools ..."
@@ -231,7 +205,7 @@ milvus-tools: print-build-info
 		-ldflags="-X 'main.BuildTags=$(BUILD_TAGS)' -X 'main.BuildTime=$(BUILD_TIME)' -X 'main.GitCommit=$(GIT_COMMIT)' -X 'main.GoVersion=$(GO_VERSION)'" \
 		-o $(INSTALL_PATH)/tools $(PWD)/cmd/tools/* 1>/dev/null
 
-rpm-setup: 
+rpm-setup:
 	@echo "Setuping rpm env ...;"
 	@build/rpm/setup-env.sh
 

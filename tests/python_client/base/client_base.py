@@ -88,8 +88,13 @@ class TestcaseBase(Base):
 
     def _connect(self):
         """ Add a connection and create the connect """
-        res, is_succ = self.connection_wrap.connect(alias=DefaultConfig.DEFAULT_USING, host=cf.param_info.param_host,
-                                                    port=cf.param_info.param_port)
+        if cf.param_info.param_user and cf.param_info.param_password:
+            res, is_succ = self.connection_wrap.connect(alias=DefaultConfig.DEFAULT_USING, host=cf.param_info.param_host,
+                                                        port=cf.param_info.param_port, user=cf.param_info.param_user,
+                                                        password=cf.param_info.param_password, secure=cf.param_info.param_secure)
+        else:
+            res, is_succ = self.connection_wrap.connect(alias=DefaultConfig.DEFAULT_USING, host=cf.param_info.param_host,
+                                                        port=cf.param_info.param_port)
         return res
 
     def init_collection_wrap(self, name=None, schema=None, shards_num=2, check_task=None, check_items=None, **kwargs):
@@ -122,9 +127,10 @@ class TestcaseBase(Base):
                                       **kwargs)
         return partition_wrap
 
-    def init_collection_general(self, prefix, insert_data=False, nb=ct.default_nb,
+    def init_collection_general(self, prefix="test", insert_data=False, nb=ct.default_nb,
                                 partition_num=0, is_binary=False, is_all_data_type=False,
-                                auto_id=False, dim=ct.default_dim, is_index=False, primary_field=ct.default_int64_field_name):
+                                auto_id=False, dim=ct.default_dim, is_index=False,
+                                primary_field=ct.default_int64_field_name, is_flush=True, name=None, **kwargs):
         """
         target: create specified collections
         method: 1. create collections (binary/non-binary, default/all data type, auto_id or not)
@@ -137,6 +143,8 @@ class TestcaseBase(Base):
         log.info("Test case of search interface: initialize before test case")
         self._connect()
         collection_name = cf.gen_unique_str(prefix)
+        if name is not None:
+            collection_name = name
         vectors = []
         binary_raw_vectors = []
         insert_ids = []
@@ -148,8 +156,7 @@ class TestcaseBase(Base):
         if is_all_data_type:
             default_schema = cf.gen_collection_schema_all_datatype(auto_id=auto_id, dim=dim, primary_field=primary_field)
         log.info("init_collection_general: collection creation")
-        collection_w = self.init_collection_wrap(name=collection_name,
-                                                 schema=default_schema)
+        collection_w = self.init_collection_wrap(name=collection_name, schema=default_schema, **kwargs)
         # 2 add extra partitions if specified (default is 1 partition named "_default")
         if partition_num > 0:
             cf.gen_partitions(collection_w, partition_num)
@@ -157,10 +164,9 @@ class TestcaseBase(Base):
         if insert_data:
             collection_w, vectors, binary_raw_vectors, insert_ids, time_stamp = \
                 cf.insert_data(collection_w, nb, is_binary, is_all_data_type, auto_id=auto_id, dim=dim)
-            assert collection_w.is_empty is False
-            assert collection_w.num_entities == nb
-            log.info("insert_data: inserted data into collection %s (num_entities: %s)"
-                     % (collection_w.name, nb))
+            if is_flush:
+                assert collection_w.is_empty is False
+                assert collection_w.num_entities == nb
             # This condition will be removed after auto index feature
             if not is_index:
                 collection_w.load()

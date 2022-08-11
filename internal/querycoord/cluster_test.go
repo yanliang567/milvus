@@ -369,19 +369,19 @@ func TestReloadClusterFromKV(t *testing.T) {
 		clusterSession.Init(typeutil.QueryCoordRole, Params.QueryCoordCfg.Address, true, false)
 		clusterSession.Register()
 		factory := dependency.NewDefaultFactory(true)
-		handler, err := newChannelUnsubscribeHandler(ctx, kv, factory)
+		cleaner, err := NewChannelCleaner(ctx, kv, factory)
 		assert.Nil(t, err)
 		id := UniqueID(rand.Int31())
 		idAllocator := func() (UniqueID, error) {
 			newID := atomic.AddInt64(&id, 1)
 			return newID, nil
 		}
-		meta, err := newMeta(ctx, kv, factory, idAllocator, nil)
+		meta, err := newMeta(ctx, kv, factory, idAllocator)
 		assert.Nil(t, err)
 
 		cluster := &queryNodeCluster{
 			client:      kv,
-			handler:     handler,
+			cleaner:     cleaner,
 			clusterMeta: meta,
 			nodes:       make(map[int64]Node),
 			newNodeFn:   newQueryNodeTest,
@@ -425,7 +425,7 @@ func TestGrpcRequest(t *testing.T) {
 	idAllocator := func() (UniqueID, error) {
 		return 0, nil
 	}
-	meta, err := newMeta(baseCtx, kv, factory, idAllocator, nil)
+	meta, err := newMeta(baseCtx, kv, factory, idAllocator)
 	assert.Nil(t, err)
 	deltaChannelInfo := []*datapb.VchannelInfo{
 		{
@@ -439,7 +439,7 @@ func TestGrpcRequest(t *testing.T) {
 	err = meta.setDeltaChannel(defaultCollectionID, deltaChannelInfo)
 	assert.Nil(t, err)
 
-	handler, err := newChannelUnsubscribeHandler(baseCtx, kv, factory)
+	cleaner, err := NewChannelCleaner(baseCtx, kv, factory)
 	assert.Nil(t, err)
 
 	var cluster Cluster = &queryNodeCluster{
@@ -447,7 +447,7 @@ func TestGrpcRequest(t *testing.T) {
 		cancel:      cancel,
 		client:      kv,
 		clusterMeta: meta,
-		handler:     handler,
+		cleaner:     cleaner,
 		nodes:       make(map[int64]Node),
 		newNodeFn:   newQueryNodeTest,
 		session:     clusterSession,
@@ -495,18 +495,8 @@ func TestGrpcRequest(t *testing.T) {
 			CollectionID: defaultCollectionID,
 		}
 		err := cluster.LoadSegments(baseCtx, nodeID, loadSegmentReq)
-		assert.Equal(t, 0, len(loadSegmentReq.DeltaPositions))
+		assert.Equal(t, 1, len(loadSegmentReq.DeltaPositions))
 		assert.Nil(t, err)
-	})
-
-	t.Run("Test WatchDeletaChannel", func(t *testing.T) {
-		watchDeltaChannelReq := &querypb.WatchDeltaChannelsRequest{
-			CollectionID: defaultCollectionID,
-			Infos:        deltaChannelInfo,
-		}
-		err := cluster.WatchDeltaChannels(baseCtx, nodeID, watchDeltaChannelReq)
-		assert.Nil(t, err)
-		assert.Equal(t, true, cluster.HasWatchedDeltaChannel(baseCtx, nodeID, defaultCollectionID))
 	})
 
 	t.Run("Test LoadSegmentsAfterWatchDeltaChannel", func(t *testing.T) {
@@ -549,42 +539,17 @@ func TestGrpcRequest(t *testing.T) {
 		assert.Nil(t, err)
 	})
 
-	t.Run("Test GetSegmentInfoByNode", func(t *testing.T) {
+	t.Run("Test GetSegmentInfoNotExist", func(t *testing.T) {
 		getSegmentInfoReq := &querypb.GetSegmentInfoRequest{
 			Base: &commonpb.MsgBase{
 				MsgType: commonpb.MsgType_SegmentInfo,
 			},
 			CollectionID: defaultCollectionID,
-		}
-		_, err = cluster.GetSegmentInfoByNode(baseCtx, nodeID, getSegmentInfoReq)
-		assert.Nil(t, err)
-	})
-
-	node.getSegmentInfos = returnFailedGetSegmentInfoResult
-
-	t.Run("Test GetSegmentInfoFailed", func(t *testing.T) {
-		getSegmentInfoReq := &querypb.GetSegmentInfoRequest{
-			Base: &commonpb.MsgBase{
-				MsgType: commonpb.MsgType_SegmentInfo,
-			},
-			CollectionID: defaultCollectionID,
+			SegmentIDs:   []UniqueID{-1},
 		}
 		_, err = cluster.GetSegmentInfo(baseCtx, getSegmentInfoReq)
-		assert.NotNil(t, err)
+		assert.Error(t, err)
 	})
-
-	t.Run("Test GetSegmentInfoByNodeFailed", func(t *testing.T) {
-		getSegmentInfoReq := &querypb.GetSegmentInfoRequest{
-			Base: &commonpb.MsgBase{
-				MsgType: commonpb.MsgType_SegmentInfo,
-			},
-			CollectionID: defaultCollectionID,
-		}
-		_, err = cluster.GetSegmentInfoByNode(baseCtx, nodeID, getSegmentInfoReq)
-		assert.NotNil(t, err)
-	})
-
-	node.getSegmentInfos = returnSuccessGetSegmentInfoResult
 
 	t.Run("Test GetNodeInfoByID", func(t *testing.T) {
 		res, err := cluster.GetNodeInfoByID(nodeID)
@@ -631,10 +596,10 @@ func TestSetNodeState(t *testing.T) {
 	idAllocator := func() (UniqueID, error) {
 		return 0, nil
 	}
-	meta, err := newMeta(baseCtx, kv, factory, idAllocator, nil)
+	meta, err := newMeta(baseCtx, kv, factory, idAllocator)
 	assert.Nil(t, err)
 
-	handler, err := newChannelUnsubscribeHandler(baseCtx, kv, factory)
+	cleaner, err := NewChannelCleaner(baseCtx, kv, factory)
 	assert.Nil(t, err)
 
 	cluster := &queryNodeCluster{
@@ -642,7 +607,7 @@ func TestSetNodeState(t *testing.T) {
 		cancel:      cancel,
 		client:      kv,
 		clusterMeta: meta,
-		handler:     handler,
+		cleaner:     cleaner,
 		nodes:       make(map[int64]Node),
 		newNodeFn:   newQueryNodeTest,
 		session:     clusterSession,
@@ -672,7 +637,7 @@ func TestSetNodeState(t *testing.T) {
 	nodeInfo, err := cluster.GetNodeInfoByID(node.queryNodeID)
 	assert.Nil(t, err)
 	cluster.setNodeState(node.queryNodeID, nodeInfo, offline)
-	assert.Equal(t, 1, len(handler.downNodeChan))
+	assert.Equal(t, 1, len(cleaner.tasks))
 
 	node.stop()
 	removeAllSession()

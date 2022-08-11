@@ -21,12 +21,19 @@
 
 namespace milvus::query {
 
+// deprecated
 std::unique_ptr<PlaceholderGroup>
-ParsePlaceholderGroup(const Plan* plan, const std::string& blob) {
+ParsePlaceholderGroup(const Plan* plan, const std::string& placeholder_group_blob) {
+    return ParsePlaceholderGroup(plan, reinterpret_cast<const uint8_t*>(placeholder_group_blob.c_str()),
+                                 placeholder_group_blob.size());
+}
+
+std::unique_ptr<PlaceholderGroup>
+ParsePlaceholderGroup(const Plan* plan, const uint8_t* blob, const int64_t blob_len) {
     namespace ser = milvus::proto::common;
     auto result = std::make_unique<PlaceholderGroup>();
     ser::PlaceholderGroup ph_group;
-    auto ok = ph_group.ParseFromString(blob);
+    auto ok = ph_group.ParseFromArray(blob, blob_len);
     Assert(ok);
     for (auto& info : ph_group.placeholders()) {
         Placeholder element;
@@ -76,6 +83,11 @@ CreateRetrievePlanByExpr(const Schema& schema, const void* serialized_expr_plan,
 int64_t
 GetTopK(const Plan* plan) {
     return plan->plan_node_->search_info_.topk_;
+}
+
+int64_t
+GetFieldID(const Plan* plan) {
+    return plan->plan_node_->search_info_.field_id_.get();
 }
 
 int64_t

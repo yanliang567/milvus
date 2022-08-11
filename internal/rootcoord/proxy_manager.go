@@ -23,7 +23,10 @@ import (
 	"path"
 	"sync"
 
+	v3rpc "go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+
 	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/metastore/kv"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
@@ -74,7 +77,7 @@ func (p *proxyManager) DelSessionFunc(fns ...func(*sessionutil.Session)) {
 
 // WatchProxy starts a goroutine to watch proxy session changes on etcd
 func (p *proxyManager) WatchProxy() error {
-	ctx, cancel := context.WithTimeout(p.ctx, RequestTimeout)
+	ctx, cancel := context.WithTimeout(p.ctx, kv.RequestTimeout)
 	defer cancel()
 
 	sessions, rev, err := p.getSessionsOnEtcd(ctx)
@@ -82,6 +85,7 @@ func (p *proxyManager) WatchProxy() error {
 		return err
 	}
 	log.Debug("succeed to init sessions on etcd", zap.Any("sessions", sessions), zap.Int64("revision", rev))
+	// all init function should be clear meta firstly.
 	for _, f := range p.initSessionsFunc {
 		f(sessions)
 	}
@@ -105,13 +109,22 @@ func (p *proxyManager) startWatchEtcd(ctx context.Context, eventCh clientv3.Watc
 		case <-ctx.Done():
 			log.Warn("stop watching etcd loop")
 			return
+			// TODO @xiaocai2333: watch proxy by session WatchService.
 		case event, ok := <-eventCh:
 			if !ok {
 				log.Warn("stop watching etcd loop due to closed etcd event channel")
-				return
+				panic("stop watching etcd loop due to closed etcd event channel")
 			}
 			if err := event.Err(); err != nil {
-				// TODO do we need to retry watch etcd when ErrCompacted, but the init session func may not be idempotent so skip
+				if err == v3rpc.ErrCompacted {
+					err2 := p.WatchProxy()
+					if err2 != nil {
+						log.Error("re watch proxy fails when etcd has a compaction error",
+							zap.String("etcd error", err.Error()), zap.Error(err2))
+						panic("failed to handle etcd request, exit..")
+					}
+					return
+				}
 				log.Error("Watch proxy service failed", zap.Error(err))
 				panic(err)
 			}
@@ -182,7 +195,7 @@ func (p *proxyManager) getSessionsOnEtcd(ctx context.Context) ([]*sessionutil.Se
 		session, err := p.parseSession(v.Value)
 		if err != nil {
 			log.Debug("failed to unmarshal session", zap.Error(err))
-			continue
+			return nil, 0, err
 		}
 		sessions = append(sessions, session)
 	}
@@ -197,7 +210,7 @@ func (p *proxyManager) Stop() {
 
 // listProxyInEtcd helper function lists proxy in etcd
 func listProxyInEtcd(ctx context.Context, cli *clientv3.Client) (map[int64]*sessionutil.Session, error) {
-	ctx2, cancel := context.WithTimeout(ctx, RequestTimeout)
+	ctx2, cancel := context.WithTimeout(ctx, kv.RequestTimeout)
 	defer cancel()
 	resp, err := cli.Get(
 		ctx2,

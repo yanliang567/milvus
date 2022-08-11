@@ -34,7 +34,6 @@ type readTask interface {
 
 	Ctx() context.Context
 
-	GetTimeRecorder() *timerecord.TimeRecorder
 	GetCollectionID() UniqueID
 
 	Ready() (bool, error)
@@ -43,7 +42,7 @@ type readTask interface {
 	CPUUsage() int32
 	Timeout() bool
 
-	SetMaxCPUUSage(int32)
+	SetMaxCPUUsage(int32)
 	SetStep(step TaskStep)
 }
 
@@ -84,7 +83,7 @@ func (b *baseReadTask) OnEnqueue() error {
 	return nil
 }
 
-func (b *baseReadTask) SetMaxCPUUSage(cpu int32) {
+func (b *baseReadTask) SetMaxCPUUsage(cpu int32) {
 	b.maxCPU = cpu
 }
 
@@ -114,10 +113,6 @@ func (b *baseReadTask) Notify(err error) {
 // GetCollectionID return CollectionID.
 func (b *baseReadTask) GetCollectionID() UniqueID {
 	return b.CollectionID
-}
-
-func (b *baseReadTask) GetTimeRecorder() *timerecord.TimeRecorder {
-	return b.tr
 }
 
 func (b *baseReadTask) CanMergeWith(t readTask) bool {
@@ -161,13 +156,6 @@ func (b *baseReadTask) Ready() (bool, error) {
 	gt, _ := tsoutil.ParseTS(guaranteeTs)
 	st, _ := tsoutil.ParseTS(serviceTime)
 	if guaranteeTs > serviceTime {
-		log.Debug("query msg can't do",
-			zap.Any("collectionID", b.CollectionID),
-			zap.Any("sm.GuaranteeTimestamp", gt),
-			zap.Any("serviceTime", st),
-			zap.Any("delta milliseconds", gt.Sub(st).Milliseconds()),
-			zap.Any("channel", channel),
-			zap.Any("msgID", b.ID()))
 		return false, nil
 	}
 	log.Debug("query msg can do",

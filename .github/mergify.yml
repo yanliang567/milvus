@@ -11,6 +11,9 @@ pull_request_rules:
           - dco-passed
         add:
           - needs-dco
+      comment:
+        message: |
+          @{{author}} Thanks for your contribution. Please submit with DCO, see the contributing guide https://github.com/milvus-io/milvus/blob/master/CONTRIBUTING.md#developer-certificate-of-origin-dco.
 
   - name: Add dco-passed label when DCO check passed
     conditions:
@@ -32,9 +35,9 @@ pull_request_rules:
         - base~=^2(\.\d+){2}$
       - "status-success=Code Checker AMD64 Ubuntu 18.04"
       - "status-success=Build and test AMD64 Ubuntu 18.04"
-      - "status-success=Code Checker MacOS 11"
+      # - "status-success=Code Checker MacOS 11"
       - "status-success=Code Checker CentOS 7"
-      - "status-success=continuous-integration/jenkins/pr-merge"
+      - "status-success=cpu-e2e"
       - "status-success=codecov/patch"
       - "status-success=codecov/project"
     actions:
@@ -48,7 +51,7 @@ pull_request_rules:
         - base=master
         - base~=^2(\.\d+){2}$
       - -files~=^(?!tests\/python_client).+
-      - "status-success=continuous-integration/jenkins/pr-merge"
+      - "status-success=cpu-e2e"
     actions:
       label:
         add:
@@ -72,7 +75,7 @@ pull_request_rules:
         - base=master
         - base~=^2(\.\d+){2}$
       - -files~=^(?=.*((\.(go|h|cpp)|CMakeLists.txt))).*$
-      - "status-success=continuous-integration/jenkins/pr-merge"
+      - "status-success=cpu-e2e"
     actions:
       label:
         add:
@@ -85,7 +88,7 @@ pull_request_rules:
         - base~=^2(\.\d+){2}$
       - "status-success=Code Checker AMD64 Ubuntu 18.04"
       - "status-success=Build and test AMD64 Ubuntu 18.04"
-      - "status-success=Code Checker MacOS 11"
+      # - "status-success=Code Checker MacOS 11"
       - "status-success=Code Checker CentOS 7"
       - -files~=^(?!internal\/.*_test\.go).*$
     actions:
@@ -174,7 +177,7 @@ pull_request_rules:
       - title~=\[skip e2e\]
       - "status-success=Code Checker AMD64 Ubuntu 18.04"
       - "status-success=Build and test AMD64 Ubuntu 18.04"
-      - "status-success=Code Checker MacOS 11"
+      # - "status-success=Code Checker MacOS 11"
       - "status-success=Code Checker CentOS 7"
       - files~=^(?=.*((\.(go|h|cpp)|CMakeLists.txt))).*$
     actions:
@@ -186,6 +189,7 @@ pull_request_rules:
 
   - name: Remove ci-passed label when status for code checker or ut  is not success
     conditions:
+      - label!=manual-pass
       - or:
         - base=master
         - base~=^2(\.\d+){2}$
@@ -193,7 +197,7 @@ pull_request_rules:
       - or:
         - "status-success!=Code Checker AMD64 Ubuntu 18.04"
         - "status-success!=Build and test AMD64 Ubuntu 18.04" 
-        - "status-success!=Code Checker MacOS 11"    
+        # - "status-success!=Code Checker MacOS 11"    
         - "status-success!=Code Checker CentOS 7"
     actions:
       label:
@@ -202,12 +206,13 @@ pull_request_rules:
 
   - name: Remove ci-passed label when  status for jenkins job is not success
     conditions:
+      - label!=manual-pass
       - or:
         - base=master
         - base~=^2(\.\d+){2}$
       - -title~=\[skip e2e\]
       - files~=^(?!(internal\/.*_test\.go|.*\.md)).*$
-      - "status-success!=continuous-integration/jenkins/pr-merge"        
+      - "status-success!=cpu-e2e"        
     actions:
       label:
         remove:
@@ -219,11 +224,11 @@ pull_request_rules:
       - or:
         - base=master
         - base~=^2(\.\d+){2}$
-      - "check-failure=continuous-integration/jenkins/pr-merge"        
+      - "check-failure=cpu-e2e"        
     actions:
       comment:
         message: |
-          @{{author}} E2e jenkins job failed, comment `/run-checks` can trigger the job again.
+          @{{author}} E2e jenkins job failed, comment `/run-cpu-e2e` can trigger the job again.
 
   - name: Add comment when code checker or ut failed
     conditions:

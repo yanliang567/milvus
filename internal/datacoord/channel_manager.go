@@ -403,7 +403,8 @@ func (c *ChannelManager) unsubAttempt(ncInfo *NodeChannelInfo) {
 
 	nodeID := ncInfo.NodeID
 	for _, ch := range ncInfo.Channels {
-		subName := fmt.Sprintf("%s-%d-%d", Params.CommonCfg.DataNodeSubName, nodeID, ch.CollectionID)
+		// align to datanode subname, using vchannel name
+		subName := fmt.Sprintf("%s-%d-%s", Params.CommonCfg.DataNodeSubName, nodeID, ch.Name)
 		pchannelName := funcutil.ToPhysicalChannel(ch.Name)
 		msgstream.UnsubscribeChannels(c.ctx, c.msgstreamFactory, subName, []string{pchannelName})
 	}
@@ -594,14 +595,14 @@ func (c *ChannelManager) updateWithTimer(updates ChannelOpSet, state datapb.Chan
 
 	err := c.store.Update(updates)
 	if err != nil {
-		log.Warn("fail to update", zap.Array("updates", updates))
+		log.Warn("fail to update", zap.Array("updates", updates), zap.Error(err))
 		c.stateTimer.removeTimers(channelsWithTimer)
 	}
 	return err
 }
 
 func (c *ChannelManager) processAck(e *ackEvent) {
-	c.stateTimer.stopIfExsit(e)
+	c.stateTimer.stopIfExist(e)
 
 	switch e.ackType {
 	case invalidAck:

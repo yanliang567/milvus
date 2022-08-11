@@ -24,8 +24,10 @@ import (
 	"math"
 	"math/rand"
 	"path"
+	"runtime"
 	"strconv"
 
+	"github.com/milvus-io/milvus/internal/util/concurrency"
 	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/indexcgowrapper"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
@@ -1210,12 +1212,18 @@ func genSealedSegment(schema *schemapb.CollectionSchema,
 	vChannel Channel,
 	msgLength int) (*Segment, error) {
 	col := newCollection(collectionID, schema)
+	pool, err := concurrency.NewPool(runtime.GOMAXPROCS(0))
+	if err != nil {
+		return nil, err
+	}
+
 	seg, err := newSegment(col,
 		segmentID,
 		partitionID,
 		collectionID,
 		vChannel,
-		segmentTypeSealed)
+		segmentTypeSealed,
+		pool)
 	if err != nil {
 		return nil, err
 	}
@@ -1252,20 +1260,28 @@ func genSimpleSealedSegment(msgLength int) (*Segment, error) {
 }
 
 func genSimpleReplica() (ReplicaInterface, error) {
-	r := newCollectionReplica()
+	pool, err := concurrency.NewPool(runtime.GOMAXPROCS(0))
+	if err != nil {
+		return nil, err
+	}
+	r := newCollectionReplica(pool)
 	schema := genTestCollectionSchema()
 	r.addCollection(defaultCollectionID, schema)
-	err := r.addPartition(defaultCollectionID, defaultPartitionID)
+	err = r.addPartition(defaultCollectionID, defaultPartitionID)
 	return r, err
 }
 
 func genSimpleSegmentLoaderWithMqFactory(metaReplica ReplicaInterface, factory msgstream.Factory) (*segmentLoader, error) {
+	pool, err := concurrency.NewPool(runtime.GOMAXPROCS(1))
+	if err != nil {
+		return nil, err
+	}
 	kv, err := genEtcdKV()
 	if err != nil {
 		return nil, err
 	}
 	cm := storage.NewLocalChunkManager(storage.RootPath(defaultLocalStorage))
-	return newSegmentLoader(metaReplica, kv, cm, factory), nil
+	return newSegmentLoader(metaReplica, kv, cm, factory, pool), nil
 }
 
 func genSimpleReplicaWithSealSegment(ctx context.Context) (ReplicaInterface, error) {
@@ -1449,7 +1465,7 @@ func genSearchPlanAndRequests(collection *Collection, indexType string, nq int64
 	iReq, _ := genSearchRequest(nq, indexType, collection.schema)
 	queryReq := &querypb.SearchRequest{
 		Req:             iReq,
-		DmlChannel:      defaultDMLChannel,
+		DmlChannels:     []string{defaultDMLChannel},
 		SegmentIDs:      []UniqueID{defaultSegmentID},
 		FromShardLeader: true,
 		Scope:           querypb.DataScope_Historical,
@@ -1505,8 +1521,25 @@ func genSimpleRetrievePlan(collection *Collection) (*RetrievePlan, error) {
 	}
 	timestamp := retrieveMsg.RetrieveRequest.TravelTimestamp
 
-	plan, err2 := createRetrievePlanByExpr(collection, retrieveMsg.SerializedExprPlan, timestamp)
+	plan, err2 := createRetrievePlanByExpr(collection, retrieveMsg.SerializedExprPlan, timestamp, 100)
 	return plan, err2
+}
+
+func genGetCollectionStatisticRequest() (*internalpb.GetStatisticsRequest, error) {
+	return &internalpb.GetStatisticsRequest{
+		Base:         genCommonMsgBase(commonpb.MsgType_GetCollectionStatistics),
+		DbID:         0,
+		CollectionID: defaultCollectionID,
+	}, nil
+}
+
+func genGetPartitionStatisticRequest() (*internalpb.GetStatisticsRequest, error) {
+	return &internalpb.GetStatisticsRequest{
+		Base:         genCommonMsgBase(commonpb.MsgType_GetPartitionStatistics),
+		DbID:         0,
+		CollectionID: defaultCollectionID,
+		PartitionIDs: []UniqueID{defaultPartitionID},
+	}, nil
 }
 
 func genSearchRequest(nq int64, indexType string, schema *schemapb.CollectionSchema) (*internalpb.SearchRequest, error) {

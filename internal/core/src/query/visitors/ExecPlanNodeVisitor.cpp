@@ -56,11 +56,11 @@ class ExecPlanNodeVisitor : PlanNodeVisitor {
 }  // namespace impl
 
 static SearchResult
-empty_search_result(int64_t num_queries, int64_t topk, int64_t round_decimal, MetricType metric_type) {
+empty_search_result(int64_t num_queries, SearchInfo& search_info) {
     SearchResult final_result;
-    SubSearchResult result(num_queries, topk, metric_type, round_decimal);
+    SubSearchResult result(num_queries, search_info.topk_, search_info.metric_type_, search_info.round_decimal_);
     final_result.total_nq_ = num_queries;
-    final_result.unity_topK_ = topk;
+    final_result.unity_topK_ = search_info.topk_;
     final_result.seg_offsets_ = std::move(result.mutable_seg_offsets());
     final_result.distances_ = std::move(result.mutable_distances());
     return final_result;
@@ -84,8 +84,7 @@ ExecPlanNodeVisitor::VectorVisitorImpl(VectorPlanNode& node) {
 
     // skip all calculation
     if (active_count == 0) {
-        search_result_opt_ = empty_search_result(num_queries, node.search_info_.topk_, node.search_info_.round_decimal_,
-                                                 node.search_info_.metric_type_);
+        search_result_opt_ = empty_search_result(num_queries, node.search_info_);
         return;
     }
 
@@ -99,6 +98,11 @@ ExecPlanNodeVisitor::VectorVisitorImpl(VectorPlanNode& node) {
     segment->mask_with_timestamps(bitset_holder, timestamp_);
 
     segment->mask_with_delete(bitset_holder, active_count, timestamp_);
+    // if bitset_holder is all 1's, we got empty result
+    if (bitset_holder.count() == bitset_holder.size()) {
+        search_result_opt_ = empty_search_result(num_queries, node.search_info_);
+        return;
+    }
     BitsetView final_view = bitset_holder;
     segment->vector_search(active_count, node.search_info_, src_data, num_queries, timestamp_, final_view,
                            search_result);
@@ -129,6 +133,12 @@ ExecPlanNodeVisitor::visit(RetrievePlanNode& node) {
     segment->mask_with_timestamps(bitset_holder, timestamp_);
 
     segment->mask_with_delete(bitset_holder, active_count, timestamp_);
+    // if bitset_holder is all 1's, we got empty result
+    if (bitset_holder.count() == bitset_holder.size()) {
+        retrieve_result_opt_ = std::move(retrieve_result);
+        return;
+    }
+
     BitsetView final_view = bitset_holder;
     auto seg_offsets = segment->search_ids(final_view, timestamp_);
     retrieve_result.result_offsets_.assign((int64_t*)seg_offsets.data(),

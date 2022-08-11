@@ -17,12 +17,10 @@
 package etcdkv_test
 
 import (
-	"errors"
 	"os"
 	"testing"
 	"time"
 
-	"github.com/milvus-io/milvus/internal/kv"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 
 	embed_etcd_kv "github.com/milvus-io/milvus/internal/kv/etcd"
@@ -35,14 +33,13 @@ import (
 func TestEmbedEtcd(te *testing.T) {
 	os.Setenv(metricsinfo.DeployModeEnvKey, metricsinfo.StandaloneDeployMode)
 	param := new(paramtable.ServiceParam)
-	param.Init()
-	param.BaseTable.Save("etcd.use.embed", "true")
-	param.BaseTable.Save("etcd.config.path", "../../../configs/advanced/etcd.yaml")
+	os.Setenv("etcd.use.embed", "true")
+	os.Setenv("etcd.config.path", "../../../configs/advanced/etcd.yaml")
 
 	dir := te.TempDir()
-	param.BaseTable.Save("etcd.data.dir", dir)
+	os.Setenv("etcd.data.dir", dir)
 
-	param.EtcdCfg.LoadCfgToMemory()
+	param.Init()
 
 	te.Run("EtcdKV SaveAndLoad", func(t *testing.T) {
 		rootPath := "/etcd/test/root/saveandload"
@@ -127,6 +124,13 @@ func TestEmbedEtcd(te *testing.T) {
 			assert.ElementsMatch(t, test.expectedKeys, actualKeys)
 			assert.ElementsMatch(t, test.expectedValues, actualValues)
 			assert.NotZero(t, versions)
+			assert.Equal(t, test.expectedError, err)
+
+			actualKeys, actualValues, versions, revision, err := metaKv.LoadWithRevisionAndVersions(test.prefix)
+			assert.ElementsMatch(t, test.expectedKeys, actualKeys)
+			assert.ElementsMatch(t, test.expectedValues, actualValues)
+			assert.NotZero(t, versions)
+			assert.NotZero(t, revision)
 			assert.Equal(t, test.expectedError, err)
 		}
 
@@ -803,24 +807,25 @@ func TestEmbedEtcd(te *testing.T) {
 			assert.Equal(t, revision+1, resp.Header.Revision)
 		}
 
-		var compareErr *kv.CompareFailedError
-		err = metaKv.CompareVersionAndSwap("a/b/c", 0, "1")
+		success, err := metaKv.CompareVersionAndSwap("a/b/c", 0, "1")
 		assert.NoError(t, err)
+		assert.True(t, success)
 
 		value, err := metaKv.Load("a/b/c")
 		assert.NoError(t, err)
 		assert.Equal(t, value, "1")
 
-		err = metaKv.CompareVersionAndSwap("a/b/c", 0, "1")
-		assert.Error(t, err)
-		assert.True(t, errors.As(err, &compareErr))
+		success, err = metaKv.CompareVersionAndSwap("a/b/c", 0, "1")
+		assert.NoError(t, err)
+		assert.False(t, success)
 
-		err = metaKv.CompareValueAndSwap("a/b/c", "1", "2")
+		success, err = metaKv.CompareValueAndSwap("a/b/c", "1", "2")
+		assert.True(t, success)
 		assert.NoError(t, err)
 
-		err = metaKv.CompareValueAndSwap("a/b/c", "1", "2")
-		assert.Error(t, err)
-		assert.True(t, errors.As(err, &compareErr))
+		success, err = metaKv.CompareValueAndSwap("a/b/c", "1", "2")
+		assert.NoError(t, err)
+		assert.False(t, success)
 	})
 
 	te.Run("Etcd Revision Bytes", func(t *testing.T) {
@@ -858,24 +863,25 @@ func TestEmbedEtcd(te *testing.T) {
 			assert.Equal(t, revision+1, resp.Header.Revision)
 		}
 
-		var compareErr *kv.CompareFailedError
-		err = metaKv.CompareVersionAndSwapBytes("a/b/c", 0, []byte("1"))
+		success, err := metaKv.CompareVersionAndSwapBytes("a/b/c", 0, []byte("1"))
 		assert.NoError(t, err)
+		assert.True(t, success)
 
 		value, err := metaKv.LoadBytes("a/b/c")
 		assert.NoError(t, err)
 		assert.Equal(t, value, []byte("1"))
 
-		err = metaKv.CompareVersionAndSwapBytes("a/b/c", 0, []byte("1"))
-		assert.Error(t, err)
-		assert.True(t, errors.As(err, &compareErr))
+		success, err = metaKv.CompareVersionAndSwapBytes("a/b/c", 0, []byte("1"))
+		assert.NoError(t, err)
+		assert.False(t, success)
 
-		err = metaKv.CompareValueAndSwapBytes("a/b/c", []byte("1"), []byte("2"))
+		success, err = metaKv.CompareValueAndSwapBytes("a/b/c", []byte("1"), []byte("2"))
+		assert.True(t, success)
 		assert.NoError(t, err)
 
-		err = metaKv.CompareValueAndSwapBytes("a/b/c", []byte("1"), []byte("2"))
-		assert.Error(t, err)
-		assert.True(t, errors.As(err, &compareErr))
+		success, err = metaKv.CompareValueAndSwapBytes("a/b/c", []byte("1"), []byte("2"))
+		assert.NoError(t, err)
+		assert.False(t, success)
 
 	})
 

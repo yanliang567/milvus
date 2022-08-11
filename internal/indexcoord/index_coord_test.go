@@ -18,6 +18,7 @@ package indexcoord
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
 	"os"
 	"os/signal"
@@ -25,6 +26,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
@@ -61,9 +64,6 @@ func TestIndexCoord(t *testing.T) {
 	ic, err := NewIndexCoord(ctx, factory)
 	assert.Nil(t, err)
 	ic.reqTimeoutInterval = time.Second * 10
-	ic.durationInterval = time.Second
-	ic.assignTaskInterval = 200 * time.Millisecond
-	ic.taskLimit = 20
 
 	dcm := &DataCoordMock{
 		Err:  false,
@@ -159,6 +159,7 @@ func TestIndexCoord(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
 		indexBuildID = resp.IndexBuildID
+
 		resp2, err := ic.BuildIndex(ctx, req)
 		assert.Nil(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
@@ -195,7 +196,7 @@ func TestIndexCoord(t *testing.T) {
 			if resp.States[0].State == commonpb.IndexState_Finished {
 				break
 			}
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(500 * time.Millisecond)
 		}
 	})
 
@@ -261,15 +262,6 @@ func TestIndexCoord(t *testing.T) {
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp.Status.ErrorCode)
 	})
 
-	t.Run("Recycle IndexMeta", func(t *testing.T) {
-		indexMeta := ic.metaTable.GetIndexMetaByIndexBuildID(indexBuildID)
-		for indexMeta != nil {
-			log.Info("RecycleIndexMeta", zap.Any("meta", indexMeta))
-			indexMeta = ic.metaTable.GetIndexMetaByIndexBuildID(indexBuildID)
-			time.Sleep(100 * time.Millisecond)
-		}
-	})
-
 	t.Run("GetMetrics request without metricType", func(t *testing.T) {
 		req := &milvuspb.GetMetricsRequest{
 			Request: "GetIndexCoordMetrics",
@@ -324,6 +316,87 @@ func TestIndexCoord_watchNodeLoop(t *testing.T) {
 	assert.True(t, closed)
 }
 
+func TestIndexCoord_watchMetaLoop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ic := &IndexCoord{
+		loopCtx: ctx,
+		loopWg:  sync.WaitGroup{},
+	}
+
+	watchChan := make(chan clientv3.WatchResponse, 1024)
+
+	client := &mockETCDKV{
+		watchWithRevision: func(s string, i int64) clientv3.WatchChan {
+			return watchChan
+		},
+	}
+	mt := &metaTable{
+		client:            client,
+		indexBuildID2Meta: map[UniqueID]*Meta{},
+		etcdRevision:      0,
+		lock:              sync.RWMutex{},
+	}
+	ic.metaTable = mt
+
+	t.Run("watch chan panic", func(t *testing.T) {
+		ic.loopWg.Add(1)
+		watchChan <- clientv3.WatchResponse{Canceled: true}
+
+		assert.Panics(t, func() {
+			ic.watchMetaLoop()
+		})
+		ic.loopWg.Wait()
+	})
+
+	t.Run("watch chan new meta table panic", func(t *testing.T) {
+		client = &mockETCDKV{
+			watchWithRevision: func(s string, i int64) clientv3.WatchChan {
+				return watchChan
+			},
+			loadWithRevisionAndVersions: func(s string) ([]string, []string, []int64, int64, error) {
+				return []string{}, []string{}, []int64{}, 0, fmt.Errorf("error occurred")
+			},
+		}
+		mt = &metaTable{
+			client:            client,
+			indexBuildID2Meta: map[UniqueID]*Meta{},
+			etcdRevision:      0,
+			lock:              sync.RWMutex{},
+		}
+		ic.metaTable = mt
+		ic.loopWg.Add(1)
+		watchChan <- clientv3.WatchResponse{CompactRevision: 10}
+		assert.Panics(t, func() {
+			ic.watchMetaLoop()
+		})
+		ic.loopWg.Wait()
+	})
+
+	t.Run("watch chan new meta success", func(t *testing.T) {
+		ic.loopWg = sync.WaitGroup{}
+		client = &mockETCDKV{
+			watchWithRevision: func(s string, i int64) clientv3.WatchChan {
+				return watchChan
+			},
+			loadWithRevisionAndVersions: func(s string) ([]string, []string, []int64, int64, error) {
+				return []string{}, []string{}, []int64{}, 0, nil
+			},
+		}
+		mt = &metaTable{
+			client:            client,
+			indexBuildID2Meta: map[UniqueID]*Meta{},
+			etcdRevision:      0,
+			lock:              sync.RWMutex{},
+		}
+		ic.metaTable = mt
+		ic.loopWg.Add(1)
+		watchChan <- clientv3.WatchResponse{CompactRevision: 10}
+		go ic.watchMetaLoop()
+		cancel()
+		ic.loopWg.Wait()
+	})
+}
+
 func TestIndexCoord_GetComponentStates(t *testing.T) {
 	n := &IndexCoord{}
 	n.stateCode.Store(internalpb.StateCode_Healthy)
@@ -362,12 +435,17 @@ func TestIndexCoord_NotHealthy(t *testing.T) {
 	resp4, err := ic.GetIndexFilePaths(context.Background(), req4)
 	assert.Nil(t, err)
 	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp4.Status.ErrorCode)
+
+	req5 := &indexpb.RemoveIndexRequest{}
+	resp5, err := ic.RemoveIndex(context.Background(), req5)
+	assert.Nil(t, err)
+	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp5.GetErrorCode())
 }
 
 func TestIndexCoord_GetIndexFilePaths(t *testing.T) {
 	ic := &IndexCoord{
 		metaTable: &metaTable{
-			indexBuildID2Meta: map[UniqueID]Meta{
+			indexBuildID2Meta: map[UniqueID]*Meta{
 				1: {
 					indexMeta: &indexpb.IndexMeta{
 						IndexBuildID:   1,
@@ -398,8 +476,8 @@ func TestIndexCoord_GetIndexFilePaths(t *testing.T) {
 	t.Run("GetIndexFilePaths failed", func(t *testing.T) {
 		resp, err := ic.GetIndexFilePaths(context.Background(), &indexpb.GetIndexFilePathsRequest{IndexBuildIDs: []UniqueID{2}})
 		assert.NoError(t, err)
-		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp.Status.ErrorCode)
-		assert.NotEqual(t, "", resp.Status.Reason)
+		assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
+		assert.Equal(t, 0, len(resp.FilePaths[0].IndexFilePaths))
 	})
 
 	t.Run("set DataCoord with nil", func(t *testing.T) {
@@ -427,7 +505,7 @@ func Test_tryAcquireSegmentReferLock(t *testing.T) {
 	ic.chunkManager = cmm
 
 	t.Run("success", func(t *testing.T) {
-		err := ic.tryAcquireSegmentReferLock(context.Background(), 1, []UniqueID{1})
+		err := ic.tryAcquireSegmentReferLock(context.Background(), 1, 1, []UniqueID{1})
 		assert.Nil(t, err)
 	})
 
@@ -437,7 +515,7 @@ func Test_tryAcquireSegmentReferLock(t *testing.T) {
 			Fail: false,
 		}
 		ic.dataCoordClient = dcmE
-		err := ic.tryAcquireSegmentReferLock(context.Background(), 1, []UniqueID{1})
+		err := ic.tryAcquireSegmentReferLock(context.Background(), 1, 1, []UniqueID{1})
 		assert.Error(t, err)
 	})
 
@@ -447,7 +525,7 @@ func Test_tryAcquireSegmentReferLock(t *testing.T) {
 			Fail: true,
 		}
 		ic.dataCoordClient = dcmF
-		err := ic.tryAcquireSegmentReferLock(context.Background(), 1, []UniqueID{1})
+		err := ic.tryAcquireSegmentReferLock(context.Background(), 1, 1, []UniqueID{1})
 		assert.Error(t, err)
 	})
 }
@@ -466,7 +544,20 @@ func Test_tryReleaseSegmentReferLock(t *testing.T) {
 	ic.dataCoordClient = dcm
 
 	t.Run("success", func(t *testing.T) {
-		err := ic.tryReleaseSegmentReferLock(context.Background(), 1, []UniqueID{1})
+		err := ic.tryReleaseSegmentReferLock(context.Background(), 1, 1)
 		assert.NoError(t, err)
 	})
+}
+
+func TestIndexCoord_RemoveIndex(t *testing.T) {
+	ic := &IndexCoord{
+		metaTable: &metaTable{},
+		indexBuilder: &indexBuilder{
+			notify: make(chan struct{}, 10),
+		},
+	}
+	ic.stateCode.Store(internalpb.StateCode_Healthy)
+	status, err := ic.RemoveIndex(context.Background(), &indexpb.RemoveIndexRequest{BuildIDs: []UniqueID{0}})
+	assert.Nil(t, err)
+	assert.Equal(t, commonpb.ErrorCode_Success, status.GetErrorCode())
 }

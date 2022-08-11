@@ -48,11 +48,16 @@ func NewClient(ctx context.Context, addr string) (*Client, error) {
 	client := &Client{
 		addr: addr,
 		grpcClient: &grpcclient.ClientBase{
-			ClientMaxRecvSize: ClientParams.ClientMaxRecvSize,
-			ClientMaxSendSize: ClientParams.ClientMaxSendSize,
-			DialTimeout:       ClientParams.DialTimeout,
-			KeepAliveTime:     ClientParams.KeepAliveTime,
-			KeepAliveTimeout:  ClientParams.KeepAliveTimeout,
+			ClientMaxRecvSize:      ClientParams.ClientMaxRecvSize,
+			ClientMaxSendSize:      ClientParams.ClientMaxSendSize,
+			DialTimeout:            ClientParams.DialTimeout,
+			KeepAliveTime:          ClientParams.KeepAliveTime,
+			KeepAliveTimeout:       ClientParams.KeepAliveTimeout,
+			RetryServiceNameConfig: "milvus.proto.proxy.Proxy",
+			MaxAttempts:            ClientParams.MaxAttempts,
+			InitialBackoff:         ClientParams.InitialBackoff,
+			MaxBackoff:             ClientParams.MaxBackoff,
+			BackoffMultiplier:      ClientParams.BackoffMultiplier,
 		},
 	}
 	client.grpcClient.SetRole(typeutil.ProxyRole)
@@ -190,19 +195,6 @@ func (c *Client) UpdateCredentialCache(ctx context.Context, req *proxypb.UpdateC
 			return nil, ctx.Err()
 		}
 		return client.(proxypb.ProxyClient).UpdateCredentialCache(ctx, req)
-	})
-	if err != nil || ret == nil {
-		return nil, err
-	}
-	return ret.(*commonpb.Status), err
-}
-
-func (c *Client) ClearCredUsersCache(ctx context.Context, req *internalpb.ClearCredUsersCacheRequest) (*commonpb.Status, error) {
-	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
-		if !funcutil.CheckCtxValid(ctx) {
-			return nil, ctx.Err()
-		}
-		return client.(proxypb.ProxyClient).ClearCredUsersCache(ctx, req)
 	})
 	if err != nil || ret == nil {
 		return nil, err

@@ -79,8 +79,6 @@ const (
 	ConnectEtcdMaxRetryTime = 100
 )
 
-const illegalRequestErrStr = "Illegal request"
-
 // makes sure DataNode implements types.DataNode
 var _ types.DataNode = (*DataNode)(nil)
 
@@ -359,6 +357,7 @@ func parsePutEventData(data []byte) (*datapb.ChannelWatchInfo, error) {
 	if watchInfo.Vchan == nil {
 		return nil, fmt.Errorf("invalid event: ChannelWatchInfo with nil VChannelInfo")
 	}
+	reviseVChannelInfo(watchInfo.GetVchan())
 	return &watchInfo, nil
 }
 
@@ -382,11 +381,9 @@ func (node *DataNode) handlePutEvent(watchInfo *datapb.ChannelWatchInfo, version
 		watchInfo.State = datapb.ChannelWatchState_WatchSuccess
 
 	case datapb.ChannelWatchState_ToRelease:
-		if node.tryToReleaseFlowgraph(vChanName) {
-			watchInfo.State = datapb.ChannelWatchState_ReleaseSuccess
-		} else {
-			watchInfo.State = datapb.ChannelWatchState_ReleaseFailure
-		}
+		// there is no reason why we release fail
+		node.tryToReleaseFlowgraph(vChanName)
+		watchInfo.State = datapb.ChannelWatchState_ReleaseSuccess
 	}
 
 	v, err := proto.Marshal(watchInfo)
@@ -394,32 +391,37 @@ func (node *DataNode) handlePutEvent(watchInfo *datapb.ChannelWatchInfo, version
 		return fmt.Errorf("fail to marshal watchInfo with state, vChanName: %s, state: %s ,err: %w", vChanName, watchInfo.State.String(), err)
 	}
 
-	k := path.Join(Params.DataNodeCfg.ChannelWatchSubPath, fmt.Sprintf("%d", Params.DataNodeCfg.GetNodeID()), vChanName)
+	key := path.Join(Params.DataNodeCfg.ChannelWatchSubPath, fmt.Sprintf("%d", Params.DataNodeCfg.GetNodeID()), vChanName)
 
-	log.Debug("handle put event: try to save result state", zap.String("key", k), zap.String("state", watchInfo.State.String()))
-	err = node.watchKv.CompareVersionAndSwap(k, version, string(v))
+	success, err := node.watchKv.CompareVersionAndSwap(key, version, string(v))
+	// etcd error, retrying
 	if err != nil {
-		return fmt.Errorf("fail to update watch state to etcd, vChanName: %s, state: %s, err: %w", vChanName, watchInfo.State.String(), err)
+		// flow graph will leak if not release, causing new datanode failed to subscribe
+		node.tryToReleaseFlowgraph(vChanName)
+		log.Warn("fail to update watch state to etcd", zap.String("vChanName", vChanName),
+			zap.String("state", watchInfo.State.String()), zap.Error(err))
+		return err
 	}
+	// etcd valid but the states updated.
+	if !success {
+		log.Info("handle put event: failed to compare version and swap, release flowgraph",
+			zap.String("key", key), zap.String("state", watchInfo.State.String()))
+		// flow graph will leak if not release, causing new datanode failed to subscribe
+		node.tryToReleaseFlowgraph(vChanName)
+		return nil
+	}
+	log.Info("handle put event successfully", zap.String("key", key), zap.String("state", watchInfo.State.String()))
 	return nil
 }
 
-func (node *DataNode) handleDeleteEvent(vChanName string) bool {
-	return node.tryToReleaseFlowgraph(vChanName)
+func (node *DataNode) handleDeleteEvent(vChanName string) {
+	node.tryToReleaseFlowgraph(vChanName)
 }
 
-// tryToReleaseFlowgraph tries to release a flowgraph, returns false if failed
-func (node *DataNode) tryToReleaseFlowgraph(vChanName string) bool {
-	success := true
-	defer func() {
-		if x := recover(); x != nil {
-			log.Error("release flowgraph panic", zap.String("vChanName", vChanName), zap.Any("recovered", x))
-			success = false
-		}
-	}()
+// tryToReleaseFlowgraph tries to release a flowgraph
+func (node *DataNode) tryToReleaseFlowgraph(vChanName string) {
 	node.flowgraphManager.release(vChanName)
 	log.Info("try to release flowgraph success", zap.String("vChanName", vChanName))
-	return success
 }
 
 // BackGroundGC runs in background to release datanode resources
@@ -438,9 +440,6 @@ func (node *DataNode) BackGroundGC(vChannelCh <-chan string) {
 	}
 }
 
-// FilterThreshold is the start time ouf DataNode
-var FilterThreshold Timestamp
-
 // Start will update DataNode state to HEALTHY
 func (node *DataNode) Start() error {
 	if err := node.idAllocator.Start(); err != nil {
@@ -458,9 +457,9 @@ func (node *DataNode) Start() error {
 		},
 		Count: 1,
 	})
-	if err != nil {
-		log.Warn("fail to alloc timestamp", zap.Error(err))
-		return err
+	if err != nil || rep.Status.ErrorCode != commonpb.ErrorCode_Success {
+		log.Warn("fail to alloc timestamp", zap.Any("rep", rep), zap.Error(err))
+		return errors.New("DataNode fail to alloc timestamp")
 	}
 
 	connectEtcdFn := func() error {
@@ -480,12 +479,6 @@ func (node *DataNode) Start() error {
 	}
 
 	node.chunkManager = chunkManager
-
-	if rep.Status.ErrorCode != commonpb.ErrorCode_Success || err != nil {
-		return errors.New("DataNode fail to start")
-	}
-
-	FilterThreshold = rep.GetTimestamp()
 
 	go node.BackGroundGC(node.clearSignal)
 
@@ -512,8 +505,7 @@ func (node *DataNode) GetStateCode() internalpb.StateCode {
 }
 
 func (node *DataNode) isHealthy() bool {
-	code := node.State.Load().(internalpb.StateCode)
-	return code == internalpb.StateCode_Healthy
+	return node.GetStateCode() == internalpb.StateCode_Healthy
 }
 
 // WatchDmChannels is not in use
@@ -546,9 +538,9 @@ func (node *DataNode) GetComponentStates(ctx context.Context) (*internalpb.Compo
 	return states, nil
 }
 
-// ReadyToFlush tells wether DataNode is ready for flushing
+// ReadyToFlush tells whether DataNode is ready for flushing
 func (node *DataNode) ReadyToFlush() error {
-	if node.State.Load().(internalpb.StateCode) != internalpb.StateCode_Healthy {
+	if !node.isHealthy() {
 		return errors.New("DataNode not in HEALTHY state")
 	}
 	return nil
@@ -568,7 +560,7 @@ func (node *DataNode) FlushSegments(ctx context.Context, req *datapb.FlushSegmen
 		ErrorCode: commonpb.ErrorCode_UnexpectedError,
 	}
 
-	if node.State.Load().(internalpb.StateCode) != internalpb.StateCode_Healthy {
+	if !node.isHealthy() {
 		errStatus.Reason = "dataNode not in HEALTHY state"
 		return errStatus, nil
 	}
@@ -620,8 +612,7 @@ func (node *DataNode) FlushSegments(ctx context.Context, req *datapb.FlushSegmen
 		log.Info("flow graph flushSegment tasks triggered",
 			zap.Bool("flushed", flushed),
 			zap.Int64("collection ID", req.GetCollectionID()),
-			zap.Int64s("segments", segmentIDs),
-			zap.Int64s("mark segments", req.GetMarkSegmentIDs()))
+			zap.Int64s("segments sending to flush channel", flushedSeg))
 		return flushedSeg, noErr
 	}
 
@@ -657,7 +648,6 @@ func (node *DataNode) ResendSegmentStats(ctx context.Context, req *datapb.Resend
 	return &datapb.ResendSegmentStatsResponse{
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_Success,
-			Reason:    "",
 		},
 		SegResent: segResent,
 	}, nil
@@ -693,9 +683,7 @@ func (node *DataNode) GetTimeTickChannel(ctx context.Context) (*milvuspb.StringR
 	return &milvuspb.StringResponse{
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_Success,
-			Reason:    "",
 		},
-		Value: "",
 	}, nil
 }
 
@@ -704,9 +692,7 @@ func (node *DataNode) GetStatisticsChannel(ctx context.Context) (*milvuspb.Strin
 	return &milvuspb.StringResponse{
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_Success,
-			Reason:    "",
 		},
-		Value: "",
 	}, nil
 }
 
@@ -728,7 +714,6 @@ func (node *DataNode) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRe
 				ErrorCode: commonpb.ErrorCode_UnexpectedError,
 				Reason:    msgDataNodeIsUnhealthy(Params.DataNodeCfg.GetNodeID()),
 			},
-			Response: "",
 		}, nil
 	}
 
@@ -744,7 +729,6 @@ func (node *DataNode) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRe
 				ErrorCode: commonpb.ErrorCode_UnexpectedError,
 				Reason:    err.Error(),
 			},
-			Response: "",
 		}, nil
 	}
 
@@ -774,7 +758,6 @@ func (node *DataNode) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRe
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 			Reason:    metricsinfo.MsgUnimplementedMetric,
 		},
-		Response: "",
 	}, nil
 }
 
@@ -822,8 +805,8 @@ func (node *DataNode) Import(ctx context.Context, req *datapb.ImportTaskRequest)
 		zap.Int64("task ID", req.GetImportTask().GetTaskId()),
 		zap.Int64("collection ID", req.GetImportTask().GetCollectionId()),
 		zap.Int64("partition ID", req.GetImportTask().GetPartitionId()),
-		zap.Any("channel names", req.GetImportTask().GetChannelNames()),
-		zap.Any("working dataNodes", req.WorkingNodes))
+		zap.Strings("channel names", req.GetImportTask().GetChannelNames()),
+		zap.Int64s("working dataNodes", req.WorkingNodes))
 	defer func() {
 		log.Info("DataNode finish import request", zap.Int64("task ID", req.GetImportTask().GetTaskId()))
 	}()
@@ -960,6 +943,7 @@ func (node *DataNode) AddSegment(ctx context.Context, req *datapb.AddSegmentRequ
 			return &commonpb.Status{
 				// TODO: Add specific error code.
 				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+				Reason:    err.Error(),
 			}, nil
 		}
 	}
@@ -976,7 +960,7 @@ func importFlushReqFunc(node *DataNode, req *datapb.ImportTaskRequest, res *root
 			log.Error("import task returns invalid shard number",
 				zap.Int("shard num", shardNum),
 				zap.Int("# of channels", len(req.GetImportTask().GetChannelNames())),
-				zap.Any("channel names", req.GetImportTask().GetChannelNames()),
+				zap.Strings("channel names", req.GetImportTask().GetChannelNames()),
 			)
 			return fmt.Errorf("syncSegmentID Failed: invalid shard number %d", shardNum)
 		}
@@ -1125,26 +1109,6 @@ func importFlushReqFunc(node *DataNode, req *datapb.ImportTaskRequest, res *root
 		}
 		for k, v := range field2Stats {
 			fieldStats = append(fieldStats, &datapb.FieldBinlog{FieldID: k, Binlogs: []*datapb.Binlog{v}})
-		}
-
-		// ReportImport with the new segment so RootCoord can add segment ref lock onto it.
-		// Fail-open.
-		status, err := node.rootCoord.ReportImport(context.Background(), &rootcoordpb.ImportResult{
-			Status: &commonpb.Status{
-				ErrorCode: commonpb.ErrorCode_Success,
-			},
-			TaskId:     req.GetImportTask().TaskId,
-			DatanodeId: Params.DataNodeCfg.GetNodeID(),
-			State:      commonpb.ImportState_ImportAllocSegment,
-			Segments:   []int64{segmentID},
-		})
-		if err != nil {
-			log.Error("failed to report import on new segment", zap.Error(err))
-			return err
-		}
-		if status.GetErrorCode() != commonpb.ErrorCode_Success {
-			log.Error("failed to report import on new segment", zap.String("reason", status.GetReason()))
-			return fmt.Errorf("failed to report import on new segment: %s", status.GetReason())
 		}
 
 		log.Info("now adding segment to the correct DataNode flow graph")

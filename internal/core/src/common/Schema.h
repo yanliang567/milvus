@@ -43,7 +43,10 @@ class Schema {
 
     // auto gen field_id for convenience
     FieldId
-    AddDebugField(const std::string& name, DataType data_type, int64_t dim, std::optional<MetricType> metric_type) {
+    AddDebugField(const std::string& name,
+                  DataType data_type,
+                  int64_t dim,
+                  std::optional<knowhere::MetricType> metric_type) {
         auto field_id = FieldId(debug_id);
         debug_id++;
         auto field_meta = FieldMeta(FieldName(name), field_id, data_type, dim, metric_type);
@@ -71,7 +74,7 @@ class Schema {
              const FieldId id,
              DataType data_type,
              int64_t dim,
-             std::optional<MetricType> metric_type) {
+             std::optional<knowhere::MetricType> metric_type) {
         auto field_meta = FieldMeta(name, id, data_type, dim, metric_type);
         this->AddField(std::move(field_meta));
     }
@@ -99,7 +102,8 @@ class Schema {
     const FieldMeta&
     operator[](FieldId field_id) const {
         Assert(field_id.get() >= 0);
-        AssertInfo(fields_.count(field_id), "Cannot find field_id");
+        AssertInfo(fields_.find(field_id) != fields_.end(),
+                   "Cannot find field with field_id: " + std::to_string(field_id.get()));
         return fields_.at(field_id);
     }
 
@@ -127,7 +131,7 @@ class Schema {
     const FieldMeta&
     operator[](const FieldName& field_name) const {
         auto id_iter = name_ids_.find(field_name);
-        AssertInfo(id_iter != name_ids_.end(), "Cannot find field_name: " + field_name.get());
+        AssertInfo(id_iter != name_ids_.end(), "Cannot find field with field_name: " + field_name.get());
         return fields_.at(id_iter->second);
     }
 

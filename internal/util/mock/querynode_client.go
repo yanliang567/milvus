@@ -33,6 +33,10 @@ type QueryNodeClient struct {
 	Err        error
 }
 
+func (q QueryNodeClient) GetStatistics(ctx context.Context, req *querypb.GetStatisticsRequest) (*internalpb.GetStatisticsResponse, error) {
+	return q.grpcClient.GetStatistics(ctx, req)
+}
+
 func (q QueryNodeClient) Init() error {
 	return nil
 }
@@ -63,10 +67,6 @@ func (q QueryNodeClient) GetTimeTickChannel(ctx context.Context) (*milvuspb.Stri
 
 func (q QueryNodeClient) WatchDmChannels(ctx context.Context, req *querypb.WatchDmChannelsRequest) (*commonpb.Status, error) {
 	return q.grpcClient.WatchDmChannels(ctx, req)
-}
-
-func (q QueryNodeClient) WatchDeltaChannels(ctx context.Context, req *querypb.WatchDeltaChannelsRequest) (*commonpb.Status, error) {
-	return q.grpcClient.WatchDeltaChannels(ctx, req)
 }
 
 func (q QueryNodeClient) LoadSegments(ctx context.Context, req *querypb.LoadSegmentsRequest) (*commonpb.Status, error) {
@@ -103,4 +103,8 @@ func (q QueryNodeClient) SyncReplicaSegments(ctx context.Context, req *querypb.S
 
 func (q QueryNodeClient) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
 	return q.grpcClient.GetMetrics(ctx, req)
+}
+
+func (q QueryNodeClient) ShowConfigurations(ctx context.Context, req *internalpb.ShowConfigurationsRequest) (*internalpb.ShowConfigurationsResponse, error) {
+	return q.grpcClient.ShowConfigurations(ctx, req)
 }

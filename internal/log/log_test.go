@@ -33,6 +33,11 @@ package log
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io/ioutil"
+	"net/http"
 	"testing"
 	"time"
 
@@ -44,7 +49,7 @@ import (
 func TestExport(t *testing.T) {
 	ts := newTestLogSpy(t)
 	conf := &Config{Level: "debug", DisableTimestamp: true}
-	logger, _, _ := InitTestLogger(ts, conf)
+	logger, _, _ := InitTestLogger(ts, conf, zap.AddCallerSkip(1))
 	ReplaceGlobals(logger, nil)
 
 	Info("Testing")
@@ -53,6 +58,7 @@ func TestExport(t *testing.T) {
 	Error("Testing")
 	Sync()
 	ts.assertMessagesContains("log_test.go:")
+	logPanic()
 
 	ts = newTestLogSpy(t)
 	logger, _, _ = InitTestLogger(ts, conf)
@@ -64,6 +70,15 @@ func TestExport(t *testing.T) {
 	Sync()
 	ts.assertMessagesContains(`name=tester`)
 	ts.assertMessagesContains(`age=42`)
+}
+
+func logPanic() {
+	defer func() {
+		if err := recover(); err != nil {
+			fmt.Println("logPanic recover")
+		}
+	}()
+	Panic("Testing")
 }
 
 func TestZapTextEncoder(t *testing.T) {
@@ -100,6 +115,56 @@ func TestLevelGetterAndSetter(t *testing.T) {
 
 	SetLevel(zap.ErrorLevel)
 	assert.Equal(t, zap.ErrorLevel, GetLevel())
+}
+
+func TestUpdateLogLevelThroughHttp(t *testing.T) {
+	httpServer := &http.Server{Addr: ":9081", ReadHeaderTimeout: time.Second * 3}
+	go func() {
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			Fatal(err.Error())
+		}
+	}()
+
+	SetLevel(zap.DebugLevel)
+	assert.Equal(t, zap.DebugLevel, GetLevel())
+
+	// replace global logger, log change will not be affected.
+	conf := &Config{Level: "info", File: FileLogConfig{}, DisableTimestamp: true}
+	logger, p, _ := InitLogger(conf)
+	ReplaceGlobals(logger, p)
+	assert.Equal(t, zap.InfoLevel, GetLevel())
+
+	// change log level through http
+	payload, err := json.Marshal(map[string]interface{}{"level": "error"})
+	if err != nil {
+		Fatal(err.Error())
+	}
+
+	req, err := http.NewRequest(http.MethodPut, "http://localhost:9081/log/level", bytes.NewBuffer(payload))
+	req.Header.Set("Content-Type", "application/json")
+	if err != nil {
+		Fatal(err.Error())
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		Fatal(err.Error())
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		Fatal(err.Error())
+	}
+	assert.Equal(t, "{\"level\":\"error\"}\n", string(body))
+	assert.Equal(t, zap.ErrorLevel, GetLevel())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := httpServer.Shutdown(ctx); err != nil {
+		Fatal(err.Error())
+	}
 }
 
 func TestSampling(t *testing.T) {

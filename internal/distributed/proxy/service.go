@@ -73,7 +73,11 @@ var HTTPParams paramtable.HTTPConfig
 var (
 	errMissingMetadata = status.Errorf(codes.InvalidArgument, "missing metadata")
 	errInvalidToken    = status.Errorf(codes.Unauthenticated, "invalid token")
+	// registerHTTPHandlerOnce avoid register http handler multiple times
+	registerHTTPHandlerOnce sync.Once
 )
+
+const apiPathPrefix = "/api/v1"
 
 // Server is the Proxy Server
 type Server struct {
@@ -82,9 +86,6 @@ type Server struct {
 	proxy              types.ProxyComponent
 	grpcInternalServer *grpc.Server
 	grpcExternalServer *grpc.Server
-	httpServer         *http.Server
-	// avoid race
-	httpServerMtx sync.Mutex
 
 	etcdCli          *clientv3.Client
 	rootCoordClient  types.RootCoord
@@ -111,9 +112,8 @@ func NewServer(ctx context.Context, factory dependency.Factory) (*Server, error)
 	return server, err
 }
 
-// startHTTPServer starts the http server, panic when failed
-func (s *Server) startHTTPServer(port int) {
-	defer s.wg.Done()
+// registerHTTPServer register the http server, panic when failed
+func (s *Server) registerHTTPServer() {
 	// (Embedded Milvus Only) Discard gin logs if logging is disabled.
 	// We might need to put these logs in some files in the further.
 	// But we don't care about these logs now, at least not in embedded Milvus.
@@ -125,21 +125,9 @@ func (s *Server) startHTTPServer(port int) {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	ginHandler := gin.Default()
-	apiv1 := ginHandler.Group("/api/v1")
+	apiv1 := ginHandler.Group(apiPathPrefix)
 	httpserver.NewHandlers(s.proxy).RegisterRoutesTo(apiv1)
-	s.httpServerMtx.Lock()
-	s.httpServer = &http.Server{
-		Addr:         fmt.Sprintf(":%d", port),
-		Handler:      ginHandler,
-		ReadTimeout:  HTTPParams.ReadTimeout,
-		WriteTimeout: HTTPParams.WriteTimeout,
-	}
-	s.httpServerMtx.Unlock()
-	if err := s.httpServer.ListenAndServe(); err != nil {
-		if err != http.ErrServerClosed {
-			panic("failed to start http server: " + err.Error())
-		}
-	}
+	http.Handle("/", ginHandler)
 }
 
 func (s *Server) startInternalRPCServer(grpcInternalPort int, errChan chan error) {
@@ -182,6 +170,7 @@ func (s *Server) startExternalGrpc(grpcPort int, errChan chan error) {
 		grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
 			ot.UnaryServerInterceptor(opts...),
 			grpc_auth.UnaryServerInterceptor(proxy.AuthenticationInterceptor),
+			proxy.UnaryServerInterceptor(proxy.PrivilegeInterceptor),
 		)),
 		grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(
 			ot.StreamServerInterceptor(opts...),
@@ -358,9 +347,10 @@ func (s *Server) init() error {
 	}
 
 	if HTTPParams.Enabled {
-		log.Info("start http server of proxy", zap.Int("port", HTTPParams.Port))
-		s.wg.Add(1)
-		go s.startHTTPServer(HTTPParams.Port)
+		registerHTTPHandlerOnce.Do(func() {
+			log.Info("register http server of proxy")
+			s.registerHTTPServer()
+		})
 	}
 
 	if s.rootCoordClient == nil {
@@ -523,16 +513,6 @@ func (s *Server) Stop() error {
 	}
 
 	gracefulWg := sync.WaitGroup{}
-	gracefulWg.Add(1)
-	go func() {
-		defer gracefulWg.Done()
-		s.httpServerMtx.Lock()
-		defer s.httpServerMtx.Unlock()
-		if s.httpServer != nil {
-			log.Debug("Graceful stop http server...")
-			s.httpServer.Shutdown(context.TODO())
-		}
-	}()
 
 	gracefulWg.Add(1)
 	go func() {
@@ -838,10 +818,6 @@ func (s *Server) UpdateCredentialCache(ctx context.Context, request *proxypb.Upd
 	return s.proxy.UpdateCredentialCache(ctx, request)
 }
 
-func (s *Server) ClearCredUsersCache(ctx context.Context, request *internalpb.ClearCredUsersCacheRequest) (*commonpb.Status, error) {
-	return s.proxy.ClearCredUsersCache(ctx, request)
-}
-
 func (s *Server) CreateCredential(ctx context.Context, req *milvuspb.CreateCredentialRequest) (*commonpb.Status, error) {
 	return s.proxy.CreateCredential(ctx, req)
 }
@@ -858,47 +834,34 @@ func (s *Server) ListCredUsers(ctx context.Context, req *milvuspb.ListCredUsersR
 	return s.proxy.ListCredUsers(ctx, req)
 }
 
-func (s *Server) CreateRole(ctx context.Context, request *milvuspb.CreateRoleRequest) (*commonpb.Status, error) {
-	//TODO implement me
-	panic("implement me")
+func (s *Server) CreateRole(ctx context.Context, req *milvuspb.CreateRoleRequest) (*commonpb.Status, error) {
+	return s.proxy.CreateRole(ctx, req)
 }
 
-func (s *Server) DropRole(ctx context.Context, request *milvuspb.DropRoleRequest) (*commonpb.Status, error) {
-	//TODO implement me
-	panic("implement me")
+func (s *Server) DropRole(ctx context.Context, req *milvuspb.DropRoleRequest) (*commonpb.Status, error) {
+	return s.proxy.DropRole(ctx, req)
 }
 
-func (s *Server) OperateUserRole(ctx context.Context, request *milvuspb.OperateUserRoleRequest) (*commonpb.Status, error) {
-	//TODO implement me
-	panic("implement me")
+func (s *Server) OperateUserRole(ctx context.Context, req *milvuspb.OperateUserRoleRequest) (*commonpb.Status, error) {
+	return s.proxy.OperateUserRole(ctx, req)
 }
 
-func (s *Server) SelectRole(ctx context.Context, request *milvuspb.SelectRoleRequest) (*milvuspb.SelectRoleResponse, error) {
-	//TODO implement me
-	panic("implement me")
+func (s *Server) SelectRole(ctx context.Context, req *milvuspb.SelectRoleRequest) (*milvuspb.SelectRoleResponse, error) {
+	return s.proxy.SelectRole(ctx, req)
 }
 
-func (s *Server) SelectUser(ctx context.Context, request *milvuspb.SelectUserRequest) (*milvuspb.SelectUserResponse, error) {
-	//TODO implement me
-	panic("implement me")
+func (s *Server) SelectUser(ctx context.Context, req *milvuspb.SelectUserRequest) (*milvuspb.SelectUserResponse, error) {
+	return s.proxy.SelectUser(ctx, req)
 }
 
-func (s *Server) SelectResource(ctx context.Context, request *milvuspb.SelectResourceRequest) (*milvuspb.SelectResourceResponse, error) {
-	//TODO implement me
-	panic("implement me")
+func (s *Server) OperatePrivilege(ctx context.Context, req *milvuspb.OperatePrivilegeRequest) (*commonpb.Status, error) {
+	return s.proxy.OperatePrivilege(ctx, req)
 }
 
-func (s *Server) OperatePrivilege(ctx context.Context, request *milvuspb.OperatePrivilegeRequest) (*commonpb.Status, error) {
-	//TODO implement me
-	panic("implement me")
+func (s *Server) SelectGrant(ctx context.Context, req *milvuspb.SelectGrantRequest) (*milvuspb.SelectGrantResponse, error) {
+	return s.proxy.SelectGrant(ctx, req)
 }
 
-func (s *Server) SelectGrant(ctx context.Context, request *milvuspb.SelectGrantRequest) (*milvuspb.SelectGrantResponse, error) {
-	//TODO implement me
-	panic("implement me")
-}
-
-func (s *Server) RefreshPolicyInfoCache(ctx context.Context, request *proxypb.RefreshPolicyInfoCacheRequest) (*commonpb.Status, error) {
-	//TODO implement me
-	panic("implement me")
+func (s *Server) RefreshPolicyInfoCache(ctx context.Context, req *proxypb.RefreshPolicyInfoCacheRequest) (*commonpb.Status, error) {
+	return s.proxy.RefreshPolicyInfoCache(ctx, req)
 }

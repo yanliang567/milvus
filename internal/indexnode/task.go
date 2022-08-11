@@ -25,22 +25,18 @@ import (
 	"runtime/debug"
 	"strconv"
 
-	"github.com/milvus-io/milvus/internal/proto/schemapb"
-
-	"github.com/milvus-io/milvus/internal/util/indexcgowrapper"
-
-	"github.com/milvus-io/milvus/internal/metrics"
-
+	"github.com/golang/protobuf/proto"
 	"go.uber.org/zap"
 
-	"github.com/golang/protobuf/proto"
-
-	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
+	"github.com/milvus-io/milvus/internal/kv"
 	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
+	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/indexcgowrapper"
 	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
 	"github.com/milvus-io/milvus/internal/util/trace"
@@ -127,7 +123,7 @@ type IndexBuildTask struct {
 	BaseTask
 	cm             storage.ChunkManager
 	index          indexcgowrapper.CodecIndex
-	etcdKV         *etcdkv.EtcdKV
+	etcdKV         kv.MetaKv
 	savePaths      []string
 	req            *indexpb.CreateIndexRequest
 	nodeID         UniqueID
@@ -171,7 +167,7 @@ func (it *IndexBuildTask) OnEnqueue() error {
 
 // loadIndexMeta load meta from etcd.
 func (it *IndexBuildTask) loadIndexMeta(ctx context.Context) (*indexpb.IndexMeta, int64, error) {
-	indexMeta := indexpb.IndexMeta{}
+	indexMeta := &indexpb.IndexMeta{}
 	var source int64
 	fn := func() error {
 		//TODO error handling need to be optimized, return Unrecoverable to avoid retry
@@ -180,9 +176,12 @@ func (it *IndexBuildTask) loadIndexMeta(ctx context.Context) (*indexpb.IndexMeta
 			return err
 		}
 		if len(values) == 0 {
-			return fmt.Errorf("IndexNode loadIndexMeta get empty")
+			log.Warn("IndexNode loadIndexMeta get empty, maybe the task has been recycled, set task to abandon",
+				zap.Int64("buildID", it.req.IndexBuildID))
+			it.SetState(TaskStateAbandon)
+			return nil
 		}
-		err = proto.Unmarshal([]byte(values[0]), &indexMeta)
+		err = proto.Unmarshal([]byte(values[0]), indexMeta)
 		if err != nil {
 			return err
 		}
@@ -193,11 +192,17 @@ func (it *IndexBuildTask) loadIndexMeta(ctx context.Context) (*indexpb.IndexMeta
 	if err != nil {
 		return nil, -1, err
 	}
-	return &indexMeta, source, nil
+	return indexMeta, source, nil
 }
 
-func (it *IndexBuildTask) updateTaskState(indexMeta *indexpb.IndexMeta) TaskState {
-	if indexMeta.Version > it.req.Version || indexMeta.State == commonpb.IndexState_Finished {
+func (it *IndexBuildTask) updateTaskState(indexMeta *indexpb.IndexMeta, err error) TaskState {
+	if it.GetState() == TaskStateAbandon {
+		return it.GetState()
+	}
+	if err != nil {
+		log.Warn("IndexNode IndexBuildTask internal err, mark the task as retry", zap.Int64("buildID", it.req.IndexBuildID), zap.Error(err))
+		it.SetState(TaskStateRetry)
+	} else if indexMeta.IndexVersion > it.req.Version || indexMeta.State == commonpb.IndexState_Finished {
 		it.SetState(TaskStateAbandon)
 	} else if indexMeta.MarkDeleted {
 		it.SetState(TaskStateAbandon)
@@ -213,25 +218,15 @@ func (it *IndexBuildTask) saveIndexMeta(ctx context.Context) error {
 	fn := func() error {
 		indexMeta, version, err := it.loadIndexMeta(ctx)
 		if err != nil {
-			errMsg := fmt.Sprintf("IndexNode IndexBuildTask saveIndexMeta fail to load index meta, IndexBuildID=%d", indexMeta.IndexBuildID)
-			panic(errMsg)
+			log.Error("IndexNode IndexBuildTask saveIndexMeta fail to load index meta,", zap.Int64("build Id", it.req.IndexBuildID), zap.Error(err))
+			return err
 		}
-
-		if it.internalErr != nil {
-			log.Warn("IndexNode IndexBuildTask internal err is not nil, mark the task as retry",
-				zap.Int64("buildID", it.req.IndexBuildID))
-			it.SetState(TaskStateRetry)
-		}
-
-		taskState := it.updateTaskState(indexMeta)
+		taskState := it.updateTaskState(indexMeta, it.internalErr)
 		if taskState == TaskStateAbandon {
-			log.Info("IndexNode IndexBuildTask saveIndexMeta", zap.String("TaskState", taskState.String()),
+			log.Warn("IndexNode IndexBuildTask saveIndexMeta success because task abandon", zap.String("TaskState", taskState.String()),
 				zap.Int64("IndexBuildID", indexMeta.IndexBuildID))
 			return nil
 		}
-
-		indexMeta.IndexFilePaths = it.savePaths
-		indexMeta.SerializeSize = it.serializedSize
 
 		if taskState == TaskStateFailed {
 			log.Error("IndexNode IndexBuildTask saveIndexMeta set indexMeta.state to IndexState_Failed",
@@ -245,6 +240,8 @@ func (it *IndexBuildTask) saveIndexMeta(ctx context.Context) error {
 				zap.Int64("IndexBuildID", indexMeta.IndexBuildID), zap.Error(it.internalErr))
 			indexMeta.State = commonpb.IndexState_Unissued
 		} else { // TaskStateNormal
+			indexMeta.IndexFilePaths = it.savePaths
+			indexMeta.SerializeSize = it.serializedSize
 			log.Info("IndexNode IndexBuildTask saveIndexMeta indexMeta.state to IndexState_Finished",
 				zap.String("TaskState", taskState.String()),
 				zap.Int64("IndexBuildID", indexMeta.IndexBuildID))
@@ -254,14 +251,22 @@ func (it *IndexBuildTask) saveIndexMeta(ctx context.Context) error {
 		var metaValue []byte
 		metaValue, err = proto.Marshal(indexMeta)
 		if err != nil {
-			errMsg := fmt.Sprintf("IndexNode IndexBuildTask saveIndexMeta fail to marshal index meta, IndexBuildID=%d, err=%s",
-				indexMeta.IndexBuildID, err.Error())
-			panic(errMsg)
+			log.Warn("IndexNode IndexBuildTask saveIndexMeta fail to marshal index meta,", zap.Int64("build Id", indexMeta.IndexBuildID), zap.Error(err))
+			return err
 		}
 
 		strMetaValue := string(metaValue)
 
-		return it.etcdKV.CompareVersionAndSwap(it.req.MetaPath, version, strMetaValue)
+		success, err := it.etcdKV.CompareVersionAndSwap(it.req.MetaPath, version, strMetaValue)
+		if err != nil {
+			// TODO, we don't need to reload if it is just etcd error
+			log.Warn("failed to compare and swap in etcd", zap.Int64("buildID", it.req.IndexBuildID), zap.Error(err))
+			return err
+		}
+		if !success {
+			return fmt.Errorf("failed to save index meta in etcd, buildId: %d, source version: %d", it.req.IndexBuildID, version)
+		}
+		return nil
 	}
 
 	err := retry.Do(ctx, fn, retry.Attempts(3))
@@ -281,7 +286,7 @@ func (it *IndexBuildTask) PreExecute(ctx context.Context) error {
 		// assume that we can loadIndexMeta later...
 		return nil
 	}
-	it.updateTaskState(indexMeta)
+	it.updateTaskState(indexMeta, nil)
 	return nil
 }
 
@@ -343,6 +348,9 @@ func (it *IndexBuildTask) loadFieldData(ctx context.Context) (storage.FieldID, s
 	getValueByPath := func(path string) ([]byte, error) {
 		data, err := it.cm.Read(path)
 		if err != nil {
+			if errors.Is(err, ErrNoSuchKey) {
+				return nil, ErrNoSuchKey
+			}
 			return nil, err
 		}
 		return data, nil
@@ -459,6 +467,12 @@ func (it *IndexBuildTask) buildIndex(ctx context.Context) ([]*storage.Blob, erro
 	}
 	it.tr.Record("index serialize done")
 
+	// use serialized size before encoding
+	it.serializedSize = 0
+	for _, blob := range indexBlobs {
+		it.serializedSize += uint64(len(blob.Value))
+	}
+
 	// early release index for gc, and we can ensure that Delete is idempotent.
 	if err := it.index.Delete(); err != nil {
 		log.Error("IndexNode IndexBuildTask Execute CIndexDelete failed",
@@ -490,36 +504,29 @@ func (it *IndexBuildTask) buildIndex(ctx context.Context) ([]*storage.Blob, erro
 
 func (it *IndexBuildTask) saveIndex(ctx context.Context, blobs []*storage.Blob) error {
 	blobCnt := len(blobs)
-	it.serializedSize = 0
-	for i := range blobs {
-		it.serializedSize += uint64(len(blobs[i].Value))
-	}
 
 	getSavePathByKey := func(key string) string {
 		return path.Join(Params.IndexNodeCfg.IndexStorageRootPath, strconv.Itoa(int(it.req.IndexBuildID)), strconv.Itoa(int(it.req.Version)),
 			strconv.Itoa(int(it.partitionID)), strconv.Itoa(int(it.segmentID)), key)
 	}
 
-	it.savePaths = make([]string, blobCnt)
+	savePaths := make([]string, blobCnt)
 	saveIndexFile := func(idx int) error {
 		blob := blobs[idx]
 		savePath := getSavePathByKey(blob.Key)
 		saveIndexFileFn := func() error {
-			v, err := it.etcdKV.Load(it.req.MetaPath)
+			indexMeta, _, err := it.loadIndexMeta(ctx)
 			if err != nil {
-				log.Warn("IndexNode load meta failed", zap.Any("path", it.req.MetaPath), zap.Error(err))
+				log.Warn("IndexNode load meta failed", zap.String("path", it.req.MetaPath), zap.Error(err))
 				return err
 			}
-			indexMeta := indexpb.IndexMeta{}
-			err = proto.Unmarshal([]byte(v), &indexMeta)
-			if err != nil {
-				log.Warn("IndexNode Unmarshal indexMeta error ", zap.Error(err))
-				return err
+			if it.GetState() != TaskStateNormal {
+				log.Warn("IndexNode task state is not normal, skip task", zap.Int64("buildID", it.req.IndexBuildID))
+				return nil
 			}
-			//log.Debug("IndexNode Unmarshal indexMeta success ", zap.Any("meta", indexMeta))
-			if indexMeta.Version > it.req.Version {
+			if indexMeta.IndexVersion > it.req.Version {
 				log.Warn("IndexNode try saveIndexFile failed req.Version is low", zap.Any("req.Version", it.req.Version),
-					zap.Any("indexMeta.Version", indexMeta.Version))
+					zap.Any("indexMeta.Version", indexMeta.IndexVersion))
 				return errors.New("This task has been reassigned, check indexMeta.version and request ")
 			}
 			return it.cm.Write(savePath, blob.Value)
@@ -529,12 +536,18 @@ func (it *IndexBuildTask) saveIndex(ctx context.Context, blobs []*storage.Blob) 
 			log.Warn("IndexNode try saveIndexFile final", zap.Error(err), zap.Any("savePath", savePath))
 			return err
 		}
-		it.savePaths[idx] = savePath
+		savePaths[idx] = savePath
 		return nil
 	}
 
 	// If an error occurs, return the error that the task state will be set to retry.
-	return funcutil.ProcessFuncParallel(blobCnt, runtime.NumCPU(), saveIndexFile, "saveIndexFile")
+	if err := funcutil.ProcessFuncParallel(blobCnt, runtime.NumCPU(), saveIndexFile, "saveIndexFile"); err != nil {
+		log.Error("saveIndexFile fail", zap.Int64("buildID", it.req.IndexBuildID))
+		return err
+	}
+	it.savePaths = savePaths
+
+	return nil
 }
 
 func (it *IndexBuildTask) releaseMemory() {
@@ -546,6 +559,13 @@ func (it *IndexBuildTask) Execute(ctx context.Context) error {
 	log.Debug("IndexNode IndexBuildTask Execute ...", zap.Int64("buildId", it.req.IndexBuildID))
 	sp, _ := trace.StartSpanFromContextWithOperationName(ctx, "CreateIndex-Execute")
 	defer sp.Finish()
+
+	state := it.GetState()
+	if state != TaskStateNormal {
+		log.Info("index task no need to execute", zap.Int64("buildID", it.req.IndexBuildID),
+			zap.String("index state", it.GetState().String()))
+		return nil
+	}
 
 	if err := it.prepareParams(ctx); err != nil {
 		it.SetState(TaskStateFailed)
@@ -562,10 +582,15 @@ func (it *IndexBuildTask) Execute(ctx context.Context) error {
 	var blobs []*storage.Blob
 	blobs, err = it.buildIndex(ctx)
 	if err != nil {
-		it.SetState(TaskStateFailed)
-		log.Error("IndexNode IndexBuildTask Execute buildIndex failed",
-			zap.Int64("buildId", it.req.IndexBuildID),
-			zap.Error(err))
+		if errors.Is(err, ErrNoSuchKey) {
+			it.SetState(TaskStateFailed)
+			log.Error("IndexNode IndexBuildTask Execute buildIndex failed",
+				zap.Int64("buildId", it.req.IndexBuildID), zap.Error(err))
+			return err
+		}
+		it.SetState(TaskStateRetry)
+		log.Error("IndexNode IndexBuildTask Execute buildIndex failed, need to retry",
+			zap.Int64("buildId", it.req.IndexBuildID), zap.Error(err))
 		return err
 	}
 

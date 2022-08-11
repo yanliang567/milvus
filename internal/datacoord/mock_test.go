@@ -22,6 +22,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/proto/indexpb"
+
 	"github.com/milvus-io/milvus/internal/kv"
 	memkv "github.com/milvus-io/milvus/internal/kv/mem"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
@@ -358,6 +360,10 @@ func (m *mockRootCoordService) DescribeIndex(ctx context.Context, req *milvuspb.
 	panic("not implemented") // TODO: Implement
 }
 
+func (m *mockRootCoordService) GetIndexState(ctx context.Context, req *milvuspb.GetIndexStateRequest) (*indexpb.GetIndexStatesResponse, error) {
+	panic("not implemented") // TODO: Implement
+}
+
 func (m *mockRootCoordService) DropIndex(ctx context.Context, req *milvuspb.DropIndexRequest) (*commonpb.Status, error) {
 	panic("not implemented") // TODO: Implement
 }
@@ -492,9 +498,10 @@ func (m *mockRootCoordService) ListImportTasks(ctx context.Context, in *milvuspb
 	panic("not implemented") // TODO: Implement
 }
 
-// Report impot task state to rootcoord
 func (m *mockRootCoordService) ReportImport(ctx context.Context, req *rootcoordpb.ImportResult) (*commonpb.Status, error) {
-	panic("not implemented") // TODO: Implement
+	return &commonpb.Status{
+		ErrorCode: commonpb.ErrorCode_Success,
+	}, nil
 }
 
 type mockCompactionHandler struct {
@@ -653,6 +660,38 @@ func (m *mockRootCoordService) ListCredUsers(ctx context.Context, req *milvuspb.
 
 func (m *mockRootCoordService) GetCredential(ctx context.Context, req *rootcoordpb.GetCredentialRequest) (*rootcoordpb.GetCredentialResponse, error) {
 	panic("implement me")
+}
+
+func (m *mockRootCoordService) CreateRole(ctx context.Context, req *milvuspb.CreateRoleRequest) (*commonpb.Status, error) {
+	panic("implement me")
+}
+
+func (m *mockRootCoordService) DropRole(ctx context.Context, req *milvuspb.DropRoleRequest) (*commonpb.Status, error) {
+	panic("implement me")
+}
+
+func (m *mockRootCoordService) OperateUserRole(ctx context.Context, req *milvuspb.OperateUserRoleRequest) (*commonpb.Status, error) {
+	panic("implement me")
+}
+
+func (m *mockRootCoordService) SelectRole(ctx context.Context, req *milvuspb.SelectRoleRequest) (*milvuspb.SelectRoleResponse, error) {
+	panic("implement me")
+}
+
+func (m *mockRootCoordService) SelectUser(ctx context.Context, req *milvuspb.SelectUserRequest) (*milvuspb.SelectUserResponse, error) {
+	panic("implement me")
+}
+
+func (m *mockRootCoordService) OperatePrivilege(ctx context.Context, req *milvuspb.OperatePrivilegeRequest) (*commonpb.Status, error) {
+	panic("implement me")
+}
+
+func (m *mockRootCoordService) SelectGrant(ctx context.Context, req *milvuspb.SelectGrantRequest) (*milvuspb.SelectGrantResponse, error) {
+	panic("implement me")
+}
+
+func (m *mockRootCoordService) ListPolicy(ctx context.Context, in *internalpb.ListPolicyRequest) (*internalpb.ListPolicyResponse, error) {
+	return &internalpb.ListPolicyResponse{Status: &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success}}, nil
 }
 
 type mockHandler struct {

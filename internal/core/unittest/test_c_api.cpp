@@ -9,20 +9,20 @@
 // is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
-#include <gtest/gtest.h>
+#include <boost/format.hpp>
 #include <chrono>
 #include <google/protobuf/text_format.h>
+#include <gtest/gtest.h>
 #include <iostream>
 #include <random>
 #include <string>
 #include <unordered_set>
-#include <knowhere/index/vector_index/helpers/IndexParameter.h>
-#include <knowhere/index/vector_index/adapter/VectorAdapter.h>
-#include <knowhere/index/vector_index/VecIndexFactory.h>
-#include <knowhere/index/vector_index/IndexIVFPQ.h>
-#include <boost/format.hpp>
 
 #include "common/LoadInfo.h"
+#include "knowhere/index/VecIndexFactory.h"
+#include "knowhere/index/vector_index/IndexIVFPQ.h"
+#include "knowhere/index/vector_index/helpers/IndexParameter.h"
+#include "knowhere/index/vector_index/adapter/VectorAdapter.h"
 #include "pb/plan.pb.h"
 #include "query/ExprImpl.h"
 #include "segcore/Collection.h"
@@ -86,6 +86,31 @@ generate_data(int N) {
     }
     return std::make_tuple(raw_data, timestamps, uids);
 }
+std::string
+generate_max_float_query_data(int all_nq, int max_float_nq) {
+    assert(max_float_nq <= all_nq);
+    namespace ser = milvus::proto::common;
+    int dim = DIM;
+    ser::PlaceholderGroup raw_group;
+    auto value = raw_group.add_placeholders();
+    value->set_tag("$0");
+    value->set_type(ser::PlaceholderType::FloatVector);
+    for (int i = 0; i < all_nq; ++i) {
+        std::vector<float> vec;
+        if (i < max_float_nq) {
+            for (int d = 0; d < dim; ++d) {
+                vec.push_back(std::numeric_limits<float>::max());
+            }
+        } else {
+            for (int d = 0; d < dim; ++d) {
+                vec.push_back(1);
+            }
+        }
+        value->add_values(vec.data(), vec.size() * sizeof(float));
+    }
+    auto blob = raw_group.SerializeAsString();
+    return blob;
+}
 
 std::string
 generate_query_data(int nq) {
@@ -147,7 +172,8 @@ generate_collection_schema(std::string metric_type, int dim, bool is_binary) {
 }
 
 VecIndexPtr
-generate_index(void* raw_data, knowhere::Config conf, int64_t dim, int64_t topK, int64_t N, std::string index_type) {
+generate_index(
+    void* raw_data, knowhere::Config conf, int64_t dim, int64_t topK, int64_t N, knowhere::IndexType index_type) {
     auto indexing = knowhere::VecIndexFactory::GetInstance().CreateVecIndex(index_type, knowhere::IndexMode::MODE_CPU);
 
     auto database = knowhere::GenDataset(N, dim, raw_data);
@@ -179,6 +205,46 @@ TEST(CApiTest, SegmentTest) {
     auto segment = NewSegment(collection, Growing, -1);
     DeleteCollection(collection);
     DeleteSegment(segment);
+}
+
+TEST(CApiTest, CPlan) {
+    std::string schema_string = generate_collection_schema("JACCARD", DIM, true);
+    auto collection = NewCollection(schema_string.c_str());
+
+    const char* dsl_string = R"(
+    {
+        "bool": {
+            "vector": {
+                "fakevec": {
+                    "metric_type": "L2",
+                    "params": {
+                        "nprobe": 10
+                    },
+                    "query": "$0",
+                    "topk": 10,
+                    "round_decimal": 3
+               }
+            }
+        }
+   })";
+
+    void* plan = nullptr;
+    auto status = CreateSearchPlan(collection, dsl_string, &plan);
+    assert(status.error_code == Success);
+
+    int64_t field_id = -1;
+    status = GetFieldID(plan, &field_id);
+    assert(status.error_code == Success);
+
+    auto col = static_cast<Collection*>(collection);
+    for (auto& [target_field_id, field_meta] : col->get_schema()->get_fields()) {
+        if (field_meta.is_vector()) {
+            assert(field_id == target_field_id.get());
+        }
+    }
+    assert(field_id != -1);
+
+    DeleteSearchPlan(plan);
 }
 
 template <typename Message>
@@ -909,7 +975,7 @@ TEST(CApiTest, GetDeletedCountTest) {
 
     // TODO: assert(deleted_count == len(delete_row_ids))
     auto deleted_count = GetDeletedCount(segment);
-    assert(deleted_count == 0);
+    assert(deleted_count == delete_row_ids.size());
 
     DeleteCollection(collection);
     DeleteSegment(segment);
@@ -933,6 +999,42 @@ TEST(CApiTest, GetRowCountTest) {
 
     auto row_count = GetRowCount(segment);
     assert(row_count == N);
+
+    DeleteCollection(collection);
+    DeleteSegment(segment);
+}
+
+TEST(CApiTest, GetRealCount) {
+    auto collection = NewCollection(get_default_schema_config());
+    auto segment = NewSegment(collection, Growing, -1);
+
+    auto schema = ((milvus::segcore::Collection*)collection)->get_schema();
+    int N = 10000;
+    auto dataset = DataGen(schema, N);
+
+    int64_t offset;
+    PreInsert(segment, N, &offset);
+
+    auto insert_data = serialize(dataset.raw_);
+    auto res = Insert(segment, offset, N, dataset.row_ids_.data(), dataset.timestamps_.data(), insert_data.data(),
+                      insert_data.size());
+    assert(res.error_code == Success);
+
+    auto pks = dataset.get_col<int64_t>(schema->get_primary_field_id().value());
+    std::vector<int64_t> delete_row_ids(pks.begin(), pks.begin() + 3);
+    auto ids = std::make_unique<IdArray>();
+    ids->mutable_int_id()->mutable_data()->Add(delete_row_ids.begin(), delete_row_ids.end());
+    auto delete_data = serialize(ids.get());
+    uint64_t delete_timestamps[] = {dataset.timestamps_[N - 1] + 1, dataset.timestamps_[N - 1] + 2,
+                                    dataset.timestamps_[N - 1] + 3};
+
+    auto del_offset = PreDelete(segment, 3);
+
+    auto del_res = Delete(segment, del_offset, 3, delete_data.data(), delete_data.size(), delete_timestamps);
+    assert(del_res.error_code == Success);
+
+    auto real_count = GetRealCount(segment);
+    assert(real_count == N - delete_row_ids.size());
 
     DeleteCollection(collection);
     DeleteSegment(segment);
@@ -983,6 +1085,81 @@ CheckSearchResultDuplicate(const std::vector<CSearchResult>& results) {
     //     cnt += pk_set.size();
     // }
     // assert(cnt == topk * num_queries);
+}
+
+TEST(CApiTest, ReudceNullResult) {
+    auto collection = NewCollection(get_default_schema_config());
+    auto segment = NewSegment(collection, Growing, -1);
+    auto schema = ((milvus::segcore::Collection*)collection)->get_schema();
+    int N = 10000;
+    auto dataset = DataGen(schema, N);
+    int64_t offset;
+
+    PreInsert(segment, N, &offset);
+    auto insert_data = serialize(dataset.raw_);
+    auto ins_res = Insert(segment, offset, N, dataset.row_ids_.data(), dataset.timestamps_.data(), insert_data.data(),
+                          insert_data.size());
+    assert(ins_res.error_code == Success);
+
+    const char* dsl_string = R"(
+    {
+        "bool": {
+            "vector": {
+                "fakevec": {
+                    "metric_type": "L2",
+                    "params": {
+                        "nprobe": 10
+                    },
+                    "query": "$0",
+                    "topk": 10,
+                    "round_decimal": 3
+               }
+            }
+        }
+   })";
+
+    int num_queries = 10;
+    int topK = 10;
+
+    auto blob = generate_max_float_query_data(num_queries, num_queries / 2);
+
+    void* plan = nullptr;
+    auto status = CreateSearchPlan(collection, dsl_string, &plan);
+    assert(status.error_code == Success);
+
+    void* placeholderGroup = nullptr;
+    status = ParsePlaceholderGroup(plan, blob.data(), blob.length(), &placeholderGroup);
+    assert(status.error_code == Success);
+
+    std::vector<CPlaceholderGroup> placeholderGroups;
+    placeholderGroups.push_back(placeholderGroup);
+    dataset.timestamps_.clear();
+    dataset.timestamps_.push_back(1);
+
+    {
+        auto slice_nqs = std::vector<int32_t>{10};
+        auto slice_topKs = std::vector<int32_t>{1};
+        std::vector<CSearchResult> results;
+        CSearchResult res;
+        status = Search(segment, plan, placeholderGroup, dataset.timestamps_[0], &res, -1);
+        assert(status.error_code == Success);
+        results.push_back(res);
+        CSearchResultDataBlobs cSearchResultData;
+        status = ReduceSearchResultsAndFillData(&cSearchResultData, plan, results.data(), results.size(),
+                                                slice_nqs.data(), slice_topKs.data(), slice_nqs.size());
+        assert(status.error_code == Success);
+
+        auto search_result = (SearchResult*)results[0];
+        auto size = search_result->result_offsets_.size();
+        EXPECT_EQ(size, num_queries / 2);
+
+        DeleteSearchResult(res);
+    }
+
+    DeleteSearchPlan(plan);
+    DeletePlaceholderGroup(placeholderGroup);
+    DeleteCollection(collection);
+    DeleteSegment(segment);
 }
 
 TEST(CApiTest, ReduceRemoveDuplicates) {
@@ -1214,14 +1391,14 @@ TEST(CApiTest, LoadIndexInfo) {
     auto N = 1024 * 10;
     auto [raw_data, timestamps, uids] = generate_data(N);
     auto indexing = std::make_shared<knowhere::IVFPQ>();
-    auto conf = knowhere::Config{{knowhere::meta::DIM, DIM},
+    auto conf = knowhere::Config{{knowhere::meta::METRIC_TYPE, knowhere::metric::L2},
+                                 {knowhere::meta::DIM, DIM},
                                  {knowhere::meta::TOPK, TOPK},
-                                 {knowhere::IndexParams::nlist, 100},
-                                 {knowhere::IndexParams::nprobe, 4},
-                                 {knowhere::IndexParams::m, 4},
-                                 {knowhere::IndexParams::nbits, 8},
-                                 {knowhere::Metric::TYPE, knowhere::Metric::L2},
-                                 {knowhere::meta::DEVICEID, 0}};
+                                 {knowhere::indexparam::NLIST, 100},
+                                 {knowhere::indexparam::NPROBE, 4},
+                                 {knowhere::indexparam::M, 4},
+                                 {knowhere::indexparam::NBITS, 8},
+                                 {knowhere::meta::DEVICE_ID, 0}};
 
     auto database = knowhere::GenDataset(N, DIM, raw_data.data());
     indexing->Train(database, conf);
@@ -1257,14 +1434,14 @@ TEST(CApiTest, LoadIndex_Search) {
     auto num_query = 100;
     auto [raw_data, timestamps, uids] = generate_data(N);
     auto indexing = std::make_shared<knowhere::IVFPQ>();
-    auto conf = knowhere::Config{{knowhere::meta::DIM, DIM},
+    auto conf = knowhere::Config{{knowhere::meta::METRIC_TYPE, knowhere::metric::L2},
+                                 {knowhere::meta::DIM, DIM},
                                  {knowhere::meta::TOPK, TOPK},
-                                 {knowhere::IndexParams::nlist, 100},
-                                 {knowhere::IndexParams::nprobe, 4},
-                                 {knowhere::IndexParams::m, 4},
-                                 {knowhere::IndexParams::nbits, 8},
-                                 {knowhere::Metric::TYPE, knowhere::Metric::L2},
-                                 {knowhere::meta::DEVICEID, 0}};
+                                 {knowhere::indexparam::NLIST, 100},
+                                 {knowhere::indexparam::NPROBE, 4},
+                                 {knowhere::indexparam::M, 4},
+                                 {knowhere::indexparam::NBITS, 8},
+                                 {knowhere::meta::DEVICE_ID, 0}};
 
     auto database = knowhere::GenDataset(N, DIM, raw_data.data());
     indexing->Train(database, conf);
@@ -1290,8 +1467,8 @@ TEST(CApiTest, LoadIndex_Search) {
 
     auto result = indexing->Query(query_dataset, conf, nullptr);
 
-    auto ids = result->Get<int64_t*>(knowhere::meta::IDS);
-    auto dis = result->Get<float*>(knowhere::meta::DISTANCE);
+    auto ids = knowhere::GetDatasetIDs(result);
+    auto dis = knowhere::GetDatasetDistance(result);
     // for (int i = 0; i < std::min(num_query * K, 100); ++i) {
     //    std::cout << ids[i] << "->" << dis[i] << std::endl;
     //}
@@ -1359,21 +1536,21 @@ TEST(CApiTest, Indexing_Without_Predicate) {
     assert(res_before_load_index.error_code == Success);
 
     // load index to segment
-    auto conf = knowhere::Config{{knowhere::meta::DIM, DIM},
+    auto conf = knowhere::Config{{knowhere::meta::METRIC_TYPE, knowhere::metric::L2},
+                                 {knowhere::meta::DIM, DIM},
                                  {knowhere::meta::TOPK, TOPK},
-                                 {knowhere::IndexParams::nlist, 100},
-                                 {knowhere::IndexParams::nprobe, 10},
-                                 {knowhere::IndexParams::m, 4},
-                                 {knowhere::IndexParams::nbits, 8},
-                                 {knowhere::Metric::TYPE, knowhere::Metric::L2},
-                                 {knowhere::meta::DEVICEID, 0}};
+                                 {knowhere::indexparam::NLIST, 100},
+                                 {knowhere::indexparam::NPROBE, 10},
+                                 {knowhere::indexparam::M, 4},
+                                 {knowhere::indexparam::NBITS, 8},
+                                 {knowhere::meta::DEVICE_ID, 0}};
     auto indexing = generate_index(vec_col.data(), conf, DIM, TOPK, N, IndexEnum::INDEX_FAISS_IVFPQ);
 
     // gen query dataset
     auto query_dataset = knowhere::GenDataset(num_queries, DIM, query_ptr);
     auto result_on_index = indexing->Query(query_dataset, conf, nullptr);
-    auto ids = result_on_index->Get<int64_t*>(knowhere::meta::IDS);
-    auto dis = result_on_index->Get<float*>(knowhere::meta::DISTANCE);
+    auto ids = knowhere::GetDatasetIDs(result_on_index);
+    auto dis = knowhere::GetDatasetDistance(result_on_index);
     std::vector<int64_t> vec_ids(ids, ids + TOPK * num_queries);
     std::vector<float> vec_dis;
     for (int j = 0; j < TOPK * num_queries; ++j) {
@@ -1484,21 +1661,21 @@ TEST(CApiTest, Indexing_Expr_Without_Predicate) {
     assert(res_before_load_index.error_code == Success);
 
     // load index to segment
-    auto conf = knowhere::Config{{knowhere::meta::DIM, DIM},
+    auto conf = knowhere::Config{{knowhere::meta::METRIC_TYPE, knowhere::metric::L2},
+                                 {knowhere::meta::DIM, DIM},
                                  {knowhere::meta::TOPK, TOPK},
-                                 {knowhere::IndexParams::nlist, 100},
-                                 {knowhere::IndexParams::nprobe, 10},
-                                 {knowhere::IndexParams::m, 4},
-                                 {knowhere::IndexParams::nbits, 8},
-                                 {knowhere::Metric::TYPE, knowhere::Metric::L2},
-                                 {knowhere::meta::DEVICEID, 0}};
+                                 {knowhere::indexparam::NLIST, 100},
+                                 {knowhere::indexparam::NPROBE, 10},
+                                 {knowhere::indexparam::M, 4},
+                                 {knowhere::indexparam::NBITS, 8},
+                                 {knowhere::meta::DEVICE_ID, 0}};
     auto indexing = generate_index(vec_col.data(), conf, DIM, TOPK, N, IndexEnum::INDEX_FAISS_IVFPQ);
 
     // gen query dataset
     auto query_dataset = knowhere::GenDataset(num_queries, DIM, query_ptr);
     auto result_on_index = indexing->Query(query_dataset, conf, nullptr);
-    auto ids = result_on_index->Get<int64_t*>(knowhere::meta::IDS);
-    auto dis = result_on_index->Get<float*>(knowhere::meta::DISTANCE);
+    auto ids = knowhere::GetDatasetIDs(result_on_index);
+    auto dis = knowhere::GetDatasetDistance(result_on_index);
     std::vector<int64_t> vec_ids(ids, ids + TOPK * num_queries);
     std::vector<float> vec_dis;
     for (int j = 0; j < TOPK * num_queries; ++j) {
@@ -1626,22 +1803,22 @@ TEST(CApiTest, Indexing_With_float_Predicate_Range) {
     assert(res_before_load_index.error_code == Success);
 
     // load index to segment
-    auto conf = knowhere::Config{{knowhere::meta::DIM, DIM},
+    auto conf = knowhere::Config{{knowhere::meta::METRIC_TYPE, knowhere::metric::L2},
+                                 {knowhere::meta::DIM, DIM},
                                  {knowhere::meta::TOPK, TOPK},
-                                 {knowhere::IndexParams::nlist, 100},
-                                 {knowhere::IndexParams::nprobe, 10},
-                                 {knowhere::IndexParams::m, 4},
-                                 {knowhere::IndexParams::nbits, 8},
-                                 {knowhere::Metric::TYPE, knowhere::Metric::L2},
-                                 {knowhere::meta::DEVICEID, 0}};
+                                 {knowhere::indexparam::NLIST, 100},
+                                 {knowhere::indexparam::NPROBE, 10},
+                                 {knowhere::indexparam::M, 4},
+                                 {knowhere::indexparam::NBITS, 8},
+                                 {knowhere::meta::DEVICE_ID, 0}};
 
     auto indexing = generate_index(vec_col.data(), conf, DIM, TOPK, N, IndexEnum::INDEX_FAISS_IVFPQ);
 
     // gen query dataset
     auto query_dataset = knowhere::GenDataset(num_queries, DIM, query_ptr);
     auto result_on_index = indexing->Query(query_dataset, conf, nullptr);
-    auto ids = result_on_index->Get<int64_t*>(knowhere::meta::IDS);
-    auto dis = result_on_index->Get<float*>(knowhere::meta::DISTANCE);
+    auto ids = knowhere::GetDatasetIDs(result_on_index);
+    auto dis = knowhere::GetDatasetDistance(result_on_index);
     std::vector<int64_t> vec_ids(ids, ids + TOPK * num_queries);
     std::vector<float> vec_dis;
     for (int j = 0; j < TOPK * num_queries; ++j) {
@@ -1783,22 +1960,22 @@ TEST(CApiTest, Indexing_Expr_With_float_Predicate_Range) {
     assert(res_before_load_index.error_code == Success);
 
     // load index to segment
-    auto conf = knowhere::Config{{knowhere::meta::DIM, DIM},
+    auto conf = knowhere::Config{{knowhere::meta::METRIC_TYPE, knowhere::metric::L2},
+                                 {knowhere::meta::DIM, DIM},
                                  {knowhere::meta::TOPK, TOPK},
-                                 {knowhere::IndexParams::nlist, 100},
-                                 {knowhere::IndexParams::nprobe, 10},
-                                 {knowhere::IndexParams::m, 4},
-                                 {knowhere::IndexParams::nbits, 8},
-                                 {knowhere::Metric::TYPE, knowhere::Metric::L2},
-                                 {knowhere::meta::DEVICEID, 0}};
+                                 {knowhere::indexparam::NLIST, 100},
+                                 {knowhere::indexparam::NPROBE, 10},
+                                 {knowhere::indexparam::M, 4},
+                                 {knowhere::indexparam::NBITS, 8},
+                                 {knowhere::meta::DEVICE_ID, 0}};
 
     auto indexing = generate_index(vec_col.data(), conf, DIM, TOPK, N, IndexEnum::INDEX_FAISS_IVFPQ);
 
     // gen query dataset
     auto query_dataset = knowhere::GenDataset(num_queries, DIM, query_ptr);
     auto result_on_index = indexing->Query(query_dataset, conf, nullptr);
-    auto ids = result_on_index->Get<int64_t*>(knowhere::meta::IDS);
-    auto dis = result_on_index->Get<float*>(knowhere::meta::DISTANCE);
+    auto ids = knowhere::GetDatasetIDs(result_on_index);
+    auto dis = knowhere::GetDatasetDistance(result_on_index);
     std::vector<int64_t> vec_ids(ids, ids + TOPK * num_queries);
     std::vector<float> vec_dis;
     for (int j = 0; j < TOPK * num_queries; ++j) {
@@ -1924,22 +2101,22 @@ TEST(CApiTest, Indexing_With_float_Predicate_Term) {
     assert(res_before_load_index.error_code == Success);
 
     // load index to segment
-    auto conf = knowhere::Config{{knowhere::meta::DIM, DIM},
+    auto conf = knowhere::Config{{knowhere::meta::METRIC_TYPE, knowhere::metric::L2},
+                                 {knowhere::meta::DIM, DIM},
                                  {knowhere::meta::TOPK, TOPK},
-                                 {knowhere::IndexParams::nlist, 100},
-                                 {knowhere::IndexParams::nprobe, 10},
-                                 {knowhere::IndexParams::m, 4},
-                                 {knowhere::IndexParams::nbits, 8},
-                                 {knowhere::Metric::TYPE, knowhere::Metric::L2},
-                                 {knowhere::meta::DEVICEID, 0}};
+                                 {knowhere::indexparam::NLIST, 100},
+                                 {knowhere::indexparam::NPROBE, 10},
+                                 {knowhere::indexparam::M, 4},
+                                 {knowhere::indexparam::NBITS, 8},
+                                 {knowhere::meta::DEVICE_ID, 0}};
 
     auto indexing = generate_index(vec_col.data(), conf, DIM, TOPK, N, IndexEnum::INDEX_FAISS_IVFPQ);
 
     // gen query dataset
     auto query_dataset = knowhere::GenDataset(num_queries, DIM, query_ptr);
     auto result_on_index = indexing->Query(query_dataset, conf, nullptr);
-    auto ids = result_on_index->Get<int64_t*>(knowhere::meta::IDS);
-    auto dis = result_on_index->Get<float*>(knowhere::meta::DISTANCE);
+    auto ids = knowhere::GetDatasetIDs(result_on_index);
+    auto dis = knowhere::GetDatasetDistance(result_on_index);
     std::vector<int64_t> vec_ids(ids, ids + TOPK * num_queries);
     std::vector<float> vec_dis;
     for (int j = 0; j < TOPK * num_queries; ++j) {
@@ -2074,22 +2251,22 @@ TEST(CApiTest, Indexing_Expr_With_float_Predicate_Term) {
     assert(res_before_load_index.error_code == Success);
 
     // load index to segment
-    auto conf = knowhere::Config{{knowhere::meta::DIM, DIM},
+    auto conf = knowhere::Config{{knowhere::meta::METRIC_TYPE, knowhere::metric::L2},
+                                 {knowhere::meta::DIM, DIM},
                                  {knowhere::meta::TOPK, TOPK},
-                                 {knowhere::IndexParams::nlist, 100},
-                                 {knowhere::IndexParams::nprobe, 10},
-                                 {knowhere::IndexParams::m, 4},
-                                 {knowhere::IndexParams::nbits, 8},
-                                 {knowhere::Metric::TYPE, knowhere::Metric::L2},
-                                 {knowhere::meta::DEVICEID, 0}};
+                                 {knowhere::indexparam::NLIST, 100},
+                                 {knowhere::indexparam::NPROBE, 10},
+                                 {knowhere::indexparam::M, 4},
+                                 {knowhere::indexparam::NBITS, 8},
+                                 {knowhere::meta::DEVICE_ID, 0}};
 
     auto indexing = generate_index(vec_col.data(), conf, DIM, TOPK, N, IndexEnum::INDEX_FAISS_IVFPQ);
 
     // gen query dataset
     auto query_dataset = knowhere::GenDataset(num_queries, DIM, query_ptr);
     auto result_on_index = indexing->Query(query_dataset, conf, nullptr);
-    auto ids = result_on_index->Get<int64_t*>(knowhere::meta::IDS);
-    auto dis = result_on_index->Get<float*>(knowhere::meta::DISTANCE);
+    auto ids = knowhere::GetDatasetIDs(result_on_index);
+    auto dis = knowhere::GetDatasetDistance(result_on_index);
     std::vector<int64_t> vec_ids(ids, ids + TOPK * num_queries);
     std::vector<float> vec_dis;
     for (int j = 0; j < TOPK * num_queries; ++j) {
@@ -2217,13 +2394,13 @@ TEST(CApiTest, Indexing_With_binary_Predicate_Range) {
 
     // load index to segment
     auto conf = knowhere::Config{
+        {knowhere::meta::METRIC_TYPE, knowhere::metric::JACCARD},
         {knowhere::meta::DIM, DIM},
         {knowhere::meta::TOPK, TOPK},
-        {knowhere::IndexParams::nprobe, 10},
-        {knowhere::IndexParams::nlist, 100},
-        {knowhere::IndexParams::m, 4},
-        {knowhere::IndexParams::nbits, 8},
-        {knowhere::Metric::TYPE, knowhere::Metric::JACCARD},
+        {knowhere::indexparam::NPROBE, 10},
+        {knowhere::indexparam::NLIST, 100},
+        {knowhere::indexparam::M, 4},
+        {knowhere::indexparam::NBITS, 8},
     };
 
     auto indexing = generate_index(vec_col.data(), conf, DIM, TOPK, N, IndexEnum::INDEX_FAISS_BIN_IVFFLAT);
@@ -2231,8 +2408,8 @@ TEST(CApiTest, Indexing_With_binary_Predicate_Range) {
     // gen query dataset
     auto query_dataset = knowhere::GenDataset(num_queries, DIM, query_ptr);
     auto result_on_index = indexing->Query(query_dataset, conf, nullptr);
-    auto ids = result_on_index->Get<int64_t*>(knowhere::meta::IDS);
-    auto dis = result_on_index->Get<float*>(knowhere::meta::DISTANCE);
+    auto ids = knowhere::GetDatasetIDs(result_on_index);
+    auto dis = knowhere::GetDatasetDistance(result_on_index);
     std::vector<int64_t> vec_ids(ids, ids + TOPK * num_queries);
     std::vector<float> vec_dis;
     for (int j = 0; j < TOPK * num_queries; ++j) {
@@ -2373,13 +2550,13 @@ TEST(CApiTest, Indexing_Expr_With_binary_Predicate_Range) {
 
     // load index to segment
     auto conf = knowhere::Config{
+        {knowhere::meta::METRIC_TYPE, knowhere::metric::JACCARD},
         {knowhere::meta::DIM, DIM},
         {knowhere::meta::TOPK, TOPK},
-        {knowhere::IndexParams::nprobe, 10},
-        {knowhere::IndexParams::nlist, 100},
-        {knowhere::IndexParams::m, 4},
-        {knowhere::IndexParams::nbits, 8},
-        {knowhere::Metric::TYPE, knowhere::Metric::JACCARD},
+        {knowhere::indexparam::NPROBE, 10},
+        {knowhere::indexparam::NLIST, 100},
+        {knowhere::indexparam::M, 4},
+        {knowhere::indexparam::NBITS, 8},
     };
 
     auto indexing = generate_index(vec_col.data(), conf, DIM, TOPK, N, IndexEnum::INDEX_FAISS_BIN_IVFFLAT);
@@ -2387,8 +2564,8 @@ TEST(CApiTest, Indexing_Expr_With_binary_Predicate_Range) {
     // gen query dataset
     auto query_dataset = knowhere::GenDataset(num_queries, DIM, query_ptr);
     auto result_on_index = indexing->Query(query_dataset, conf, nullptr);
-    auto ids = result_on_index->Get<int64_t*>(knowhere::meta::IDS);
-    auto dis = result_on_index->Get<float*>(knowhere::meta::DISTANCE);
+    auto ids = knowhere::GetDatasetIDs(result_on_index);
+    auto dis = knowhere::GetDatasetDistance(result_on_index);
     std::vector<int64_t> vec_ids(ids, ids + TOPK * num_queries);
     std::vector<float> vec_dis;
     for (int j = 0; j < TOPK * num_queries; ++j) {
@@ -2516,13 +2693,13 @@ TEST(CApiTest, Indexing_With_binary_Predicate_Term) {
 
     // load index to segment
     auto conf = knowhere::Config{
+        {knowhere::meta::METRIC_TYPE, knowhere::metric::JACCARD},
         {knowhere::meta::DIM, DIM},
         {knowhere::meta::TOPK, TOPK},
-        {knowhere::IndexParams::nprobe, 10},
-        {knowhere::IndexParams::nlist, 100},
-        {knowhere::IndexParams::m, 4},
-        {knowhere::IndexParams::nbits, 8},
-        {knowhere::Metric::TYPE, knowhere::Metric::JACCARD},
+        {knowhere::indexparam::NPROBE, 10},
+        {knowhere::indexparam::NLIST, 100},
+        {knowhere::indexparam::M, 4},
+        {knowhere::indexparam::NBITS, 8},
     };
 
     auto indexing = generate_index(vec_col.data(), conf, DIM, TOPK, N, IndexEnum::INDEX_FAISS_BIN_IVFFLAT);
@@ -2530,8 +2707,8 @@ TEST(CApiTest, Indexing_With_binary_Predicate_Term) {
     // gen query dataset
     auto query_dataset = knowhere::GenDataset(num_queries, DIM, query_ptr);
     auto result_on_index = indexing->Query(query_dataset, conf, nullptr);
-    auto ids = result_on_index->Get<int64_t*>(knowhere::meta::IDS);
-    auto dis = result_on_index->Get<float*>(knowhere::meta::DISTANCE);
+    auto ids = knowhere::GetDatasetIDs(result_on_index);
+    auto dis = knowhere::GetDatasetDistance(result_on_index);
     std::vector<int64_t> vec_ids(ids, ids + TOPK * num_queries);
     std::vector<float> vec_dis;
     for (int j = 0; j < TOPK * num_queries; ++j) {
@@ -2681,13 +2858,13 @@ TEST(CApiTest, Indexing_Expr_With_binary_Predicate_Term) {
 
     // load index to segment
     auto conf = knowhere::Config{
+        {knowhere::meta::METRIC_TYPE, knowhere::metric::JACCARD},
         {knowhere::meta::DIM, DIM},
         {knowhere::meta::TOPK, TOPK},
-        {knowhere::IndexParams::nprobe, 10},
-        {knowhere::IndexParams::nlist, 100},
-        {knowhere::IndexParams::m, 4},
-        {knowhere::IndexParams::nbits, 8},
-        {knowhere::Metric::TYPE, knowhere::Metric::JACCARD},
+        {knowhere::indexparam::NPROBE, 10},
+        {knowhere::indexparam::NLIST, 100},
+        {knowhere::indexparam::M, 4},
+        {knowhere::indexparam::NBITS, 8},
     };
 
     auto indexing = generate_index(vec_col.data(), conf, DIM, TOPK, N, IndexEnum::INDEX_FAISS_BIN_IVFFLAT);
@@ -2695,8 +2872,8 @@ TEST(CApiTest, Indexing_Expr_With_binary_Predicate_Term) {
     // gen query dataset
     auto query_dataset = knowhere::GenDataset(num_queries, DIM, query_ptr);
     auto result_on_index = indexing->Query(query_dataset, conf, nullptr);
-    auto ids = result_on_index->Get<int64_t*>(knowhere::meta::IDS);
-    auto dis = result_on_index->Get<float*>(knowhere::meta::DISTANCE);
+    auto ids = knowhere::GetDatasetIDs(result_on_index);
+    auto dis = knowhere::GetDatasetDistance(result_on_index);
     std::vector<int64_t> vec_ids(ids, ids + TOPK * num_queries);
     std::vector<float> vec_dis;
     for (int j = 0; j < TOPK * num_queries; ++j) {
@@ -2770,7 +2947,7 @@ TEST(CApiTest, SealedSegmentTest) {
 
     int N = 10000;
     std::default_random_engine e(67);
-    auto ages = std::vector<int32_t>(N);
+    auto ages = std::vector<int64_t>(N);
     for (auto& age : ages) {
         age = e() % 2000;
     }
@@ -2863,22 +3040,22 @@ TEST(CApiTest, SealedSegment_search_float_Predicate_Range) {
     Timestamp time = 10000000;
 
     // load index to segment
-    auto conf = knowhere::Config{{knowhere::meta::DIM, DIM},
+    auto conf = knowhere::Config{{knowhere::meta::METRIC_TYPE, knowhere::metric::L2},
+                                 {knowhere::meta::DIM, DIM},
                                  {knowhere::meta::TOPK, TOPK},
-                                 {knowhere::IndexParams::nlist, 100},
-                                 {knowhere::IndexParams::nprobe, 10},
-                                 {knowhere::IndexParams::m, 4},
-                                 {knowhere::IndexParams::nbits, 8},
-                                 {knowhere::Metric::TYPE, knowhere::Metric::L2},
-                                 {knowhere::meta::DEVICEID, 0}};
+                                 {knowhere::indexparam::NLIST, 100},
+                                 {knowhere::indexparam::NPROBE, 10},
+                                 {knowhere::indexparam::M, 4},
+                                 {knowhere::indexparam::NBITS, 8},
+                                 {knowhere::meta::DEVICE_ID, 0}};
 
     auto indexing = generate_index(vec_col.data(), conf, DIM, TOPK, N, IndexEnum::INDEX_FAISS_IVFPQ);
 
     // gen query dataset
     auto query_dataset = knowhere::GenDataset(num_queries, DIM, query_ptr);
     auto result_on_index = indexing->Query(query_dataset, conf, nullptr);
-    auto ids = result_on_index->Get<int64_t*>(knowhere::meta::IDS);
-    auto dis = result_on_index->Get<float*>(knowhere::meta::DISTANCE);
+    auto ids = knowhere::GetDatasetIDs(result_on_index);
+    auto dis = knowhere::GetDatasetDistance(result_on_index);
     std::vector<int64_t> vec_ids(ids, ids + TOPK * num_queries);
     std::vector<float> vec_dis;
     for (int j = 0; j < TOPK * num_queries; ++j) {
@@ -2906,8 +3083,8 @@ TEST(CApiTest, SealedSegment_search_float_Predicate_Range) {
     auto query_dataset2 = knowhere::GenDataset(num_queries, DIM, query_ptr);
     auto index = std::dynamic_pointer_cast<knowhere::VecIndex>(load_index_info->index);
     auto result_on_index2 = index->Query(query_dataset2, conf, nullptr);
-    auto ids2 = result_on_index2->Get<int64_t*>(knowhere::meta::IDS);
-    auto dis2 = result_on_index2->Get<float*>(knowhere::meta::DISTANCE);
+    auto ids2 = knowhere::GetDatasetIDs(result_on_index2);
+    auto dis2 = knowhere::GetDatasetDistance(result_on_index2);
 
     auto c_counter_field_data = CLoadFieldDataInfo{
         101,
@@ -3158,14 +3335,14 @@ TEST(CApiTest, SealedSegment_search_float_With_Expr_Predicate_Range) {
     Timestamp time = 10000000;
 
     // load index to segment
-    auto conf = knowhere::Config{{knowhere::meta::DIM, DIM},
+    auto conf = knowhere::Config{{knowhere::meta::METRIC_TYPE, knowhere::metric::L2},
+                                 {knowhere::meta::DIM, DIM},
                                  {knowhere::meta::TOPK, TOPK},
-                                 {knowhere::IndexParams::nlist, 100},
-                                 {knowhere::IndexParams::nprobe, 10},
-                                 {knowhere::IndexParams::m, 4},
-                                 {knowhere::IndexParams::nbits, 8},
-                                 {knowhere::Metric::TYPE, knowhere::Metric::L2},
-                                 {knowhere::meta::DEVICEID, 0}};
+                                 {knowhere::indexparam::NLIST, 100},
+                                 {knowhere::indexparam::NPROBE, 10},
+                                 {knowhere::indexparam::M, 4},
+                                 {knowhere::indexparam::NBITS, 8},
+                                 {knowhere::meta::DEVICE_ID, 0}};
 
     auto indexing = generate_index(vec_col.data(), conf, DIM, TOPK, N, IndexEnum::INDEX_FAISS_IVFPQ);
 
@@ -3191,8 +3368,8 @@ TEST(CApiTest, SealedSegment_search_float_With_Expr_Predicate_Range) {
     auto query_dataset2 = knowhere::GenDataset(num_queries, DIM, query_ptr);
     auto index = std::dynamic_pointer_cast<knowhere::VecIndex>(load_index_info->index);
     auto result_on_index2 = index->Query(query_dataset2, conf, nullptr);
-    auto ids2 = result_on_index2->Get<int64_t*>(knowhere::meta::IDS);
-    auto dis2 = result_on_index2->Get<float*>(knowhere::meta::DISTANCE);
+    auto ids2 = knowhere::GetDatasetIDs(result_on_index2);
+    auto dis2 = knowhere::GetDatasetDistance(result_on_index2);
     status = UpdateSealedSegmentIndex(segment, c_load_index_info);
     assert(status.error_code == Success);
 
@@ -3227,8 +3404,8 @@ TEST(CApiTest, SealedSegment_search_float_With_Expr_Predicate_Range) {
     // gen query dataset
     auto query_dataset = knowhere::GenDataset(num_queries, DIM, query_ptr);
     auto result_on_index = indexing->Query(query_dataset, conf, nullptr);
-    auto ids = result_on_index->Get<int64_t*>(knowhere::meta::IDS);
-    auto dis = result_on_index->Get<float*>(knowhere::meta::DISTANCE);
+    auto ids = knowhere::GetDatasetIDs(result_on_index);
+    auto dis = knowhere::GetDatasetDistance(result_on_index);
     std::vector<int64_t> vec_ids(ids, ids + TOPK * num_queries);
     std::vector<float> vec_dis;
     for (int j = 0; j < TOPK * num_queries; ++j) {

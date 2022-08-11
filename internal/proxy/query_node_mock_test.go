@@ -37,15 +37,32 @@ type QueryNodeMock struct {
 
 	state atomic.Value // internal.StateCode
 
-	withSearchResult *internalpb.SearchResults
-	withQueryResult  *internalpb.RetrieveResults
+	withStatisticsResponse *internalpb.GetStatisticsResponse
+	withSearchResult       *internalpb.SearchResults
+	withQueryResult        *internalpb.RetrieveResults
+	queryError             error
+	searchError            error
+	statisticsError        error
+}
+
+func (m *QueryNodeMock) GetStatistics(ctx context.Context, req *querypb.GetStatisticsRequest) (*internalpb.GetStatisticsResponse, error) {
+	if m.statisticsError != nil {
+		return nil, m.statisticsError
+	}
+	return m.withStatisticsResponse, nil
 }
 
 func (m *QueryNodeMock) Search(ctx context.Context, req *querypb.SearchRequest) (*internalpb.SearchResults, error) {
+	if m.searchError != nil {
+		return nil, m.searchError
+	}
 	return m.withSearchResult, nil
 }
 
 func (m *QueryNodeMock) Query(ctx context.Context, req *querypb.QueryRequest) (*internalpb.RetrieveResults, error) {
+	if m.queryError != nil {
+		return nil, m.queryError
+	}
 	return m.withQueryResult, nil
 }
 
@@ -55,11 +72,6 @@ func (m *QueryNodeMock) SyncReplicaSegments(ctx context.Context, req *querypb.Sy
 
 // TODO
 func (m *QueryNodeMock) WatchDmChannels(ctx context.Context, req *querypb.WatchDmChannelsRequest) (*commonpb.Status, error) {
-	return nil, nil
-}
-
-// TODO
-func (m *QueryNodeMock) WatchDeltaChannels(ctx context.Context, req *querypb.WatchDeltaChannelsRequest) (*commonpb.Status, error) {
 	return nil, nil
 }
 
@@ -104,5 +116,8 @@ func (m *QueryNodeMock) GetStatisticsChannel(ctx context.Context) (*milvuspb.Str
 	return nil, nil
 }
 func (m *QueryNodeMock) GetTimeTickChannel(ctx context.Context) (*milvuspb.StringResponse, error) {
+	return nil, nil
+}
+func (m *QueryNodeMock) ShowConfigurations(ctx context.Context, req *internalpb.ShowConfigurationsRequest) (*internalpb.ShowConfigurationsResponse, error) {
 	return nil, nil
 }

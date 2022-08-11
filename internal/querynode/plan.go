@@ -17,10 +17,7 @@
 package querynode
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../core/output/include
-#cgo darwin LDFLAGS: -L${SRCDIR}/../core/output/lib -lmilvus_segcore -Wl,-rpath,"${SRCDIR}/../core/output/lib"
-#cgo linux LDFLAGS: -L${SRCDIR}/../core/output/lib -lmilvus_segcore -Wl,-rpath=${SRCDIR}/../core/output/lib
-#cgo windows LDFLAGS: -L${SRCDIR}/../core/output/lib -lmilvus_segcore -Wl,-rpath=${SRCDIR}/../core/output/lib
+#cgo pkg-config: milvus_segcore
 
 #include "segcore/collection_c.h"
 #include "segcore/segment_c.h"
@@ -30,9 +27,10 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"unsafe"
+
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
-	"unsafe"
 )
 
 // SearchPlan is a wrapper of the underlying C-structure C.CSearchPlan
@@ -96,6 +94,8 @@ type searchRequest struct {
 	plan              *SearchPlan
 	cPlaceholderGroup C.CPlaceholderGroup
 	timestamp         Timestamp
+	msgID             UniqueID
+	searchFieldID     UniqueID
 }
 
 func newSearchRequest(collection *Collection, req *querypb.SearchRequest, placeholderGrp []byte) (*searchRequest, error) {
@@ -130,10 +130,19 @@ func newSearchRequest(collection *Collection, req *querypb.SearchRequest, placeh
 		return nil, err
 	}
 
+	var fieldID C.int64_t
+	status = C.GetFieldID(plan.cSearchPlan, &fieldID)
+	if err = HandleCStatus(&status, "get fieldID from plan failed"); err != nil {
+		plan.delete()
+		return nil, err
+	}
+
 	ret := &searchRequest{
 		plan:              plan,
 		cPlaceholderGroup: cPlaceholderGroup,
 		timestamp:         req.Req.GetTravelTimestamp(),
+		msgID:             req.GetReq().GetBase().GetMsgID(),
+		searchFieldID:     int64(fieldID),
 	}
 
 	return ret, nil
@@ -172,9 +181,10 @@ func parseSearchRequest(plan *SearchPlan, searchRequestBlob []byte) (*searchRequ
 type RetrievePlan struct {
 	cRetrievePlan C.CRetrievePlan
 	Timestamp     Timestamp
+	msgID         UniqueID // only used to debug.
 }
 
-func createRetrievePlanByExpr(col *Collection, expr []byte, timestamp Timestamp) (*RetrievePlan, error) {
+func createRetrievePlanByExpr(col *Collection, expr []byte, timestamp Timestamp, msgID UniqueID) (*RetrievePlan, error) {
 	var cPlan C.CRetrievePlan
 	status := C.CreateRetrievePlanByExpr(col.collectionPtr, unsafe.Pointer(&expr[0]), (C.int64_t)(len(expr)), &cPlan)
 
@@ -186,6 +196,7 @@ func createRetrievePlanByExpr(col *Collection, expr []byte, timestamp Timestamp)
 	var newPlan = &RetrievePlan{
 		cRetrievePlan: cPlan,
 		Timestamp:     timestamp,
+		msgID:         msgID,
 	}
 	return newPlan, nil
 }

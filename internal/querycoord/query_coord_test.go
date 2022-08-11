@@ -23,7 +23,9 @@ import (
 	"math/rand"
 	"os"
 	"os/signal"
+	"path"
 	"strconv"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -36,9 +38,12 @@ import (
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
+	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
+	"github.com/milvus-io/milvus/internal/util"
 	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/etcd"
+	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 )
 
@@ -51,10 +56,10 @@ func setup() {
 func refreshParams() {
 	rand.Seed(time.Now().UnixNano())
 	suffix := "-test-query-Coord" + strconv.FormatInt(rand.Int63(), 10)
-	Params.CommonCfg.QueryNodeStats = Params.CommonCfg.QueryNodeStats + suffix
 	Params.CommonCfg.QueryCoordTimeTick = Params.CommonCfg.QueryCoordTimeTick + suffix
 	Params.EtcdCfg.MetaRootPath = Params.EtcdCfg.MetaRootPath + suffix
 	GlobalSegmentInfos = make(map[UniqueID]*querypb.SegmentInfo)
+	Params.QueryCoordCfg.RetryInterval = int64(1 * time.Millisecond)
 }
 
 func TestMain(m *testing.M) {
@@ -238,7 +243,7 @@ func TestWatchNodeLoop(t *testing.T) {
 		err = removeNodeSession(nodeID)
 		assert.Nil(t, err)
 
-		waitAllQueryNodeOffline(queryCoord.cluster, onlineNodeIDs)
+		waitAllQueryNodeOffline(queryCoord.cluster, onlineNodeIDs...)
 
 		queryCoord.Stop()
 		err = removeAllSession()
@@ -305,7 +310,7 @@ func TestHandoffSegmentLoop(t *testing.T) {
 			SegmentState: commonpb.SegmentState_Sealed,
 		}
 
-		key := fmt.Sprintf("%s/%d/%d/%d", handoffSegmentPrefix, defaultCollectionID, defaultPartitionID, defaultSegmentID)
+		key := fmt.Sprintf("%s/%d/%d/%d", util.HandoffSegmentPrefix, defaultCollectionID, defaultPartitionID, defaultSegmentID)
 		value, err := proto.Marshal(segmentInfo)
 		assert.Nil(t, err)
 		err = queryCoord.kvClient.Save(key, string(value))
@@ -350,11 +355,12 @@ func TestHandoffSegmentLoop(t *testing.T) {
 		waitTaskFinalState(handoffTask, taskExpired)
 	})
 
+	// genReleaseCollectionTask(baseCtx, queryCoord)
+	queryCoord.meta.releaseCollection(defaultCollectionID)
 	loadCollectionTask := genLoadCollectionTask(baseCtx, queryCoord)
 	err = queryCoord.scheduler.Enqueue(loadCollectionTask)
 	assert.Nil(t, err)
 	waitTaskFinalState(loadCollectionTask, taskExpired)
-	queryCoord.meta.setLoadType(defaultCollectionID, querypb.LoadType_LoadCollection)
 
 	t.Run("Test handoffGrowingSegment", func(t *testing.T) {
 		infos := queryCoord.meta.showSegmentInfos(defaultCollectionID, nil)
@@ -458,7 +464,8 @@ func TestHandoffSegmentLoop(t *testing.T) {
 			Base: &commonpb.MsgBase{
 				MsgType: commonpb.MsgType_HandoffSegments,
 			},
-			SegmentInfos: []*querypb.SegmentInfo{segmentInfo},
+			SegmentInfos:     []*querypb.SegmentInfo{segmentInfo},
+			ReleasedSegments: []int64{defaultSegmentID, defaultSegmentID + 1},
 		}
 		handoffTask := &handoffTask{
 			baseTask:               baseTask,
@@ -558,55 +565,49 @@ func TestHandoffSegmentLoop(t *testing.T) {
 
 func TestLoadBalanceSegmentLoop(t *testing.T) {
 	refreshParams()
+	defer removeAllSession()
 	Params.QueryCoordCfg.BalanceIntervalSeconds = 10
 	baseCtx := context.Background()
-
 	queryCoord, err := startQueryCoord(baseCtx)
 	assert.Nil(t, err)
 	queryCoord.cluster.(*queryNodeCluster).segmentAllocator = shuffleSegmentsToQueryNode
+	defer queryCoord.Stop()
 
 	queryNode1, err := startQueryNodeServer(baseCtx)
 	assert.Nil(t, err)
 	waitQueryNodeOnline(queryCoord.cluster, queryNode1.queryNodeID)
+	defer queryNode1.stop()
 
 	loadCollectionTask := genLoadCollectionTask(baseCtx, queryCoord)
 	err = queryCoord.scheduler.Enqueue(loadCollectionTask)
 	assert.Nil(t, err)
 	waitTaskFinalState(loadCollectionTask, taskExpired)
 
-	partitionID := defaultPartitionID
-	for {
-		req := &querypb.LoadPartitionsRequest{
-			Base: &commonpb.MsgBase{
-				MsgType: commonpb.MsgType_LoadPartitions,
+	memory := uint64(1 << 30)
+	queryNode1.getMetrics = func() (*milvuspb.GetMetricsResponse, error) {
+		nodeInfo := metricsinfo.QueryNodeInfos{
+			BaseComponentInfos: metricsinfo.BaseComponentInfos{
+				HardwareInfos: metricsinfo.HardwareMetrics{
+					Memory:      1 << 30,
+					MemoryUsage: memory - memory/10, // >= memory*0.9
+				},
 			},
-			CollectionID:  defaultCollectionID,
-			PartitionIDs:  []UniqueID{partitionID},
-			Schema:        genDefaultCollectionSchema(false),
-			ReplicaNumber: 1,
 		}
-		baseTask := newBaseTask(baseCtx, querypb.TriggerCondition_GrpcRequest)
-		loadPartitionTask := &loadPartitionTask{
-			baseTask:              baseTask,
-			LoadPartitionsRequest: req,
-			broker:                queryCoord.broker,
-			cluster:               queryCoord.cluster,
-			meta:                  queryCoord.meta,
-		}
-		err = queryCoord.scheduler.Enqueue(loadPartitionTask)
-		assert.Nil(t, err)
-		waitTaskFinalState(loadPartitionTask, taskExpired)
-		nodeInfo, err := queryCoord.cluster.GetNodeInfoByID(queryNode1.queryNodeID)
-		assert.Nil(t, err)
-		if nodeInfo.(*queryNode).memUsageRate >= Params.QueryCoordCfg.OverloadedMemoryThresholdPercentage {
-			break
-		}
-		partitionID++
+
+		nodeInfoResp, err := metricsinfo.MarshalComponentInfos(nodeInfo)
+		return &milvuspb.GetMetricsResponse{
+			Status:   &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success},
+			Response: nodeInfoResp,
+		}, err
 	}
+	nodeInfo, err := queryCoord.cluster.GetNodeInfoByID(queryNode1.queryNodeID)
+	assert.Nil(t, err)
+	assert.GreaterOrEqual(t, nodeInfo.(*queryNode).memUsageRate, Params.QueryCoordCfg.OverloadedMemoryThresholdPercentage)
 
 	queryNode2, err := startQueryNodeServer(baseCtx)
 	assert.Nil(t, err)
 	waitQueryNodeOnline(queryCoord.cluster, queryNode2.queryNodeID)
+	defer queryNode2.stop()
 
 	// if sealed has been balance to query node2, than balance work
 	for {
@@ -618,11 +619,116 @@ func TestLoadBalanceSegmentLoop(t *testing.T) {
 		})
 		assert.Nil(t, err)
 		if len(segmentInfos) > 0 {
+			queryNode1.getMetrics = returnSuccessGetMetricsResult
 			break
 		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func TestQueryCoord_watchHandoffSegmentLoop(t *testing.T) {
+	Params.Init()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	etcdCli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
+	assert.Nil(t, err)
+	etcdKV := etcdkv.NewEtcdKV(etcdCli, Params.EtcdCfg.MetaRootPath)
+
+	qc := &QueryCoord{
+		loopCtx:  ctx,
+		loopWg:   sync.WaitGroup{},
+		kvClient: etcdKV,
+		handoffHandler: &HandoffHandler{
+			ctx:    ctx,
+			cancel: cancel,
+			client: etcdKV,
+		},
 	}
 
-	queryCoord.Stop()
-	err = removeAllSession()
-	assert.Nil(t, err)
+	t.Run("chan closed", func(t *testing.T) {
+		qc.loopWg.Add(1)
+		go func() {
+			assert.Panics(t, func() {
+				qc.handoffNotificationLoop()
+			})
+		}()
+
+		etcdCli.Close()
+		qc.loopWg.Wait()
+	})
+
+	t.Run("etcd compaction", func(t *testing.T) {
+		etcdCli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
+		assert.Nil(t, err)
+		etcdKV = etcdkv.NewEtcdKV(etcdCli, Params.EtcdCfg.MetaRootPath)
+		qc.kvClient = etcdKV
+		qc.handoffHandler.client = etcdKV
+		qc.handoffHandler.revision = 0
+		qc.meta = &MetaReplica{}
+		qc.handoffHandler.meta = qc.meta
+		qc.handoffHandler.tasks = make(map[int64]*HandOffTask)
+
+		for i := 1; i < 10; i++ {
+			segInfo := &querypb.SegmentInfo{
+				SegmentID: UniqueID(i),
+			}
+			v, err := proto.Marshal(segInfo)
+			assert.Nil(t, err)
+			key := path.Join(util.HandoffSegmentPrefix, strconv.Itoa(i))
+			err = etcdKV.Save(key, string(v))
+			assert.Nil(t, err)
+		}
+		// The reason there the error is no handle is that if you run compact twice, an error will be reported;
+		// error msg is "etcdserver: mvcc: required revision has been compacted"
+		etcdCli.Compact(ctx, 10)
+		qc.loopWg.Add(1)
+		go qc.handoffNotificationLoop()
+
+		time.Sleep(2 * time.Second)
+		for i := 1; i < 10; i++ {
+			k := path.Join(util.HandoffSegmentPrefix, strconv.Itoa(i))
+			err = etcdKV.Remove(k)
+			assert.Nil(t, err)
+		}
+		cancel()
+		qc.loopWg.Wait()
+	})
+
+	t.Run("etcd compaction and reload failed", func(t *testing.T) {
+		ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		etcdCli, err = etcd.GetEtcdClient(&Params.EtcdCfg)
+		assert.Nil(t, err)
+		etcdKV = etcdkv.NewEtcdKV(etcdCli, Params.EtcdCfg.MetaRootPath)
+		qc.loopCtx = ctx
+		qc.loopCancel = cancel
+		qc.kvClient = etcdKV
+		qc.handoffHandler.client = etcdKV
+		qc.handoffHandler.revision = 0
+		qc.handoffHandler.tasks = make(map[int64]*HandOffTask)
+
+		for i := 1; i < 10; i++ {
+			key := path.Join(util.HandoffSegmentPrefix, strconv.Itoa(i))
+			v := "segment-" + strconv.Itoa(i)
+			err = etcdKV.Save(key, v)
+			assert.Nil(t, err)
+		}
+		// The reason there the error is no handle is that if you run compact twice, an error will be reported;
+		// error msg is "etcdserver: mvcc: required revision has been compacted"
+		etcdCli.Compact(ctx, 10)
+		qc.loopWg.Add(1)
+		go func() {
+			assert.Panics(t, func() {
+				qc.handoffNotificationLoop()
+			})
+		}()
+		qc.loopWg.Wait()
+
+		for i := 1; i < 10; i++ {
+			k := path.Join(util.HandoffSegmentPrefix, strconv.Itoa(i))
+			err = etcdKV.Remove(k)
+			assert.Nil(t, err)
+		}
+	})
 }

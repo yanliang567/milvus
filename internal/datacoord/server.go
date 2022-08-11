@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/minio/minio-go/v7"
-	"github.com/minio/minio-go/v7/pkg/credentials"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 
@@ -42,8 +41,10 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
+	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/dependency"
+	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/logutil"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
@@ -129,7 +130,7 @@ type Server struct {
 
 	session   *sessionutil.Session
 	dnEventCh <-chan *sessionutil.SessionEvent
-	icEventCh <-chan *sessionutil.SessionEvent
+	//icEventCh <-chan *sessionutil.SessionEvent
 	qcEventCh <-chan *sessionutil.SessionEvent
 	rcEventCh <-chan *sessionutil.SessionEvent
 
@@ -282,15 +283,16 @@ func (s *Server) Start() error {
 	}
 
 	s.allocator = newRootCoordAllocator(s.rootCoordClient)
+
+	if err = s.initServiceDiscovery(); err != nil {
+		return err
+	}
+
 	if Params.DataCoordCfg.EnableCompaction {
 		s.createCompactionHandler()
 		s.createCompactionTrigger()
 	}
-
 	s.startSegmentManager()
-	if err = s.initServiceDiscovery(); err != nil {
-		return err
-	}
 
 	if err = s.initGarbageCollection(); err != nil {
 		return err
@@ -333,7 +335,7 @@ func (s *Server) SetEtcdClient(client *clientv3.Client) {
 }
 
 func (s *Server) createCompactionHandler() {
-	s.compactionHandler = newCompactionPlanHandler(s.sessionManager, s.channelManager, s.meta, s.allocator, s.flushCh)
+	s.compactionHandler = newCompactionPlanHandler(s.sessionManager, s.channelManager, s.meta, s.allocator, s.flushCh, s.segReferManager)
 	s.compactionHandler.start()
 }
 
@@ -342,7 +344,7 @@ func (s *Server) stopCompactionHandler() {
 }
 
 func (s *Server) createCompactionTrigger() {
-	s.compactionTrigger = newCompactionTrigger(s.meta, s.compactionHandler, s.allocator)
+	s.compactionTrigger = newCompactionTrigger(s.meta, s.compactionHandler, s.allocator, s.segReferManager)
 	s.compactionTrigger.start()
 }
 
@@ -351,39 +353,40 @@ func (s *Server) stopCompactionTrigger() {
 }
 
 func (s *Server) initGarbageCollection() error {
-	var cli *minio.Client
+	var cli storage.ChunkManager
 	var err error
-	if Params.DataCoordCfg.EnableGarbageCollection {
-		var creds *credentials.Credentials
-		if Params.MinioCfg.UseIAM {
-			creds = credentials.NewIAM(Params.MinioCfg.IAMEndpoint)
-		} else {
-			creds = credentials.NewStaticV4(Params.MinioCfg.AccessKeyID, Params.MinioCfg.SecretAccessKey, "")
-		}
-		// TODO: We call minio.New in different places with same procedures to call several functions.
-		// We should abstract this to a focade function to avoid applying changes to only one place.
-		cli, err = minio.New(Params.MinioCfg.Address, &minio.Options{
-			Creds:  creds,
-			Secure: Params.MinioCfg.UseSSL,
-		})
+	if Params.CommonCfg.StorageType == "minio" {
+		chunkManagerFactory := storage.NewChunkManagerFactory("local", "minio",
+			storage.RootPath(Params.LocalStorageCfg.Path),
+			storage.Address(Params.MinioCfg.Address),
+			storage.AccessKeyID(Params.MinioCfg.AccessKeyID),
+			storage.SecretAccessKeyID(Params.MinioCfg.SecretAccessKey),
+			storage.UseSSL(Params.MinioCfg.UseSSL),
+			storage.BucketName(Params.MinioCfg.BucketName),
+			storage.UseIAM(Params.MinioCfg.UseIAM),
+			storage.IAMEndpoint(Params.MinioCfg.IAMEndpoint),
+			storage.CreateBucket(true))
+		cli, err = chunkManagerFactory.NewVectorStorageChunkManager(s.ctx)
 		if err != nil {
-			return fmt.Errorf("failed to create minio client: %v", err)
-		}
-		// retry times shall be two, just to prevent
-		// 1. bucket not exists
-		// 2. bucket is created by other componnent
-		// 3. datacoord try to create but failed with bucket already exists error
-		err = retry.Do(s.ctx, getCheckBucketFn(cli), retry.Attempts(2))
-		if err != nil {
+			log.Error("minio chunk manager init failed", zap.String("error", err.Error()))
 			return err
 		}
+		log.Info("minio chunk manager init success", zap.String("bucketname", Params.MinioCfg.BucketName))
+	} else if Params.CommonCfg.StorageType == "local" {
+		chunkManagerFactory := storage.NewChunkManagerFactory("local", "local",
+			storage.RootPath(Params.LocalStorageCfg.Path))
+		cli, err = chunkManagerFactory.NewVectorStorageChunkManager(s.ctx)
+		if err != nil {
+			log.Error("local chunk manager init failed", zap.String("error", err.Error()))
+			return err
+		}
+		log.Info("local chunk manager init success")
 	}
 
 	s.garbageCollector = newGarbageCollector(s.meta, s.segReferManager, GcOption{
-		cli:        cli,
-		enabled:    Params.DataCoordCfg.EnableGarbageCollection,
-		bucketName: Params.MinioCfg.BucketName,
-		rootPath:   Params.MinioCfg.RootPath,
+		cli:      cli,
+		enabled:  Params.DataCoordCfg.EnableGarbageCollection,
+		rootPath: Params.MinioCfg.RootPath,
 
 		checkInterval:    Params.DataCoordCfg.GCInterval,
 		missingTolerance: Params.DataCoordCfg.GCMissingTolerance,
@@ -431,22 +434,23 @@ func (s *Server) initServiceDiscovery() error {
 	// TODO implement rewatch logic
 	s.dnEventCh = s.session.WatchServices(typeutil.DataNodeRole, rev+1, nil)
 
-	icSessions, icRevision, err := s.session.GetSessions(typeutil.IndexCoordRole)
-	if err != nil {
-		log.Error("DataCoord get IndexCoord session failed", zap.Error(err))
-		return err
-	}
-	serverIDs := make([]UniqueID, 0, len(icSessions))
-	for _, session := range icSessions {
-		serverIDs = append(serverIDs, session.ServerID)
-	}
-	s.icEventCh = s.session.WatchServices(typeutil.IndexCoordRole, icRevision+1, nil)
+	//icSessions, icRevision, err := s.session.GetSessions(typeutil.IndexCoordRole)
+	//if err != nil {
+	//	log.Error("DataCoord get IndexCoord session failed", zap.Error(err))
+	//	return err
+	//}
+	//serverIDs := make([]UniqueID, 0, len(icSessions))
+	//for _, session := range icSessions {
+	//	serverIDs = append(serverIDs, session.ServerID)
+	//}
+	//s.icEventCh = s.session.WatchServices(typeutil.IndexCoordRole, icRevision+1, nil)
 
 	qcSessions, qcRevision, err := s.session.GetSessions(typeutil.QueryCoordRole)
 	if err != nil {
 		log.Error("DataCoord get QueryCoord session failed", zap.Error(err))
 		return err
 	}
+	serverIDs := make([]UniqueID, 0, len(qcSessions))
 	for _, session := range qcSessions {
 		serverIDs = append(serverIDs, session.ServerID)
 	}
@@ -468,7 +472,7 @@ func (s *Server) initServiceDiscovery() error {
 
 func (s *Server) startSegmentManager() {
 	if s.segmentManager == nil {
-		s.segmentManager = newSegmentManager(s.meta, s.allocator)
+		s.segmentManager = newSegmentManager(s.meta, s.allocator, s.rootCoordClient)
 	}
 }
 
@@ -574,7 +578,9 @@ func (s *Server) handleTimetickMessage(ctx context.Context, ttMsg *msgstream.Dat
 	}
 
 	utcT, _ := tsoutil.ParseHybridTs(ts)
-	metrics.DataCoordSyncEpoch.WithLabelValues(ch).Set(float64(utcT))
+
+	pChannelName := funcutil.ToPhysicalChannel(ch)
+	metrics.DataCoordSyncEpoch.WithLabelValues(pChannelName).Set(float64(utcT))
 
 	s.updateSegmentStatistics(ttMsg.GetSegmentsStats())
 
@@ -637,7 +643,8 @@ func (s *Server) getStaleSegmentsInfo(ch string) []*SegmentInfo {
 		return isSegmentHealthy(info) &&
 			info.GetInsertChannel() == ch &&
 			!info.lastFlushTime.IsZero() &&
-			time.Since(info.lastFlushTime).Minutes() >= segmentTimedFlushDuration
+			time.Since(info.lastFlushTime).Minutes() >= segmentTimedFlushDuration &&
+			info.GetNumOfRows() != 0
 	})
 }
 
@@ -720,12 +727,12 @@ func (s *Server) watchService(ctx context.Context) {
 				}()
 				return
 			}
-		case event, ok := <-s.icEventCh:
-			if !ok {
-				s.stopServiceWatch()
-				return
-			}
-			s.processSessionEvent(ctx, "IndexCoord", event)
+		//case event, ok := <-s.icEventCh:
+		//	if !ok {
+		//		s.stopServiceWatch()
+		//		return
+		//	}
+		//	s.processSessionEvent(ctx, "IndexCoord", event)
 		case event, ok := <-s.qcEventCh:
 			if !ok {
 				s.stopServiceWatch()
@@ -762,7 +769,7 @@ func (s *Server) handleSessionEvent(ctx context.Context, event *sessionutil.Sess
 			zap.String("address", info.Address),
 			zap.Int64("serverID", info.Version))
 		if err := s.cluster.Register(node); err != nil {
-			log.Warn("failed to regisger node", zap.Int64("id", node.NodeID), zap.String("address", node.Address), zap.Error(err))
+			log.Warn("failed to register node", zap.Int64("id", node.NodeID), zap.String("address", node.Address), zap.Error(err))
 			return err
 		}
 		s.metricsCacheManager.InvalidateSystemInfoMetrics()
@@ -771,7 +778,7 @@ func (s *Server) handleSessionEvent(ctx context.Context, event *sessionutil.Sess
 			zap.String("address", info.Address),
 			zap.Int64("serverID", info.Version))
 		if err := s.cluster.UnRegister(node); err != nil {
-			log.Warn("failed to deregisger node", zap.Int64("id", node.NodeID), zap.String("address", node.Address), zap.Error(err))
+			log.Warn("failed to deregister node", zap.Int64("id", node.NodeID), zap.String("address", node.Address), zap.Error(err))
 			return err
 		}
 		s.metricsCacheManager.InvalidateSystemInfoMetrics()

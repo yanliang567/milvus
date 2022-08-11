@@ -24,6 +24,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/util/funcutil"
+
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/common"
@@ -36,6 +38,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util"
 	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
@@ -65,8 +68,11 @@ type Cache interface {
 	GetCredentialInfo(ctx context.Context, username string) (*internalpb.CredentialInfo, error)
 	RemoveCredential(username string)
 	UpdateCredential(credInfo *internalpb.CredentialInfo)
-	GetCredUsernames(ctx context.Context) ([]string, error)
-	ClearCredUsers()
+
+	GetPrivilegeInfo(ctx context.Context) []string
+	GetUserRole(username string) []string
+	RefreshPolicyInfo(op typeutil.CacheOp) error
+	InitPolicyInfo(info []string, userRoles []string)
 }
 
 type collectionInfo struct {
@@ -106,35 +112,48 @@ type MetaCache struct {
 	rootCoord  types.RootCoord
 	queryCoord types.QueryCoord
 
-	collInfo         map[string]*collectionInfo
-	credMap          map[string]*internalpb.CredentialInfo // cache for credential, lazy load
-	credUsernameList []string                              // no need initialize when NewMetaCache
-	mu               sync.RWMutex
-	credMut          sync.RWMutex
-	shardMgr         *shardClientMgr
+	collInfo       map[string]*collectionInfo
+	credMap        map[string]*internalpb.CredentialInfo // cache for credential, lazy load
+	privilegeInfos map[string]struct{}                   // privileges cache
+	userToRoles    map[string]map[string]struct{}        // user to role cache
+	mu             sync.RWMutex
+	credMut        sync.RWMutex
+	privilegeMut   sync.RWMutex
+	shardMgr       *shardClientMgr
 }
 
 // globalMetaCache is singleton instance of Cache
 var globalMetaCache Cache
 
 // InitMetaCache initializes globalMetaCache
-func InitMetaCache(rootCoord types.RootCoord, queryCoord types.QueryCoord, shardMgr *shardClientMgr) error {
+func InitMetaCache(ctx context.Context, rootCoord types.RootCoord, queryCoord types.QueryCoord, shardMgr *shardClientMgr) error {
 	var err error
 	globalMetaCache, err = NewMetaCache(rootCoord, queryCoord, shardMgr)
 	if err != nil {
 		return err
 	}
+
+	// The privilege info is a little more. And to get this info, the query operation of involving multiple table queries is required.
+	resp, err := rootCoord.ListPolicy(ctx, &internalpb.ListPolicyRequest{})
+	if err != nil {
+		log.Error("fail to init meta cache", zap.Error(err))
+		return err
+	}
+	globalMetaCache.InitPolicyInfo(resp.PolicyInfos, resp.UserRoles)
+	log.Debug("success to init meta cache", zap.Strings("policy_infos", resp.PolicyInfos))
 	return nil
 }
 
 // NewMetaCache creates a MetaCache with provided RootCoord and QueryNode
 func NewMetaCache(rootCoord types.RootCoord, queryCoord types.QueryCoord, shardMgr *shardClientMgr) (*MetaCache, error) {
 	return &MetaCache{
-		rootCoord:  rootCoord,
-		queryCoord: queryCoord,
-		collInfo:   map[string]*collectionInfo{},
-		credMap:    map[string]*internalpb.CredentialInfo{},
-		shardMgr:   shardMgr,
+		rootCoord:      rootCoord,
+		queryCoord:     queryCoord,
+		collInfo:       map[string]*collectionInfo{},
+		credMap:        map[string]*internalpb.CredentialInfo{},
+		shardMgr:       shardMgr,
+		privilegeInfos: map[string]struct{}{},
+		userToRoles:    map[string]map[string]struct{}{},
 	}, nil
 }
 
@@ -520,17 +539,7 @@ func (m *MetaCache) GetCredentialInfo(ctx context.Context, username string) (*in
 		m.UpdateCredential(credInfo)
 	}
 
-	return &internalpb.CredentialInfo{
-		Username:          credInfo.Username,
-		EncryptedPassword: credInfo.EncryptedPassword,
-	}, nil
-}
-
-func (m *MetaCache) ClearCredUsers() {
-	m.credMut.Lock()
-	defer m.credMut.Unlock()
-	// clear credUsernameList
-	m.credUsernameList = nil
+	return credInfo, nil
 }
 
 func (m *MetaCache) RemoveCredential(username string) {
@@ -538,8 +547,6 @@ func (m *MetaCache) RemoveCredential(username string) {
 	defer m.credMut.Unlock()
 	// delete pair in credMap
 	delete(m.credMap, username)
-	// clear credUsernameList
-	m.credUsernameList = nil
 }
 
 func (m *MetaCache) UpdateCredential(credInfo *internalpb.CredentialInfo) {
@@ -547,41 +554,13 @@ func (m *MetaCache) UpdateCredential(credInfo *internalpb.CredentialInfo) {
 	defer m.credMut.Unlock()
 	// update credMap
 	username := credInfo.Username
-	password := credInfo.EncryptedPassword
 	_, ok := m.credMap[username]
 	if !ok {
 		m.credMap[username] = &internalpb.CredentialInfo{}
 	}
 	m.credMap[username].Username = username
-	m.credMap[username].EncryptedPassword = password
-}
-
-func (m *MetaCache) UpdateCredUsersListCache(usernames []string) {
-	m.credMut.Lock()
-	defer m.credMut.Unlock()
-	m.credUsernameList = usernames
-}
-
-func (m *MetaCache) GetCredUsernames(ctx context.Context) ([]string, error) {
-	m.credMut.RLock()
-	usernames := m.credUsernameList
-	m.credMut.RUnlock()
-
-	if usernames == nil {
-		req := &milvuspb.ListCredUsersRequest{
-			Base: &commonpb.MsgBase{
-				MsgType: commonpb.MsgType_ListCredUsernames,
-			},
-		}
-		resp, err := m.rootCoord.ListCredUsers(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		usernames = resp.Usernames
-		m.UpdateCredUsersListCache(usernames)
-	}
-
-	return usernames, nil
+	m.credMap[username].Sha256Password = credInfo.Sha256Password
+	m.credMap[username].EncryptedPassword = credInfo.EncryptedPassword
 }
 
 // GetShards update cache if withCache == false
@@ -683,4 +662,71 @@ func (m *MetaCache) ClearShards(collectionName string) {
 	if ok {
 		_ = m.shardMgr.UpdateShardLeaders(info.shardLeaders, nil)
 	}
+}
+
+func (m *MetaCache) InitPolicyInfo(info []string, userRoles []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.privilegeInfos = util.StringSet(info)
+	for _, userRole := range userRoles {
+		user, role, err := funcutil.DecodeUserRoleCache(userRole)
+		if err != nil {
+			log.Warn("invalid user-role key", zap.String("user-role", userRole), zap.Error(err))
+			continue
+		}
+		if m.userToRoles[user] == nil {
+			m.userToRoles[user] = make(map[string]struct{})
+		}
+		m.userToRoles[user][role] = struct{}{}
+	}
+}
+
+func (m *MetaCache) GetPrivilegeInfo(ctx context.Context) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return util.StringList(m.privilegeInfos)
+}
+
+func (m *MetaCache) GetUserRole(user string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return util.StringList(m.userToRoles[user])
+}
+
+func (m *MetaCache) RefreshPolicyInfo(op typeutil.CacheOp) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if op.OpKey == "" {
+		return errors.New("empty op key")
+	}
+	switch op.OpType {
+	case typeutil.CacheGrantPrivilege:
+		m.privilegeInfos[op.OpKey] = struct{}{}
+	case typeutil.CacheRevokePrivilege:
+		delete(m.privilegeInfos, op.OpKey)
+	case typeutil.CacheAddUserToRole:
+		user, role, err := funcutil.DecodeUserRoleCache(op.OpKey)
+		if err != nil {
+			return fmt.Errorf("invalid opKey, fail to decode, op_type: %d, op_key: %s", int(op.OpType), op.OpKey)
+		}
+		if m.userToRoles[user] == nil {
+			m.userToRoles[user] = make(map[string]struct{})
+		}
+		m.userToRoles[user][role] = struct{}{}
+	case typeutil.CacheRemoveUserFromRole:
+		user, role, err := funcutil.DecodeUserRoleCache(op.OpKey)
+		if err != nil {
+			return fmt.Errorf("invalid opKey, fail to decode, op_type: %d, op_key: %s", int(op.OpType), op.OpKey)
+		}
+		if m.userToRoles[user] != nil {
+			delete(m.userToRoles[user], role)
+		}
+	default:
+		return fmt.Errorf("invalid opType, op_type: %d, op_key: %s", int(op.OpType), op.OpKey)
+	}
+	return nil
 }

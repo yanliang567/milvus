@@ -42,10 +42,6 @@ import (
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
-const (
-	queryNodeInfoPrefix = "queryCoord-queryNodeInfo"
-)
-
 // Cluster manages all query node connections and grpc requests
 type Cluster interface {
 	// Collection/Parition
@@ -62,8 +58,6 @@ type Cluster interface {
 
 	// Channel
 	WatchDmChannels(ctx context.Context, nodeID int64, in *querypb.WatchDmChannelsRequest) error
-	WatchDeltaChannels(ctx context.Context, nodeID int64, in *querypb.WatchDeltaChannelsRequest) error
-	HasWatchedDeltaChannel(ctx context.Context, nodeID int64, collectionID UniqueID) bool
 
 	// Node
 	RegisterNode(ctx context.Context, session *sessionutil.Session, id UniqueID, state nodeState) error
@@ -107,14 +101,14 @@ type queryNodeCluster struct {
 
 	sync.RWMutex
 	clusterMeta      Meta
-	handler          *channelUnsubscribeHandler
+	cleaner          *ChannelCleaner
 	nodes            map[int64]Node
 	newNodeFn        newQueryNodeFn
 	segmentAllocator SegmentAllocatePolicy
 	channelAllocator ChannelAllocatePolicy
 }
 
-func newQueryNodeCluster(ctx context.Context, clusterMeta Meta, kv *etcdkv.EtcdKV, newNodeFn newQueryNodeFn, session *sessionutil.Session, handler *channelUnsubscribeHandler) (Cluster, error) {
+func newQueryNodeCluster(ctx context.Context, clusterMeta Meta, kv *etcdkv.EtcdKV, newNodeFn newQueryNodeFn, session *sessionutil.Session, cleaner *ChannelCleaner) (Cluster, error) {
 	childCtx, cancel := context.WithCancel(ctx)
 	nodes := make(map[int64]Node)
 	c := &queryNodeCluster{
@@ -123,7 +117,7 @@ func newQueryNodeCluster(ctx context.Context, clusterMeta Meta, kv *etcdkv.EtcdK
 		client:           kv,
 		session:          session,
 		clusterMeta:      clusterMeta,
-		handler:          handler,
+		cleaner:          cleaner,
 		nodes:            nodes,
 		newNodeFn:        newNodeFn,
 		segmentAllocator: defaultSegAllocatePolicy(),
@@ -213,48 +207,44 @@ func (c *queryNodeCluster) LoadSegments(ctx context.Context, nodeID int64, in *q
 
 	if targetNode != nil {
 		collectionID := in.CollectionID
-		// if node has watched the collection's deltaChannel
-		// then the node should recover part delete log from dmChanel
-		if c.HasWatchedDeltaChannel(ctx, nodeID, collectionID) {
-			// get all deltaChannelInfo of the collection from meta
-			deltaChannelInfos, err := c.clusterMeta.getDeltaChannelsByCollectionID(collectionID)
+		// get all deltaChannelInfo of the collection from meta
+		deltaChannelInfos, err := c.clusterMeta.getDeltaChannelsByCollectionID(collectionID)
+		if err != nil {
+			// this case should not happen
+			// deltaChannelInfos should have been set to meta before executing child tasks
+			log.Error("loadSegments: failed to get deltaChannelInfo from meta", zap.Error(err))
+			return err
+		}
+		deltaChannel2Info := make(map[string]*datapb.VchannelInfo, len(deltaChannelInfos))
+		for _, info := range deltaChannelInfos {
+			deltaChannel2Info[info.ChannelName] = info
+		}
+
+		// check delta channel which should be reloaded
+		reloadDeltaChannels := make(map[string]struct{})
+		for _, segment := range in.Infos {
+			// convert vChannel to deltaChannel
+			deltaChannelName, err := funcutil.ConvertChannelName(segment.InsertChannel, Params.CommonCfg.RootCoordDml, Params.CommonCfg.RootCoordDelta)
 			if err != nil {
-				// this case should not happen
-				// deltaChannelInfos should have been set to meta before executing child tasks
-				log.Error("loadSegments: failed to get deltaChannelInfo from meta", zap.Error(err))
 				return err
 			}
-			deltaChannel2Info := make(map[string]*datapb.VchannelInfo, len(deltaChannelInfos))
-			for _, info := range deltaChannelInfos {
-				deltaChannel2Info[info.ChannelName] = info
-			}
 
-			// check delta channel which should be reloaded
-			reloadDeltaChannels := make(map[string]struct{})
-			for _, segment := range in.Infos {
-				// convert vChannel to deltaChannel
-				deltaChannelName, err := funcutil.ConvertChannelName(segment.InsertChannel, Params.CommonCfg.RootCoordDml, Params.CommonCfg.RootCoordDelta)
-				if err != nil {
-					return err
-				}
+			reloadDeltaChannels[deltaChannelName] = struct{}{}
+		}
 
-				reloadDeltaChannels[deltaChannelName] = struct{}{}
-			}
-
-			in.DeltaPositions = make([]*internalpb.MsgPosition, 0)
-			for deltaChannelName := range reloadDeltaChannels {
-				if info, ok := deltaChannel2Info[deltaChannelName]; ok {
-					in.DeltaPositions = append(in.DeltaPositions, info.SeekPosition)
-				} else {
-					// this case should not happen
-					err = fmt.Errorf("loadSegments: can't find deltaChannelInfo, channel name = %s", deltaChannelName)
-					log.Error(err.Error())
-					return err
-				}
+		in.DeltaPositions = make([]*internalpb.MsgPosition, 0)
+		for deltaChannelName := range reloadDeltaChannels {
+			if info, ok := deltaChannel2Info[deltaChannelName]; ok {
+				in.DeltaPositions = append(in.DeltaPositions, info.SeekPosition)
+			} else {
+				// this case should not happen
+				err = fmt.Errorf("loadSegments: can't find deltaChannelInfo, channel name = %s", deltaChannelName)
+				log.Error(err.Error())
+				return err
 			}
 		}
 
-		err := targetNode.loadSegments(ctx, in)
+		err = targetNode.loadSegments(ctx, in)
 		if err != nil {
 			log.Warn("loadSegments: queryNode load segments error", zap.Int64("nodeID", nodeID), zap.String("error info", err.Error()))
 			return err
@@ -332,33 +322,6 @@ func (c *queryNodeCluster) WatchDmChannels(ctx context.Context, nodeID int64, in
 	return fmt.Errorf("watchDmChannels: can't find QueryNode by nodeID, nodeID = %d", nodeID)
 }
 
-func (c *queryNodeCluster) WatchDeltaChannels(ctx context.Context, nodeID int64, in *querypb.WatchDeltaChannelsRequest) error {
-	c.RLock()
-	var targetNode Node
-	if node, ok := c.nodes[nodeID]; ok {
-		targetNode = node
-	}
-	c.RUnlock()
-
-	if targetNode != nil {
-		err := targetNode.watchDeltaChannels(ctx, in)
-		if err != nil {
-			return err
-		}
-
-		return nil
-	}
-
-	return fmt.Errorf("watchDeltaChannels: can't find QueryNode by nodeID, nodeID = %d", nodeID)
-}
-
-func (c *queryNodeCluster) HasWatchedDeltaChannel(ctx context.Context, nodeID int64, collectionID UniqueID) bool {
-	c.RLock()
-	defer c.RUnlock()
-
-	return c.nodes[nodeID].hasWatchedDeltaChannel(collectionID)
-}
-
 func (c *queryNodeCluster) ReleaseCollection(ctx context.Context, nodeID int64, in *querypb.ReleaseCollectionRequest) error {
 	c.RLock()
 	var targetNode Node
@@ -405,11 +368,16 @@ func (c *queryNodeCluster) GetSegmentInfoByID(ctx context.Context, segmentID Uni
 		return nil, err
 	}
 
+	if len(segmentInfo.NodeIds) == 0 {
+		return nil, fmt.Errorf("GetSegmentInfoByID: no node loaded the segment %v", segmentID)
+	}
+
+	node := segmentInfo.NodeIds[0]
 	c.RLock()
-	targetNode, ok := c.nodes[segmentInfo.NodeID]
+	targetNode, ok := c.nodes[node]
 	c.RUnlock()
 	if !ok {
-		return nil, fmt.Errorf("updateSegmentInfo: can't find query node by nodeID, nodeID = %d", segmentInfo.NodeID)
+		return nil, fmt.Errorf("GetSegmentInfoByID: can't find query node by nodeID, nodeID=%v", node)
 	}
 
 	res, err := targetNode.getSegmentInfo(ctx, &querypb.GetSegmentInfoRequest{
@@ -429,7 +397,7 @@ func (c *queryNodeCluster) GetSegmentInfoByID(ctx context.Context, segmentID Uni
 		}
 	}
 
-	return nil, fmt.Errorf("updateSegmentInfo: can't find segment %d on QueryNode %d", segmentID, segmentInfo.NodeID)
+	return nil, fmt.Errorf("GetSegmentInfoByID: can't find segment %d on QueryNode %d", segmentID, node)
 }
 
 func (c *queryNodeCluster) GetSegmentInfo(ctx context.Context, in *querypb.GetSegmentInfoRequest) ([]*querypb.SegmentInfo, error) {
@@ -461,43 +429,10 @@ func (c *queryNodeCluster) GetSegmentInfo(ctx context.Context, in *querypb.GetSe
 		}
 	}
 
-	// Fetch growing segments
-	c.RLock()
-	var wg sync.WaitGroup
-	cnt := len(c.nodes)
-	resChan := make(chan respTuple, cnt)
-	wg.Add(cnt)
-	for _, node := range c.nodes {
-		go func(node Node) {
-			defer wg.Done()
-			res, err := node.getSegmentInfo(ctx, in)
-			resChan <- respTuple{
-				res: res,
-				err: err,
-			}
-		}(node)
-	}
-	c.RUnlock()
-	wg.Wait()
-	close(resChan)
-
-	for tuple := range resChan {
-		if tuple.err != nil {
-			return nil, tuple.err
-		}
-
-		segments := tuple.res.GetInfos()
-		for _, segment := range segments {
-			if segment.SegmentState != commonpb.SegmentState_Sealed {
-				segmentInfos = append(segmentInfos, segment)
-			}
-		}
-	}
-
-	//TODO::update meta
 	return segmentInfos, nil
 }
 
+// Deprecated
 func (c *queryNodeCluster) GetSegmentInfoByNode(ctx context.Context, nodeID int64, in *querypb.GetSegmentInfoRequest) ([]*querypb.SegmentInfo, error) {
 	c.RLock()
 	node, ok := c.nodes[nodeID]
@@ -571,13 +506,14 @@ func (c *queryNodeCluster) setNodeState(nodeID int64, node Node, state nodeState
 
 		// 2.add unsubscribed channels to handler, handler will auto unsubscribe channel
 		if len(unsubscribeChannelInfo.CollectionChannels) != 0 {
-			c.handler.addUnsubscribeChannelInfo(unsubscribeChannelInfo)
+			c.cleaner.addUnsubscribeChannelInfo(unsubscribeChannelInfo)
 		}
 	}
 
 	node.setState(state)
 }
 
+// TODO, registerNode return error is not handled correctly
 func (c *queryNodeCluster) RegisterNode(ctx context.Context, session *sessionutil.Session, id UniqueID, state nodeState) error {
 	c.Lock()
 	defer c.Unlock()

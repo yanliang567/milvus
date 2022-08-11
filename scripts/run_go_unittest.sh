@@ -19,13 +19,8 @@
 # Exit immediately for non zero status
 set -e
 
-SOURCE="${BASH_SOURCE[0]}"
-while [ -h "$SOURCE" ]; do # resolve $SOURCE until the file is no longer a symlink
-  DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
-  SOURCE="$(readlink "$SOURCE")"
-  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE" # if $SOURCE was a relative symlink, we need to resolve it relative to the path where the symlink file was located
-done
-ROOT_DIR="$( cd -P "$( dirname "$SOURCE" )/.." && pwd )"
+BASEDIR=$(dirname "$0")
+source $BASEDIR/setenv.sh
 
 if [[ $(uname -s) == "Darwin" ]]; then
     export MallocNanoZone=0
@@ -41,9 +36,10 @@ echo "Running go unittest under $MILVUS_DIR"
 
 go test -race -cover ${APPLE_SILICON_FLAG} "${MILVUS_DIR}/allocator/..." -failfast
 go test -race -cover ${APPLE_SILICON_FLAG} "${MILVUS_DIR}/kv/..." -failfast
-go test -race -cover ${APPLE_SILICON_FLAG} $(go list "${MILVUS_DIR}/mq/..." | grep -v kafka)  -failfast
+go test -race -cover ${APPLE_SILICON_FLAG} "${MILVUS_DIR}/mq/..." -failfast
 go test -race -cover ${APPLE_SILICON_FLAG} "${MILVUS_DIR}/storage" -failfast
 go test -race -cover ${APPLE_SILICON_FLAG} "${MILVUS_DIR}/tso/..." -failfast
+go test -race -cover ${APPLE_SILICON_FLAG} "${MILVUS_DIR}/config/..." -failfast
 go test -race -cover ${APPLE_SILICON_FLAG} "${MILVUS_DIR}/util/funcutil/..." -failfast
 go test -race -cover ${APPLE_SILICON_FLAG} "${MILVUS_DIR}/util/paramtable/..." -failfast
 go test -race -cover ${APPLE_SILICON_FLAG} "${MILVUS_DIR}/util/retry/..." -failfast

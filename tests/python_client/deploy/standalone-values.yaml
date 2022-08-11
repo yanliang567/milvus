@@ -2,14 +2,21 @@ cluster:
   enabled: false
 image:
   all:
-    repository: milvusdb/milvus-dev
+    repository: milvusdb/milvus
     tag: master-latest
     pullPolicy: IfNotPresent
+
+kafka:
+  enabled: false
+  name: kafka
+  replicaCount: 3
+  defaultReplicationFactor: 2
+
 etcd:
   replicaCount: 1
   image:
     repository: milvusdb/etcd
-    tag: 3.5.0-r1  
+    tag: 3.5.0-r7  
 minio:
   mode: standalone
 pulsar:

@@ -84,6 +84,8 @@ pulsar:
 #  brokerList: localhost1:9092,localhost2:9092,localhost3:9092
 #  saslUsername: username
 #  saslPassword: password
+#  saslMechanisms: PLAIN
+#  securityProtocol: SASL_SSL
 
 rocksmq:
   # please adjust in embedded Milvus: /tmp/milvus/rdb_data
@@ -91,6 +93,7 @@ rocksmq:
   rocksmqPageSize: 2147483648 # 2 GB, 2 * 1024 * 1024 * 1024 bytes, The size of each page of messages in rocksmq
   retentionTimeInMinutes: 10080 # 7 days, 7 * 24 * 60 minutes, The retention time of the message in rocksmq.
   retentionSizeInMB: 8192 # 8 GB, 8 * 1024 MB, The retention size of the message in rocksmq.
+  lrucacheratio:  0.06 # rocksdb cache memory ratio
 
 # Related configuration of rootCoord, used to handle data definition language (DDL) and data control language (DCL) requests
 rootCoord:
@@ -132,9 +135,6 @@ proxy:
   http:
     enabled: true # Whether to enable the http server
     debug_mode: false # Whether to enable http server debug mode
-    port: 8080 # Whether to enable the http server
-    readTimeout: 30000 # 30000 ms http read timeout
-    writeTimeout: 30000 # 30000 ms http write timeout
 
   timeTickInterval: 200 # ms, the interval that proxy synchronize the time tick
   msgStream:
@@ -173,37 +173,45 @@ queryNode:
       maxParallelism: 1024 # Maximum number of tasks executed in parallel in the flowgraph
   # Segcore will divide a segment into multiple chunks to enbale small index
   segcore:
-    chunkRows: 32768 # The number of vectors in a chunk.
+    chunkRows: 1024 # The number of vectors in a chunk.
     # Note: we have disabled segment small index since @2022.05.12. So below related configurations won't work.
     # We won't create small index for growing segments and search on these segments will directly use bruteforce scan.
     smallIndex:
-      nlist: 256 # small index nlist, recommend to set sqrt(chunkRows), must smaller than chunkRows/8
+      nlist: 128 # small index nlist, recommend to set sqrt(chunkRows), must smaller than chunkRows/8
       nprobe: 16 # nprobe to search small index, based on your accuracy requirement, must smaller than nlist
   cache:
     enabled: true
     memoryLimit: 2147483648 # 2 GB, 2 * 1024 *1024 *1024
 
-  grouping:
-    enabled: true
+  scheduler:
     receiveChanSize: 10240
     unsolvedQueueSize: 10240
+    maxReadConcurrency: 0 # maximum concurrency of read task. if set to less or equal 0, it means no uppper limit.
+    cpuRatio: 10.0 # ratio used to estimate read task cpu usage.
+
+  grouping:
+    enabled: true
     maxNQ: 1000
     topKMergeRatio: 10.0
-
-
 
 indexCoord:
   address: localhost
   port: 31000
 
+  gc:
+    interval: 600 # gc interval in seconds
+
 indexNode:
   port: 21121
+
+  scheduler:
+    buildParallel: 1
 
 dataCoord:
   address: localhost
   port: 13333
   enableCompaction: true # Enable data segment compression
-  enableGarbageCollection: false
+  enableGarbageCollection: true
 
   segment:
     maxSize: 512 # Maximum size of a segment in MB
@@ -255,6 +263,10 @@ grpc:
     dialTimeout:      5000
     keepAliveTime:    10000
     keepAliveTimeout: 20000
+    maxMaxAttempts: 5
+    initialBackOff: 1.0
+    maxBackoff: 60.0
+    backoffMultiplier: 2.0
 
 # Configure the proxy tls enable.
 tls:
@@ -304,7 +316,6 @@ common:
 
   # please adjust in embedded Milvus: local
   storageType: minio
-
 
   security:
     authorizationEnabled: false

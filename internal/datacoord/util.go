@@ -19,8 +19,6 @@ package datacoord
 import (
 	"context"
 	"errors"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
@@ -62,9 +60,15 @@ func VerifyResponse(response interface{}, err error) error {
 	return nil
 }
 
-// FailResponse sets status to failed with reason
-func FailResponse(status *commonpb.Status, reason string) {
+// failResponse sets status to failed with unexpected error and reason.
+func failResponse(status *commonpb.Status, reason string) {
 	status.ErrorCode = commonpb.ErrorCode_UnexpectedError
+	status.Reason = reason
+}
+
+// failResponseWithCode sets status to failed with error code and reason.
+func failResponseWithCode(status *commonpb.Status, errCode commonpb.ErrorCode, reason string) {
+	status.ErrorCode = errCode
 	status.Reason = reason
 }
 
@@ -86,10 +90,4 @@ func getCompactTime(ctx context.Context, allocator allocator) (*compactTime, err
 	}
 	// no expiration time
 	return &compactTime{ttRetentionLogic, 0}, nil
-}
-
-func parseSegmentIDByBinlog(path string) (UniqueID, error) {
-	// binlog path should consist of "files/insertLog/collID/partID/segID/fieldID/fileName"
-	keyStr := strings.Split(path, "/")
-	return strconv.ParseInt(keyStr[len(keyStr)-3], 10, 64)
 }

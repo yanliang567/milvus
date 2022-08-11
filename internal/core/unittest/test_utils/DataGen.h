@@ -15,20 +15,20 @@
 #include <cstring>
 #include <memory>
 #include <random>
-#include "google/protobuf/text_format.h"
-#include <knowhere/index/vector_index/VecIndex.h>
-#include <knowhere/index/vector_index/adapter/VectorAdapter.h>
-#include <knowhere/index/vector_index/VecIndexFactory.h>
-#include <knowhere/index/vector_index/IndexIVF.h>
+#include <google/protobuf/text_format.h>
 
 #include "Constants.h"
 #include "common/Schema.h"
+#include "index/ScalarIndexSort.h"
+#include "index/StringIndexSort.h"
+#include "knowhere/index/VecIndex.h"
+#include "knowhere/index/VecIndexFactory.h"
+#include "knowhere/index/vector_index/IndexIVF.h"
+#include "knowhere/index/vector_index/adapter/VectorAdapter.h"
 #include "query/SearchOnIndex.h"
 #include "segcore/SegmentGrowingImpl.h"
 #include "segcore/SegmentSealedImpl.h"
 #include "segcore/Utils.h"
-#include "index/ScalarIndexSort.h"
-#include "index/StringIndexSort.h"
 
 using boost::algorithm::starts_with;
 
@@ -281,6 +281,23 @@ CreatePlaceholderGroup(int64_t num_queries, int dim, int64_t seed = 42) {
 }
 
 inline auto
+CreatePlaceholderGroup(int64_t num_queries, int dim, const std::vector<float>& vecs) {
+    namespace ser = milvus::proto::common;
+    ser::PlaceholderGroup raw_group;
+    auto value = raw_group.add_placeholders();
+    value->set_tag("$0");
+    value->set_type(ser::PlaceholderType::FloatVector);
+    for (int i = 0; i < num_queries; ++i) {
+        std::vector<float> vec;
+        for (int d = 0; d < dim; ++d) {
+            vec.push_back(vecs[i * dim + d]);
+        }
+        value->add_values(vec.data(), vec.size() * sizeof(float));
+    }
+    return raw_group;
+}
+
+inline auto
 CreatePlaceholderGroupFromBlob(int64_t num_queries, int dim, const float* src) {
     namespace ser = milvus::proto::common;
     ser::PlaceholderGroup raw_group;
@@ -340,6 +357,20 @@ CreateBinaryPlaceholderGroupFromBlob(int64_t num_queries, int64_t dim, const uin
     return raw_group;
 }
 
+inline auto
+SearchResultToVector(const SearchResult& sr) {
+    int64_t num_queries = sr.total_nq_;
+    int64_t topk = sr.unity_topK_;
+    std::vector<std::pair<int, float>> result;
+    for (int q = 0; q < num_queries; ++q) {
+        for (int k = 0; k < topk; ++k) {
+            int index = q * topk + k;
+            result.emplace_back(std::make_pair(sr.seg_offsets_[index], sr.distances_[index]));
+        }
+    }
+    return result;
+}
+
 inline json
 SearchResultToJson(const SearchResult& sr) {
     int64_t num_queries = sr.total_nq_;
@@ -357,7 +388,7 @@ SearchResultToJson(const SearchResult& sr) {
 };
 
 inline void
-SealedLoadFieldData(const GeneratedData& dataset, SegmentSealed& seg) {
+SealedLoadFieldData(const GeneratedData& dataset, SegmentSealed& seg, const std::set<int64_t>& exclude_fields = {}) {
     auto row_count = dataset.row_ids_.size();
     {
         LoadFieldDataInfo info;
@@ -378,6 +409,10 @@ SealedLoadFieldData(const GeneratedData& dataset, SegmentSealed& seg) {
         seg.LoadFieldData(info);
     }
     for (auto field_data : dataset.raw_->fields_data()) {
+        int64_t field_id = field_data.field_id();
+        if (exclude_fields.find(field_id) != exclude_fields.end()) {
+            continue;
+        }
         LoadFieldDataInfo info;
         info.field_id = field_data.field_id();
         info.row_count = row_count;
@@ -396,10 +431,10 @@ SealedCreator(SchemaPtr schema, const GeneratedData& dataset) {
 inline knowhere::VecIndexPtr
 GenVecIndexing(int64_t N, int64_t dim, const float* vec) {
     // {knowhere::IndexParams::nprobe, 10},
-    auto conf = knowhere::Config{{knowhere::meta::DIM, dim},
-                                 {knowhere::IndexParams::nlist, 1024},
-                                 {knowhere::Metric::TYPE, knowhere::Metric::L2},
-                                 {knowhere::meta::DEVICEID, 0}};
+    auto conf = knowhere::Config{{knowhere::meta::METRIC_TYPE, knowhere::metric::L2},
+                                 {knowhere::meta::DIM, dim},
+                                 {knowhere::indexparam::NLIST, 1024},
+                                 {knowhere::meta::DEVICE_ID, 0}};
     auto database = knowhere::GenDataset(N, dim, vec);
     auto indexing = std::make_shared<knowhere::IVF>();
     indexing->Train(database, conf);
@@ -435,6 +470,41 @@ translate_text_plan_to_binary_plan(const char* text_plan) {
     std::memcpy(ret.data(), binary_plan.c_str(), binary_plan.size());
 
     return ret;
+}
+
+inline auto
+GenTss(int64_t num, int64_t begin_ts) {
+    std::vector<Timestamp> tss(num, 0);
+    std::iota(tss.begin(), tss.end(), begin_ts);
+    return tss;
+}
+
+inline auto
+GenPKs(int64_t num, int64_t begin_pk) {
+    auto arr = std::make_unique<milvus::proto::schema::LongArray>();
+    for (int64_t i = 0; i < num; i++) {
+        arr->add_data(begin_pk + i);
+    }
+    auto ids = std::make_shared<IdArray>();
+    ids->set_allocated_int_id(arr.release());
+    return ids;
+}
+
+template <typename Iter>
+inline auto
+GenPKs(const Iter begin, const Iter end) {
+    auto arr = std::make_unique<milvus::proto::schema::LongArray>();
+    for (auto it = begin; it != end; it++) {
+        arr->add_data(*it);
+    }
+    auto ids = std::make_shared<IdArray>();
+    ids->set_allocated_int_id(arr.release());
+    return ids;
+}
+
+inline auto
+GenPKs(const std::vector<int64_t>& pks) {
+    return GenPKs(pks.begin(), pks.end());
 }
 
 }  // namespace milvus::segcore

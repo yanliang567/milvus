@@ -34,6 +34,10 @@ func NewKafkaClientInstance(address string) *kafkaClient {
 	return &kafkaClient{basicConfig: config}
 }
 
+func NewKafkaClientInstanceWithConfigMap(config kafka.ConfigMap) *kafkaClient {
+	return &kafkaClient{basicConfig: config}
+}
+
 func NewKafkaClientInstanceWithConfig(config *paramtable.KafkaConfig) *kafkaClient {
 	kafkaConfig := getBasicConfig(config.Address)
 
@@ -43,8 +47,8 @@ func NewKafkaClientInstanceWithConfig(config *paramtable.KafkaConfig) *kafkaClie
 	}
 
 	if config.SaslUsername != "" && config.SaslPassword != "" {
-		kafkaConfig.SetKey("sasl.mechanisms", "PLAIN")
-		kafkaConfig.SetKey("security.protocol", "SASL_SSL")
+		kafkaConfig.SetKey("sasl.mechanisms", config.SaslMechanisms)
+		kafkaConfig.SetKey("security.protocol", config.SecurityProtocol)
 		kafkaConfig.SetKey("sasl.username", config.SaslUsername)
 		kafkaConfig.SetKey("sasl.password", config.SaslPassword)
 	}

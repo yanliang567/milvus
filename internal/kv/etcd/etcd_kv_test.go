@@ -17,12 +17,10 @@
 package etcdkv_test
 
 import (
-	"errors"
 	"os"
 	"testing"
 	"time"
 
-	"github.com/milvus-io/milvus/internal/kv"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/util/etcd"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
@@ -125,6 +123,13 @@ func TestEtcdKV_Load(te *testing.T) {
 			assert.ElementsMatch(t, test.expectedKeys, actualKeys)
 			assert.ElementsMatch(t, test.expectedValues, actualValues)
 			assert.NotZero(t, versions)
+			assert.Equal(t, test.expectedError, err)
+
+			actualKeys, actualValues, versions, revision, err := etcdKV.LoadWithRevisionAndVersions(test.prefix)
+			assert.ElementsMatch(t, test.expectedKeys, actualKeys)
+			assert.ElementsMatch(t, test.expectedValues, actualValues)
+			assert.NotZero(t, versions)
+			assert.NotZero(t, revision)
 			assert.Equal(t, test.expectedError, err)
 		}
 
@@ -725,24 +730,25 @@ func TestEtcdKV_Load(te *testing.T) {
 			assert.Equal(t, revision+1, resp.Header.Revision)
 		}
 
-		var compareErr *kv.CompareFailedError
-		err = etcdKV.CompareVersionAndSwap("a/b/c", 0, "1")
+		success, err := etcdKV.CompareVersionAndSwap("a/b/c", 0, "1")
 		assert.NoError(t, err)
+		assert.True(t, success)
 
 		value, err := etcdKV.Load("a/b/c")
 		assert.NoError(t, err)
 		assert.Equal(t, value, "1")
 
-		err = etcdKV.CompareVersionAndSwap("a/b/c", 0, "1")
-		assert.Error(t, err)
-		assert.True(t, errors.As(err, &compareErr))
+		success, err = etcdKV.CompareVersionAndSwap("a/b/c", 0, "1")
+		assert.NoError(t, err)
+		assert.False(t, success)
 
-		err = etcdKV.CompareValueAndSwap("a/b/c", "1", "2")
+		success, err = etcdKV.CompareValueAndSwap("a/b/c", "1", "2")
+		assert.True(t, success)
 		assert.NoError(t, err)
 
-		err = etcdKV.CompareValueAndSwap("a/b/c", "1", "2")
-		assert.Error(t, err)
-		assert.True(t, errors.As(err, &compareErr))
+		success, err = etcdKV.CompareValueAndSwap("a/b/c", "1", "2")
+		assert.NoError(t, err)
+		assert.False(t, success)
 	})
 
 	te.Run("Etcd Revision Bytes", func(t *testing.T) {
@@ -777,24 +783,25 @@ func TestEtcdKV_Load(te *testing.T) {
 			assert.Equal(t, revision+1, resp.Header.Revision)
 		}
 
-		var compareErr *kv.CompareFailedError
-		err = etcdKV.CompareVersionAndSwapBytes("a/b/c", 0, []byte("1"))
+		success, err := etcdKV.CompareVersionAndSwapBytes("a/b/c", 0, []byte("1"))
 		assert.NoError(t, err)
+		assert.True(t, success)
 
 		value, err := etcdKV.LoadBytes("a/b/c")
 		assert.NoError(t, err)
 		assert.Equal(t, string(value), "1")
 
-		err = etcdKV.CompareVersionAndSwapBytes("a/b/c", 0, []byte("1"))
-		assert.Error(t, err)
-		assert.True(t, errors.As(err, &compareErr))
+		success, err = etcdKV.CompareVersionAndSwapBytes("a/b/c", 0, []byte("1"))
+		assert.NoError(t, err)
+		assert.False(t, success)
 
-		err = etcdKV.CompareValueAndSwapBytes("a/b/c", []byte("1"), []byte("2"))
+		success, err = etcdKV.CompareValueAndSwapBytes("a/b/c", []byte("1"), []byte("2"))
+		assert.True(t, success)
 		assert.NoError(t, err)
 
-		err = etcdKV.CompareValueAndSwapBytes("a/b/c", []byte("1"), []byte("2"))
-		assert.Error(t, err)
-		assert.True(t, errors.As(err, &compareErr))
+		success, err = etcdKV.CompareValueAndSwapBytes("a/b/c", []byte("1"), []byte("2"))
+		assert.NoError(t, err)
+		assert.False(t, success)
 	})
 
 	te.Run("Etcd Lease", func(t *testing.T) {

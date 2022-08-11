@@ -6,11 +6,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/common"
+
 	"github.com/golang/protobuf/proto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
@@ -38,6 +39,10 @@ func TestQueryTask_all(t *testing.T) {
 
 		expr   = fmt.Sprintf("%s > 0", testInt64Field)
 		hitNum = 10
+
+		errPolicy = func(context.Context, *shardClientMgr, func(context.Context, int64, types.QueryNode, []string) error, map[string][]nodeInfo) error {
+			return fmt.Errorf("fake error")
+		}
 	)
 
 	mockCreator := func(ctx context.Context, address string) (types.QueryNode, error) {
@@ -51,7 +56,7 @@ func TestQueryTask_all(t *testing.T) {
 	qc.Start()
 	defer qc.Stop()
 
-	err = InitMetaCache(rc, qc, mgr)
+	err = InitMetaCache(ctx, rc, qc, mgr)
 	assert.NoError(t, err)
 
 	fieldName2Types := map[string]schemapb.DataType{
@@ -124,13 +129,8 @@ func TestQueryTask_all(t *testing.T) {
 			CollectionName: collectionName,
 			Expr:           expr,
 		},
-		qc: qc,
-
-		queryShardPolicy: roundRobinPolicy,
-		shardMgr:         mgr,
-	}
-	for i := 0; i < len(fieldName2Types); i++ {
-		task.RetrieveRequest.OutputFieldsId[i] = int64(common.StartOfUserFieldID + i)
+		qc:       qc,
+		shardMgr: mgr,
 	}
 
 	assert.NoError(t, task.OnEnqueue())
@@ -145,6 +145,11 @@ func TestQueryTask_all(t *testing.T) {
 	// after preExecute
 	assert.Greater(t, task.TimeoutTimestamp, typeutil.ZeroTimestamp)
 
+	task.ctx = ctx
+	task.queryShardPolicy = errPolicy
+	assert.Error(t, task.Execute(ctx))
+
+	task.queryShardPolicy = mergeRoundRobinPolicy
 	result1 := &internalpb.RetrieveResults{
 		Base: &commonpb.MsgBase{MsgType: commonpb.MsgType_RetrieveResult},
 		Status: &commonpb.Status{
@@ -157,170 +162,37 @@ func TestQueryTask_all(t *testing.T) {
 		},
 	}
 
+	outputFieldIDs := make([]UniqueID, 0, len(fieldName2Types))
+	for i := 0; i < len(fieldName2Types); i++ {
+		outputFieldIDs = append(outputFieldIDs, int64(common.StartOfUserFieldID+i))
+	}
+	task.RetrieveRequest.OutputFieldsId = outputFieldIDs
 	for fieldName, dataType := range fieldName2Types {
 		result1.FieldsData = append(result1.FieldsData, generateFieldData(dataType, fieldName, hitNum))
 	}
 
+	task.ctx = ctx
+	qn.queryError = fmt.Errorf("mock error")
+	assert.Error(t, task.Execute(ctx))
+
+	qn.queryError = nil
+	qn.withQueryResult = &internalpb.RetrieveResults{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_NotShardLeader,
+		},
+	}
+	assert.Equal(t, task.Execute(ctx), errInvalidShardLeaders)
+
+	qn.withQueryResult = &internalpb.RetrieveResults{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_UnexpectedError,
+		},
+	}
+	assert.Error(t, task.Execute(ctx))
+
 	qn.withQueryResult = result1
 
-	task.ctx = ctx
 	assert.NoError(t, task.Execute(ctx))
 
 	assert.NoError(t, task.PostExecute(ctx))
-}
-
-func TestCheckIfLoaded(t *testing.T) {
-	var err error
-
-	Params.Init()
-	var (
-		rc  = NewRootCoordMock()
-		qc  = NewQueryCoordMock()
-		ctx = context.TODO()
-	)
-
-	err = rc.Start()
-	defer rc.Stop()
-	require.NoError(t, err)
-	mgr := newShardClientMgr()
-	err = InitMetaCache(rc, qc, mgr)
-	require.NoError(t, err)
-
-	err = qc.Start()
-	defer qc.Stop()
-	require.NoError(t, err)
-
-	getQueryTask := func(t *testing.T, collName string) *queryTask {
-		task := &queryTask{
-			ctx: ctx,
-			RetrieveRequest: &internalpb.RetrieveRequest{
-				Base: &commonpb.MsgBase{
-					MsgType: commonpb.MsgType_Retrieve,
-				},
-			},
-			request: &milvuspb.QueryRequest{
-				Base: &commonpb.MsgBase{
-					MsgType: commonpb.MsgType_Retrieve,
-				},
-				CollectionName: collName,
-			},
-			qc: qc,
-		}
-		require.NoError(t, task.OnEnqueue())
-		return task
-	}
-
-	t.Run("test checkIfLoaded error", func(t *testing.T) {
-		collName := "test_checkIfLoaded_error" + funcutil.GenRandomStr()
-		createColl(t, collName, rc)
-		collID, err := globalMetaCache.GetCollectionID(context.TODO(), collName)
-		require.NoError(t, err)
-		task := getQueryTask(t, collName)
-		task.collectionName = collName
-
-		t.Run("show collection err", func(t *testing.T) {
-			qc.SetShowCollectionsFunc(func(ctx context.Context, request *querypb.ShowCollectionsRequest) (*querypb.ShowCollectionsResponse, error) {
-				return nil, fmt.Errorf("mock")
-			})
-
-			loaded, err := task.checkIfLoaded(collID, []UniqueID{})
-			assert.Error(t, err)
-			assert.False(t, loaded)
-		})
-
-		t.Run("show collection status unexpected error", func(t *testing.T) {
-			qc.SetShowCollectionsFunc(func(ctx context.Context, request *querypb.ShowCollectionsRequest) (*querypb.ShowCollectionsResponse, error) {
-				return &querypb.ShowCollectionsResponse{
-					Status: &commonpb.Status{
-						ErrorCode: commonpb.ErrorCode_UnexpectedError,
-						Reason:    "mock",
-					},
-				}, nil
-			})
-
-			loaded, err := task.checkIfLoaded(collID, []UniqueID{})
-			assert.Error(t, err)
-			assert.False(t, loaded)
-			assert.Error(t, task.PreExecute(ctx))
-			qc.ResetShowCollectionsFunc()
-		})
-
-		t.Run("show partition error", func(t *testing.T) {
-			qc.SetShowPartitionsFunc(func(ctx context.Context, req *querypb.ShowPartitionsRequest) (*querypb.ShowPartitionsResponse, error) {
-				return &querypb.ShowPartitionsResponse{
-					Status: &commonpb.Status{
-						ErrorCode: commonpb.ErrorCode_UnexpectedError,
-						Reason:    "mock",
-					},
-				}, nil
-			})
-			loaded, err := task.checkIfLoaded(collID, []UniqueID{1})
-			assert.Error(t, err)
-			assert.False(t, loaded)
-		})
-
-		t.Run("show partition status unexpected error", func(t *testing.T) {
-			qc.SetShowPartitionsFunc(func(ctx context.Context, req *querypb.ShowPartitionsRequest) (*querypb.ShowPartitionsResponse, error) {
-				return nil, fmt.Errorf("mock error")
-			})
-			loaded, err := task.checkIfLoaded(collID, []UniqueID{1})
-			assert.Error(t, err)
-			assert.False(t, loaded)
-		})
-
-		t.Run("show partitions success", func(t *testing.T) {
-			qc.SetShowPartitionsFunc(func(ctx context.Context, req *querypb.ShowPartitionsRequest) (*querypb.ShowPartitionsResponse, error) {
-				return &querypb.ShowPartitionsResponse{
-					Status: &commonpb.Status{
-						ErrorCode: commonpb.ErrorCode_Success,
-					},
-				}, nil
-			})
-			loaded, err := task.checkIfLoaded(collID, []UniqueID{1})
-			assert.NoError(t, err)
-			assert.True(t, loaded)
-			qc.ResetShowPartitionsFunc()
-		})
-
-		t.Run("show collection success but not loaded", func(t *testing.T) {
-			qc.SetShowCollectionsFunc(func(ctx context.Context, request *querypb.ShowCollectionsRequest) (*querypb.ShowCollectionsResponse, error) {
-				return &querypb.ShowCollectionsResponse{
-					Status: &commonpb.Status{
-						ErrorCode: commonpb.ErrorCode_Success,
-					},
-					CollectionIDs:       []UniqueID{collID},
-					InMemoryPercentages: []int64{0},
-				}, nil
-			})
-
-			qc.SetShowPartitionsFunc(func(ctx context.Context, req *querypb.ShowPartitionsRequest) (*querypb.ShowPartitionsResponse, error) {
-				return nil, fmt.Errorf("mock error")
-			})
-			loaded, err := task.checkIfLoaded(collID, []UniqueID{})
-			assert.Error(t, err)
-			assert.False(t, loaded)
-
-			qc.SetShowPartitionsFunc(func(ctx context.Context, req *querypb.ShowPartitionsRequest) (*querypb.ShowPartitionsResponse, error) {
-				return nil, fmt.Errorf("mock error")
-			})
-			loaded, err = task.checkIfLoaded(collID, []UniqueID{})
-			assert.Error(t, err)
-			assert.False(t, loaded)
-
-			qc.SetShowPartitionsFunc(func(ctx context.Context, req *querypb.ShowPartitionsRequest) (*querypb.ShowPartitionsResponse, error) {
-				return &querypb.ShowPartitionsResponse{
-					Status: &commonpb.Status{
-						ErrorCode: commonpb.ErrorCode_Success,
-					},
-					PartitionIDs: []UniqueID{1},
-				}, nil
-			})
-			loaded, err = task.checkIfLoaded(collID, []UniqueID{})
-			assert.NoError(t, err)
-			assert.True(t, loaded)
-		})
-
-		qc.ResetShowCollectionsFunc()
-		qc.ResetShowPartitionsFunc()
-	})
 }

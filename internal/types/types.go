@@ -310,6 +310,7 @@ type IndexNode interface {
 	// CreateIndex receives request from IndexCoordinator to build an index.
 	// Index building is asynchronous, so when an index building request comes, IndexNode records the task and returns.
 	CreateIndex(ctx context.Context, req *indexpb.CreateIndexRequest) (*commonpb.Status, error)
+	GetTaskSlots(ctx context.Context, req *indexpb.GetTaskSlotsRequest) (*indexpb.GetTaskSlotsResponse, error)
 
 	// GetMetrics gets the metrics about IndexNode.
 	GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error)
@@ -351,6 +352,9 @@ type IndexCoord interface {
 
 	// GetMetrics gets the metrics about IndexCoord.
 	GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error)
+
+	// RemoveIndex removes the index on specify segments.
+	RemoveIndex(ctx context.Context, req *indexpb.RemoveIndexRequest) (*commonpb.Status, error)
 }
 
 // IndexCoordComponent is used by grpc server of IndexCoord
@@ -494,6 +498,8 @@ type RootCoord interface {
 	// index information is filled in `IndexDescriptions`
 	// error is always nil
 	DescribeIndex(ctx context.Context, req *milvuspb.DescribeIndexRequest) (*milvuspb.DescribeIndexResponse, error)
+
+	GetIndexState(ctx context.Context, req *milvuspb.GetIndexStateRequest) (*indexpb.GetIndexStatesResponse, error)
 
 	// DropIndex notifies RootCoord to drop the specified index for the specified field
 	//
@@ -680,6 +686,15 @@ type RootCoord interface {
 	ListCredUsers(ctx context.Context, req *milvuspb.ListCredUsersRequest) (*milvuspb.ListCredUsersResponse, error)
 	// GetCredential get credential by username
 	GetCredential(ctx context.Context, req *rootcoordpb.GetCredentialRequest) (*rootcoordpb.GetCredentialResponse, error)
+
+	CreateRole(ctx context.Context, req *milvuspb.CreateRoleRequest) (*commonpb.Status, error)
+	DropRole(ctx context.Context, req *milvuspb.DropRoleRequest) (*commonpb.Status, error)
+	OperateUserRole(ctx context.Context, req *milvuspb.OperateUserRoleRequest) (*commonpb.Status, error)
+	SelectRole(ctx context.Context, req *milvuspb.SelectRoleRequest) (*milvuspb.SelectRoleResponse, error)
+	SelectUser(ctx context.Context, req *milvuspb.SelectUserRequest) (*milvuspb.SelectUserResponse, error)
+	OperatePrivilege(ctx context.Context, req *milvuspb.OperatePrivilegeRequest) (*commonpb.Status, error)
+	SelectGrant(ctx context.Context, req *milvuspb.SelectGrantRequest) (*milvuspb.SelectGrantResponse, error)
+	ListPolicy(ctx context.Context, in *internalpb.ListPolicyRequest) (*internalpb.ListPolicyResponse, error)
 }
 
 // RootCoordComponent is used by grpc server of RootCoord
@@ -754,8 +769,6 @@ type Proxy interface {
 
 	UpdateCredentialCache(ctx context.Context, request *proxypb.UpdateCredCacheRequest) (*commonpb.Status, error)
 
-	ClearCredUsersCache(ctx context.Context, request *internalpb.ClearCredUsersCacheRequest) (*commonpb.Status, error)
-
 	// ReleaseDQLMessageStream notifies Proxy to release and close the search message stream of specific collection.
 	//
 	// ReleaseDQLMessageStream should be called when the specific collection was released.
@@ -771,6 +784,8 @@ type Proxy interface {
 
 	SendSearchResult(ctx context.Context, req *internalpb.SearchResults) (*commonpb.Status, error)
 	SendRetrieveResult(ctx context.Context, req *internalpb.RetrieveResults) (*commonpb.Status, error)
+
+	RefreshPolicyInfoCache(ctx context.Context, req *proxypb.RefreshPolicyInfoCacheRequest) (*commonpb.Status, error)
 }
 
 // ProxyComponent defines the interface of proxy component.
@@ -1192,6 +1207,14 @@ type ProxyComponent interface {
 	DeleteCredential(ctx context.Context, req *milvuspb.DeleteCredentialRequest) (*commonpb.Status, error)
 	// ListCredUsers list all usernames
 	ListCredUsers(ctx context.Context, req *milvuspb.ListCredUsersRequest) (*milvuspb.ListCredUsersResponse, error)
+
+	CreateRole(ctx context.Context, req *milvuspb.CreateRoleRequest) (*commonpb.Status, error)
+	DropRole(ctx context.Context, req *milvuspb.DropRoleRequest) (*commonpb.Status, error)
+	OperateUserRole(ctx context.Context, req *milvuspb.OperateUserRoleRequest) (*commonpb.Status, error)
+	SelectRole(ctx context.Context, req *milvuspb.SelectRoleRequest) (*milvuspb.SelectRoleResponse, error)
+	SelectUser(ctx context.Context, req *milvuspb.SelectUserRequest) (*milvuspb.SelectUserResponse, error)
+	OperatePrivilege(ctx context.Context, req *milvuspb.OperatePrivilegeRequest) (*commonpb.Status, error)
+	SelectGrant(ctx context.Context, req *milvuspb.SelectGrantRequest) (*milvuspb.SelectGrantResponse, error)
 }
 
 // QueryNode is the interface `querynode` package implements
@@ -1200,7 +1223,6 @@ type QueryNode interface {
 	TimeTickProvider
 
 	WatchDmChannels(ctx context.Context, req *querypb.WatchDmChannelsRequest) (*commonpb.Status, error)
-	WatchDeltaChannels(ctx context.Context, req *querypb.WatchDeltaChannelsRequest) (*commonpb.Status, error)
 	// LoadSegments notifies QueryNode to load the sealed segments from storage. The load tasks are sync to this
 	// rpc, QueryNode will return after all the sealed segments are loaded.
 	//
@@ -1215,10 +1237,12 @@ type QueryNode interface {
 	ReleaseSegments(ctx context.Context, req *querypb.ReleaseSegmentsRequest) (*commonpb.Status, error)
 	GetSegmentInfo(ctx context.Context, req *querypb.GetSegmentInfoRequest) (*querypb.GetSegmentInfoResponse, error)
 
+	GetStatistics(ctx context.Context, req *querypb.GetStatisticsRequest) (*internalpb.GetStatisticsResponse, error)
 	Search(ctx context.Context, req *querypb.SearchRequest) (*internalpb.SearchResults, error)
 	Query(ctx context.Context, req *querypb.QueryRequest) (*internalpb.RetrieveResults, error)
 	SyncReplicaSegments(ctx context.Context, req *querypb.SyncReplicaSegmentsRequest) (*commonpb.Status, error)
 
+	ShowConfigurations(ctx context.Context, req *internalpb.ShowConfigurationsRequest) (*internalpb.ShowConfigurationsResponse, error)
 	// GetMetrics gets the metrics about QueryNode.
 	GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error)
 }

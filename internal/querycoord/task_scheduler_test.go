@@ -92,7 +92,7 @@ func (tt *testTask) execute(ctx context.Context) error {
 			loadTask := &loadSegmentTask{
 				baseTask: &baseTask{
 					ctx:              tt.ctx,
-					condition:        newTaskCondition(tt.ctx),
+					condition:        newTaskCondition(),
 					triggerCondition: tt.triggerCondition,
 				},
 				LoadSegmentsRequest: req,
@@ -107,7 +107,7 @@ func (tt *testTask) execute(ctx context.Context) error {
 		childTask := &loadSegmentTask{
 			baseTask: &baseTask{
 				ctx:              tt.ctx,
-				condition:        newTaskCondition(tt.ctx),
+				condition:        newTaskCondition(),
 				triggerCondition: tt.triggerCondition,
 			},
 			LoadSegmentsRequest: &querypb.LoadSegmentsRequest{
@@ -126,7 +126,7 @@ func (tt *testTask) execute(ctx context.Context) error {
 		childTask := &watchDmChannelTask{
 			baseTask: &baseTask{
 				ctx:              tt.ctx,
-				condition:        newTaskCondition(tt.ctx),
+				condition:        newTaskCondition(),
 				triggerCondition: tt.triggerCondition,
 			},
 			WatchDmChannelsRequest: &querypb.WatchDmChannelsRequest{
@@ -165,7 +165,7 @@ func TestWatchQueryChannel_ClearEtcdInfoAfterAssignedNodeDown(t *testing.T) {
 	testTask := &testTask{
 		baseTask: baseTask{
 			ctx:              baseCtx,
-			condition:        newTaskCondition(baseCtx),
+			condition:        newTaskCondition(),
 			triggerCondition: querypb.TriggerCondition_GrpcRequest,
 		},
 		baseMsg: &commonpb.MsgBase{
@@ -199,9 +199,14 @@ func TestUnMarshalTask(t *testing.T) {
 	defer etcdCli.Close()
 	kv := etcdkv.NewEtcdKV(etcdCli, Params.EtcdCfg.MetaRootPath)
 	baseCtx, cancel := context.WithCancel(context.Background())
+	dataCoord := &dataCoordMock{}
+	broker, err := newGlobalMetaBroker(baseCtx, nil, dataCoord, nil, nil)
+	assert.Nil(t, err)
+
 	taskScheduler := &TaskScheduler{
 		ctx:    baseCtx,
 		cancel: cancel,
+		broker: broker,
 	}
 
 	t.Run("Test loadCollectionTask", func(t *testing.T) {
@@ -350,27 +355,14 @@ func TestUnMarshalTask(t *testing.T) {
 		task, err := taskScheduler.unmarshalTask(1006, value)
 		assert.Nil(t, err)
 		assert.Equal(t, task.msgType(), commonpb.MsgType_WatchDmChannels)
-	})
 
-	t.Run("Test watchDeltaChannelTask", func(t *testing.T) {
-		watchTask := &watchDeltaChannelTask{
-			WatchDeltaChannelsRequest: &querypb.WatchDeltaChannelsRequest{
-				Base: &commonpb.MsgBase{
-					MsgType: commonpb.MsgType_WatchDeltaChannels,
-				},
-			},
-		}
-		blobs, err := watchTask.marshal()
-		assert.Nil(t, err)
-		err = kv.Save("testMarshalWatchDeltaChannel", string(blobs))
-		assert.Nil(t, err)
-		defer kv.RemoveWithPrefix("testMarshalWatchDeltaChannel")
-		value, err := kv.Load("testMarshalWatchDeltaChannel")
-		assert.Nil(t, err)
-
-		task, err := taskScheduler.unmarshalTask(1007, value)
-		assert.Nil(t, err)
-		assert.Equal(t, task.msgType(), commonpb.MsgType_WatchDeltaChannels)
+		dataCoord.returnError = true
+		defer func() {
+			dataCoord.returnError = false
+		}()
+		task2, err := taskScheduler.unmarshalTask(1006, value)
+		assert.Error(t, err)
+		assert.Nil(t, task2)
 	})
 
 	t.Run("Test loadBalanceTask", func(t *testing.T) {
@@ -485,7 +477,7 @@ func Test_saveInternalTaskToEtcd(t *testing.T) {
 	testTask := &testTask{
 		baseTask: baseTask{
 			ctx:              ctx,
-			condition:        newTaskCondition(ctx),
+			condition:        newTaskCondition(),
 			triggerCondition: querypb.TriggerCondition_GrpcRequest,
 			taskID:           100,
 		},
@@ -510,49 +502,6 @@ func Test_saveInternalTaskToEtcd(t *testing.T) {
 		err = queryCoord.scheduler.processTask(testTask)
 		assert.Nil(t, err)
 	})
-}
-
-func Test_generateDerivedInternalTasks(t *testing.T) {
-	refreshParams()
-	baseCtx := context.Background()
-	queryCoord, err := startQueryCoord(baseCtx)
-	assert.Nil(t, err)
-	node1, err := startQueryNodeServer(baseCtx)
-	assert.Nil(t, err)
-	waitQueryNodeOnline(queryCoord.cluster, node1.queryNodeID)
-	vChannelInfos, _, err := queryCoord.broker.getRecoveryInfo(baseCtx, defaultCollectionID, defaultPartitionID)
-	assert.NoError(t, err)
-	deltaChannelInfos := make([]*datapb.VchannelInfo, len(vChannelInfos))
-	for i, info := range vChannelInfos {
-		deltaInfo, err := generateWatchDeltaChannelInfo(info)
-		assert.NoError(t, err)
-		deltaChannelInfos[i] = deltaInfo
-	}
-
-	queryCoord.meta.setDeltaChannel(defaultCollectionID, deltaChannelInfos)
-
-	loadCollectionTask := genLoadCollectionTask(baseCtx, queryCoord)
-	loadSegmentTask := genLoadSegmentTask(baseCtx, queryCoord, node1.queryNodeID)
-	loadCollectionTask.addChildTask(loadSegmentTask)
-	loadSegmentTask.setParentTask(loadCollectionTask)
-	watchDmChannelTask := genWatchDmChannelTask(baseCtx, queryCoord, node1.queryNodeID)
-	loadCollectionTask.addChildTask(watchDmChannelTask)
-	watchDmChannelTask.setParentTask(loadCollectionTask)
-
-	derivedTasks, err := generateDerivedInternalTasks(loadCollectionTask, queryCoord.meta, queryCoord.cluster)
-	assert.Nil(t, err)
-	assert.Equal(t, 1, len(derivedTasks))
-	for _, internalTask := range derivedTasks {
-		matchType := internalTask.msgType() == commonpb.MsgType_WatchDeltaChannels
-		assert.Equal(t, true, matchType)
-		if internalTask.msgType() == commonpb.MsgType_WatchDeltaChannels {
-			assert.Equal(t, node1.queryNodeID, internalTask.(*watchDeltaChannelTask).NodeID)
-		}
-	}
-
-	queryCoord.Stop()
-	err = removeAllSession()
-	assert.Nil(t, err)
 }
 
 func TestTaskScheduler_BindContext(t *testing.T) {
@@ -600,4 +549,51 @@ func TestTaskScheduler_BindContext(t *testing.T) {
 			return nctx.Err() == context.Canceled
 		}, time.Second, time.Millisecond*10)
 	})
+}
+
+func TestTaskScheduler_willLoadOrRelease(t *testing.T) {
+	ctx := context.Background()
+	queryCoord := &QueryCoord{}
+
+	loadCollectionTask := genLoadCollectionTask(ctx, queryCoord)
+	loadPartitionTask := genLoadPartitionTask(ctx, queryCoord)
+	releaseCollectionTask := genReleaseCollectionTask(ctx, queryCoord)
+	releasePartitionTask := genReleasePartitionTask(ctx, queryCoord)
+
+	queue := newTaskQueue()
+	queue.tasks.PushBack(loadCollectionTask)
+	queue.tasks.PushBack(loadPartitionTask)
+	queue.tasks.PushBack(releaseCollectionTask)
+	queue.tasks.PushBack(releasePartitionTask)
+	queue.tasks.PushBack(loadCollectionTask)
+	loadCollectionTask.CollectionID++
+	queue.tasks.PushBack(loadCollectionTask) // add other collection's task
+	loadCollectionTask.CollectionID = defaultCollectionID
+
+	taskType := queue.willLoadOrRelease(defaultCollectionID)
+	assert.Equal(t, commonpb.MsgType_LoadCollection, taskType)
+
+	queue.tasks.PushBack(loadPartitionTask)
+	taskType = queue.willLoadOrRelease(defaultCollectionID)
+	assert.Equal(t, commonpb.MsgType_LoadPartitions, taskType)
+
+	queue.tasks.PushBack(releaseCollectionTask)
+	taskType = queue.willLoadOrRelease(defaultCollectionID)
+	assert.Equal(t, commonpb.MsgType_ReleaseCollection, taskType)
+
+	queue.tasks.PushBack(releasePartitionTask)
+	taskType = queue.willLoadOrRelease(defaultCollectionID)
+	assert.Equal(t, commonpb.MsgType_ReleasePartitions, taskType)
+
+	loadSegmentTask := &loadSegmentTask{
+		LoadSegmentsRequest: &querypb.LoadSegmentsRequest{
+			Base: &commonpb.MsgBase{
+				MsgType: commonpb.MsgType_LoadSegments,
+			},
+		},
+	}
+	queue.tasks.PushBack(loadSegmentTask)
+	taskType = queue.willLoadOrRelease(defaultCollectionID)
+	// should be the last release or load for collection or partition
+	assert.Equal(t, commonpb.MsgType_ReleasePartitions, taskType)
 }

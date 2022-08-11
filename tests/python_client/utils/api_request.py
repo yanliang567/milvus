@@ -1,4 +1,5 @@
 import traceback
+import copy
 import os
 from utils.util_log import test_log as log
 
@@ -19,7 +20,10 @@ def api_request_catch():
     def wrapper(func):
         def inner_wrapper(*args, **kwargs):
             try:
-                res = func(*args, **kwargs)
+                _kwargs = copy.deepcopy(kwargs)
+                if "enable_traceback" in _kwargs:
+                    del _kwargs["enable_traceback"]
+                res = func(*args, **_kwargs)
                 # if enable_traceback == "True":
                 if kwargs.get("enable_traceback", True):
                     res_str = str(res)
@@ -44,10 +48,7 @@ def api_request(_list, **kwargs):
     if isinstance(_list, list):
         func = _list[0]
         if callable(func):
-            arg = []
-            if len(_list) > 1:
-                for a in _list[1:]:
-                    arg.append(a)
+            arg = _list[1:]
             arg_str = str(arg)
             log_arg = arg_str[0:log_row_length] + '......' if len(arg_str) > log_row_length else arg_str
             # if enable_traceback == "True":

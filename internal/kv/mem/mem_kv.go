@@ -17,9 +17,10 @@
 package memkv
 
 import (
-	"fmt"
 	"strings"
 	"sync"
+
+	"github.com/milvus-io/milvus/internal/common"
 
 	"github.com/google/btree"
 )
@@ -81,7 +82,7 @@ func (kv *MemoryKV) Load(key string) (string, error) {
 	defer kv.RUnlock()
 	item := kv.tree.Get(memoryKVItem{key: key})
 	if item == nil {
-		return "", fmt.Errorf("invalid key: %s", key)
+		return "", common.NewKeyNotExistError(key)
 	}
 	return item.(memoryKVItem).value.String(), nil
 }
@@ -92,7 +93,7 @@ func (kv *MemoryKV) LoadBytes(key string) ([]byte, error) {
 	defer kv.RUnlock()
 	item := kv.tree.Get(memoryKVItem{key: key})
 	if item == nil {
-		return []byte{}, fmt.Errorf("invalid key: %s", key)
+		return []byte{}, common.NewKeyNotExistError(key)
 	}
 	return item.(memoryKVItem).value.ByteSlice(), nil
 }
@@ -108,17 +109,6 @@ func (kv *MemoryKV) Get(key string) string {
 	return item.(memoryKVItem).value.String()
 }
 
-// LoadWithDefault loads an object with @key. If the object does not exist, @defaultValue will be returned.
-func (kv *MemoryKV) LoadWithDefault(key, defaultValue string) string {
-	kv.RLock()
-	defer kv.RUnlock()
-	item := kv.tree.Get(memoryKVItem{key: key})
-	if item == nil {
-		return defaultValue
-	}
-	return item.(memoryKVItem).value.String()
-}
-
 // LoadBytesWithDefault loads an object with @key. If the object does not exist, @defaultValue will be returned.
 func (kv *MemoryKV) LoadBytesWithDefault(key string, defaultValue []byte) []byte {
 	kv.RLock()
@@ -128,23 +118,6 @@ func (kv *MemoryKV) LoadBytesWithDefault(key string, defaultValue []byte) []byte
 		return defaultValue
 	}
 	return item.(memoryKVItem).value.ByteSlice()
-}
-
-// LoadRange loads objects with range @startKey to @endKey with @limit number of objects.
-func (kv *MemoryKV) LoadRange(key, endKey string, limit int) ([]string, []string, error) {
-	kv.RLock()
-	defer kv.RUnlock()
-	keys := make([]string, 0, limit)
-	values := make([]string, 0, limit)
-	kv.tree.AscendRange(memoryKVItem{key: key}, memoryKVItem{key: endKey}, func(item btree.Item) bool {
-		keys = append(keys, item.(memoryKVItem).key)
-		values = append(values, item.(memoryKVItem).value.String())
-		if limit > 0 {
-			return len(keys) < limit
-		}
-		return true
-	})
-	return keys, values, nil
 }
 
 // LoadBytesRange loads objects with range @startKey to @endKey with @limit number of objects.

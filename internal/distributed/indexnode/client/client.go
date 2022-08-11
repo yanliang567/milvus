@@ -48,11 +48,16 @@ func NewClient(ctx context.Context, addr string) (*Client, error) {
 	client := &Client{
 		addr: addr,
 		grpcClient: &grpcclient.ClientBase{
-			ClientMaxRecvSize: ClientParams.ClientMaxRecvSize,
-			ClientMaxSendSize: ClientParams.ClientMaxSendSize,
-			DialTimeout:       ClientParams.DialTimeout,
-			KeepAliveTime:     ClientParams.KeepAliveTime,
-			KeepAliveTimeout:  ClientParams.KeepAliveTimeout,
+			ClientMaxRecvSize:      ClientParams.ClientMaxRecvSize,
+			ClientMaxSendSize:      ClientParams.ClientMaxSendSize,
+			DialTimeout:            ClientParams.DialTimeout,
+			KeepAliveTime:          ClientParams.KeepAliveTime,
+			KeepAliveTimeout:       ClientParams.KeepAliveTimeout,
+			RetryServiceNameConfig: "milvus.proto.index.IndexNode",
+			MaxAttempts:            ClientParams.MaxAttempts,
+			InitialBackoff:         ClientParams.InitialBackoff,
+			MaxBackoff:             ClientParams.MaxBackoff,
+			BackoffMultiplier:      ClientParams.BackoffMultiplier,
 		},
 	}
 	client.grpcClient.SetRole(typeutil.IndexNodeRole)
@@ -157,4 +162,17 @@ func (c *Client) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest
 		return nil, err
 	}
 	return ret.(*milvuspb.GetMetricsResponse), err
+}
+
+func (c *Client) GetTaskSlots(ctx context.Context, req *indexpb.GetTaskSlotsRequest) (*indexpb.GetTaskSlotsResponse, error) {
+	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(indexpb.IndexNodeClient).GetTaskSlots(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*indexpb.GetTaskSlotsResponse), err
 }

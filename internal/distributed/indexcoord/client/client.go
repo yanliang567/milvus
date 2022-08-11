@@ -55,11 +55,16 @@ func NewClient(ctx context.Context, metaRoot string, etcdCli *clientv3.Client) (
 	ClientParams.InitOnce(typeutil.IndexCoordRole)
 	client := &Client{
 		grpcClient: &grpcclient.ClientBase{
-			ClientMaxRecvSize: ClientParams.ClientMaxRecvSize,
-			ClientMaxSendSize: ClientParams.ClientMaxSendSize,
-			DialTimeout:       ClientParams.DialTimeout,
-			KeepAliveTime:     ClientParams.KeepAliveTime,
-			KeepAliveTimeout:  ClientParams.KeepAliveTimeout,
+			ClientMaxRecvSize:      ClientParams.ClientMaxRecvSize,
+			ClientMaxSendSize:      ClientParams.ClientMaxSendSize,
+			DialTimeout:            ClientParams.DialTimeout,
+			KeepAliveTime:          ClientParams.KeepAliveTime,
+			KeepAliveTimeout:       ClientParams.KeepAliveTimeout,
+			RetryServiceNameConfig: "milvus.proto.index.IndexCoord",
+			MaxAttempts:            ClientParams.MaxAttempts,
+			InitialBackoff:         ClientParams.InitialBackoff,
+			MaxBackoff:             ClientParams.MaxBackoff,
+			BackoffMultiplier:      ClientParams.BackoffMultiplier,
 		},
 		sess: sess,
 	}
@@ -174,6 +179,19 @@ func (c *Client) DropIndex(ctx context.Context, req *indexpb.DropIndexRequest) (
 			return nil, ctx.Err()
 		}
 		return client.(indexpb.IndexCoordClient).DropIndex(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*commonpb.Status), err
+}
+
+func (c *Client) RemoveIndex(ctx context.Context, req *indexpb.RemoveIndexRequest) (*commonpb.Status, error) {
+	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(indexpb.IndexCoordClient).RemoveIndex(ctx, req)
 	})
 	if err != nil || ret == nil {
 		return nil, err

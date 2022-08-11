@@ -17,13 +17,10 @@
 package querynode
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../core/output/include
-#cgo darwin LDFLAGS: -L${SRCDIR}/../core/output/lib -lmilvus_segcore -Wl,-rpath,"${SRCDIR}/../core/output/lib"
-#cgo linux LDFLAGS: -L${SRCDIR}/../core/output/lib -lmilvus_segcore -Wl,-rpath=${SRCDIR}/../core/output/lib
+#cgo pkg-config: milvus_segcore
 
 #include "segcore/plan_c.h"
 #include "segcore/reduce_c.h"
-
 */
 import "C"
 import (
@@ -88,6 +85,9 @@ func reduceSearchResultsAndFillData(plan *SearchPlan, searchResults []*SearchRes
 
 	cSearchResults := make([]C.CSearchResult, 0)
 	for _, res := range searchResults {
+		if res == nil {
+			return nil, fmt.Errorf("nil searchResult detected when reduceSearchResultsAndFillData")
+		}
 		cSearchResults = append(cSearchResults, res.cSearchResult)
 	}
 	cSearchResultPtr := (*C.CSearchResult)(&cSearchResults[0])

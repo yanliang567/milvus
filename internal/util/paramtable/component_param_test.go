@@ -12,7 +12,7 @@
 package paramtable
 
 import (
-	"os"
+	"math"
 	"path"
 	"testing"
 	"time"
@@ -90,9 +90,6 @@ func TestComponentParam(t *testing.T) {
 		t.Logf("querycoord timetick channel = %s", Params.QueryCoordTimeTick)
 
 		// -- querynode --
-		assert.Equal(t, Params.QueryNodeStats, "by-dev-query-node-stats")
-		t.Logf("querynode stats channel = %s", Params.QueryNodeStats)
-
 		assert.Equal(t, Params.QueryNodeSubName, "by-dev-queryNode")
 		t.Logf("querynode subname = %s", Params.QueryNodeSubName)
 
@@ -202,25 +199,20 @@ func TestComponentParam(t *testing.T) {
 			Params.Base.Save("proxy.maxTaskNum", "-asdf")
 			Params.initMaxTaskNum()
 		})
-	})
 
-	t.Run("test queryCoordConfig", func(t *testing.T) {
-		//Params := CParams.QueryCoordCfg
+		shouldPanic(t, "proxy.maxUserNum", func() {
+			Params.Base.Save("proxy.maxUserNum", "abc")
+			Params.initMaxUserNum()
+		})
+
+		shouldPanic(t, "proxy.maxRoleNum", func() {
+			Params.Base.Save("proxy.maxRoleNum", "abc")
+			Params.initMaxRoleNum()
+		})
 	})
 
 	t.Run("test queryNodeConfig", func(t *testing.T) {
 		Params := CParams.QueryNodeCfg
-
-		cacheSize := Params.CacheSize
-		assert.Equal(t, int64(32), cacheSize)
-		err := os.Setenv("CACHE_SIZE", "2")
-		assert.NoError(t, err)
-		Params.initCacheSize()
-		assert.Equal(t, int64(2), Params.CacheSize)
-		err = os.Setenv("CACHE_SIZE", "32")
-		assert.NoError(t, err)
-		Params.initCacheSize()
-		assert.Equal(t, int64(32), Params.CacheSize)
 
 		interval := Params.StatsPublishInterval
 		assert.Equal(t, 1000, interval)
@@ -233,10 +225,10 @@ func TestComponentParam(t *testing.T) {
 
 		// test query side config
 		chunkRows := Params.ChunkRows
-		assert.Equal(t, int64(32768), chunkRows)
+		assert.Equal(t, int64(1024), chunkRows)
 
 		nlist := Params.SmallIndexNlist
-		assert.Equal(t, int64(256), nlist)
+		assert.Equal(t, int64(128), nlist)
 
 		nprobe := Params.SmallIndexNProbe
 		assert.Equal(t, int64(16), nprobe)
@@ -244,8 +236,10 @@ func TestComponentParam(t *testing.T) {
 		assert.Equal(t, true, Params.GroupEnabled)
 		assert.Equal(t, int32(10240), Params.MaxReceiveChanSize)
 		assert.Equal(t, int32(10240), Params.MaxUnsolvedQueueSize)
+		assert.Equal(t, int32(math.MaxInt32), Params.MaxReadConcurrency)
 		assert.Equal(t, int64(1000), Params.MaxGroupNQ)
 		assert.Equal(t, 10.0, Params.TopKMergeRatio)
+		assert.Equal(t, 10.0, Params.CPURatio)
 
 		// test small indexNlist/NProbe default
 		Params.Base.Remove("queryNode.segcore.smallIndex.nlist")
@@ -278,6 +272,8 @@ func TestComponentParam(t *testing.T) {
 	t.Run("test dataCoordConfig", func(t *testing.T) {
 		Params := CParams.DataCoordCfg
 		assert.Equal(t, 24*60*60*time.Second, Params.SegmentMaxLifetime)
+
+		assert.True(t, Params.EnableGarbageCollection)
 	})
 
 	t.Run("test dataNodeConfig", func(t *testing.T) {

@@ -320,6 +320,47 @@ func TestImpl_isHealthy(t *testing.T) {
 	assert.True(t, isHealthy)
 }
 
+func TestImpl_ShowConfigurations(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	etcdCli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
+	assert.NoError(t, err)
+	defer etcdCli.Close()
+
+	t.Run("test ShowConfigurations", func(t *testing.T) {
+		node, err := genSimpleQueryNode(ctx)
+		assert.NoError(t, err)
+		node.session = sessionutil.NewSession(node.queryNodeLoopCtx, Params.EtcdCfg.MetaRootPath, etcdCli)
+
+		pattern := "Cache"
+		req := &internalpb.ShowConfigurationsRequest{
+			Base:    genCommonMsgBase(commonpb.MsgType_WatchQueryChannels),
+			Pattern: pattern,
+		}
+
+		reqs, err := node.ShowConfigurations(ctx, req)
+		assert.NoError(t, err)
+		assert.Equal(t, reqs.Status.ErrorCode, commonpb.ErrorCode_Success)
+	})
+
+	t.Run("test ShowConfigurations node failed", func(t *testing.T) {
+		node, err := genSimpleQueryNode(ctx)
+		assert.NoError(t, err)
+		node.session = sessionutil.NewSession(node.queryNodeLoopCtx, Params.EtcdCfg.MetaRootPath, etcdCli)
+		node.UpdateStateCode(internalpb.StateCode_Abnormal)
+
+		pattern := "Cache"
+		req := &internalpb.ShowConfigurationsRequest{
+			Base:    genCommonMsgBase(commonpb.MsgType_WatchQueryChannels),
+			Pattern: pattern,
+		}
+
+		reqs, err := node.ShowConfigurations(ctx, req)
+		assert.NoError(t, err)
+		assert.Equal(t, reqs.Status.ErrorCode, commonpb.ErrorCode_UnexpectedError)
+	})
+}
+
 func TestImpl_GetMetrics(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -392,8 +433,17 @@ func TestImpl_ReleaseSegments(t *testing.T) {
 			CollectionID: defaultCollectionID,
 			PartitionIDs: []UniqueID{defaultPartitionID},
 			SegmentIDs:   []UniqueID{defaultSegmentID},
+			Scope:        queryPb.DataScope_All,
 		}
 
+		_, err = node.ReleaseSegments(ctx, req)
+		assert.NoError(t, err)
+
+		req.Scope = queryPb.DataScope_Streaming
+		_, err = node.ReleaseSegments(ctx, req)
+		assert.NoError(t, err)
+
+		req.Scope = queryPb.DataScope_Historical
 		_, err = node.ReleaseSegments(ctx, req)
 		assert.NoError(t, err)
 	})
@@ -435,6 +485,24 @@ func TestImpl_ReleaseSegments(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
 	})
+
+	wg.Add(1)
+	t.Run("test no collection", func(t *testing.T) {
+		defer wg.Done()
+		node, err := genSimpleQueryNode(ctx)
+		assert.NoError(t, err)
+		err = node.metaReplica.removeCollection(defaultCollectionID)
+		assert.NoError(t, err)
+
+		req := &queryPb.ReleaseSegmentsRequest{
+			Base:         genCommonMsgBase(commonpb.MsgType_ReleaseSegments),
+			CollectionID: defaultCollectionID,
+		}
+
+		status, err := node.ReleaseSegments(ctx, req)
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
+	})
 	wg.Wait()
 }
 
@@ -450,11 +518,99 @@ func TestImpl_Search(t *testing.T) {
 	require.NoError(t, err)
 
 	node.queryShardService.addQueryShard(defaultCollectionID, defaultDMLChannel, defaultReplicaID)
+	node.ShardClusterService.addShardCluster(defaultCollectionID, defaultReplicaID, defaultDMLChannel)
+	// shard cluster not synced
+	_, err = node.Search(ctx, &queryPb.SearchRequest{
+		Req:             req,
+		FromShardLeader: false,
+		DmlChannels:     []string{defaultDMLChannel},
+	})
+	assert.NoError(t, err)
+
+	// shard cluster sync segments
+	sc, ok := node.ShardClusterService.getShardCluster(defaultDMLChannel)
+	assert.True(t, ok)
+	sc.SyncSegments(nil, segmentStateLoaded)
 
 	_, err = node.Search(ctx, &queryPb.SearchRequest{
 		Req:             req,
 		FromShardLeader: false,
-		DmlChannel:      defaultDMLChannel,
+		DmlChannels:     []string{defaultDMLChannel},
+	})
+	assert.NoError(t, err)
+}
+
+func TestImpl_searchWithDmlChannel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	node, err := genSimpleQueryNode(ctx)
+	require.NoError(t, err)
+
+	schema := genTestCollectionSchema()
+	req, err := genSearchRequest(defaultNQ, IndexFaissIDMap, schema)
+	require.NoError(t, err)
+
+	node.queryShardService.addQueryShard(defaultCollectionID, defaultDMLChannel, defaultReplicaID)
+	node.ShardClusterService.addShardCluster(defaultCollectionID, defaultReplicaID, defaultDMLChannel)
+	sc, ok := node.ShardClusterService.getShardCluster(defaultDMLChannel)
+	assert.True(t, ok)
+	sc.SyncSegments(nil, segmentStateLoaded)
+
+	_, err = node.searchWithDmlChannel(ctx, &queryPb.SearchRequest{
+		Req:             req,
+		FromShardLeader: false,
+		DmlChannels:     []string{defaultDMLChannel},
+	}, defaultDMLChannel)
+	assert.NoError(t, err)
+
+	// search for wrong dml channel
+	_, err = node.searchWithDmlChannel(ctx, &queryPb.SearchRequest{
+		Req:             req,
+		FromShardLeader: false,
+		DmlChannels:     []string{defaultDMLChannel + "_suffix"},
+	}, defaultDMLChannel)
+	assert.NoError(t, err)
+}
+
+func TestImpl_GetCollectionStatistics(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	node, err := genSimpleQueryNode(ctx)
+	defer node.Stop()
+	require.NoError(t, err)
+
+	req, err := genGetCollectionStatisticRequest()
+	require.NoError(t, err)
+
+	node.queryShardService.addQueryShard(defaultCollectionID, defaultDMLChannel, defaultReplicaID)
+
+	_, err = node.GetStatistics(ctx, &queryPb.GetStatisticsRequest{
+		Req:             req,
+		FromShardLeader: false,
+		DmlChannels:     []string{defaultDMLChannel},
+	})
+	assert.NoError(t, err)
+}
+
+func TestImpl_GetPartitionStatistics(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	node, err := genSimpleQueryNode(ctx)
+	defer node.Stop()
+	require.NoError(t, err)
+
+	req, err := genGetPartitionStatisticRequest()
+	require.NoError(t, err)
+
+	node.queryShardService.addQueryShard(defaultCollectionID, defaultDMLChannel, defaultReplicaID)
+
+	_, err = node.GetStatistics(ctx, &queryPb.GetStatisticsRequest{
+		Req:             req,
+		FromShardLeader: false,
+		DmlChannels:     []string{defaultDMLChannel},
 	})
 	assert.NoError(t, err)
 }
@@ -472,12 +628,59 @@ func TestImpl_Query(t *testing.T) {
 	require.NoError(t, err)
 
 	node.queryShardService.addQueryShard(defaultCollectionID, defaultDMLChannel, defaultReplicaID)
+	node.ShardClusterService.addShardCluster(defaultCollectionID, defaultReplicaID, defaultDMLChannel)
+	// shard cluster not synced
+	_, err = node.Query(ctx, &queryPb.QueryRequest{
+		Req:             req,
+		FromShardLeader: false,
+		DmlChannels:     []string{defaultDMLChannel},
+	})
+	assert.NoError(t, err)
+
+	// sync cluster segments
+	sc, ok := node.ShardClusterService.getShardCluster(defaultDMLChannel)
+	assert.True(t, ok)
+	sc.SyncSegments(nil, segmentStateLoaded)
 
 	_, err = node.Query(ctx, &queryPb.QueryRequest{
 		Req:             req,
 		FromShardLeader: false,
-		DmlChannel:      defaultDMLChannel,
+		DmlChannels:     []string{defaultDMLChannel},
 	})
+	assert.NoError(t, err)
+}
+
+func TestImpl_queryWithDmlChannel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	node, err := genSimpleQueryNode(ctx)
+	defer node.Stop()
+	require.NoError(t, err)
+
+	schema := genTestCollectionSchema()
+	req, err := genRetrieveRequest(schema)
+	require.NoError(t, err)
+
+	node.queryShardService.addQueryShard(defaultCollectionID, defaultDMLChannel, defaultReplicaID)
+	node.ShardClusterService.addShardCluster(defaultCollectionID, defaultReplicaID, defaultDMLChannel)
+	sc, ok := node.ShardClusterService.getShardCluster(defaultDMLChannel)
+	assert.True(t, ok)
+	sc.SyncSegments(nil, segmentStateLoaded)
+
+	_, err = node.queryWithDmlChannel(ctx, &queryPb.QueryRequest{
+		Req:             req,
+		FromShardLeader: false,
+		DmlChannels:     []string{defaultDMLChannel},
+	}, defaultDMLChannel)
+	assert.NoError(t, err)
+
+	// query for wrong dml channel
+	_, err = node.queryWithDmlChannel(ctx, &queryPb.QueryRequest{
+		Req:             req,
+		FromShardLeader: false,
+		DmlChannels:     []string{defaultDMLChannel + "_suffix"},
+	}, defaultDMLChannel)
 	assert.NoError(t, err)
 }
 

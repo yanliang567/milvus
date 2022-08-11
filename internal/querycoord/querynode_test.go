@@ -65,7 +65,7 @@ func removeAllSession() error {
 	return nil
 }
 
-func waitAllQueryNodeOffline(cluster Cluster, nodeIDs []int64) bool {
+func waitAllQueryNodeOffline(cluster Cluster, nodeIDs ...int64) bool {
 	for {
 		allOffline := true
 		for _, nodeID := range nodeIDs {
@@ -85,6 +85,7 @@ func waitAllQueryNodeOffline(cluster Cluster, nodeIDs []int64) bool {
 
 func waitQueryNodeOnline(cluster Cluster, nodeID int64) {
 	for {
+		log.Debug("waiting for query node online...")
 		online, err := cluster.IsOnline(nodeID)
 		if err != nil {
 			continue
@@ -92,6 +93,8 @@ func waitQueryNodeOnline(cluster Cluster, nodeID int64) {
 		if online {
 			return
 		}
+
+		time.Sleep(500 * time.Millisecond)
 	}
 }
 
@@ -136,7 +139,7 @@ func TestQueryNode_MultiNode_stop(t *testing.T) {
 	err = removeNodeSession(queryNode2.queryNodeID)
 	assert.Nil(t, err)
 
-	waitAllQueryNodeOffline(queryCoord.cluster, onlineNodeIDs)
+	waitAllQueryNodeOffline(queryCoord.cluster, onlineNodeIDs...)
 	queryCoord.Stop()
 	err = removeAllSession()
 	assert.Nil(t, err)
@@ -182,7 +185,7 @@ func TestQueryNode_MultiNode_reStart(t *testing.T) {
 	err = removeNodeSession(queryNode3.queryNodeID)
 	assert.Nil(t, err)
 
-	waitAllQueryNodeOffline(queryCoord.cluster, onlineNodeIDs)
+	waitAllQueryNodeOffline(queryCoord.cluster, onlineNodeIDs...)
 	queryCoord.Stop()
 	err = removeAllSession()
 	assert.Nil(t, err)
@@ -275,7 +278,7 @@ func TestSealedSegmentChangeAfterQueryNodeStop(t *testing.T) {
 		segmentInfos := queryCoord.meta.showSegmentInfos(defaultCollectionID, nil)
 		recoverDone := true
 		for _, info := range segmentInfos {
-			if info.NodeID != queryNode2.queryNodeID {
+			if !nodeIncluded(queryNode2.queryNodeID, info.NodeIds) {
 				recoverDone = false
 				break
 			}
@@ -283,6 +286,7 @@ func TestSealedSegmentChangeAfterQueryNodeStop(t *testing.T) {
 		if recoverDone {
 			break
 		}
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	queryCoord.Stop()

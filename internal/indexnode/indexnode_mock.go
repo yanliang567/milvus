@@ -19,7 +19,10 @@ package indexnode
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
+
+	"github.com/milvus-io/milvus/internal/types"
 
 	"go.uber.org/zap"
 
@@ -38,6 +41,7 @@ import (
 )
 
 // Mock is an alternative to IndexNode, it will return specific results based on specific parameters.
+// Deprecated, use MockIndexNode
 type Mock struct {
 	Build   bool
 	Failure bool
@@ -59,7 +63,7 @@ func (inm *Mock) Init() error {
 		return errors.New("IndexNode init failed")
 	}
 	inm.ctx, inm.cancel = context.WithCancel(context.Background())
-	inm.buildIndex = make(chan *indexpb.CreateIndexRequest)
+	inm.buildIndex = make(chan *indexpb.CreateIndexRequest, 10)
 	return nil
 }
 
@@ -89,10 +93,14 @@ func (inm *Mock) buildIndexTask() {
 					if err != nil {
 						return err
 					}
-					err = inm.etcdKV.CompareVersionAndSwap(req.MetaPath, versions[0],
-						string(metaData))
+					success, err := inm.etcdKV.CompareVersionAndSwap(req.MetaPath, versions[0], string(metaData))
 					if err != nil {
+						// TODO, we don't need to reload if it is just etcd error
+						log.Warn("failed to compare and swap in etcd", zap.Int64("buildID", req.IndexBuildID), zap.Error(err))
 						return err
+					}
+					if !success {
+						return fmt.Errorf("failed to save index meta in etcd, buildId: %d, source version: %d", req.IndexBuildID, versions[0])
 					}
 					return nil
 				}
@@ -112,37 +120,19 @@ func (inm *Mock) buildIndexTask() {
 						return err
 					}
 					indexMeta.IndexFilePaths = []string{"IndexFilePath-1", "IndexFilePath-2"}
-					indexMeta.State = commonpb.IndexState_Failed
+					indexMeta.State = commonpb.IndexState_Finished
 					metaData, err := proto.Marshal(&indexMeta)
 					if err != nil {
 						return err
 					}
-					err = inm.etcdKV.CompareVersionAndSwap(req.MetaPath, versions[0],
-						string(metaData))
+					success, err := inm.etcdKV.CompareVersionAndSwap(req.MetaPath, versions[0], string(metaData))
 					if err != nil {
+						// TODO, we don't need to reload if it is just etcd error
+						log.Warn("failed to compare and swap in etcd", zap.Int64("buildID", req.IndexBuildID), zap.Error(err))
 						return err
 					}
-
-					indexMeta2 := indexpb.IndexMeta{}
-					_, values2, versions2, err := inm.etcdKV.LoadWithPrefix2(req.MetaPath)
-					if err != nil {
-						return err
-					}
-					err = proto.Unmarshal([]byte(values2[0]), &indexMeta2)
-					if err != nil {
-						return err
-					}
-					indexMeta2.Version = indexMeta.Version + 1
-					indexMeta2.IndexFilePaths = []string{"IndexFilePath-1", "IndexFilePath-2"}
-					indexMeta2.State = commonpb.IndexState_Finished
-					metaData2, err := proto.Marshal(&indexMeta2)
-					if err != nil {
-						return err
-					}
-					err = inm.etcdKV.CompareVersionAndSwap(req.MetaPath, versions2[0],
-						string(metaData2))
-					if err != nil {
-						return err
+					if !success {
+						return fmt.Errorf("failed to save index meta in etcd, buildId: %d, source version: %d", req.IndexBuildID, versions[0])
 					}
 					return nil
 				}
@@ -329,6 +319,35 @@ func (inm *Mock) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest
 	}, nil
 }
 
+func (inm *Mock) GetTaskSlots(ctx context.Context, req *indexpb.GetTaskSlotsRequest) (*indexpb.GetTaskSlotsResponse, error) {
+	if inm.Err {
+		return &indexpb.GetTaskSlotsResponse{
+			Slots: 0,
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+				Reason:    "IndexNode mock err",
+			},
+		}, errors.New("IndexNode GetMetrics failed")
+	}
+
+	if inm.Failure {
+		return &indexpb.GetTaskSlotsResponse{
+			Slots: 0,
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+				Reason:    "IndexNode mock fail",
+			},
+		}, nil
+	}
+	return &indexpb.GetTaskSlotsResponse{
+		Slots: 1,
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+			Reason:    "",
+		},
+	}, nil
+}
+
 func getMockSystemInfoMetrics(
 	ctx context.Context,
 	req *milvuspb.GetMetricsRequest,
@@ -369,4 +388,24 @@ func getMockSystemInfoMetrics(
 		Response:      resp,
 		ComponentName: metricsinfo.ConstructComponentName(typeutil.IndexNodeRole, Params.IndexNodeCfg.GetNodeID()),
 	}, nil
+}
+
+type MockIndexNode struct {
+	types.IndexNode
+
+	CreateIndexMock  func(ctx context.Context, req *indexpb.CreateIndexRequest) (*commonpb.Status, error)
+	GetTaskSlotsMock func(ctx context.Context, req *indexpb.GetTaskSlotsRequest) (*indexpb.GetTaskSlotsResponse, error)
+	GetMetricsMock   func(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error)
+}
+
+func (min *MockIndexNode) CreateIndex(ctx context.Context, req *indexpb.CreateIndexRequest) (*commonpb.Status, error) {
+	return min.CreateIndexMock(ctx, req)
+}
+
+func (min *MockIndexNode) GetTaskSlots(ctx context.Context, req *indexpb.GetTaskSlotsRequest) (*indexpb.GetTaskSlotsResponse, error) {
+	return min.GetTaskSlotsMock(ctx, req)
+}
+
+func (min *MockIndexNode) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
+	return min.GetMetricsMock(ctx, req)
 }

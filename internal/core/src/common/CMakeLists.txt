@@ -9,16 +9,15 @@
 # is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 # or implied. See the License for the specific language governing permissions and limitations under the License
 
+milvus_add_pkg_config("milvus_common")
+
 set(COMMON_SRC
         Schema.cpp
-        Types.cpp
         SystemProperty.cpp
         vector_index_c.cpp
         )
 
-add_library(milvus_common SHARED
-        ${COMMON_SRC}
-        )
+add_library(milvus_common SHARED ${COMMON_SRC})
 
 if ( MSYS )
     target_link_libraries(milvus_common
@@ -47,4 +46,4 @@ else()
             )
 endif()
 
-install(TARGETS milvus_common DESTINATION lib)
+install(TARGETS milvus_common DESTINATION "${CMAKE_INSTALL_LIBDIR}")

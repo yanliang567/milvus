@@ -69,6 +69,7 @@ func waitLoadPartitionDone(ctx context.Context, queryCoord *QueryCoord, collecti
 
 func waitLoadCollectionDone(ctx context.Context, queryCoord *QueryCoord, collectionID UniqueID) error {
 	for {
+		log.Debug("waiting for loading collection done...")
 		showCollectionReq := &querypb.ShowCollectionsRequest{
 			Base: &commonpb.MsgBase{
 				MsgType: commonpb.MsgType_ShowPartitions,
@@ -81,7 +82,7 @@ func waitLoadCollectionDone(ctx context.Context, queryCoord *QueryCoord, collect
 			return errors.New("showCollection failed")
 		}
 
-		loadDone := true
+		loadDone := len(res.InMemoryPercentages) > 0
 		for _, percent := range res.InMemoryPercentages {
 			if percent < 100 {
 				loadDone = false
@@ -90,6 +91,8 @@ func waitLoadCollectionDone(ctx context.Context, queryCoord *QueryCoord, collect
 		if loadDone {
 			break
 		}
+
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	return nil
@@ -592,7 +595,7 @@ func TestLoadBalanceTask(t *testing.T) {
 	loadBalanceTask := &loadBalanceTask{
 		baseTask: &baseTask{
 			ctx:              baseCtx,
-			condition:        newTaskCondition(baseCtx),
+			condition:        newTaskCondition(),
 			triggerCondition: querypb.TriggerCondition_NodeDown,
 		},
 		LoadBalanceRequest: loadBalanceSegment,
@@ -882,7 +885,7 @@ func Test_LoadCollectionAndLoadPartitions(t *testing.T) {
 
 	// second load defaultPartitionID
 	status, err = queryCoord.LoadPartitions(ctx, loadPartitionReq)
-	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
+	assert.Equal(t, commonpb.ErrorCode_IllegalArgument, status.ErrorCode)
 	assert.Nil(t, err)
 
 	node.stop()
@@ -1060,9 +1063,8 @@ func TestLoadCollectionSyncSegmentsFail(t *testing.T) {
 	rollbackDone := waitLoadCollectionRollbackDone(queryCoord, loadCollectionReq.CollectionID)
 	assert.True(t, rollbackDone)
 
-	assert.NoError(t, node1.stop())
-	assert.NoError(t, queryCoord.Stop())
-	assert.NoError(t, removeAllSession())
+	node1.stop()
+	removeAllSession()
 }
 
 func Test_RepeatedLoadSamePartitions(t *testing.T) {
@@ -1139,7 +1141,7 @@ func Test_RepeatedLoadDifferentPartitions(t *testing.T) {
 		ReplicaNumber: 1,
 	}
 	status, err = queryCoord.LoadPartitions(ctx, failLoadRequest)
-	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
+	assert.Equal(t, commonpb.ErrorCode_IllegalArgument, status.ErrorCode)
 	assert.Nil(t, err)
 
 	node.stop()
@@ -1185,7 +1187,7 @@ func Test_LoadPartitionsAndLoadCollection(t *testing.T) {
 
 	// second load defaultCollectionID
 	status, err = queryCoord.LoadCollection(ctx, loadCollectionReq)
-	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
+	assert.Equal(t, commonpb.ErrorCode_IllegalArgument, status.ErrorCode)
 	assert.Nil(t, err)
 
 	node.stop()

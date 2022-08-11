@@ -28,6 +28,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
+	"github.com/milvus-io/milvus/internal/util"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -325,7 +326,7 @@ func TestSaveHandoffMeta(t *testing.T) {
 	err = meta.saveSegmentInfo(segmentInfo)
 	assert.Nil(t, err)
 
-	keys, _, err := meta.client.LoadWithPrefix(handoffSegmentPrefix)
+	keys, _, err := meta.client.LoadWithPrefix(util.HandoffSegmentPrefix)
 	assert.Nil(t, err)
 	assert.Equal(t, 1, len(keys))
 	segmentID, err := strconv.ParseInt(filepath.Base(keys[0]), 10, 64)
@@ -447,7 +448,10 @@ func Test_meta_CompleteMergeCompaction(t *testing.T) {
 				collections: tt.fields.collections,
 				segments:    tt.fields.segments,
 			}
-			err := m.CompleteMergeCompaction(tt.args.compactionLogs, tt.args.result)
+			canCompaction := func(segment *datapb.CompactionSegmentBinlogs) bool {
+				return true
+			}
+			err := m.CompleteMergeCompaction(tt.args.compactionLogs, tt.args.result, canCompaction)
 			assert.Equal(t, tt.wantErr, err != nil)
 			if err == nil {
 				for _, l := range tt.args.compactionLogs {
@@ -721,4 +725,40 @@ func TestMeta_HasSegments(t *testing.T) {
 	has, err = m.HasSegments([]UniqueID{2})
 	assert.Equal(t, false, has)
 	assert.Error(t, err)
+}
+
+func TestMeta_GetAllSegments(t *testing.T) {
+	m := &meta{
+		segments: &SegmentsInfo{
+			segments: map[UniqueID]*SegmentInfo{
+				1: {
+					SegmentInfo: &datapb.SegmentInfo{
+						ID:    1,
+						State: commonpb.SegmentState_Growing,
+					},
+				},
+				2: {
+					SegmentInfo: &datapb.SegmentInfo{
+						ID:    2,
+						State: commonpb.SegmentState_Dropped,
+					},
+				},
+			},
+		},
+	}
+
+	seg1 := m.GetSegment(1)
+	seg1All := m.GetAllSegment(1)
+	seg2 := m.GetSegment(2)
+	seg2All := m.GetAllSegment(2)
+	assert.NotNil(t, seg1)
+	assert.NotNil(t, seg1All)
+	assert.Nil(t, seg2)
+	assert.NotNil(t, seg2All)
+}
+
+func TestMeta_isSegmentHealthy_issue17823_panic(t *testing.T) {
+	var seg *SegmentInfo
+
+	assert.False(t, isSegmentHealthy(seg))
 }

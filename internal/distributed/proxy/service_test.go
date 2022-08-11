@@ -162,6 +162,10 @@ func (m *MockRootCoord) DescribeIndex(ctx context.Context, req *milvuspb.Describ
 	return nil, nil
 }
 
+func (m *MockRootCoord) GetIndexState(ctx context.Context, req *milvuspb.GetIndexStateRequest) (*indexpb.GetIndexStatesResponse, error) {
+	return nil, nil
+}
+
 func (m *MockRootCoord) DropIndex(ctx context.Context, req *milvuspb.DropIndexRequest) (*commonpb.Status, error) {
 	return nil, nil
 }
@@ -254,6 +258,38 @@ func (m *MockRootCoord) GetCredential(ctx context.Context, req *rootcoordpb.GetC
 	return nil, nil
 }
 
+func (m *MockRootCoord) CreateRole(ctx context.Context, req *milvuspb.CreateRoleRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockRootCoord) DropRole(ctx context.Context, in *milvuspb.DropRoleRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockRootCoord) OperateUserRole(ctx context.Context, in *milvuspb.OperateUserRoleRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockRootCoord) SelectRole(ctx context.Context, in *milvuspb.SelectRoleRequest) (*milvuspb.SelectRoleResponse, error) {
+	return nil, nil
+}
+
+func (m *MockRootCoord) SelectUser(ctx context.Context, in *milvuspb.SelectUserRequest) (*milvuspb.SelectUserResponse, error) {
+	return nil, nil
+}
+
+func (m *MockRootCoord) OperatePrivilege(ctx context.Context, in *milvuspb.OperatePrivilegeRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockRootCoord) SelectGrant(ctx context.Context, in *milvuspb.SelectGrantRequest) (*milvuspb.SelectGrantResponse, error) {
+	return nil, nil
+}
+
+func (m *MockRootCoord) ListPolicy(ctx context.Context, in *internalpb.ListPolicyRequest) (*internalpb.ListPolicyResponse, error) {
+	return nil, nil
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 type MockIndexCoord struct {
 	MockBase
@@ -284,6 +320,10 @@ func (m *MockIndexCoord) BuildIndex(ctx context.Context, req *indexpb.BuildIndex
 }
 
 func (m *MockIndexCoord) DropIndex(ctx context.Context, req *indexpb.DropIndexRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockIndexCoord) RemoveIndex(ctx context.Context, req *indexpb.RemoveIndexRequest) (*commonpb.Status, error) {
 	return nil, nil
 }
 
@@ -780,10 +820,6 @@ func (m *MockProxy) UpdateCredentialCache(ctx context.Context, request *proxypb.
 	return nil, nil
 }
 
-func (m *MockProxy) ClearCredUsersCache(ctx context.Context, request *internalpb.ClearCredUsersCacheRequest) (*commonpb.Status, error) {
-	return nil, nil
-}
-
 func (m *MockProxy) CreateCredential(ctx context.Context, req *milvuspb.CreateCredentialRequest) (*commonpb.Status, error) {
 	return nil, nil
 }
@@ -797,6 +833,38 @@ func (m *MockProxy) DeleteCredential(ctx context.Context, req *milvuspb.DeleteCr
 }
 
 func (m *MockProxy) ListCredUsers(ctx context.Context, req *milvuspb.ListCredUsersRequest) (*milvuspb.ListCredUsersResponse, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) CreateRole(ctx context.Context, req *milvuspb.CreateRoleRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) DropRole(ctx context.Context, req *milvuspb.DropRoleRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) OperateUserRole(ctx context.Context, req *milvuspb.OperateUserRoleRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) SelectRole(ctx context.Context, req *milvuspb.SelectRoleRequest) (*milvuspb.SelectRoleResponse, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) SelectUser(ctx context.Context, req *milvuspb.SelectUserRequest) (*milvuspb.SelectUserResponse, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) OperatePrivilege(ctx context.Context, req *milvuspb.OperatePrivilegeRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) SelectGrant(ctx context.Context, in *milvuspb.SelectGrantRequest) (*milvuspb.SelectGrantResponse, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) RefreshPolicyInfoCache(ctx context.Context, req *proxypb.RefreshPolicyInfoCacheRequest) (*commonpb.Status, error) {
 	return nil, nil
 }
 
@@ -1180,8 +1248,43 @@ func Test_NewServer(t *testing.T) {
 		assert.Nil(t, err)
 	})
 
-	t.Run("ClearCredUsersCache", func(t *testing.T) {
-		_, err := server.ClearCredUsersCache(ctx, nil)
+	t.Run("CreateRole", func(t *testing.T) {
+		_, err := server.CreateRole(ctx, nil)
+		assert.Nil(t, err)
+	})
+
+	t.Run("DropRole", func(t *testing.T) {
+		_, err := server.DropRole(ctx, nil)
+		assert.Nil(t, err)
+	})
+
+	t.Run("OperateUserRole", func(t *testing.T) {
+		_, err := server.OperateUserRole(ctx, nil)
+		assert.Nil(t, err)
+	})
+
+	t.Run("SelectRole", func(t *testing.T) {
+		_, err := server.SelectRole(ctx, nil)
+		assert.Nil(t, err)
+	})
+
+	t.Run("SelectUser", func(t *testing.T) {
+		_, err := server.SelectUser(ctx, nil)
+		assert.Nil(t, err)
+	})
+
+	t.Run("OperatePrivilege", func(t *testing.T) {
+		_, err := server.OperatePrivilege(ctx, nil)
+		assert.Nil(t, err)
+	})
+
+	t.Run("SelectGrant", func(t *testing.T) {
+		_, err := server.SelectGrant(ctx, nil)
+		assert.Nil(t, err)
+	})
+
+	t.Run("RefreshPrivilegeInfoCache", func(t *testing.T) {
+		_, err := server.RefreshPolicyInfoCache(ctx, nil)
 		assert.Nil(t, err)
 	})
 
@@ -1319,7 +1422,7 @@ func TestServer_Watch(t *testing.T) {
 	assert.Equal(t, grpc_health_v1.HealthCheckResponse_SERVING, ret.Status)
 }
 
-func Test_NewServer_HTTPServerDisabled(t *testing.T) {
+func Test_NewServer_HTTPServer_Enabled(t *testing.T) {
 	ctx := context.Background()
 	server, err := NewServer(ctx, nil)
 	assert.NotNil(t, server)
@@ -1332,13 +1435,21 @@ func Test_NewServer_HTTPServerDisabled(t *testing.T) {
 	server.dataCoordClient = &MockDataCoord{}
 
 	HTTPParams.InitOnce()
-	HTTPParams.Enabled = false
+	HTTPParams.Enabled = true
 
 	err = runAndWaitForServerReady(server)
 	assert.Nil(t, err)
-	assert.Nil(t, server.httpServer)
 	err = server.Stop()
 	assert.Nil(t, err)
+
+	defer func() {
+		e := recover()
+		if e == nil {
+			t.Fatalf("test should have panicked but did not")
+		}
+	}()
+	// if disable workds path not registered, so it shall not panic
+	server.registerHTTPServer()
 }
 
 func getServer(t *testing.T) *Server {
@@ -1363,6 +1474,7 @@ func Test_NewServer_TLS_TwoWay(t *testing.T) {
 	Params.ServerPemPath = "../../../configs/cert/server.pem"
 	Params.ServerKeyPath = "../../../configs/cert/server.key"
 	Params.CaPemPath = "../../../configs/cert/ca.pem"
+	HTTPParams.Enabled = false
 
 	err := runAndWaitForServerReady(server)
 	assert.Nil(t, err)
@@ -1378,6 +1490,7 @@ func Test_NewServer_TLS_OneWay(t *testing.T) {
 	Params.TLSMode = 1
 	Params.ServerPemPath = "../../../configs/cert/server.pem"
 	Params.ServerKeyPath = "../../../configs/cert/server.key"
+	HTTPParams.Enabled = false
 
 	err := runAndWaitForServerReady(server)
 	assert.Nil(t, err)
@@ -1393,6 +1506,7 @@ func Test_NewServer_TLS_FileNotExisted(t *testing.T) {
 	Params.TLSMode = 1
 	Params.ServerPemPath = "../not/existed/server.pem"
 	Params.ServerKeyPath = "../../../configs/cert/server.key"
+	HTTPParams.Enabled = false
 	err := runAndWaitForServerReady(server)
 	assert.NotNil(t, err)
 	server.Stop()

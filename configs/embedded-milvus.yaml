@@ -170,7 +170,7 @@ queryNode:
       maxParallelism: 1024 # Maximum number of tasks executed in parallel in the flowgraph
   # Segcore will divide a segment into multiple chunks.
   segcore:
-    chunkRows: 32768 # The number of vectors in a chunk.
+    chunkRows: 1024 # The number of vectors in a chunk.
 
   cache:
     enabled: true
@@ -206,7 +206,7 @@ dataCoord:
     clientMaxRecvSize: 104857600 # 100 MB, 100 * 1024 * 1024
     clientMaxSendSize: 104857600 # 100 MB, 100 * 1024 * 1024
   enableCompaction: true # Enable data segment compression
-  enableGarbageCollection: false
+  enableGarbageCollection: true
 
   segment:
     maxSize: 512 # Maximum size of a segment in MB

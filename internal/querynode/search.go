@@ -20,7 +20,9 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
+	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
 )
 
@@ -30,6 +32,10 @@ func searchOnSegments(replica ReplicaInterface, segType segmentType, searchReq *
 	// results variables
 	searchResults := make([]*SearchResult, len(segIDs))
 	errs := make([]error, len(segIDs))
+	searchLabel := metrics.SealedSegmentLabel
+	if segType == commonpb.SegmentState_Growing {
+		searchLabel = metrics.GrowingSegmentLabel
+	}
 
 	// calling segment search in goroutines
 	var wg sync.WaitGroup
@@ -39,6 +45,7 @@ func searchOnSegments(replica ReplicaInterface, segType segmentType, searchReq *
 			defer wg.Done()
 			seg, err := replica.getSegmentByID(segID, segType)
 			if err != nil {
+				log.Error(err.Error()) // should not happen but still ignore it since the result is still correct
 				return
 			}
 			// record search time
@@ -48,8 +55,7 @@ func searchOnSegments(replica ReplicaInterface, segType segmentType, searchReq *
 			searchResults[i] = searchResult
 			// update metrics
 			metrics.QueryNodeSQSegmentLatency.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID()),
-				metrics.SearchLabel,
-				metrics.SealedSegmentLabel).Observe(float64(tr.ElapseSpan().Milliseconds()))
+				metrics.SearchLabel, searchLabel).Observe(float64(tr.ElapseSpan().Milliseconds()))
 		}(segID, i)
 	}
 	wg.Wait()

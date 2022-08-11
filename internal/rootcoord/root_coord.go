@@ -30,27 +30,28 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/util/errorutil"
+	"github.com/milvus-io/milvus/internal/util/funcutil"
+
 	"github.com/golang/protobuf/proto"
-	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/kv"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
+	kvmetestore "github.com/milvus-io/milvus/internal/metastore/kv"
+	"github.com/milvus-io/milvus/internal/metastore/model"
 	"github.com/milvus-io/milvus/internal/metrics"
 	ms "github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
-	"github.com/milvus-io/milvus/internal/proto/etcdpb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/proxypb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
-	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/tso"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util"
@@ -64,6 +65,8 @@ import (
 	"github.com/milvus-io/milvus/internal/util/trace"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.uber.org/zap"
 )
 
 // UniqueID is an alias of typeutil.UniqueID.
@@ -133,8 +136,9 @@ type Core struct {
 	CallGetRecoveryInfoService    func(ctx context.Context, collID, partID UniqueID) ([]*datapb.SegmentBinlogs, error)
 
 	//call index builder's client to build index, return build id or get index state.
-	CallBuildIndexService     func(ctx context.Context, segID UniqueID, binlog []string, field *schemapb.FieldSchema, idxInfo *etcdpb.IndexInfo, numRows int64) (typeutil.UniqueID, error)
+	CallBuildIndexService     func(ctx context.Context, segID UniqueID, binlog []string, field *model.Field, idxInfo *model.Index, numRows int64) (typeutil.UniqueID, error)
 	CallDropIndexService      func(ctx context.Context, indexID typeutil.UniqueID) error
+	CallRemoveIndexService    func(ctx context.Context, buildIDs []UniqueID) error
 	CallGetIndexStatesService func(ctx context.Context, IndexBuildIDs []int64) ([]*indexpb.IndexInfo, error)
 
 	NewProxyClient func(sess *sessionutil.Session) (types.Proxy, error)
@@ -281,6 +285,9 @@ func (c *Core) checkInit() error {
 	if c.CallDropIndexService == nil {
 		return fmt.Errorf("callDropIndexService is nil")
 	}
+	if c.CallRemoveIndexService == nil {
+		return fmt.Errorf("callDropIndexService is nil")
+	}
 	if c.CallWatchChannels == nil {
 		return fmt.Errorf("callWatchChannels is nil")
 	}
@@ -369,83 +376,161 @@ func (c *Core) checkFlushedSegmentsLoop() {
 	}
 }
 
-func (c *Core) checkFlushedSegments(ctx context.Context) {
-	collID2Meta, segID2IndexMeta, indexID2Meta := c.MetaTable.dupMeta()
-	for _, collMeta := range collID2Meta {
-		if len(collMeta.FieldIndexes) == 0 {
+func (c *Core) recycleDroppedIndex() {
+	defer c.wg.Done()
+	ticker := time.NewTicker(3 * time.Second)
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-ticker.C:
+			droppedIndex := c.MetaTable.GetDroppedIndex()
+			for collID, idxIDs := range droppedIndex {
+				for _, indexID := range idxIDs {
+					if err := c.CallDropIndexService(c.ctx, indexID); err != nil {
+						log.Warn("Notify IndexCoord to drop index failed, wait to retry",
+							zap.Int64("collID", collID),
+							zap.Int64("indexID", indexID))
+					}
+				}
+			}
+			err := c.MetaTable.RecycleDroppedIndex()
+			if err != nil {
+				log.Warn("Remove index meta failed, wait to retry", zap.Error(err))
+			}
+		}
+	}
+}
+
+func (c *Core) createIndexForSegment(ctx context.Context, collID, partID, segID UniqueID, numRows int64, binlogs []*datapb.FieldBinlog) error {
+	collID2Meta, _, indexID2Meta := c.MetaTable.dupMeta()
+	collMeta, ok := collID2Meta[collID]
+	if !ok {
+		log.Error("collection meta is not exist", zap.Int64("collID", collID))
+		return fmt.Errorf("collection meta is not exist with ID = %d", collID)
+	}
+	if len(collMeta.FieldIDToIndexID) == 0 {
+		log.Info("collection has no index, no need to build index on segment", zap.Int64("collID", collID),
+			zap.Int64("segID", segID))
+		return nil
+	}
+	for _, t := range collMeta.FieldIDToIndexID {
+		fieldID := t.Key
+		indexID := t.Value
+		indexMeta, ok := indexID2Meta[indexID]
+		if !ok {
+			log.Warn("index has no meta", zap.Int64("collID", collID), zap.Int64("indexID", indexID))
+			return fmt.Errorf("index has no meta with ID = %d in collection %d", indexID, collID)
+		}
+		if indexMeta.IsDeleted {
+			log.Info("index has been deleted, no need to build index on segment")
 			continue
 		}
-		for _, partID := range collMeta.PartitionIDs {
-			ctx2, cancel2 := context.WithTimeout(ctx, 3*time.Minute)
-			segBinlogs, err := c.CallGetRecoveryInfoService(ctx2, collMeta.ID, partID)
+
+		field, err := GetFieldSchemaByID(&collMeta, fieldID)
+		if err != nil {
+			log.Error("GetFieldSchemaByID failed",
+				zap.Int64("collectionID", collID),
+				zap.Int64("fieldID", fieldID))
+			return err
+		}
+		if c.MetaTable.IsSegmentIndexed(segID, field, indexMeta.IndexParams) {
+			continue
+		}
+		createTS, err := c.TSOAllocator(1)
+		if err != nil {
+			log.Error("RootCoord alloc timestamp failed", zap.Int64("collectionID", collID), zap.Error(err))
+			return err
+		}
+
+		indexInfo := model.Index{
+			CollectionID: collMeta.CollectionID,
+			FieldID:      fieldID,
+			IndexID:      indexID,
+			SegmentIndexes: map[int64]model.SegmentIndex{
+				segID: {
+					Segment: model.Segment{
+						PartitionID: partID,
+						SegmentID:   segID,
+					},
+					EnableIndex: false,
+					CreateTime:  createTS,
+				},
+			},
+		}
+
+		segIndexInfo := indexInfo.SegmentIndexes[segID]
+		buildID, err := c.BuildIndex(ctx, segID, numRows, binlogs, field, &indexMeta, false)
+		if err != nil {
+			log.Debug("build index failed",
+				zap.Int64("segmentID", segID),
+				zap.Int64("fieldID", field.FieldID),
+				zap.Int64("indexID", indexMeta.IndexID))
+			return err
+		}
+		// if buildID == 0, means it's no need to build index.
+		if buildID != 0 {
+			segIndexInfo.BuildID = buildID
+			segIndexInfo.EnableIndex = true
+		}
+
+		if err := c.MetaTable.AlterIndex(&indexInfo); err != nil {
+			log.Error("alter index into meta table failed, need remove index with buildID",
+				zap.Int64("collectionID", collID), zap.Int64("indexID", indexID),
+				zap.Int64("buildID", buildID), zap.Error(err))
+			if err = retry.Do(ctx, func() error {
+				return c.CallRemoveIndexService(ctx, []UniqueID{buildID})
+			}); err != nil {
+				log.Error("remove index failed, need to be resolved manually", zap.Int64("collectionID", collID),
+					zap.Int64("indexID", indexID), zap.Int64("buildID", buildID), zap.Error(err))
+				return err
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Core) checkFlushedSegments(ctx context.Context) {
+	collID2Meta := c.MetaTable.dupCollectionMeta()
+	for collID, collMeta := range collID2Meta {
+		if len(collMeta.FieldIDToIndexID) == 0 {
+			continue
+		}
+		for _, part := range collMeta.Partitions {
+			segBinlogs, err := c.CallGetRecoveryInfoService(ctx, collMeta.CollectionID, part.PartitionID)
 			if err != nil {
 				log.Debug("failed to get flushed segments from dataCoord",
-					zap.Int64("collection ID", collMeta.GetID()),
-					zap.Int64("partition ID", partID),
+					zap.Int64("collection ID", collMeta.CollectionID),
+					zap.Int64("partition ID", part.PartitionID),
 					zap.Error(err))
-				cancel2()
 				continue
 			}
+			segIDs := make(map[UniqueID]struct{})
 			for _, segBinlog := range segBinlogs {
-				segID := segBinlog.SegmentID
-				var indexInfos []*etcdpb.FieldIndexInfo
-				indexMeta, ok := segID2IndexMeta[segID]
-				if !ok {
-					indexInfos = append(indexInfos, collMeta.FieldIndexes...)
-				} else {
-					for _, idx := range collMeta.FieldIndexes {
-						if _, ok := indexMeta[idx.IndexID]; !ok {
-							indexInfos = append(indexInfos, idx)
-						}
-					}
-				}
-				for _, idxInfo := range indexInfos {
-					/* #nosec G601 */
-					field, err := GetFieldSchemaByID(&collMeta, idxInfo.FiledID)
-					if err != nil {
-						log.Debug("GetFieldSchemaByID",
-							zap.Any("collection_meta", collMeta),
-							zap.Int64("field id", idxInfo.FiledID))
-						continue
-					}
-					indexMeta, ok := indexID2Meta[idxInfo.IndexID]
-					if !ok {
-						log.Debug("index meta does not exist", zap.Int64("index_id", idxInfo.IndexID))
-						continue
-					}
-					info := etcdpb.SegmentIndexInfo{
-						CollectionID: collMeta.ID,
-						PartitionID:  partID,
-						SegmentID:    segID,
-						FieldID:      idxInfo.FiledID,
-						IndexID:      idxInfo.IndexID,
-						EnableIndex:  false,
-					}
-					log.Debug("building index by background checker",
-						zap.Int64("segment_id", segID),
-						zap.Int64("index_id", indexMeta.IndexID),
-						zap.Int64("collection_id", collMeta.ID))
-					info.BuildID, err = c.BuildIndex(ctx2, segID, segBinlog.GetNumOfRows(), segBinlog.GetFieldBinlogs(), field, &indexMeta, false)
-					if err != nil {
-						log.Debug("build index failed",
-							zap.Int64("segment_id", segID),
-							zap.Int64("field_id", field.FieldID),
-							zap.Int64("index_id", indexMeta.IndexID))
-						continue
-					}
-					if info.BuildID != 0 {
-						info.EnableIndex = true
-					}
-					if err := c.MetaTable.AddIndex(&info); err != nil {
-						log.Debug("Add index into meta table failed",
-							zap.Int64("collection_id", collMeta.ID),
-							zap.Int64("index_id", info.IndexID),
-							zap.Int64("build_id", info.BuildID),
-							zap.Error(err))
-					}
+				segIDs[segBinlog.GetSegmentID()] = struct{}{}
+				err = c.createIndexForSegment(ctx, collID, part.PartitionID, segBinlog.GetSegmentID(), segBinlog.GetNumOfRows(), segBinlog.GetFieldBinlogs())
+				if err != nil {
+					log.Error("createIndexForSegment failed, wait to retry", zap.Int64("collID", collID),
+						zap.Int64("partID", part.PartitionID), zap.Int64("segID", segBinlog.GetSegmentID()), zap.Error(err))
+					continue
 				}
 			}
-			cancel2()
+			recycledSegIDs, recycledBuildIDs := c.MetaTable.AlignSegmentsMeta(collID, part.PartitionID, segIDs)
+			log.Info("there buildIDs should be remove index", zap.Int64s("buildIDs", recycledBuildIDs))
+			if len(recycledBuildIDs) > 0 {
+				if err := c.CallRemoveIndexService(ctx, recycledBuildIDs); err != nil {
+					log.Error("CallRemoveIndexService remove indexes on segments failed",
+						zap.Int64s("need dropped buildIDs", recycledBuildIDs), zap.Error(err))
+					continue
+				}
+			}
+			if err := c.MetaTable.RemoveSegments(collID, part.PartitionID, recycledSegIDs); err != nil {
+				log.Warn("remove segments failed, wait to retry", zap.Int64("collID", collID), zap.Int64("partID", part.PartitionID),
+					zap.Int64s("segIDs", recycledSegIDs), zap.Error(err))
+				continue
+			}
 		}
 	}
 }
@@ -457,16 +542,16 @@ func (c *Core) getSegments(ctx context.Context, collID typeutil.UniqueID) (map[U
 	}
 	segID2PartID := make(map[UniqueID]UniqueID)
 	segID2Binlog := make(map[UniqueID]*datapb.SegmentBinlogs)
-	for _, partID := range collMeta.PartitionIDs {
-		if segs, err := c.CallGetRecoveryInfoService(ctx, collID, partID); err == nil {
+	for _, part := range collMeta.Partitions {
+		if segs, err := c.CallGetRecoveryInfoService(ctx, collID, part.PartitionID); err == nil {
 			for _, s := range segs {
-				segID2PartID[s.SegmentID] = partID
+				segID2PartID[s.SegmentID] = part.PartitionID
 				segID2Binlog[s.SegmentID] = s
 			}
 		} else {
 			log.Error("failed to get flushed segments info from dataCoord",
 				zap.Int64("collection ID", collID),
-				zap.Int64("partition ID", partID),
+				zap.Int64("partition ID", part.PartitionID),
 				zap.Error(err))
 			return nil, nil, err
 		}
@@ -764,7 +849,7 @@ func (c *Core) SetIndexCoord(s types.IndexCoord) error {
 		}
 	}()
 
-	c.CallBuildIndexService = func(ctx context.Context, segID UniqueID, binlog []string, field *schemapb.FieldSchema, idxInfo *etcdpb.IndexInfo, numRows int64) (retID typeutil.UniqueID, retErr error) {
+	c.CallBuildIndexService = func(ctx context.Context, segID UniqueID, binlog []string, field *model.Field, idxInfo *model.Index, numRows int64) (retID typeutil.UniqueID, retErr error) {
 		defer func() {
 			if err := recover(); err != nil {
 				retErr = fmt.Errorf("build index panic, msg = %v", err)
@@ -778,7 +863,7 @@ func (c *Core) SetIndexCoord(s types.IndexCoord) error {
 			IndexID:     idxInfo.IndexID,
 			IndexName:   idxInfo.IndexName,
 			NumRows:     numRows,
-			FieldSchema: field,
+			FieldSchema: model.MarshalFieldModel(field),
 			SegmentID:   segID,
 		})
 		if err != nil {
@@ -831,6 +916,27 @@ func (c *Core) SetIndexCoord(s types.IndexCoord) error {
 			return nil, fmt.Errorf(res.GetStatus().GetErrorCode().String())
 		}
 		return res.GetStates(), nil
+	}
+
+	c.CallRemoveIndexService = func(ctx context.Context, buildIDs []UniqueID) (retErr error) {
+		defer func() {
+			if err := recover(); err != nil {
+				retErr = fmt.Errorf("remove index from index service panic, msg = %v", err)
+			}
+		}()
+		<-initCh
+		status, err := s.RemoveIndex(ctx, &indexpb.RemoveIndexRequest{
+			BuildIDs: buildIDs,
+		})
+		if err != nil {
+			return err
+		}
+
+		if status.GetErrorCode() != commonpb.ErrorCode_Success {
+			return fmt.Errorf(status.Reason)
+		}
+
+		return nil
 	}
 	return nil
 }
@@ -924,14 +1030,14 @@ func (c *Core) SetQueryCoord(s types.QueryCoord) error {
 }
 
 // BuildIndex will check row num and call build index service
-func (c *Core) BuildIndex(ctx context.Context, segID UniqueID, numRows int64, binlogs []*datapb.FieldBinlog, field *schemapb.FieldSchema, idxInfo *etcdpb.IndexInfo, isFlush bool) (typeutil.UniqueID, error) {
+func (c *Core) BuildIndex(ctx context.Context, segID UniqueID, numRows int64, binlogs []*datapb.FieldBinlog, field *model.Field, idxInfo *model.Index, isFlush bool) (typeutil.UniqueID, error) {
 	log.Debug("start build index", zap.String("index name", idxInfo.IndexName),
 		zap.String("field name", field.Name), zap.Int64("segment id", segID))
 	sp, ctx := trace.StartSpanFromContext(ctx)
 	defer sp.Finish()
 	if c.MetaTable.IsSegmentIndexed(segID, field, idxInfo.IndexParams) {
-		info, err := c.MetaTable.GetSegmentIndexInfoByID(segID, field.FieldID, idxInfo.GetIndexName())
-		return info.BuildID, err
+		info, err := c.MetaTable.GetSegmentIndexInfoByID(segID, field.FieldID, idxInfo.IndexName)
+		return info.SegmentIndexes[segID].BuildID, err
 	}
 	var bldID UniqueID
 	var err error
@@ -940,7 +1046,7 @@ func (c *Core) BuildIndex(ctx context.Context, segID UniqueID, numRows int64, bi
 	} else {
 		binLogs := make([]string, 0)
 		for _, fieldBinLog := range binlogs {
-			if fieldBinLog.GetFieldID() == field.GetFieldID() {
+			if fieldBinLog.GetFieldID() == field.FieldID {
 				for _, binLog := range fieldBinLog.GetBinlogs() {
 					binLogs = append(binLogs, binLog.LogPath)
 				}
@@ -951,23 +1057,6 @@ func (c *Core) BuildIndex(ctx context.Context, segID UniqueID, numRows int64, bi
 	}
 
 	return bldID, err
-}
-
-// RemoveIndex will call drop index service
-func (c *Core) RemoveIndex(ctx context.Context, collName string, indexName string) error {
-	_, indexInfos, err := c.MetaTable.GetIndexByName(collName, indexName)
-	if err != nil {
-		log.Error("GetIndexByName failed,", zap.String("collection name", collName),
-			zap.String("index name", indexName), zap.Error(err))
-		return err
-	}
-	for _, indexInfo := range indexInfos {
-		if err = c.CallDropIndexService(ctx, indexInfo.IndexID); err != nil {
-			log.Error("CallDropIndexService failed,", zap.String("collection name", collName), zap.Error(err))
-			return err
-		}
-	}
-	return nil
 }
 
 // ExpireMetaCache will call invalidate collection meta cache
@@ -1074,12 +1163,13 @@ func (c *Core) Init() error {
 				log.Error("RootCoord failed to new EtcdKV", zap.Any("reason", initError))
 				return initError
 			}
-			var ss *suffixSnapshot
-			if ss, initError = newSuffixSnapshot(metaKV, "_ts", Params.EtcdCfg.MetaRootPath, "snapshots"); initError != nil {
+
+			var ss *kvmetestore.SuffixSnapshot
+			if ss, initError = kvmetestore.NewSuffixSnapshot(metaKV, "_ts", Params.EtcdCfg.MetaRootPath, "snapshots"); initError != nil {
 				log.Error("RootCoord failed to new suffixSnapshot", zap.Error(initError))
 				return initError
 			}
-			if c.MetaTable, initError = NewMetaTable(metaKV, ss); initError != nil {
+			if c.MetaTable, initError = NewMetaTable(c.ctx, metaKV, ss); initError != nil {
 				log.Error("RootCoord failed to new MetaTable", zap.Any("reason", initError))
 				return initError
 			}
@@ -1158,6 +1248,11 @@ func (c *Core) Init() error {
 		if initError != nil {
 			return
 		}
+
+		if initError = c.initRbac(); initError != nil {
+			return
+		}
+		log.Debug("RootCoord init user root done")
 	})
 	if initError != nil {
 		log.Debug("RootCoord init error", zap.Error(initError))
@@ -1173,6 +1268,61 @@ func (c *Core) initData() error {
 		encryptedRootPassword, _ := crypto.PasswordEncrypt(util.DefaultRootPassword)
 		err := c.MetaTable.AddCredential(&internalpb.CredentialInfo{Username: util.UserRoot, EncryptedPassword: encryptedRootPassword})
 		return err
+	}
+	return nil
+}
+
+func (c *Core) initRbac() (initError error) {
+	// create default roles, including admin, public
+	if initError = c.MetaTable.CreateRole(util.DefaultTenant, &milvuspb.RoleEntity{Name: util.RoleAdmin}); initError != nil {
+		return
+	}
+	if initError = c.MetaTable.CreateRole(util.DefaultTenant, &milvuspb.RoleEntity{Name: util.RolePublic}); initError != nil {
+		return
+	}
+
+	// create default rolemapping, root -> admin
+	if initError = c.MetaTable.OperateUserRole(util.DefaultTenant,
+		&milvuspb.UserEntity{Name: util.UserRoot},
+		&milvuspb.RoleEntity{Name: util.RoleAdmin},
+		milvuspb.OperateUserRoleType_AddUserToRole); initError != nil {
+		return
+	}
+
+	// grant privileges for the public role
+	globalPrivileges := []string{
+		commonpb.ObjectPrivilege_PrivilegeDescribeCollection.String(),
+		commonpb.ObjectPrivilege_PrivilegeShowCollections.String(),
+	}
+	collectionPrivileges := []string{
+		commonpb.ObjectPrivilege_PrivilegeIndexDetail.String(),
+	}
+
+	for _, globalPrivilege := range globalPrivileges {
+		if initError = c.MetaTable.OperatePrivilege(util.DefaultTenant, &milvuspb.GrantEntity{
+			Role:       &milvuspb.RoleEntity{Name: util.RolePublic},
+			Object:     &milvuspb.ObjectEntity{Name: commonpb.ObjectType_Global.String()},
+			ObjectName: funcutil.AnyObjectName,
+			Grantor: &milvuspb.GrantorEntity{
+				User:      &milvuspb.UserEntity{Name: util.RoleAdmin},
+				Privilege: &milvuspb.PrivilegeEntity{Name: globalPrivilege},
+			},
+		}, milvuspb.OperatePrivilegeType_Grant); initError != nil {
+			return
+		}
+	}
+	for _, collectionPrivilege := range collectionPrivileges {
+		if initError = c.MetaTable.OperatePrivilege(util.DefaultTenant, &milvuspb.GrantEntity{
+			Role:       &milvuspb.RoleEntity{Name: util.RolePublic},
+			Object:     &milvuspb.ObjectEntity{Name: commonpb.ObjectType_Collection.String()},
+			ObjectName: funcutil.AnyObjectName,
+			Grantor: &milvuspb.GrantorEntity{
+				User:      &milvuspb.UserEntity{Name: util.RoleAdmin},
+				Privilege: &milvuspb.PrivilegeEntity{Name: collectionPrivilege},
+			},
+		}, milvuspb.OperatePrivilegeType_Grant); initError != nil {
+			return
+		}
 	}
 	return nil
 }
@@ -1258,7 +1408,7 @@ func (c *Core) reSendDdMsg(ctx context.Context, force bool) error {
 		if err != nil {
 			return err
 		}
-		if _, err = c.MetaTable.GetPartitionByName(collInfo.ID, ddReq.PartitionName, 0); err != nil {
+		if _, err = c.MetaTable.GetPartitionByName(collInfo.CollectionID, ddReq.PartitionName, 0); err != nil {
 			if err = c.SendDdCreatePartitionReq(ctx, &ddReq, collInfo.PhysicalChannelNames); err != nil {
 				return err
 			}
@@ -1279,7 +1429,7 @@ func (c *Core) reSendDdMsg(ctx context.Context, force bool) error {
 		if err != nil {
 			return err
 		}
-		if _, err = c.MetaTable.GetPartitionByName(collInfo.ID, ddReq.PartitionName, 0); err == nil {
+		if _, err = c.MetaTable.GetPartitionByName(collInfo.CollectionID, ddReq.PartitionName, 0); err == nil {
 			if err = c.SendDdDropPartitionReq(ctx, &ddReq, collInfo.PhysicalChannelNames); err != nil {
 				return err
 			}
@@ -1340,13 +1490,14 @@ func (c *Core) Start() error {
 			log.Fatal("RootCoord Start reSendDdMsg failed", zap.Error(err))
 			panic(err)
 		}
-		c.wg.Add(6)
+		c.wg.Add(7)
 		go c.startTimeTickLoop()
 		go c.tsLoop()
 		go c.chanTimeTick.startWatch(&c.wg)
 		go c.checkFlushedSegmentsLoop()
 		go c.importManager.expireOldTasksLoop(&c.wg, c.CallReleaseSegRefLock)
 		go c.importManager.sendOutTasksLoop(&c.wg)
+		go c.recycleDroppedIndex()
 		Params.RootCoordCfg.CreatedTime = time.Now()
 		Params.RootCoordCfg.UpdatedTime = time.Now()
 	})
@@ -1841,6 +1992,50 @@ func (c *Core) DescribeIndex(ctx context.Context, in *milvuspb.DescribeIndexRequ
 	return t.Rsp, nil
 }
 
+func (c *Core) GetIndexState(ctx context.Context, in *milvuspb.GetIndexStateRequest) (*indexpb.GetIndexStatesResponse, error) {
+	if code, ok := c.checkHealthy(); !ok {
+		log.Error("RootCoord GetIndexState failed, RootCoord is not healthy")
+		return &indexpb.GetIndexStatesResponse{
+			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]),
+		}, nil
+	}
+	log.Info("RootCoord GetIndexState", zap.String("collName", in.GetCollectionName()),
+		zap.String("fieldName", in.GetFieldName()), zap.String("indexName", in.GetIndexName()))
+
+	// initBuildIDs are the buildIDs generated when CreateIndex is called.
+	initBuildIDs, err := c.MetaTable.GetInitBuildIDs(in.GetCollectionName(), in.GetIndexName())
+	if err != nil {
+		log.Error("RootCoord GetIndexState failed", zap.String("collName", in.GetCollectionName()),
+			zap.String("fieldName", in.GetFieldName()), zap.String("indexName", in.GetIndexName()), zap.Error(err))
+		return &indexpb.GetIndexStatesResponse{
+			Status: failStatus(commonpb.ErrorCode_UnexpectedError, err.Error()),
+		}, nil
+	}
+
+	ret := &indexpb.GetIndexStatesResponse{
+		Status: succStatus(),
+	}
+	if len(initBuildIDs) == 0 {
+		log.Warn("RootCoord GetIndexState successful, all segments generated when CreateIndex is called have been compacted")
+		return ret, nil
+	}
+
+	states, err := c.CallGetIndexStatesService(ctx, initBuildIDs)
+	if err != nil {
+		log.Error("RootCoord GetIndexState CallGetIndexStatesService failed", zap.String("collName", in.GetCollectionName()),
+			zap.String("fieldName", in.GetFieldName()), zap.String("indexName", in.GetIndexName()), zap.Error(err))
+		ret.Status = failStatus(commonpb.ErrorCode_UnexpectedError, err.Error())
+		return ret, err
+	}
+
+	log.Info("RootCoord GetIndexState successful", zap.String("collName", in.GetCollectionName()),
+		zap.String("fieldName", in.GetFieldName()), zap.String("indexName", in.GetIndexName()))
+	return &indexpb.GetIndexStatesResponse{
+		Status: succStatus(),
+		States: states,
+	}, nil
+}
+
 // DropIndex drop index
 func (c *Core) DropIndex(ctx context.Context, in *milvuspb.DropIndexRequest) (*commonpb.Status, error) {
 	metrics.RootCoordDDLReqCounter.WithLabelValues("DropIndex", metrics.TotalLabel).Inc()
@@ -2110,77 +2305,44 @@ func (c *Core) InvalidateCollectionMetaCache(ctx context.Context, in *proxypb.In
 }
 
 // SegmentFlushCompleted check whether segment flush has completed
-func (c *Core) SegmentFlushCompleted(ctx context.Context, in *datapb.SegmentFlushCompletedMsg) (*commonpb.Status, error) {
+func (c *Core) SegmentFlushCompleted(ctx context.Context, in *datapb.SegmentFlushCompletedMsg) (status *commonpb.Status, err error) {
 	if code, ok := c.checkHealthy(); !ok {
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "StateCode="+internalpb.StateCode_name[int32(code)]), nil
 	}
 	if in.Base.MsgType != commonpb.MsgType_SegmentFlushDone {
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "invalid msg type "+commonpb.MsgType_name[int32(in.Base.MsgType)]), nil
 	}
-	segID := in.Segment.GetID()
-	log.Debug("SegmentFlushCompleted", zap.String("role", typeutil.RootCoordRole),
-		zap.Int64("collection id", in.Segment.CollectionID), zap.Int64("partition id", in.Segment.PartitionID),
-		zap.Int64("segment id", segID), zap.Int64("msgID", in.Base.MsgID))
 
-	coll, err := c.MetaTable.GetCollectionByID(in.Segment.CollectionID, 0)
+	log.Info("SegmentFlushCompleted received", zap.Int64("msgID", in.Base.MsgID), zap.Int64("collID", in.Segment.CollectionID),
+		zap.Int64("partID", in.Segment.PartitionID), zap.Int64("segID", in.Segment.ID), zap.Int64s("compactFrom", in.Segment.CompactionFrom))
+
+	err = c.createIndexForSegment(ctx, in.Segment.CollectionID, in.Segment.PartitionID, in.Segment.ID, in.Segment.NumOfRows, in.Segment.Binlogs)
 	if err != nil {
-		log.Error("GetCollectionByID failed", zap.String("role", typeutil.RootCoordRole),
-			zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
-		return failStatus(commonpb.ErrorCode_UnexpectedError, "GetCollectionByID failed: "+err.Error()), nil
+		log.Error("createIndexForSegment", zap.Int64("msgID", in.Base.MsgID), zap.Int64("collID", in.Segment.CollectionID),
+			zap.Int64("partID", in.Segment.PartitionID), zap.Int64("segID", in.Segment.ID), zap.Error(err))
+		return failStatus(commonpb.ErrorCode_UnexpectedError, err.Error()), nil
 	}
 
-	if len(coll.FieldIndexes) == 0 {
-		log.Debug("no index params on collection", zap.String("role", typeutil.RootCoordRole),
-			zap.String("collection_name", coll.Schema.Name), zap.Int64("msgID", in.Base.MsgID))
+	buildIDs := c.MetaTable.GetBuildIDsBySegIDs(in.Segment.CompactionFrom)
+	if len(buildIDs) != 0 {
+		if err = c.CallRemoveIndexService(ctx, buildIDs); err != nil {
+			log.Error("CallRemoveIndexService failed", zap.Int64("msgID", in.Base.MsgID), zap.Int64("collID", in.Segment.CollectionID),
+				zap.Int64("partID", in.Segment.PartitionID), zap.Int64("segID", in.Segment.ID),
+				zap.Int64s("compactFrom", in.Segment.CompactionFrom), zap.Int64s("buildIDs", buildIDs), zap.Error(err))
+			return failStatus(commonpb.ErrorCode_UnexpectedError, err.Error()), nil
+		}
 	}
 
-	for _, f := range coll.FieldIndexes {
-		fieldSch, err := GetFieldSchemaByID(coll, f.FiledID)
-		if err != nil {
-			log.Warn("field schema not found", zap.String("role", typeutil.RootCoordRole),
-				zap.String("collection_name", coll.Schema.Name), zap.Int64("field id", f.FiledID),
-				zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
-			continue
-		}
-
-		idxInfo, err := c.MetaTable.GetIndexByID(f.IndexID)
-		if err != nil {
-			log.Warn("index not found", zap.String("role", typeutil.RootCoordRole),
-				zap.String("collection_name", coll.Schema.Name), zap.Int64("field id", f.FiledID),
-				zap.Int64("index id", f.IndexID), zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
-			continue
-		}
-
-		info := etcdpb.SegmentIndexInfo{
-			CollectionID: in.Segment.CollectionID,
-			PartitionID:  in.Segment.PartitionID,
-			SegmentID:    segID,
-			FieldID:      fieldSch.FieldID,
-			IndexID:      idxInfo.IndexID,
-			EnableIndex:  false,
-		}
-		info.BuildID, err = c.BuildIndex(ctx, segID, in.Segment.GetNumOfRows(), in.Segment.GetBinlogs(), fieldSch, idxInfo, true)
-		if err == nil && info.BuildID != 0 {
-			info.EnableIndex = true
-		} else {
-			log.Error("BuildIndex failed", zap.String("role", typeutil.RootCoordRole),
-				zap.String("collection_name", coll.Schema.Name), zap.Int64("field id", f.FiledID),
-				zap.Int64("index id", f.IndexID), zap.Int64("build id", info.BuildID),
-				zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
-			continue
-		}
-		err = c.MetaTable.AddIndex(&info)
-		if err != nil {
-			log.Error("AddIndex failed", zap.String("role", typeutil.RootCoordRole),
-				zap.String("collection_name", coll.Schema.Name), zap.Int64("field id", f.FiledID),
-				zap.Int64("index id", f.IndexID), zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
-			continue
-		}
+	if err = c.MetaTable.RemoveSegments(in.Segment.CollectionID, in.Segment.PartitionID, in.Segment.CompactionFrom); err != nil {
+		log.Error("RemoveSegments failed", zap.Int64("msgID", in.Base.MsgID), zap.Int64("collID", in.Segment.CollectionID),
+			zap.Int64("partID", in.Segment.PartitionID), zap.Int64("segID", in.Segment.ID),
+			zap.Int64s("compactFrom", in.Segment.CompactionFrom), zap.Error(err))
+		return failStatus(commonpb.ErrorCode_UnexpectedError, err.Error()), nil
 	}
 
 	log.Debug("SegmentFlushCompleted success", zap.String("role", typeutil.RootCoordRole),
 		zap.Int64("collection id", in.Segment.CollectionID), zap.Int64("partition id", in.Segment.PartitionID),
-		zap.Int64("segment id", segID), zap.Int64("msgID", in.Base.MsgID))
+		zap.Int64("segment id", in.Segment.ID), zap.Int64("msgID", in.Base.MsgID))
 	return succStatus(), nil
 }
 
@@ -2195,7 +2357,7 @@ func (c *Core) GetMetrics(ctx context.Context, in *milvuspb.GetMetricsRequest) (
 
 	metricType, err := metricsinfo.ParseMetricType(in.Request)
 	if err != nil {
-		log.Error("ParseMetricType failed", zap.String("role", typeutil.RootCoordRole),
+		log.Warn("ParseMetricType failed", zap.String("role", typeutil.RootCoordRole),
 			zap.Int64("node_id", c.session.ServerID), zap.String("req", in.Request), zap.Error(err))
 		return &milvuspb.GetMetricsResponse{
 			Status:   failStatus(commonpb.ErrorCode_UnexpectedError, "ParseMetricType failed: "+err.Error()),
@@ -2204,7 +2366,7 @@ func (c *Core) GetMetrics(ctx context.Context, in *milvuspb.GetMetricsRequest) (
 	}
 
 	log.Debug("GetMetrics success", zap.String("role", typeutil.RootCoordRole),
-		zap.String("metric_type", metricType), zap.Int64("msgID", in.Base.MsgID))
+		zap.String("metric_type", metricType), zap.Int64("msgID", in.GetBase().GetMsgID()))
 
 	if metricType == metricsinfo.SystemInfoMetrics {
 		ret, err := c.metricsCacheManager.GetSystemInfoMetrics()
@@ -2213,21 +2375,24 @@ func (c *Core) GetMetrics(ctx context.Context, in *milvuspb.GetMetricsRequest) (
 		}
 
 		log.Warn("GetSystemInfoMetrics from cache failed", zap.String("role", typeutil.RootCoordRole),
-			zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
+			zap.Int64("msgID", in.GetBase().GetMsgID()), zap.Error(err))
 
 		systemInfoMetrics, err := c.getSystemInfoMetrics(ctx, in)
 		if err != nil {
-			log.Error("GetSystemInfoMetrics failed", zap.String("role", typeutil.RootCoordRole),
-				zap.String("metric_type", metricType), zap.Int64("msgID", in.Base.MsgID), zap.Error(err))
-			return nil, err
+			log.Warn("GetSystemInfoMetrics failed", zap.String("role", typeutil.RootCoordRole),
+				zap.String("metric_type", metricType), zap.Int64("msgID", in.GetBase().GetMsgID()), zap.Error(err))
+			return &milvuspb.GetMetricsResponse{
+				Status:   failStatus(commonpb.ErrorCode_UnexpectedError, fmt.Sprintf("getSystemInfoMetrics failed: %s", err.Error())),
+				Response: "",
+			}, nil
 		}
 
 		c.metricsCacheManager.UpdateSystemInfoMetrics(systemInfoMetrics)
 		return systemInfoMetrics, err
 	}
 
-	log.Error("GetMetrics failed, metric type not implemented", zap.String("role", typeutil.RootCoordRole),
-		zap.String("metric_type", metricType), zap.Int64("msgID", in.Base.MsgID))
+	log.Warn("GetMetrics failed, metric type not implemented", zap.String("role", typeutil.RootCoordRole),
+		zap.String("metric_type", metricType), zap.Int64("msgID", in.GetBase().GetMsgID()))
 
 	return &milvuspb.GetMetricsResponse{
 		Status:   failStatus(commonpb.ErrorCode_UnexpectedError, metricsinfo.MsgUnimplementedMetric),
@@ -2473,17 +2638,20 @@ func (c *Core) ReportImport(ctx context.Context, ir *rootcoordpb.ImportResult) (
 
 	// Look up collection name on collection ID.
 	var colName string
-	var colMeta *etcdpb.CollectionInfo
+	var colMeta *model.Collection
 	if colMeta, err = c.MetaTable.GetCollectionByID(ti.GetCollectionId(), 0); err != nil {
 		log.Error("failed to get collection name",
 			zap.Int64("collection ID", ti.GetCollectionId()),
 			zap.Error(err))
+		// In some unexpected cases, user drop collection when bulkload task still in pending list, the datanode become idle.
+		// If we directly return, the pending tasks will remain in pending list. So we call resendTaskFunc() to push next pending task to idle datanode.
+		resendTaskFunc()
 		return &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_CollectionNameNotFound,
 			Reason:    "failed to get collection name for collection ID" + strconv.FormatInt(ti.GetCollectionId(), 10),
 		}, nil
 	}
-	colName = colMeta.GetSchema().GetName()
+	colName = colMeta.Name
 
 	// When DataNode has done its thing, remove it from the busy node list. And send import task again
 	resendTaskFunc()
@@ -2613,7 +2781,7 @@ func (c *Core) postImportPersistLoop(ctx context.Context, taskID int64, colID in
 		log.Error("failed to find meta for collection",
 			zap.Int64("collection ID", colID),
 			zap.Error(err))
-	} else if len(colMeta.GetFieldIndexes()) == 0 {
+	} else if len(colMeta.FieldIDToIndexID) == 0 {
 		log.Info("no index field found for collection", zap.Int64("collection ID", colID))
 	} else {
 		log.Info("start checking index state", zap.Int64("collection ID", colID))
@@ -2729,15 +2897,9 @@ func (c *Core) UpdateCredCache(ctx context.Context, credInfo *internalpb.Credent
 			SourceID: c.session.ServerID,
 		},
 		Username: credInfo.Username,
-		Password: credInfo.EncryptedPassword,
+		Password: credInfo.Sha256Password,
 	}
 	return c.proxyClientManager.UpdateCredentialCache(ctx, &req)
-}
-
-// ClearCredUsersCache will call clear credential usernames cache
-func (c *Core) ClearCredUsersCache(ctx context.Context) error {
-	req := internalpb.ClearCredUsersCacheRequest{}
-	return c.proxyClientManager.ClearCredUsersCache(ctx, &req)
 }
 
 // CreateCredential create new user and password
@@ -2751,16 +2913,18 @@ func (c *Core) CreateCredential(ctx context.Context, credInfo *internalpb.Creden
 	log.Debug("CreateCredential", zap.String("role", typeutil.RootCoordRole),
 		zap.String("username", credInfo.Username))
 
+	usersInfo, err := c.MetaTable.ListCredentialUsernames()
+	if err != nil {
+		log.Error("CreateCredential get credential username list failed", zap.String("role", typeutil.RootCoordRole),
+			zap.String("username", credInfo.Username), zap.Error(err))
+		return failStatus(commonpb.ErrorCode_CreateCredentialFailure, "CreateCredential failed, fail to get credential username list to check the user number, error: "+err.Error()), nil
+	}
+	if len(usersInfo.Usernames) >= Params.ProxyCfg.MaxUserNum {
+		return failStatus(commonpb.ErrorCode_CreateCredentialFailure, "unable to add user because the number of users has reached the limit"), nil
+	}
+
 	if cred, _ := c.MetaTable.getCredential(credInfo.Username); cred != nil {
 		return failStatus(commonpb.ErrorCode_CreateCredentialFailure, "user already exists:"+credInfo.Username), nil
-	}
-	// update proxy's local cache
-	err := c.ClearCredUsersCache(ctx)
-	if err != nil {
-		log.Error("CreateCredential clear credential username list cache failed", zap.String("role", typeutil.RootCoordRole),
-			zap.String("username", credInfo.Username), zap.Error(err))
-		metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.FailLabel).Inc()
-		return failStatus(commonpb.ErrorCode_CreateCredentialFailure, "CreateCredential failed: "+err.Error()), nil
 	}
 	// insert to db
 	err = c.MetaTable.AddCredential(credInfo)
@@ -2769,6 +2933,13 @@ func (c *Core) CreateCredential(ctx context.Context, credInfo *internalpb.Creden
 			zap.String("username", credInfo.Username), zap.Error(err))
 		metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.FailLabel).Inc()
 		return failStatus(commonpb.ErrorCode_CreateCredentialFailure, "CreateCredential failed: "+err.Error()), nil
+	}
+	// update proxy's local cache
+	err = c.UpdateCredCache(ctx, credInfo)
+	if err != nil {
+		log.Warn("CreateCredential add cache failed", zap.String("role", typeutil.RootCoordRole),
+			zap.String("username", credInfo.Username), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.FailLabel).Inc()
 	}
 	log.Debug("CreateCredential success", zap.String("role", typeutil.RootCoordRole),
 		zap.String("username", credInfo.Username))
@@ -2815,18 +2986,18 @@ func (c *Core) UpdateCredential(ctx context.Context, credInfo *internalpb.Creden
 	tr := timerecord.NewTimeRecorder(method)
 	log.Debug("UpdateCredential", zap.String("role", typeutil.RootCoordRole),
 		zap.String("username", credInfo.Username))
-	// update proxy's local cache
-	err := c.UpdateCredCache(ctx, credInfo)
+	// update data on storage
+	err := c.MetaTable.AddCredential(credInfo)
 	if err != nil {
-		log.Error("UpdateCredential update credential cache failed", zap.String("role", typeutil.RootCoordRole),
+		log.Error("UpdateCredential save credential failed", zap.String("role", typeutil.RootCoordRole),
 			zap.String("username", credInfo.Username), zap.Error(err))
 		metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.FailLabel).Inc()
 		return failStatus(commonpb.ErrorCode_UpdateCredentialFailure, "UpdateCredential failed: "+err.Error()), nil
 	}
-	// update data on storage
-	err = c.MetaTable.AddCredential(credInfo)
+	// update proxy's local cache
+	err = c.UpdateCredCache(ctx, credInfo)
 	if err != nil {
-		log.Error("UpdateCredential save credential failed", zap.String("role", typeutil.RootCoordRole),
+		log.Error("UpdateCredential update cache failed", zap.String("role", typeutil.RootCoordRole),
 			zap.String("username", credInfo.Username), zap.Error(err))
 		metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.FailLabel).Inc()
 		return failStatus(commonpb.ErrorCode_UpdateCredentialFailure, "UpdateCredential failed: "+err.Error()), nil
@@ -2845,23 +3016,21 @@ func (c *Core) DeleteCredential(ctx context.Context, in *milvuspb.DeleteCredenti
 	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.TotalLabel).Inc()
 	tr := timerecord.NewTimeRecorder(method)
 
-	log.Debug("DeleteCredential", zap.String("role", typeutil.RootCoordRole),
-		zap.String("username", in.Username))
-	// invalidate proxy's local cache
-	err := c.ExpireCredCache(ctx, in.Username)
-	if err != nil {
-		log.Error("DeleteCredential expire credential cache failed", zap.String("role", typeutil.RootCoordRole),
-			zap.String("username", in.Username), zap.Error(err))
-		metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.FailLabel).Inc()
-		return failStatus(commonpb.ErrorCode_DeleteCredentialFailure, "DeleteCredential failed: "+err.Error()), nil
-	}
 	// delete data on storage
-	err = c.MetaTable.DeleteCredential(in.Username)
+	err := c.MetaTable.DeleteCredential(in.Username)
 	if err != nil {
 		log.Error("DeleteCredential remove credential failed", zap.String("role", typeutil.RootCoordRole),
 			zap.String("username", in.Username), zap.Error(err))
 		metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.FailLabel).Inc()
 		return failStatus(commonpb.ErrorCode_DeleteCredentialFailure, "DeleteCredential failed: "+err.Error()), err
+	}
+	// invalidate proxy's local cache
+	err = c.ExpireCredCache(ctx, in.Username)
+	if err != nil {
+		log.Error("DeleteCredential expire credential cache failed", zap.String("role", typeutil.RootCoordRole),
+			zap.String("username", in.Username), zap.Error(err))
+		metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.FailLabel).Inc()
+		return failStatus(commonpb.ErrorCode_DeleteCredentialFailure, "DeleteCredential failed: "+err.Error()), nil
 	}
 	log.Debug("DeleteCredential success", zap.String("role", typeutil.RootCoordRole),
 		zap.String("username", in.Username))
@@ -2894,5 +3063,461 @@ func (c *Core) ListCredUsers(ctx context.Context, in *milvuspb.ListCredUsersRequ
 	return &milvuspb.ListCredUsersResponse{
 		Status:    succStatus(),
 		Usernames: credInfo.Usernames,
+	}, nil
+}
+
+// CreateRole create role
+// - check the node health
+// - check if the role is existed
+// - check if the role num has reached the limit
+// - create the role by the metatable api
+func (c *Core) CreateRole(ctx context.Context, in *milvuspb.CreateRoleRequest) (*commonpb.Status, error) {
+	method := "CreateRole"
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.TotalLabel).Inc()
+	tr := timerecord.NewTimeRecorder(method)
+	logger.Debug(method, zap.Any("in", in))
+
+	if code, ok := c.checkHealthy(); !ok {
+		return errorutil.UnhealthyStatus(code), errorutil.UnhealthyError()
+	}
+	entity := in.Entity
+	_, err := c.MetaTable.SelectRole(util.DefaultTenant, &milvuspb.RoleEntity{Name: entity.Name}, false)
+	if err == nil {
+		errMsg := "role already exists:" + entity.Name
+		return failStatus(commonpb.ErrorCode_CreateRoleFailure, errMsg), errors.New(errMsg)
+	}
+	if !common.IsKeyNotExistError(err) {
+		return failStatus(commonpb.ErrorCode_CreateRoleFailure, err.Error()), err
+	}
+
+	results, err := c.MetaTable.SelectRole(util.DefaultTenant, nil, false)
+	if err != nil {
+		logger.Error("fail to select roles", zap.Error(err))
+		return failStatus(commonpb.ErrorCode_CreateRoleFailure, "fail to select roles to check the role number, error: "+err.Error()), err
+	}
+	if len(results) >= Params.ProxyCfg.MaxRoleNum {
+		errMsg := "unable to add role because the number of roles has reached the limit"
+		return failStatus(commonpb.ErrorCode_CreateRoleFailure, errMsg), errors.New(errMsg)
+	}
+
+	err = c.MetaTable.CreateRole(util.DefaultTenant, &milvuspb.RoleEntity{Name: entity.Name})
+	if err != nil {
+		logger.Error("fail to create role", zap.String("role_name", entity.Name), zap.Error(err))
+		return failStatus(commonpb.ErrorCode_CreateRoleFailure, "CreateCollection role failed: "+err.Error()), err
+	}
+
+	logger.Debug(method+" success", zap.String("role_name", entity.Name))
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues(method).Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.RootCoordNumOfRoles.Inc()
+
+	return succStatus(), nil
+}
+
+// DropRole drop role
+// - check the node health
+// - check if the role name is existed
+// - check if the role has some grant info
+// - get all role mapping of this role
+// - drop these role mappings
+// - drop the role by the metatable api
+func (c *Core) DropRole(ctx context.Context, in *milvuspb.DropRoleRequest) (*commonpb.Status, error) {
+	method := "DropRole"
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.TotalLabel).Inc()
+	tr := timerecord.NewTimeRecorder(method)
+	logger.Debug(method, zap.Any("in", in))
+
+	if code, ok := c.checkHealthy(); !ok {
+		return errorutil.UnhealthyStatus(code), errorutil.UnhealthyError()
+	}
+	if _, err := c.MetaTable.SelectRole(util.DefaultTenant, &milvuspb.RoleEntity{Name: in.RoleName}, false); err != nil {
+		logger.Error("the role isn't existed", zap.String("role_name", in.RoleName), zap.Error(err))
+		return failStatus(commonpb.ErrorCode_DropRoleFailure, fmt.Sprintf("the role isn't existed, role name: %s", in.RoleName)), err
+	}
+
+	grantEntities, err := c.MetaTable.SelectGrant(util.DefaultTenant, &milvuspb.GrantEntity{
+		Role: &milvuspb.RoleEntity{Name: in.RoleName},
+	})
+	if len(grantEntities) != 0 {
+		errMsg := "fail to drop the role that it has privileges. Use REVOKE API to revoke privileges"
+		logger.Error(errMsg, zap.String("role_name", in.RoleName), zap.Error(err))
+		return failStatus(commonpb.ErrorCode_DropRoleFailure, errMsg), errors.New(errMsg)
+	}
+	roleResults, err := c.MetaTable.SelectRole(util.DefaultTenant, &milvuspb.RoleEntity{Name: in.RoleName}, true)
+	if err != nil {
+		errMsg := "fail to select a role by role name"
+		logger.Error("fail to select a role by role name", zap.String("role_name", in.RoleName), zap.Error(err))
+		return failStatus(commonpb.ErrorCode_DropRoleFailure, errMsg), err
+	}
+	logger.Debug("role to user info", zap.Int("counter", len(roleResults)))
+	for _, roleResult := range roleResults {
+		for index, userEntity := range roleResult.Users {
+			if err = c.MetaTable.OperateUserRole(util.DefaultTenant, &milvuspb.UserEntity{Name: userEntity.Name}, &milvuspb.RoleEntity{Name: roleResult.Role.Name}, milvuspb.OperateUserRoleType_RemoveUserFromRole); err != nil {
+				errMsg := "fail to remove user from role"
+				logger.Error(errMsg, zap.String("role_name", roleResult.Role.Name), zap.String("username", userEntity.Name), zap.Int("current_index", index), zap.Error(err))
+				return failStatus(commonpb.ErrorCode_OperateUserRoleFailure, errMsg), err
+			}
+		}
+	}
+	if err = c.MetaTable.DropRole(util.DefaultTenant, in.RoleName); err != nil {
+		errMsg := "fail to drop the role"
+		logger.Error(errMsg, zap.String("role_name", in.RoleName), zap.Error(err))
+		return failStatus(commonpb.ErrorCode_DropRoleFailure, errMsg), err
+	}
+
+	logger.Debug(method+" success", zap.String("role_name", in.RoleName))
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues(method).Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.RootCoordNumOfRoles.Dec()
+	return succStatus(), nil
+}
+
+// OperateUserRole operate the relationship between a user and a role
+// - check the node health
+// - check if the role is valid
+// - check if the user is valid
+// - operate the user-role by the metatable api
+// - update the policy cache
+func (c *Core) OperateUserRole(ctx context.Context, in *milvuspb.OperateUserRoleRequest) (*commonpb.Status, error) {
+	method := "OperateUserRole-" + in.Type.String()
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.TotalLabel).Inc()
+	tr := timerecord.NewTimeRecorder(method)
+	logger.Debug(method, zap.Any("in", in))
+
+	if code, ok := c.checkHealthy(); !ok {
+		return errorutil.UnhealthyStatus(code), errorutil.UnhealthyError()
+	}
+
+	if _, err := c.MetaTable.SelectRole(util.DefaultTenant, &milvuspb.RoleEntity{Name: in.RoleName}, false); err != nil {
+		errMsg := "fail to check the role name"
+		logger.Error(errMsg, zap.String("role_name", in.RoleName), zap.Error(err))
+		return failStatus(commonpb.ErrorCode_OperateUserRoleFailure, errMsg), err
+	}
+	if _, err := c.MetaTable.SelectUser(util.DefaultTenant, &milvuspb.UserEntity{Name: in.Username}, false); err != nil {
+		errMsg := "fail to check the username"
+		logger.Error(errMsg, zap.String("username", in.Username), zap.Error(err))
+		return failStatus(commonpb.ErrorCode_OperateUserRoleFailure, errMsg), err
+	}
+	if err := c.MetaTable.OperateUserRole(util.DefaultTenant, &milvuspb.UserEntity{Name: in.Username}, &milvuspb.RoleEntity{Name: in.RoleName}, in.Type); err != nil {
+		errMsg := "fail to operate user to role"
+		logger.Error(errMsg, zap.String("role_name", in.RoleName), zap.String("username", in.Username), zap.Error(err))
+		return failStatus(commonpb.ErrorCode_OperateUserRoleFailure, errMsg), err
+	}
+
+	var opType int32
+	if in.Type == milvuspb.OperateUserRoleType_AddUserToRole {
+		opType = int32(typeutil.CacheAddUserToRole)
+	} else if in.Type == milvuspb.OperateUserRoleType_RemoveUserFromRole {
+		opType = int32(typeutil.CacheRemoveUserFromRole)
+	}
+	if err := c.proxyClientManager.RefreshPolicyInfoCache(ctx, &proxypb.RefreshPolicyInfoCacheRequest{
+		OpType: opType,
+		OpKey:  funcutil.EncodeUserRoleCache(in.Username, in.RoleName),
+	}); err != nil {
+		return failStatus(commonpb.ErrorCode_OperateUserRoleFailure, err.Error()), err
+	}
+
+	logger.Debug(method + " success")
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues(method).Observe(float64(tr.ElapseSpan().Milliseconds()))
+	return succStatus(), nil
+}
+
+// SelectRole select role
+// - check the node health
+// - check if the role is valid when this param is provided
+// - select role by the metatable api
+func (c *Core) SelectRole(ctx context.Context, in *milvuspb.SelectRoleRequest) (*milvuspb.SelectRoleResponse, error) {
+	method := "SelectRole"
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.TotalLabel).Inc()
+	tr := timerecord.NewTimeRecorder(method)
+	logger.Debug(method, zap.Any("in", in))
+
+	if code, ok := c.checkHealthy(); !ok {
+		return &milvuspb.SelectRoleResponse{Status: errorutil.UnhealthyStatus(code)}, errorutil.UnhealthyError()
+	}
+
+	if in.Role != nil {
+		if _, err := c.MetaTable.SelectRole(util.DefaultTenant, &milvuspb.RoleEntity{Name: in.Role.Name}, false); err != nil {
+			errMsg := "fail to select the role to check the role name"
+			logger.Error(errMsg, zap.String("role_name", in.Role.Name), zap.Error(err))
+			if common.IsKeyNotExistError(err) {
+				return &milvuspb.SelectRoleResponse{
+					Status: succStatus(),
+				}, nil
+			}
+			return &milvuspb.SelectRoleResponse{
+				Status: failStatus(commonpb.ErrorCode_SelectRoleFailure, errMsg),
+			}, err
+		}
+	}
+	roleResults, err := c.MetaTable.SelectRole(util.DefaultTenant, in.Role, in.IncludeUserInfo)
+	if err != nil {
+		errMsg := "fail to select the role"
+		logger.Error(errMsg, zap.Error(err))
+		return &milvuspb.SelectRoleResponse{
+			Status: failStatus(commonpb.ErrorCode_SelectRoleFailure, errMsg),
+		}, err
+	}
+
+	logger.Debug(method + " success")
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues(method).Observe(float64(tr.ElapseSpan().Milliseconds()))
+	return &milvuspb.SelectRoleResponse{
+		Status:  succStatus(),
+		Results: roleResults,
+	}, nil
+}
+
+// SelectUser select user
+// - check the node health
+// - check if the user is valid when this param is provided
+// - select user by the metatable api
+func (c *Core) SelectUser(ctx context.Context, in *milvuspb.SelectUserRequest) (*milvuspb.SelectUserResponse, error) {
+	method := "SelectUser"
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.TotalLabel).Inc()
+	tr := timerecord.NewTimeRecorder(method)
+	logger.Debug(method, zap.Any("in", in))
+
+	if code, ok := c.checkHealthy(); !ok {
+		return &milvuspb.SelectUserResponse{Status: errorutil.UnhealthyStatus(code)}, errorutil.UnhealthyError()
+	}
+
+	if in.User != nil {
+		if _, err := c.MetaTable.SelectUser(util.DefaultTenant, &milvuspb.UserEntity{Name: in.User.Name}, false); err != nil {
+			errMsg := "fail to select the user to check the username"
+			logger.Error(errMsg, zap.String("username", in.User.Name), zap.Error(err))
+			if common.IsKeyNotExistError(err) {
+				return &milvuspb.SelectUserResponse{
+					Status: succStatus(),
+				}, nil
+			}
+			return &milvuspb.SelectUserResponse{
+				Status: failStatus(commonpb.ErrorCode_SelectUserFailure, errMsg),
+			}, err
+		}
+	}
+	userResults, err := c.MetaTable.SelectUser(util.DefaultTenant, in.User, in.IncludeRoleInfo)
+	if err != nil {
+		errMsg := "fail to select the user"
+		log.Error(errMsg, zap.Error(err))
+		return &milvuspb.SelectUserResponse{
+			Status: failStatus(commonpb.ErrorCode_SelectUserFailure, errMsg),
+		}, err
+	}
+
+	logger.Debug(method + " success")
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues(method).Observe(float64(tr.ElapseSpan().Milliseconds()))
+	return &milvuspb.SelectUserResponse{
+		Status:  succStatus(),
+		Results: userResults,
+	}, nil
+}
+
+func (c *Core) isValidRole(entity *milvuspb.RoleEntity) error {
+	if entity == nil {
+		return fmt.Errorf("the role entity is nil")
+	}
+	if entity.Name == "" {
+		return fmt.Errorf("the name in the role entity is empty")
+	}
+	if _, err := c.MetaTable.SelectRole(util.DefaultTenant, &milvuspb.RoleEntity{Name: entity.Name}, false); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Core) isValidObject(entity *milvuspb.ObjectEntity) error {
+	if entity == nil {
+		return fmt.Errorf("the object entity is nil")
+	}
+	if _, ok := commonpb.ObjectType_value[entity.Name]; !ok {
+		return fmt.Errorf("the object type in the object entity is invalid, current value: %s", entity.Name)
+	}
+	return nil
+}
+
+func (c *Core) isValidGrantor(entity *milvuspb.GrantorEntity, object string) error {
+	if entity == nil {
+		return fmt.Errorf("the grantor entity is nil")
+	}
+	if entity.User == nil {
+		return fmt.Errorf("the user entity in the grantor entity is nil")
+	}
+	if entity.User.Name == "" {
+		return fmt.Errorf("the name in the user entity of the grantor entity is empty")
+	}
+	if _, err := c.MetaTable.SelectUser(util.DefaultTenant, &milvuspb.UserEntity{Name: entity.GetUser().Name}, false); err != nil {
+		return err
+	}
+	if entity.Privilege == nil {
+		return fmt.Errorf("the privilege entity in the grantor entity is nil")
+	}
+	if privilegeName := util.PrivilegeNameForMetastore(entity.Privilege.Name); privilegeName == "" {
+		return fmt.Errorf("the privilege name in the privilege entity is invalid, current value: %s", entity.Privilege.Name)
+	}
+	privileges, ok := util.GetObjectPrivileges()[object]
+	if !ok {
+		return fmt.Errorf("the object type is invalid, current value: %s", object)
+	}
+	for _, privilege := range privileges {
+		if privilege == entity.Privilege.Name {
+			return nil
+		}
+	}
+	return fmt.Errorf("the privilege name is invalid, current value: %s", entity.Privilege.Name)
+}
+
+// OperatePrivilege operate the privilege, including grant and revoke
+// - check the node health
+// - check if the operating type is valid
+// - check if the entity is nil
+// - check if the params, including the resource entity, the principal entity, the grantor entity, is valid
+// - operate the privilege by the metatable api
+// - update the policy cache
+func (c *Core) OperatePrivilege(ctx context.Context, in *milvuspb.OperatePrivilegeRequest) (*commonpb.Status, error) {
+	method := "OperatePrivilege"
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.TotalLabel).Inc()
+	tr := timerecord.NewTimeRecorder(method)
+	logger.Debug(method, zap.Any("in", in))
+
+	if code, ok := c.checkHealthy(); !ok {
+		return errorutil.UnhealthyStatus(code), errorutil.UnhealthyError()
+	}
+	if in.Type != milvuspb.OperatePrivilegeType_Grant && in.Type != milvuspb.OperatePrivilegeType_Revoke {
+		errMsg := fmt.Sprintf("invalid operate privilege type, current type: %s, valid value: [%s, %s]", in.Type, milvuspb.OperatePrivilegeType_Grant, milvuspb.OperatePrivilegeType_Revoke)
+		return failStatus(commonpb.ErrorCode_OperatePrivilegeFailure, errMsg), errors.New(errMsg)
+	}
+	if in.Entity == nil {
+		errMsg := "the grant entity in the request is nil"
+		return failStatus(commonpb.ErrorCode_OperatePrivilegeFailure, errMsg), errors.New(errMsg)
+	}
+	if err := c.isValidObject(in.Entity.Object); err != nil {
+		return failStatus(commonpb.ErrorCode_OperatePrivilegeFailure, err.Error()), err
+	}
+	if err := c.isValidRole(in.Entity.Role); err != nil {
+		return failStatus(commonpb.ErrorCode_OperatePrivilegeFailure, err.Error()), err
+	}
+	if err := c.isValidGrantor(in.Entity.Grantor, in.Entity.Object.Name); err != nil {
+		return failStatus(commonpb.ErrorCode_OperatePrivilegeFailure, err.Error()), err
+	}
+
+	logger.Debug("before PrivilegeNameForMetastore", zap.String("privilege", in.Entity.Grantor.Privilege.Name))
+	in.Entity.Grantor.Privilege.Name = util.PrivilegeNameForMetastore(in.Entity.Grantor.Privilege.Name)
+	logger.Debug("after PrivilegeNameForMetastore", zap.String("privilege", in.Entity.Grantor.Privilege.Name))
+	if in.Entity.Object.Name == commonpb.ObjectType_Global.String() {
+		in.Entity.ObjectName = funcutil.AnyObjectName
+	}
+	if err := c.MetaTable.OperatePrivilege(util.DefaultTenant, in.Entity, in.Type); err != nil {
+		errMsg := "fail to operate the privilege"
+		logger.Error(errMsg, zap.Error(err))
+		return failStatus(commonpb.ErrorCode_OperatePrivilegeFailure, errMsg), err
+	}
+
+	var opType int32
+	if in.Type == milvuspb.OperatePrivilegeType_Grant {
+		opType = int32(typeutil.CacheGrantPrivilege)
+	} else if in.Type == milvuspb.OperatePrivilegeType_Revoke {
+		opType = int32(typeutil.CacheRevokePrivilege)
+	}
+	if err := c.proxyClientManager.RefreshPolicyInfoCache(ctx, &proxypb.RefreshPolicyInfoCacheRequest{
+		OpType: opType,
+		OpKey:  funcutil.PolicyForPrivilege(in.Entity.Role.Name, in.Entity.Object.Name, in.Entity.ObjectName, in.Entity.Grantor.Privilege.Name),
+	}); err != nil {
+		return failStatus(commonpb.ErrorCode_OperatePrivilegeFailure, err.Error()), err
+	}
+
+	logger.Debug(method + " success")
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues(method).Observe(float64(tr.ElapseSpan().Milliseconds()))
+	return succStatus(), nil
+}
+
+// SelectGrant select grant
+// - check the node health
+// - check if the principal entity is valid
+// - check if the resource entity which is provided by the user is valid
+// - select grant by the metatable api
+func (c *Core) SelectGrant(ctx context.Context, in *milvuspb.SelectGrantRequest) (*milvuspb.SelectGrantResponse, error) {
+	method := "SelectGrant"
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.TotalLabel).Inc()
+	tr := timerecord.NewTimeRecorder(method)
+	logger.Debug(method, zap.Any("in", in))
+
+	if code, ok := c.checkHealthy(); !ok {
+		return &milvuspb.SelectGrantResponse{
+			Status: errorutil.UnhealthyStatus(code),
+		}, errorutil.UnhealthyError()
+	}
+	if in.Entity == nil {
+		errMsg := "the grant entity in the request is nil"
+		return &milvuspb.SelectGrantResponse{
+			Status: failStatus(commonpb.ErrorCode_SelectGrantFailure, errMsg),
+		}, errors.New(errMsg)
+	}
+	if err := c.isValidRole(in.Entity.Role); err != nil {
+		return &milvuspb.SelectGrantResponse{
+			Status: failStatus(commonpb.ErrorCode_SelectGrantFailure, err.Error()),
+		}, err
+	}
+	if in.Entity.Object != nil {
+		if err := c.isValidObject(in.Entity.Object); err != nil {
+			return &milvuspb.SelectGrantResponse{
+				Status: failStatus(commonpb.ErrorCode_SelectGrantFailure, err.Error()),
+			}, err
+		}
+	}
+
+	grantEntities, err := c.MetaTable.SelectGrant(util.DefaultTenant, in.Entity)
+	if err != nil {
+		errMsg := "fail to select the grant"
+		logger.Error(errMsg, zap.Error(err))
+		return &milvuspb.SelectGrantResponse{
+			Status: failStatus(commonpb.ErrorCode_SelectGrantFailure, errMsg),
+		}, err
+	}
+
+	logger.Debug(method + " success")
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues(method).Observe(float64(tr.ElapseSpan().Milliseconds()))
+	return &milvuspb.SelectGrantResponse{
+		Status:   succStatus(),
+		Entities: grantEntities,
+	}, nil
+}
+
+func (c *Core) ListPolicy(ctx context.Context, in *internalpb.ListPolicyRequest) (*internalpb.ListPolicyResponse, error) {
+	method := "PolicyList"
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.TotalLabel).Inc()
+	tr := timerecord.NewTimeRecorder(method)
+	logger.Debug(method, zap.Any("in", in))
+
+	if code, ok := c.checkHealthy(); !ok {
+		return &internalpb.ListPolicyResponse{
+			Status: errorutil.UnhealthyStatus(code),
+		}, errorutil.UnhealthyError()
+	}
+
+	policies, err := c.MetaTable.ListPolicy(util.DefaultTenant)
+	if err != nil {
+		return &internalpb.ListPolicyResponse{
+			Status: failStatus(commonpb.ErrorCode_ListPolicyFailure, "fail to list policy"),
+		}, err
+	}
+	userRoles, err := c.MetaTable.ListUserRole(util.DefaultTenant)
+	if err != nil {
+		return &internalpb.ListPolicyResponse{
+			Status: failStatus(commonpb.ErrorCode_ListPolicyFailure, "fail to list user-role"),
+		}, err
+	}
+
+	logger.Debug(method + " success")
+	metrics.RootCoordDDLReqCounter.WithLabelValues(method, metrics.SuccessLabel).Inc()
+	metrics.RootCoordDDLReqLatency.WithLabelValues(method).Observe(float64(tr.ElapseSpan().Milliseconds()))
+	return &internalpb.ListPolicyResponse{
+		Status:      succStatus(),
+		PolicyInfos: policies,
+		UserRoles:   userRoles,
 	}, nil
 }

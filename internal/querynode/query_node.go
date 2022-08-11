@@ -17,12 +17,7 @@
 package querynode
 
 /*
-
-#cgo CFLAGS: -I${SRCDIR}/../core/output/include
-
-#cgo darwin LDFLAGS: -L${SRCDIR}/../core/output/lib -lmilvus_segcore -Wl,-rpath,"${SRCDIR}/../core/output/lib"
-#cgo linux LDFLAGS: -L${SRCDIR}/../core/output/lib -lmilvus_segcore -Wl,-rpath=${SRCDIR}/../core/output/lib
-#cgo windows LDFLAGS: -L${SRCDIR}/../core/output/lib -lmilvus_segcore -Wl,-rpath=${SRCDIR}/../core/output/lib
+#cgo pkg-config: milvus_segcore
 
 #include "segcore/collection_c.h"
 #include "segcore/segment_c.h"
@@ -33,11 +28,11 @@ import "C"
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -46,6 +41,7 @@ import (
 	"unsafe"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/panjf2000/ants/v2"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
@@ -59,6 +55,7 @@ import (
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util"
+	"github.com/milvus-io/milvus/internal/util/concurrency"
 	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
@@ -100,10 +97,6 @@ type QueryNode struct {
 	// dataSyncService
 	dataSyncService *dataSyncService
 
-	// internal services
-	//queryService *queryService
-	statsService *statsService
-
 	// segment loader
 	loader *segmentLoader
 
@@ -124,6 +117,9 @@ type QueryNode struct {
 	ShardClusterService *ShardClusterService
 	//shard query service, handles shard-level query & search
 	queryShardService *queryShardService
+
+	// cgoPool is the worker pool to control concurrency of cgo call
+	cgoPool *concurrency.Pool
 }
 
 // NewQueryNode will return a QueryNode with abnormal state.
@@ -236,13 +232,33 @@ func (node *QueryNode) Init() error {
 		node.etcdKV = etcdkv.NewEtcdKV(node.etcdCli, Params.EtcdCfg.MetaRootPath)
 		log.Info("queryNode try to connect etcd success", zap.Any("MetaRootPath", Params.EtcdCfg.MetaRootPath))
 
-		node.metaReplica = newCollectionReplica()
+		cpuNum := runtime.GOMAXPROCS(0)
+		node.cgoPool, err = concurrency.NewPool(cpuNum, ants.WithPreAlloc(true))
+		if err != nil {
+			log.Error("QueryNode init cgo pool failed", zap.Error(err))
+			initError = err
+			return
+		}
+
+		sig := make(chan struct{})
+
+		for i := 0; i < cpuNum; i++ {
+			node.cgoPool.Submit(func() (interface{}, error) {
+				runtime.LockOSThread()
+				<-sig
+				return nil, nil
+			})
+		}
+		close(sig)
+
+		node.metaReplica = newCollectionReplica(node.cgoPool)
 
 		node.loader = newSegmentLoader(
 			node.metaReplica,
 			node.etcdKV,
 			node.vectorStorage,
-			node.factory)
+			node.factory,
+			node.cgoPool)
 
 		node.dataSyncService = newDataSyncService(node.queryNodeLoopCtx, node.metaReplica, node.tSafeReplica, node.factory)
 
@@ -265,7 +281,6 @@ func (node *QueryNode) Start() error {
 
 	// start services
 	go node.watchChangeInfo()
-	//go node.statsService.start()
 
 	// create shardClusterService for shardLeader functions.
 	node.ShardClusterService = newShardClusterService(node.etcdCli, node.session, node)
@@ -372,79 +387,50 @@ func (node *QueryNode) watchChangeInfo() {
 
 func (node *QueryNode) handleSealedSegmentsChangeInfo(info *querypb.SealedSegmentsChangeInfo) {
 	for _, line := range info.GetInfos() {
-		vchannel, err := validateChangeChannel(line)
-		if err != nil {
-			log.Warn("failed to validate vchannel for SegmentChangeInfo", zap.Error(err))
-			continue
-		}
-		// ignore segments that are online and offline in the same QueryNode
-		filterDuplicateChangeInfo(line)
+		result := splitSegmentsChange(line)
 
-		node.ShardClusterService.HandoffVChannelSegments(vchannel, line)
+		for vchannel, changeInfo := range result {
+			err := node.ShardClusterService.HandoffVChannelSegments(vchannel, changeInfo)
+			if err != nil {
+				log.Warn("failed to handle vchannel segments", zap.String("vchannel", vchannel))
+			}
+		}
 	}
 }
 
-func validateChangeChannel(info *querypb.SegmentChangeInfo) (string, error) {
-	if len(info.GetOnlineSegments()) == 0 && len(info.GetOfflineSegments()) == 0 {
-		return "", errors.New("SegmentChangeInfo with no segments info")
-	}
+// splitSegmentsChange returns rearranged segmentChangeInfo in vchannel dimension
+func splitSegmentsChange(changeInfo *querypb.SegmentChangeInfo) map[string]*querypb.SegmentChangeInfo {
+	result := make(map[string]*querypb.SegmentChangeInfo)
 
-	var channelName string
-
-	for _, segment := range info.GetOnlineSegments() {
-		if channelName == "" {
-			channelName = segment.GetDmChannel()
-		}
-		if segment.GetDmChannel() != channelName {
-			return "", fmt.Errorf("found multilple channel name in one SegmentChangeInfo, channel1: %s, channel 2:%s", channelName, segment.GetDmChannel())
-		}
-	}
-	for _, segment := range info.GetOfflineSegments() {
-		if channelName == "" {
-			channelName = segment.GetDmChannel()
-		}
-		if segment.GetDmChannel() != channelName {
-			return "", fmt.Errorf("found multilple channel name in one SegmentChangeInfo, channel1: %s, channel 2:%s", channelName, segment.GetDmChannel())
-		}
-	}
-
-	return channelName, nil
-}
-
-// filterDuplicateChangeInfo filters out duplicated sealed segments which are both online and offline (Fix issue#17347)
-func filterDuplicateChangeInfo(line *querypb.SegmentChangeInfo) {
-	if line.OnlineNodeID == line.OfflineNodeID {
-		dupSegmentIDs := make(map[UniqueID]struct{})
-		for _, onlineSegment := range line.OnlineSegments {
-			for _, offlineSegment := range line.OfflineSegments {
-				if onlineSegment.SegmentID == offlineSegment.SegmentID && onlineSegment.SegmentState == segmentTypeSealed && offlineSegment.SegmentState == segmentTypeSealed {
-					dupSegmentIDs[onlineSegment.SegmentID] = struct{}{}
-				}
+	for _, segment := range changeInfo.GetOnlineSegments() {
+		dmlChannel := segment.GetDmChannel()
+		info, has := result[dmlChannel]
+		if !has {
+			info = &querypb.SegmentChangeInfo{
+				OnlineNodeID:  changeInfo.OnlineNodeID,
+				OfflineNodeID: changeInfo.OfflineNodeID,
 			}
-		}
-		if len(dupSegmentIDs) == 0 {
-			return
+
+			result[dmlChannel] = info
 		}
 
-		var dupSegmentIDsList []UniqueID
-		for sid := range dupSegmentIDs {
-			dupSegmentIDsList = append(dupSegmentIDsList, sid)
-		}
-		log.Warn("Found sealed segments are that are online and offline.", zap.Int64s("SegmentIDs", dupSegmentIDsList))
-
-		var filteredOnlineSegments []*querypb.SegmentInfo
-		for _, onlineSegment := range line.OnlineSegments {
-			if _, ok := dupSegmentIDs[onlineSegment.SegmentID]; !ok {
-				filteredOnlineSegments = append(filteredOnlineSegments, onlineSegment)
-			}
-		}
-		line.OnlineSegments = filteredOnlineSegments
-		var filteredOfflineSegments []*querypb.SegmentInfo
-		for _, offlineSegment := range line.OfflineSegments {
-			if _, ok := dupSegmentIDs[offlineSegment.SegmentID]; !ok {
-				filteredOfflineSegments = append(filteredOfflineSegments, offlineSegment)
-			}
-		}
-		line.OfflineSegments = filteredOfflineSegments
+		info.OnlineSegments = append(info.OnlineSegments, segment)
 	}
+
+	for _, segment := range changeInfo.GetOfflineSegments() {
+		dmlChannel := segment.GetDmChannel()
+		info, has := result[dmlChannel]
+		if !has {
+			info = &querypb.SegmentChangeInfo{
+				OnlineNodeID:  changeInfo.OnlineNodeID,
+				OfflineNodeID: changeInfo.OfflineNodeID,
+			}
+
+			result[dmlChannel] = info
+		}
+
+		info.OfflineSegments = append(info.OfflineSegments, segment)
+	}
+
+	return result
 }

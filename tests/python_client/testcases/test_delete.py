@@ -968,7 +968,7 @@ class TestDeleteOperation(TestcaseBase):
         while True:
             time.sleep(0.5)
             segment_infos = self.utility_wrap.get_query_segment_info(collection_w.name)[0]
-            if segment_infos[0].state == SegmentState.Sealed:
+            if len(segment_infos) > 0 and segment_infos[0].state == SegmentState.Sealed:
                 break
         # query deleted id
         collection_w.query(tmp_expr, check_task=CheckTasks.check_query_empty)
@@ -1098,7 +1098,6 @@ class TestDeleteString(TestcaseBase):
         collection_w.query(default_string_expr, check_task=CheckTasks.check_query_empty)
         collection_w.delete(expr=default_string_expr)
 
-    @pytest.mark.xfail(reason="https://github.com/milvus-io/milvus/issues/17067")
     @pytest.mark.tags(CaseLabel.L1)
     def test_delete_all_index_with_string(self):
         """
@@ -1581,7 +1580,7 @@ class TestDeleteString(TestcaseBase):
         while True:
             time.sleep(0.5)
             segment_infos = self.utility_wrap.get_query_segment_info(collection_w.name)[0]
-            if segment_infos[0].state == SegmentState.Sealed:
+            if len(segment_infos) > 0 and segment_infos[0].state == SegmentState.Sealed:
                 break
         # query deleted id
         collection_w.query(default_string_expr, check_task=CheckTasks.check_query_empty)

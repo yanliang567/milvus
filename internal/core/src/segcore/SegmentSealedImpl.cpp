@@ -84,7 +84,7 @@ SegmentSealedImpl::LoadVecIndex(const LoadIndexInfo& info) {
 
     auto index = std::dynamic_pointer_cast<knowhere::VecIndex>(info.index);
     AssertInfo(info.index_params.count("metric_type"), "Can't get metric_type in index_params");
-    auto metric_type_str = info.index_params.at("metric_type");
+    auto metric_type = info.index_params.at("metric_type");
     auto row_count = index->Count();
     AssertInfo(row_count > 0, "Index count is 0");
 
@@ -101,7 +101,7 @@ SegmentSealedImpl::LoadVecIndex(const LoadIndexInfo& info) {
                        std::to_string(row_count_opt_.value()) + ")");
     }
     AssertInfo(!vector_indexings_.is_ready(field_id), "vec index is not ready");
-    vector_indexings_.append_field_indexing(field_id, GetMetricType(metric_type_str), index);
+    vector_indexings_.append_field_indexing(field_id, metric_type, index);
 
     set_bit(index_ready_bitset_, field_id, true);
     update_row_count(row_count);
@@ -254,11 +254,10 @@ SegmentSealedImpl::LoadDeletedRecord(const LoadDeletedRecordInfo& info) {
     auto timestamps = reinterpret_cast<const Timestamp*>(info.timestamps);
 
     // step 2: fill pks and timestamps
-    deleted_record_.pks_.set_data_raw(0, pks.data(), size);
-    deleted_record_.timestamps_.set_data_raw(0, timestamps, size);
-    deleted_record_.ack_responder_.AddSegment(0, size);
-    deleted_record_.reserved.fetch_add(size);
-    deleted_record_.record_size_ = size;
+    auto reserved_begin = deleted_record_.reserved.fetch_add(size);
+    deleted_record_.pks_.set_data_raw(reserved_begin, pks.data(), size);
+    deleted_record_.timestamps_.set_data_raw(reserved_begin, timestamps, size);
+    deleted_record_.ack_responder_.AddSegment(reserved_begin, reserved_begin + size);
 }
 
 // internal API: support scalar index only
@@ -303,8 +302,9 @@ SegmentSealedImpl::chunk_data_impl(FieldId field_id, int64_t chunk_id) const {
 
 const knowhere::Index*
 SegmentSealedImpl::chunk_index_impl(FieldId field_id, int64_t chunk_id) const {
+    AssertInfo(scalar_indexings_.find(field_id) != scalar_indexings_.end(),
+               "Cannot find scalar_indexing with field_id: " + std::to_string(field_id.get()));
     auto ptr = scalar_indexings_.at(field_id).get();
-    AssertInfo(ptr, "Scalar index of " + std::to_string(field_id.get()) + " is null");
     return ptr;
 }
 
@@ -320,6 +320,12 @@ int64_t
 SegmentSealedImpl::get_row_count() const {
     std::shared_lock lck(mutex_);
     return row_count_opt_.value_or(0);
+}
+
+int64_t
+SegmentSealedImpl::get_deleted_count() const {
+    std::shared_lock lck(mutex_);
+    return deleted_record_.ack_responder_.GetAck();
 }
 
 const Schema&
@@ -344,7 +350,7 @@ SegmentSealedImpl::mask_with_delete(BitsetType& bitset, int64_t ins_barrier, Tim
 
 void
 SegmentSealedImpl::vector_search(int64_t vec_count,
-                                 query::SearchInfo search_info,
+                                 query::SearchInfo& search_info,
                                  const void* query_data,
                                  int64_t query_count,
                                  Timestamp timestamp,
@@ -364,15 +370,8 @@ SegmentSealedImpl::vector_search(int64_t vec_count,
         PanicInfo("Field Data is not loaded");
     }
 
-    query::dataset::SearchDataset dataset;
-    dataset.query_data = query_data;
-    dataset.num_queries = query_count;
-    // if(field_meta.is)
-    dataset.metric_type = search_info.metric_type_;
-    dataset.topk = search_info.topk_;
-    dataset.dim = field_meta.get_dim();
-    dataset.round_decimal = search_info.round_decimal_;
-
+    query::dataset::SearchDataset dataset{search_info.metric_type_,   query_count,          search_info.topk_,
+                                          search_info.round_decimal_, field_meta.get_dim(), query_data};
     AssertInfo(get_bit(field_data_ready_bitset_, field_id),
                "Can't get bitset element at " + std::to_string(field_id.get()));
     AssertInfo(row_count_opt_.has_value(), "Can't get row count value");
@@ -380,22 +379,12 @@ SegmentSealedImpl::vector_search(int64_t vec_count,
     auto vec_data = insert_record_.get_field_data_base(field_id);
     AssertInfo(vec_data->num_chunk() == 1, "num chunk not equal to 1 for sealed segment");
     auto chunk_data = vec_data->get_chunk_data(0);
+    auto sub_qr = query::BruteForceSearch(dataset, chunk_data, row_count, bitset);
 
-    auto sub_qr = [&] {
-        if (field_meta.get_data_type() == DataType::VECTOR_FLOAT) {
-            return query::FloatSearchBruteForce(dataset, chunk_data, row_count, bitset);
-        } else {
-            return query::BinarySearchBruteForce(dataset, chunk_data, row_count, bitset);
-        }
-    }();
-
-    SearchResult results;
-    results.distances_ = std::move(sub_qr.mutable_distances());
-    results.seg_offsets_ = std::move(sub_qr.mutable_seg_offsets());
-    results.unity_topK_ = dataset.topk;
-    results.total_nq_ = dataset.num_queries;
-
-    output = std::move(results);
+    output.distances_ = std::move(sub_qr.mutable_distances());
+    output.seg_offsets_ = std::move(sub_qr.mutable_seg_offsets());
+    output.unity_topK_ = dataset.topk;
+    output.total_nq_ = dataset.num_queries;
 }
 
 void

@@ -21,7 +21,6 @@ service Proxy {
 
   rpc InvalidateCredentialCache(InvalidateCredCacheRequest) returns (common.Status) {}
   rpc UpdateCredentialCache(UpdateCredCacheRequest) returns (common.Status) {}
-  rpc ClearCredUsersCache(internal.ClearCredUsersCacheRequest) returns (common.Status) {}
 
   rpc RefreshPolicyInfoCache(RefreshPolicyInfoCacheRequest) returns (common.Status) {}
 }
@@ -47,6 +46,7 @@ message InvalidateCredCacheRequest {
 message UpdateCredCacheRequest {
   common.MsgBase base = 1;
   string username = 2;
+  // password stored in cache
   string password = 3;
 }
 

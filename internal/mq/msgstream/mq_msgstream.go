@@ -34,6 +34,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/trace"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
 	"github.com/opentracing/opentracing-go"
 )
 
@@ -50,12 +51,11 @@ type mqMsgStream struct {
 	repackFunc   RepackFunc
 	unmarshal    UnmarshalDispatcher
 	receiveBuf   chan *MsgPack
-	wait         *sync.WaitGroup
+	closeRWMutex *sync.RWMutex
 	streamCancel func()
 	bufSize      int64
 	producerLock *sync.Mutex
 	consumerLock *sync.Mutex
-	readerLock   *sync.Mutex
 	closed       int32
 	onceChan     sync.Once
 }
@@ -88,8 +88,7 @@ func NewMqMsgStream(ctx context.Context,
 		streamCancel: streamCancel,
 		producerLock: &sync.Mutex{},
 		consumerLock: &sync.Mutex{},
-		readerLock:   &sync.Mutex{},
-		wait:         &sync.WaitGroup{},
+		closeRWMutex: &sync.RWMutex{},
 		closed:       0,
 	}
 
@@ -185,12 +184,12 @@ func (ms *mqMsgStream) Start() {
 }
 
 func (ms *mqMsgStream) Close() {
-
 	ms.streamCancel()
-	ms.readerLock.Lock()
-	ms.wait.Wait()
-	ms.readerLock.Unlock()
-
+	ms.closeRWMutex.Lock()
+	defer ms.closeRWMutex.Unlock()
+	if !atomic.CompareAndSwapInt32(&ms.closed, 0, 1) {
+		return
+	}
 	for _, producer := range ms.producers {
 		if producer != nil {
 			producer.Close()
@@ -204,10 +203,8 @@ func (ms *mqMsgStream) Close() {
 
 	ms.client.Close()
 
-	if !atomic.CompareAndSwapInt32(&ms.closed, 0, 1) {
-		return
-	}
 	close(ms.receiveBuf)
+
 }
 
 func (ms *mqMsgStream) ComputeProduceChannelIndexes(tsMsgs []TsMsg) [][]int32 {
@@ -477,7 +474,11 @@ func (ms *mqMsgStream) getTsMsgFromConsumerMsg(msg mqwrapper.Message) (TsMsg, er
 }
 
 func (ms *mqMsgStream) receiveMsg(consumer mqwrapper.Consumer) {
-	defer ms.wait.Done()
+	ms.closeRWMutex.RLock()
+	defer ms.closeRWMutex.RUnlock()
+	if atomic.LoadInt32(&ms.closed) != 0 {
+		return
+	}
 
 	for {
 		select {
@@ -515,7 +516,11 @@ func (ms *mqMsgStream) receiveMsg(consumer mqwrapper.Consumer) {
 				StartPositions: []*internalpb.MsgPosition{tsMsg.Position()},
 				EndPositions:   []*internalpb.MsgPosition{tsMsg.Position()},
 			}
-			ms.receiveBuf <- &msgPack
+			select {
+			case ms.receiveBuf <- &msgPack:
+			case <-ms.ctx.Done():
+				return
+			}
 
 			sp.Finish()
 		}
@@ -525,9 +530,6 @@ func (ms *mqMsgStream) receiveMsg(consumer mqwrapper.Consumer) {
 func (ms *mqMsgStream) Chan() <-chan *MsgPack {
 	ms.onceChan.Do(func() {
 		for _, c := range ms.consumers {
-			ms.readerLock.Lock()
-			ms.wait.Add(1)
-			ms.readerLock.Unlock()
 			go ms.receiveMsg(c)
 		}
 	})
@@ -548,13 +550,13 @@ func (ms *mqMsgStream) Seek(msgPositions []*internalpb.MsgPosition) error {
 			return err
 		}
 
-		log.Debug("MsgStream begin to seek start msg: ", zap.Any("MessageID", messageID))
+		log.Info("MsgStream seek begin", zap.String("channel", mp.ChannelName), zap.Any("MessageID", messageID))
 		err = consumer.Seek(messageID, false)
 		if err != nil {
-			log.Debug("Failed to seek", zap.Error(err))
+			log.Warn("Failed to seek", zap.String("channel", mp.ChannelName), zap.Error(err))
 			return err
 		}
-		log.Debug("MsgStream seek finished", zap.Any("MessageID", messageID))
+		log.Info("MsgStream seek finished", zap.String("channel", mp.ChannelName))
 	}
 	return nil
 }
@@ -668,12 +670,16 @@ func (ms *MqTtMsgStream) Close() {
 }
 
 func (ms *MqTtMsgStream) bufMsgPackToChannel() {
-	defer ms.wait.Done()
+	ms.closeRWMutex.RLock()
+	defer ms.closeRWMutex.RUnlock()
+	if atomic.LoadInt32(&ms.closed) != 0 {
+		return
+	}
 	chanTtMsgSync := make(map[mqwrapper.Consumer]bool)
 
 	// block here until addConsumer
 	if _, ok := <-ms.syncConsumer; !ok {
-		log.Debug("consumer closed!")
+		log.Warn("consumer closed!")
 		return
 	}
 
@@ -751,16 +757,31 @@ func (ms *MqTtMsgStream) bufMsgPackToChannel() {
 			ms.chanMsgBufMutex.Unlock()
 			ms.consumerLock.Unlock()
 
+			idset := make(typeutil.UniqueSet)
+			uniqueMsgs := make([]TsMsg, 0, len(timeTickBuf))
+			for _, msg := range timeTickBuf {
+				if idset.Contain(msg.ID()) {
+					log.Warn("mqTtMsgStream, found duplicated msg", zap.Int64("msgID", msg.ID()))
+					continue
+				}
+				idset.Insert(msg.ID())
+				uniqueMsgs = append(uniqueMsgs, msg)
+			}
+
 			msgPack := MsgPack{
 				BeginTs:        ms.lastTimeStamp,
 				EndTs:          currTs,
-				Msgs:           timeTickBuf,
+				Msgs:           uniqueMsgs,
 				StartPositions: startMsgPosition,
 				EndPositions:   endMsgPositions,
 			}
 
 			//log.Debug("send msg pack", zap.Int("len", len(msgPack.Msgs)), zap.Uint64("currTs", currTs))
-			ms.receiveBuf <- &msgPack
+			select {
+			case ms.receiveBuf <- &msgPack:
+			case <-ms.ctx.Done():
+				return
+			}
 			ms.lastTimeStamp = currTs
 		}
 	}
@@ -859,10 +880,17 @@ func (ms *MqTtMsgStream) Seek(msgPositions []*internalpb.MsgPosition) error {
 		if err != nil {
 			return err
 		}
+		log.Info("MsgStream begin to seek start msg: ", zap.String("channel", mp.ChannelName), zap.Any("MessageID", seekMsgID))
 		err = consumer.Seek(seekMsgID, true)
 		if err != nil {
+			log.Warn("Failed to seek", zap.String("channel", mp.ChannelName), zap.Error(err))
+			// stop retry if consumer topic not exist
+			if errors.Is(err, mqwrapper.ErrTopicNotExist) {
+				return retry.Unrecoverable(err)
+			}
 			return err
 		}
+		log.Info("MsgStream seek finished", zap.String("channel", mp.ChannelName))
 
 		return nil
 	}
@@ -922,9 +950,6 @@ func (ms *MqTtMsgStream) Seek(msgPositions []*internalpb.MsgPosition) error {
 func (ms *MqTtMsgStream) Chan() <-chan *MsgPack {
 	ms.onceChan.Do(func() {
 		if ms.consumers != nil {
-			ms.readerLock.Lock()
-			ms.wait.Add(1)
-			ms.readerLock.Unlock()
 			go ms.bufMsgPackToChannel()
 		}
 	})

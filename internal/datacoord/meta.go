@@ -30,14 +30,14 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
+	"github.com/milvus-io/milvus/internal/util"
 	"go.uber.org/zap"
 )
 
 const (
-	metaPrefix           = "datacoord-meta"
-	segmentPrefix        = metaPrefix + "/s"
-	channelRemovePrefix  = metaPrefix + "/channel-removal"
-	handoffSegmentPrefix = "querycoord-handoff"
+	metaPrefix          = "datacoord-meta"
+	segmentPrefix       = metaPrefix + "/s"
+	channelRemovePrefix = metaPrefix + "/channel-removal"
 
 	removeFlagTomestone = "removed"
 )
@@ -85,7 +85,7 @@ func (m *meta) reloadFromKV() error {
 		}
 		state := segmentInfo.GetState()
 		m.segments.SetSegment(segmentInfo.GetID(), NewSegmentInfo(segmentInfo))
-		metrics.DataCoordNumSegments.WithLabelValues(string(state)).Inc()
+		metrics.DataCoordNumSegments.WithLabelValues(state.String()).Inc()
 		if state == commonpb.SegmentState_Flushed {
 			numStoredRows += segmentInfo.GetNumOfRows()
 		}
@@ -171,11 +171,11 @@ func (m *meta) GetNumRowsOfCollection(collectionID UniqueID) int64 {
 func (m *meta) AddSegment(segment *SegmentInfo) error {
 	m.Lock()
 	defer m.Unlock()
-	m.segments.SetSegment(segment.GetID(), segment)
 	if err := m.saveSegmentInfo(segment); err != nil {
 		return err
 	}
-	metrics.DataCoordNumSegments.WithLabelValues(string(segment.GetState())).Inc()
+	m.segments.SetSegment(segment.GetID(), segment)
+	metrics.DataCoordNumSegments.WithLabelValues(segment.GetState().String()).Inc()
 	return nil
 }
 
@@ -207,6 +207,18 @@ func (m *meta) GetSegment(segID UniqueID) *SegmentInfo {
 	return nil
 }
 
+// GetAllSegment returns segment info with provided id
+// different from GetSegment, this will return unhealthy segment as well
+func (m *meta) GetAllSegment(segID UniqueID) *SegmentInfo {
+	m.RLock()
+	defer m.RUnlock()
+	segment := m.segments.GetSegment(segID)
+	if segment != nil {
+		return segment
+	}
+	return nil
+}
+
 // SetState setting segment with provided ID state
 func (m *meta) SetState(segmentID UniqueID, state commonpb.SegmentState) error {
 	m.Lock()
@@ -221,8 +233,8 @@ func (m *meta) SetState(segmentID UniqueID, state commonpb.SegmentState) error {
 	if curSegInfo != nil && isSegmentHealthy(curSegInfo) {
 		err := m.saveSegmentInfo(curSegInfo)
 		if err == nil {
-			metrics.DataCoordNumSegments.WithLabelValues(string(oldState)).Dec()
-			metrics.DataCoordNumSegments.WithLabelValues(string(state)).Inc()
+			metrics.DataCoordNumSegments.WithLabelValues(oldState.String()).Dec()
+			metrics.DataCoordNumSegments.WithLabelValues(state.String()).Inc()
 			if state == commonpb.SegmentState_Flushed {
 				metrics.DataCoordNumStoredRows.WithLabelValues().Add(float64(curSegInfo.GetNumOfRows()))
 				metrics.DataCoordNumStoredRowsCounter.WithLabelValues().Add(float64(curSegInfo.GetNumOfRows()))
@@ -385,8 +397,8 @@ func (m *meta) UpdateFlushSegmentsInfo(
 	}
 	oldSegmentState := segment.GetState()
 	newSegmentState := clonedSegment.GetState()
-	metrics.DataCoordNumSegments.WithLabelValues(string(oldSegmentState)).Dec()
-	metrics.DataCoordNumSegments.WithLabelValues(string(newSegmentState)).Inc()
+	metrics.DataCoordNumSegments.WithLabelValues(oldSegmentState.String()).Dec()
+	metrics.DataCoordNumSegments.WithLabelValues(newSegmentState.String()).Inc()
 	if newSegmentState == commonpb.SegmentState_Flushed {
 		metrics.DataCoordNumStoredRows.WithLabelValues().Add(float64(clonedSegment.GetNumOfRows()))
 		metrics.DataCoordNumStoredRowsCounter.WithLabelValues().Add(float64(clonedSegment.GetNumOfRows()))
@@ -436,7 +448,7 @@ func (m *meta) UpdateDropChannelSegmentInfo(channel string, segments []*SegmentI
 		for _, seg := range originSegments {
 			state := seg.GetState()
 			metrics.DataCoordNumSegments.WithLabelValues(
-				string(state)).Dec()
+				state.String()).Dec()
 			if state == commonpb.SegmentState_Flushed {
 				metrics.DataCoordNumStoredRows.WithLabelValues().Sub(float64(seg.GetNumOfRows()))
 			}
@@ -767,12 +779,17 @@ func (m *meta) SetSegmentCompacting(segmentID UniqueID, compacting bool) {
 	m.segments.SetIsCompacting(segmentID, compacting)
 }
 
-func (m *meta) CompleteMergeCompaction(compactionLogs []*datapb.CompactionSegmentBinlogs, result *datapb.CompactionResult) error {
+func (m *meta) CompleteMergeCompaction(compactionLogs []*datapb.CompactionSegmentBinlogs, result *datapb.CompactionResult,
+	canCompaction func(segment *datapb.CompactionSegmentBinlogs) bool) error {
 	m.Lock()
 	defer m.Unlock()
 
 	segments := make([]*SegmentInfo, 0, len(compactionLogs))
 	for _, cl := range compactionLogs {
+		if !canCompaction(cl) {
+			log.Warn("can not be compacted, segment has reference lock", zap.Int64("segmentID", cl.SegmentID))
+			return fmt.Errorf("can not be compacted, segment with ID %d has reference lock", cl.SegmentID)
+		}
 		if segment := m.segments.GetSegment(cl.GetSegmentID()); segment != nil {
 			cloned := segment.Clone()
 			cloned.State = commonpb.SegmentState_Dropped
@@ -783,11 +800,13 @@ func (m *meta) CompleteMergeCompaction(compactionLogs []*datapb.CompactionSegmen
 
 	var startPosition, dmlPosition *internalpb.MsgPosition
 	for _, s := range segments {
-		if dmlPosition == nil || s.GetDmlPosition().Timestamp > dmlPosition.Timestamp {
+		if dmlPosition == nil ||
+			s.GetDmlPosition() != nil && s.GetDmlPosition().GetTimestamp() < dmlPosition.GetTimestamp() {
 			dmlPosition = s.GetDmlPosition()
 		}
 
-		if startPosition == nil || s.GetStartPosition().Timestamp < startPosition.Timestamp {
+		if startPosition == nil ||
+			s.GetStartPosition() != nil && s.GetStartPosition().GetTimestamp() < startPosition.GetTimestamp() {
 			startPosition = s.GetStartPosition()
 		}
 	}
@@ -827,8 +846,13 @@ func (m *meta) CompleteMergeCompaction(compactionLogs []*datapb.CompactionSegmen
 		CreatedByCompaction: true,
 		CompactionFrom:      compactionFrom,
 	}
-
 	segment := NewSegmentInfo(segmentInfo)
+
+	log.Info("CompleteMergeCompaction", zap.Int64("segmentID", segmentInfo.ID),
+		zap.Int64("collectionID", segmentInfo.CollectionID),
+		zap.Int64("partitionID", segmentInfo.PartitionID),
+		zap.Int64("NumOfRows", segmentInfo.NumOfRows),
+		zap.Any("compactionFrom", segmentInfo.CompactionFrom))
 
 	data := make(map[string]string)
 
@@ -853,7 +877,7 @@ func (m *meta) CompleteMergeCompaction(compactionLogs []*datapb.CompactionSegmen
 	}
 
 	for _, s := range segments {
-		m.segments.DropSegment(s.GetID())
+		m.segments.SetSegment(s.GetID(), s)
 	}
 
 	// Handle empty segment generated by merge-compaction
@@ -1032,7 +1056,7 @@ func buildSegmentPath(collectionID UniqueID, partitionID UniqueID, segmentID Uni
 
 // buildQuerySegmentPath common logic mapping segment info to corresponding key of queryCoord in kv store
 func buildQuerySegmentPath(collectionID UniqueID, partitionID UniqueID, segmentID UniqueID) string {
-	return fmt.Sprintf("%s/%d/%d/%d", handoffSegmentPrefix, collectionID, partitionID, segmentID)
+	return fmt.Sprintf("%s/%d/%d/%d", util.HandoffSegmentPrefix, collectionID, partitionID, segmentID)
 }
 
 // buildChannelRemovePat builds vchannel remove flag path
@@ -1054,7 +1078,8 @@ func buildSegment(collectionID UniqueID, partitionID UniqueID, segmentID UniqueI
 }
 
 func isSegmentHealthy(segment *SegmentInfo) bool {
-	return segment.GetState() != commonpb.SegmentState_SegmentStateNone &&
+	return segment != nil &&
+		segment.GetState() != commonpb.SegmentState_SegmentStateNone &&
 		segment.GetState() != commonpb.SegmentState_NotExist &&
 		segment.GetState() != commonpb.SegmentState_Dropped
 }
