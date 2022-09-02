@@ -36,17 +36,19 @@ import (
 type MockDataNode struct {
 	nodeID typeutil.UniqueID
 
-	stateCode  internalpb.StateCode
-	states     *internalpb.ComponentStates
-	status     *commonpb.Status
-	err        error
-	initErr    error
-	startErr   error
-	stopErr    error
-	regErr     error
-	strResp    *milvuspb.StringResponse
-	metricResp *milvuspb.GetMetricsResponse
-	resendResp *datapb.ResendSegmentStatsResponse
+	stateCode      internalpb.StateCode
+	states         *internalpb.ComponentStates
+	status         *commonpb.Status
+	err            error
+	initErr        error
+	startErr       error
+	stopErr        error
+	regErr         error
+	strResp        *milvuspb.StringResponse
+	configResp     *internalpb.ShowConfigurationsResponse
+	metricResp     *milvuspb.GetMetricsResponse
+	resendResp     *datapb.ResendSegmentStatsResponse
+	compactionResp *datapb.CompactionStateResponse
 }
 
 func (m *MockDataNode) Init() error {
@@ -101,12 +103,20 @@ func (m *MockDataNode) FlushSegments(ctx context.Context, req *datapb.FlushSegme
 	return m.status, m.err
 }
 
+func (m *MockDataNode) ShowConfigurations(ctx context.Context, req *internalpb.ShowConfigurationsRequest) (*internalpb.ShowConfigurationsResponse, error) {
+	return m.configResp, m.err
+}
+
 func (m *MockDataNode) GetMetrics(ctx context.Context, request *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
 	return m.metricResp, m.err
 }
 
 func (m *MockDataNode) Compaction(ctx context.Context, req *datapb.CompactionPlan) (*commonpb.Status, error) {
 	return m.status, m.err
+}
+
+func (m *MockDataNode) GetCompactionState(ctx context.Context, req *datapb.CompactionStateRequest) (*datapb.CompactionStateResponse, error) {
+	return m.compactionResp, m.err
 }
 
 func (m *MockDataNode) SetEtcdClient(client *clientv3.Client) {
@@ -239,6 +249,15 @@ func Test_NewServer(t *testing.T) {
 		states, err := server.FlushSegments(ctx, nil)
 		assert.NotNil(t, err)
 		assert.NotNil(t, states)
+	})
+
+	t.Run("ShowConfigurations", func(t *testing.T) {
+		server.datanode = &MockDataNode{
+			configResp: &internalpb.ShowConfigurationsResponse{},
+		}
+		resp, err := server.ShowConfigurations(ctx, nil)
+		assert.Nil(t, err)
+		assert.NotNil(t, resp)
 	})
 
 	t.Run("GetMetrics", func(t *testing.T) {

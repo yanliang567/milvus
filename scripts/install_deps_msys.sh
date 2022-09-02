@@ -24,17 +24,19 @@ pacmanInstall()
     mingw-w64-x86_64-diffutils \
     mingw-w64-x86_64-arrow \
     mingw-w64-x86_64-go \
-    mingw-w64-x86_64-rocksdb
+    mingw-w64-x86_64-zstd
+  pacman -U --noconfirm \
+    https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-rocksdb-6.26.1-1-any.pkg.tar.zst
 }
 
 updateKey()
 {
-	pacman-key --refresh-keys
+    pacman-key --refresh-keys
 }
 
 pacmanInstall || {
-	updateKey
-	pacmanInstall
+    updateKey
+    pacmanInstall
 
 }
 

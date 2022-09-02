@@ -217,70 +217,6 @@ func TestSearchTask_PreExecute(t *testing.T) {
 		qc.ResetShowPartitionsFunc()
 	})
 
-	t.Run("invalid key value pairs", func(t *testing.T) {
-		spNoTopk := []*commonpb.KeyValuePair{{
-			Key:   AnnsFieldKey,
-			Value: testFloatVecField}}
-
-		spInvalidTopk := append(spNoTopk, &commonpb.KeyValuePair{
-			Key:   TopKKey,
-			Value: "invalid",
-		})
-
-		spNoMetricType := append(spNoTopk, &commonpb.KeyValuePair{
-			Key:   TopKKey,
-			Value: "10",
-		})
-
-		spNoSearchParams := append(spNoMetricType, &commonpb.KeyValuePair{
-			Key:   MetricTypeKey,
-			Value: distance.L2,
-		})
-
-		spNoRoundDecimal := append(spNoSearchParams, &commonpb.KeyValuePair{
-			Key:   SearchParamsKey,
-			Value: `{"nprobe": 10}`,
-		})
-
-		spInvalidRoundDecimal := append(spNoRoundDecimal, &commonpb.KeyValuePair{
-			Key:   RoundDecimalKey,
-			Value: "invalid",
-		})
-
-		tests := []struct {
-			description   string
-			invalidParams []*commonpb.KeyValuePair
-		}{
-			{"No_topk", spNoTopk},
-			{"Invalid_topk", spInvalidTopk},
-			{"No_Metric_type", spNoMetricType},
-			{"No_search_params", spNoSearchParams},
-			{"no_round_decimal", spNoRoundDecimal},
-			{"Invalid_round_decimal", spInvalidRoundDecimal},
-		}
-
-		for _, test := range tests {
-			t.Run(test.description, func(t *testing.T) {
-				collName := "collection_" + test.description
-				createColl(t, collName, rc)
-				collID, err := globalMetaCache.GetCollectionID(context.TODO(), collName)
-				require.NoError(t, err)
-				task := getSearchTask(t, collName)
-				task.request.DslType = commonpb.DslType_BoolExprV1
-
-				status, err := qc.LoadCollection(ctx, &querypb.LoadCollectionRequest{
-					Base: &commonpb.MsgBase{
-						MsgType: commonpb.MsgType_LoadCollection,
-					},
-					CollectionID: collID,
-				})
-				require.NoError(t, err)
-				require.Equal(t, commonpb.ErrorCode_Success, status.GetErrorCode())
-				assert.Error(t, task.PreExecute(ctx))
-			})
-		}
-	})
-
 	t.Run("search with timeout", func(t *testing.T) {
 		collName := "search_with_timeout" + funcutil.GenRandomStr()
 		createColl(t, collName, rc)
@@ -1418,7 +1354,7 @@ func Test_reduceSearchResultData_int(t *testing.T) {
 		},
 	}
 
-	reduced, err := reduceSearchResultData(results, int64(nq), int64(topk), distance.L2, schemapb.DataType_Int64)
+	reduced, err := reduceSearchResultData(context.TODO(), results, int64(nq), int64(topk), distance.L2, schemapb.DataType_Int64)
 	assert.NoError(t, err)
 	assert.ElementsMatch(t, []int64{3, 4, 7, 8, 11, 12}, reduced.GetResults().GetIds().GetIntId().GetData())
 	// hard to compare floating point value.
@@ -1457,7 +1393,7 @@ func Test_reduceSearchResultData_str(t *testing.T) {
 		},
 	}
 
-	reduced, err := reduceSearchResultData(results, int64(nq), int64(topk), distance.L2, schemapb.DataType_VarChar)
+	reduced, err := reduceSearchResultData(context.TODO(), results, int64(nq), int64(topk), distance.L2, schemapb.DataType_VarChar)
 	assert.NoError(t, err)
 	assert.ElementsMatch(t, []string{"3", "4", "7", "8", "11", "12"}, reduced.GetResults().GetIds().GetStrId().GetData())
 	// hard to compare floating point value.
@@ -1524,11 +1460,26 @@ func Test_checkIfLoaded(t *testing.T) {
 		globalMetaCache = cache
 		qc := NewQueryCoordMock()
 		qc.SetShowPartitionsFunc(func(ctx context.Context, request *querypb.ShowPartitionsRequest) (*querypb.ShowPartitionsResponse, error) {
-			return &querypb.ShowPartitionsResponse{Status: &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success}}, nil
+			return &querypb.ShowPartitionsResponse{Status: &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success}, InMemoryPercentages: []int64{100, 100}}, nil
 		})
 		loaded, err := checkIfLoaded(context.Background(), qc, "test", []UniqueID{1, 2})
 		assert.NoError(t, err)
 		assert.True(t, loaded)
+	})
+
+	t.Run("partitions loaded, some patitions not fully loaded", func(t *testing.T) {
+		cache := newMockCache()
+		cache.setGetInfoFunc(func(ctx context.Context, collectionName string) (*collectionInfo, error) {
+			return &collectionInfo{isLoaded: false}, nil
+		})
+		globalMetaCache = cache
+		qc := NewQueryCoordMock()
+		qc.SetShowPartitionsFunc(func(ctx context.Context, request *querypb.ShowPartitionsRequest) (*querypb.ShowPartitionsResponse, error) {
+			return &querypb.ShowPartitionsResponse{Status: &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success}, InMemoryPercentages: []int64{100, 50}}, nil
+		})
+		loaded, err := checkIfLoaded(context.Background(), qc, "test", []UniqueID{1, 2})
+		assert.NoError(t, err)
+		assert.False(t, loaded)
 	})
 
 	t.Run("no specified partitions, show partitions failed", func(t *testing.T) {
@@ -1541,7 +1492,7 @@ func Test_checkIfLoaded(t *testing.T) {
 		qc.SetShowPartitionsFunc(func(ctx context.Context, request *querypb.ShowPartitionsRequest) (*querypb.ShowPartitionsResponse, error) {
 			return nil, errors.New("mock")
 		})
-		_, err := checkIfLoaded(context.Background(), qc, "test", []UniqueID{})
+		_, err := checkIfLoaded(context.Background(), qc, "test", []UniqueID{1, 2})
 		assert.Error(t, err)
 	})
 
@@ -1555,7 +1506,7 @@ func Test_checkIfLoaded(t *testing.T) {
 		qc.SetShowPartitionsFunc(func(ctx context.Context, request *querypb.ShowPartitionsRequest) (*querypb.ShowPartitionsResponse, error) {
 			return &querypb.ShowPartitionsResponse{Status: &commonpb.Status{ErrorCode: commonpb.ErrorCode_CollectionNotExists}}, nil
 		})
-		_, err := checkIfLoaded(context.Background(), qc, "test", []UniqueID{})
+		_, err := checkIfLoaded(context.Background(), qc, "test", []UniqueID{1, 2})
 		assert.Error(t, err)
 	})
 
@@ -1571,7 +1522,7 @@ func Test_checkIfLoaded(t *testing.T) {
 		})
 		loaded, err := checkIfLoaded(context.Background(), qc, "test", []UniqueID{})
 		assert.NoError(t, err)
-		assert.True(t, loaded)
+		assert.False(t, loaded)
 	})
 
 	t.Run("not loaded", func(t *testing.T) {
@@ -1733,4 +1684,67 @@ func TestSearchTask_ErrExecute(t *testing.T) {
 	}
 	qn.withSearchResult = result1
 	assert.NoError(t, task.Execute(ctx))
+}
+
+func TestTaskSearch_parseQueryInfo(t *testing.T) {
+	t.Run("parseQueryInfo error", func(t *testing.T) {
+		spNoTopk := []*commonpb.KeyValuePair{{
+			Key:   AnnsFieldKey,
+			Value: testFloatVecField}}
+
+		spInvalidTopk := append(spNoTopk, &commonpb.KeyValuePair{
+			Key:   TopKKey,
+			Value: "invalid",
+		})
+
+		spInvalidTopk65536 := append(spNoTopk, &commonpb.KeyValuePair{
+			Key:   TopKKey,
+			Value: "65536",
+		})
+
+		spNoMetricType := append(spNoTopk, &commonpb.KeyValuePair{
+			Key:   TopKKey,
+			Value: "10",
+		})
+
+		spNoSearchParams := append(spNoMetricType, &commonpb.KeyValuePair{
+			Key:   MetricTypeKey,
+			Value: distance.L2,
+		})
+		noRoundDecimal := append(spNoSearchParams, &commonpb.KeyValuePair{
+			Key:   SearchParamsKey,
+			Value: `{"nprobe": 10}`,
+		})
+
+		spInvalidRoundDecimal2 := append(noRoundDecimal, &commonpb.KeyValuePair{
+			Key:   RoundDecimalKey,
+			Value: "1000",
+		})
+
+		spInvalidRoundDecimal := append(noRoundDecimal, &commonpb.KeyValuePair{
+			Key:   RoundDecimalKey,
+			Value: "invalid",
+		})
+
+		tests := []struct {
+			description   string
+			invalidParams []*commonpb.KeyValuePair
+		}{
+			{"No_topk", spNoTopk},
+			{"Invalid_topk", spInvalidTopk},
+			{"Invalid_topk_65536", spInvalidTopk65536},
+			{"No_Metric_type", spNoMetricType},
+			{"No_search_params", spNoSearchParams},
+			{"Invalid_round_decimal", spInvalidRoundDecimal},
+			{"Invalid_round_decimal_1000", spInvalidRoundDecimal2},
+		}
+
+		for _, test := range tests {
+			t.Run(test.description, func(t *testing.T) {
+				info, err := parseQueryInfo(test.invalidParams)
+				assert.Error(t, err)
+				assert.Nil(t, info)
+			})
+		}
+	})
 }

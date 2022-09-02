@@ -2,6 +2,7 @@ import threading
 import time
 
 import pytest
+from pymilvus import DefaultConfig
 from pymilvus.exceptions import MilvusException
 from base.client_base import TestcaseBase
 from base.utility_wrapper import ApiUtilityWrapper
@@ -10,6 +11,7 @@ from common import common_func as cf
 from common import common_type as ct
 from common.common_type import CaseLabel, CheckTasks
 from common.milvus_sys import MilvusSys
+from pymilvus.grpc_gen.common_pb2 import SegmentState
 
 prefix = "utility"
 default_schema = cf.gen_default_collection_schema()
@@ -23,6 +25,7 @@ num_total_entities = "num_total_entities"
 loading_progress = "loading_progress"
 num_loaded_partitions = "num_loaded_partitions"
 not_loaded_partitions = "not_loaded_partitions"
+exp_name = "name"
 
 
 class TestUtilityParams(TestcaseBase):
@@ -229,7 +232,6 @@ class TestUtilityParams(TestcaseBase):
         self.utility_wrap.loading_progress("not_existed_name", check_task=CheckTasks.err_res, check_items=error)
 
     @pytest.mark.tags(CaseLabel.L2)
-    @pytest.mark.xfail(reason="pymilvus issue #677")
     def test_loading_progress_invalid_partition_names(self, get_invalid_partition_names):
         """
         target: test loading progress with invalid partition names
@@ -907,14 +909,16 @@ class TestUtilityBase(TestcaseBase):
         assert res_part_partition == {'loading_progress': '50%', 'num_loaded_partitions': 1,
                                       'not_loaded_partitions': [partition_w.name]}
 
-        res_part_partition, _ = self.utility_wrap.loading_progress(collection_w.name, partition_names=[partition_w.name])
+        res_part_partition, _ = self.utility_wrap.loading_progress(collection_w.name,
+                                                                   partition_names=[partition_w.name])
         assert res_part_partition == {'loading_progress': '0%', 'num_loaded_partitions': 0,
                                       'not_loaded_partitions': [partition_w.name]}
 
         collection_w.release()
         collection_w.load(replica_number=2)
         res_all_partitions, _ = self.utility_wrap.loading_progress(collection_w.name)
-        assert res_all_partitions == {'loading_progress': '100%', 'num_loaded_partitions': 2, 'not_loaded_partitions': []}
+        assert res_all_partitions == {'loading_progress': '100%', 'num_loaded_partitions': 2,
+                                      'not_loaded_partitions': []}
 
     @pytest.mark.tags(CaseLabel.L1)
     def test_wait_loading_collection_empty(self):
@@ -1702,7 +1706,7 @@ class TestUtilityAdvanced(TestcaseBase):
             if len(g.group_nodes) >= 2:
                 group_nodes = list(g.group_nodes)
                 break
-        src_node_id = group_nodes[0]              
+        src_node_id = group_nodes[0]
         dst_node_ids = list(set(all_querynodes) - set(group_nodes))
         res, _ = self.utility_wrap.get_query_segment_info(c_name)
         segment_distribution = cf.get_segment_distribution(res)
@@ -1711,3 +1715,582 @@ class TestUtilityAdvanced(TestcaseBase):
         self.utility_wrap.load_balance(collection_w.name, src_node_id, dst_node_ids, sealed_segment_ids,
                                        check_task=CheckTasks.err_res,
                                        check_items={ct.err_code: 1, ct.err_msg: "must be in the same replica group"})
+
+    @pytest.mark.tags(CaseLabel.L1)
+    def test_handoff_query_search(self):
+        collection_w = self.init_collection_wrap(name=cf.gen_unique_str(prefix), shards_num=1)
+        collection_w.create_index(default_field_name, default_index_params)
+        collection_w.load()
+
+        # handoff: insert and flush one segment
+        df = cf.gen_default_dataframe_data()
+        insert_res, _ = collection_w.insert(df)
+        term_expr = f'{ct.default_int64_field_name} in {insert_res.primary_keys[:10]}'
+        res = df.iloc[:10, :1].to_dict('records')
+        collection_w.query(term_expr, check_task=CheckTasks.check_query_results,
+                           check_items={'exp_res': res})
+        search_res_before, _ = collection_w.search(df[ct.default_float_vec_field_name][:1].to_list(),
+                                                   ct.default_float_vec_field_name,
+                                                   ct.default_search_params, ct.default_limit)
+        log.debug(collection_w.num_entities)
+
+        start = time.time()
+        while True:
+            time.sleep(0.5)
+            segment_infos, _ = self.utility_wrap.get_query_segment_info(collection_w.name)
+            # handoff done
+            if len(segment_infos) == 1 and segment_infos[0].state == SegmentState.Sealed:
+                break
+            if time.time() - start > 20:
+                raise MilvusException(1, f"Get query segment info after handoff cost more than 20s")
+
+        # query and search from handoff segments
+        collection_w.query(term_expr, check_task=CheckTasks.check_query_results,
+                           check_items={'exp_res': res})
+        search_res_after, _ = collection_w.search(df[ct.default_float_vec_field_name][:1].to_list(),
+                                                  ct.default_float_vec_field_name,
+                                                  ct.default_search_params, ct.default_limit)
+        # the ids between twice search is different because of index building
+        log.debug(search_res_before[0].ids)
+        log.debug(search_res_after[0].ids)
+        # assert search_res_before[0].ids != search_res_after[0].ids
+
+        # assert search result includes the nq-vector before or after handoff
+        assert search_res_after[0].ids[0] == 0
+        assert search_res_before[0].ids[0] == search_res_after[0].ids[0]
+
+
+class TestUtilityUserPassword(TestcaseBase):
+    """ Test case of user interface """
+
+    @pytest.mark.tags(ct.CaseLabel.L3)
+    def test_create_user_with_user_password(self,host, port):
+        """
+        target: test the user creation with user and password
+        method: create user with the default user and password parameter
+        expected: connected is True
+        """
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+        user = "nico"
+        password = "wertyu567"
+        self.utility_wrap.create_user(user=user, password=password)
+        self.connection_wrap.disconnect(alias=DefaultConfig.DEFAULT_USING)
+        self.connection_wrap.connect(host=host, port=port, user=user, password=password,
+                                     check_task=ct.CheckTasks.ccr)
+        self.utility_wrap.list_collections()
+
+    @pytest.mark.tags(ct.CaseLabel.L3)
+    @pytest.mark.parametrize("old_password", ["abc1234"])
+    @pytest.mark.parametrize("new_password", ["abc12345"])
+    def test_reset_password_with_user_and_old_password(self, host, port, old_password, new_password):
+        """
+        target: test the password reset with old password
+        method: get a connection with user and corresponding old password
+        expected: connected is True
+        """
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+        user = "robot2048"
+        self.utility_wrap.create_user(user=user, password=old_password)
+        self.utility_wrap.reset_password(user=user, old_password=old_password, new_password=new_password)
+        self.connection_wrap.disconnect(alias=DefaultConfig.DEFAULT_USING)
+        self.connection_wrap.connect(host=host, port=port, user=user,
+                                     password=new_password, check_task=ct.CheckTasks.ccr)
+        self.utility_wrap.list_collections()
+
+    @pytest.mark.tags(ct.CaseLabel.L3)
+    def test_list_usernames(self, host, port):
+        """
+        target: test the user list created successfully
+        method: get a list of users
+        expected: list all users
+        """
+        #1. default user login
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+
+        #2. create 2 users
+        self.utility_wrap.create_user(user="user1", password="abc123")
+        self.utility_wrap.create_user(user="user2", password="abc123")
+
+        #3. list all users
+        res = self.utility_wrap.list_usernames()[0]
+        assert "user1" and "user2" in res
+
+    @pytest.mark.tags(ct.CaseLabel.L3)
+    @pytest.mark.parametrize("connect_name", [DefaultConfig.DEFAULT_USING])
+    def test_delete_user_with_username(self,host, port,connect_name):
+        """
+        target: test deleting user with username
+        method: delete user with username and connect with the wrong user then list collections
+        expected: deleted successfully
+        """
+        user = "xiaoai"
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+        self.utility_wrap.create_user(user=user, password="abc123")
+        self.utility_wrap.delete_user(user=user)
+        self.connection_wrap.disconnect(alias=connect_name)
+        self.connection_wrap.connect(host=host, port=port, user=user,
+                                     password="abc123", check_task=ct.CheckTasks.ccr)
+        self.utility_wrap.list_collections(check_task=ct.CheckTasks.err_res,
+                                           check_items={ct.err_code: 1})
+
+    @pytest.mark.tags(ct.CaseLabel.L3)
+    def test_delete_user_with_invalid_username(self, host, port):
+        """
+        target: test the nonexistant user when deleting credential
+        method: delete a credential with user wrong
+        excepted: delete is true
+        """
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+        self.utility_wrap.delete_user(user="asdfghj")
+
+    @pytest.mark.tags(ct.CaseLabel.L3)
+    def test_delete_all_users(self, host, port):
+        """
+        target: delete the users that created for test
+        method: delete the users in list_usernames except root
+        excepted: delete is true
+        """
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+        res = self.utility_wrap.list_usernames()[0]
+        for user in res:
+            if user != "root":
+                self.utility_wrap.delete_user(user=user)
+        res = self.utility_wrap.list_usernames()[0]
+        assert len(res) == 1
+
+
+class TestUtilityInvalidUserPassword(TestcaseBase):
+    """ Test invalid case of user interface """
+
+    @pytest.mark.tags(ct.CaseLabel.L3)
+    @pytest.mark.parametrize("user", ["qwertyuiopasdfghjklzxcvbnmqwertyui", "@*-.-*", "alisd/"])
+    def test_create_user_with_invalid_username(self, host, port, user):
+        """
+        target: test the user when create user
+        method: make the length of user beyond standard
+        excepted: the creation is false
+        """
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+        self.utility_wrap.create_user(user=user, password=ct.default_password,
+                                      check_task=ct.CheckTasks.err_res,
+                                      check_items={ct.err_code: 5})
+
+    @pytest.mark.tags(ct.CaseLabel.L3)
+    @pytest.mark.parametrize("user", ["alice123w"])
+    def test_create_user_with_existed_username(self, host, port, user):
+        """
+        target: test the user when create user
+        method: create a user, and then create a user with the same username
+        excepted: the creation is false
+        """
+        # 1.default user login
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+
+        # 2.create the first user successfully
+        self.utility_wrap.create_user(user=user, password=ct.default_password)
+
+        # 3.create the second user with the same username
+        self.utility_wrap.create_user(user=user, password=ct.default_password,
+                                      check_task=ct.CheckTasks.err_res, check_items={ct.err_code: 29})
+
+    @pytest.mark.tags(ct.CaseLabel.L3)
+    @pytest.mark.parametrize("password", ["12345"])
+    def test_create_user_with_invalid_password(self, host, port, password):
+        """
+        target: test the password when create user
+        method: make the length of user exceed the limitation [6, 256]
+        excepted: the creation is false
+        """
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+        user = "alice"
+        self.utility_wrap.create_user(user=user, password=password,
+                                      check_task=ct.CheckTasks.err_res, check_items={ct.err_code: 5})
+
+    @pytest.mark.tags(ct.CaseLabel.L3)
+    @pytest.mark.parametrize("user", ["hobo89"])
+    @pytest.mark.parametrize("old_password", ["qwaszx0"])
+    def test_reset_password_with_invalid_username(self, host, port, user, old_password):
+        """
+        target: test the wrong user when resetting password
+        method: create a user, and then reset the password with wrong username
+        excepted: reset is false
+        """
+        # 1.default user login
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+
+        # 2.create a user
+        self.utility_wrap.create_user(user=user, password=old_password)
+
+        # 3.reset password with the wrong username
+        self.utility_wrap.reset_password(user="hobo", old_password=old_password, new_password="qwaszx1",
+                                         check_task=ct.CheckTasks.err_res,
+                                         check_items={ct.err_code: 30})
+
+    @pytest.mark.tags(ct.CaseLabel.L3)
+    @pytest.mark.parametrize("user", ["demo"])
+    @pytest.mark.parametrize("old_password", ["qwaszx0"])
+    @pytest.mark.parametrize("new_password", ["12345"])
+    def test_reset_password_with_invalid_new_password(self, host, port, user, old_password, new_password):
+        """
+        target: test the new password when resetting password
+        method: create a user, and then set a wrong new password
+        excepted: reset is false
+        """
+        # 1.default user login
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+
+        # 2.create a user
+        self.utility_wrap.create_user(user=user, password=old_password)
+
+        # 3.reset password with the wrong new password
+        self.utility_wrap.reset_password(user=user, old_password=old_password, new_password=new_password,
+                                         check_task=ct.CheckTasks.err_res,
+                                         check_items={ct.err_code: 5})
+
+    @pytest.mark.tags(ct.CaseLabel.L3)
+    @pytest.mark.parametrize("user", ["genny"])
+    def test_reset_password_with_invalid_old_password(self, host, port, user):
+        """
+        target: test the old password when resetting password
+        method: create a credential, and then reset with a wrong old password
+        excepted: reset is false
+        """
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+        self.utility_wrap.create_user(user=user, password="qwaszx0")
+        self.utility_wrap.reset_password(user=user, old_password="waszx0", new_password="123456",
+                                         check_task=ct.CheckTasks.err_res,
+                                         check_items={ct.err_code: 30})
+
+    @pytest.mark.tags(ct.CaseLabel.L3)
+    def test_delete_user_root(self, host, port):
+        """
+        target: test deleting user root when deleting credential
+        method: connect and then delete the user root
+        excepted: delete is false
+        """
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+        self.utility_wrap.delete_user(user=ct.default_user, check_task=ct.CheckTasks.err_res,
+                                      check_items={ct.err_code: 31})
+
+
+    @pytest.mark.tags(CaseLabel.L3)
+    def test_clear_roles(self, host, port):
+        """
+        target: check get roles list and clear them
+        method: remove all roles except admin and public
+        expected: assert clear success
+        """
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+
+        # add user and bind to role
+        user = cf.gen_unique_str(prefix)
+        password = cf.gen_unique_str(prefix)
+        r_name = cf.gen_unique_str(prefix)
+        u, _ = self.utility_wrap.create_user(user=user, password=password)
+
+        self.utility_wrap.init_role(r_name)
+        self.utility_wrap.create_role()
+        self.utility_wrap.role_add_user(user)
+
+        # get roles
+        role_groups, _ = self.utility_wrap.list_roles(False)
+
+        # drop roles
+        for role_group in role_groups.groups:
+            if role_group.role_name not in ['admin', 'public']:
+                self.utility_wrap.init_role(role_group.role_name)
+                g_list, _ = self.utility_wrap.role_list_grants()
+                for g in g_list.groups:
+                    self.utility_wrap.role_revoke(g.object, g.object_name, g.privilege)
+                self.utility_wrap.role_drop()
+        role_groups, _ = self.utility_wrap.list_roles(False)
+        assert len(role_groups.groups) == 2
+
+    @pytest.mark.tags(CaseLabel.L3)
+    def test_role_list_user_with_root_user(self, host, port):
+        """
+        target: check list user
+        method: check list user with root
+        expected: assert list user success, and root has no roles
+        """
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+
+        user_info, _ = self.utility_wrap.list_user("root", True)
+        user_item = user_info.groups[0]
+        assert user_item.roles == ()
+        assert user_item.username == "root"
+
+    @pytest.mark.tags(CaseLabel.L3)
+    def test_role_list_users(self, host, port):
+        """
+        target: check list users
+        method: check list users con
+        expected: assert list users success
+        """
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+        # add user and bind to role
+        user = cf.gen_unique_str(prefix)
+        password = cf.gen_unique_str(prefix)
+        r_name = cf.gen_unique_str(prefix)
+        u, _ = self.utility_wrap.create_user(user=user, password=password)
+
+        self.utility_wrap.init_role(r_name)
+        self.utility_wrap.create_role()
+        self.utility_wrap.role_add_user(user)
+
+        # get users
+        user_info, _ = self.utility_wrap.list_users(True)
+
+        # check root user and new user
+        root_exist = False
+        new_user_exist = False
+        for user_item in user_info.groups:
+            if user_item.username == "root" and len(user_item.roles) == 0:
+                root_exist = True
+            if user_item.username == user and user_item.roles[0] == r_name:
+                new_user_exist = True
+        assert root_exist
+        assert new_user_exist
+
+    @pytest.mark.tags(CaseLabel.L3)
+    def test_create_role(self, host, port):
+        """
+        target: test create role
+        method: test create role with random name
+        expected: assert role create success
+        """
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+        r_name = cf.gen_unique_str(prefix)
+        self.utility_wrap.init_role(r_name, check_task=CheckTasks.check_role_property,
+                                    check_items={exp_name: r_name})
+        assert not self.utility_wrap.role_is_exist()[0]
+        self.utility_wrap.create_role()
+        assert self.utility_wrap.role_is_exist()[0]
+
+    @pytest.mark.tags(CaseLabel.L3)
+    def test_drop_role(self, host, port):
+        """
+        target: test drop role
+        method: create a role, drop this role
+        expected: assert role drop success
+        """
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+        r_name = cf.gen_unique_str(prefix)
+        self.utility_wrap.init_role(r_name)
+        self.utility_wrap.create_role()
+        self.utility_wrap.role_drop()
+        assert not self.utility_wrap.role_is_exist()[0]
+
+    @pytest.mark.tags(CaseLabel.L3)
+    def test_add_user_to_role(self, host, port):
+        """
+        target: test add user to role
+        method: create a new user,add user to role
+        expected: assert add user success
+        """
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+        user = cf.gen_unique_str(prefix)
+        password = cf.gen_unique_str(prefix)
+        r_name = cf.gen_unique_str(prefix)
+        u, _ = self.utility_wrap.create_user(user=user, password=password)
+
+        self.utility_wrap.init_role(r_name)
+        self.utility_wrap.create_role()
+        self.utility_wrap.role_add_user(user)
+        users, _ = self.utility_wrap.role_get_users()
+        user_info, _ = self.utility_wrap.list_user(user, True)
+        user_item = user_info.groups[0]
+        assert r_name in user_item.roles
+        assert user in users
+
+    @pytest.mark.tags(CaseLabel.L3)
+    def test_remove_user_from_role(self, host, port):
+        """
+        target: test remove user from role
+        method: create a new user,add user to role, remove user from role
+        expected: assert remove user from role success
+        """
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+        user = cf.gen_unique_str(prefix)
+        password = cf.gen_unique_str(prefix)
+        r_name = cf.gen_unique_str(prefix)
+        u, _ = self.utility_wrap.create_user(user=user, password=password)
+
+        self.utility_wrap.init_role(r_name)
+        self.utility_wrap.create_role()
+        self.utility_wrap.role_add_user(user)
+        self.utility_wrap.role_remove_user(user)
+        users, _ = self.utility_wrap.role_get_users()
+        assert len(users) == 0
+
+    @pytest.mark.tags(CaseLabel.L3)
+    def test_role_is_exist(self, host, port):
+        """
+        target: test role is existed
+        method: check not exist role and exist role
+        expected: assert is_exist interface is correct
+        """
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+        r_name = cf.gen_unique_str(prefix)
+        r_not_exist = cf.gen_unique_str(prefix)
+        self.utility_wrap.init_role(r_name)
+        self.utility_wrap.create_role()
+        assert self.utility_wrap.role_is_exist()[0]
+        self.utility_wrap.init_role(r_not_exist)
+        assert not self.utility_wrap.role_is_exist()[0]
+
+    @pytest.mark.tags(CaseLabel.L3)
+    def test_role_grant_collection_insert(self, host, port):
+        """
+        target: test grant role collection insert privilege
+        method: create one role and tow collections, grant one collection insert privilege
+        expected: assert grant privilege success
+        """
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+        user = cf.gen_unique_str(prefix)
+        password = cf.gen_unique_str(prefix)
+        r_name = cf.gen_unique_str(prefix)
+        c_name = cf.gen_unique_str(prefix)
+        c_name_2 = cf.gen_unique_str(prefix)
+        u, _ = self.utility_wrap.create_user(user=user, password=password)
+
+        self.utility_wrap.init_role(r_name, check_task=CheckTasks.check_role_property,
+                                    check_items={exp_name: r_name})
+        self.utility_wrap.create_role()
+        self.utility_wrap.role_add_user(user)
+
+        self.init_collection_wrap(name=c_name)
+        self.init_collection_wrap(name=c_name_2)
+
+        # verify user default privilege
+        self.connection_wrap.disconnect(alias=DefaultConfig.DEFAULT_USING)
+        self.connection_wrap.connect(host=host, port=port, user=user,
+                                     password=password, check_task=ct.CheckTasks.ccr)
+        collection_w = self.init_collection_wrap(name=c_name)
+        data = cf.gen_default_list_data(ct.default_nb)
+        error = {ct.err_code: 1}
+        collection_w.insert(data=data, check_task=CheckTasks.err_res, check_items=error)
+        collection_w2 = self.init_collection_wrap(name=c_name_2)
+        collection_w2.insert(data=data, check_task=CheckTasks.err_res, check_items=error)
+
+        # grant user collection insert privilege
+        self.connection_wrap.disconnect(alias=DefaultConfig.DEFAULT_USING)
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+        self.utility_wrap.init_role(r_name)
+        self.utility_wrap.role_grant("Collection", c_name, "Insert")
+
+        # verify user specific collection insert privilege
+        self.connection_wrap.disconnect(alias=DefaultConfig.DEFAULT_USING)
+        self.connection_wrap.connect(host=host, port=port, user=user,
+                                     password=password, check_task=ct.CheckTasks.ccr)
+        collection_w = self.init_collection_wrap(name=c_name)
+        collection_w.insert(data=data)
+
+        # verify grant scope
+        error = {ct.err_code: 1}
+        index_params = {"index_type": "IVF_SQ8", "metric_type": "L2", "params": {"nlist": 64}}
+        collection_w.create_index(ct.default_float_vec_field_name, index_params,
+                                  check_task=CheckTasks.err_res, check_items=error)
+        collection_w2 = self.init_collection_wrap(name=c_name_2)
+        collection_w2.insert(data=data, check_task=CheckTasks.err_res, check_items=error)
+
+    @pytest.mark.tags(CaseLabel.L3)
+    def test_role_revoke_collection_insert(self, host, port):
+        """
+        target: test revoke role collection insert privilege,
+        method: create role and collection, grant role insert privilege, revoke privilege
+        expected: assert revoke privilege success
+        """
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+        user = cf.gen_unique_str(prefix)
+        password = cf.gen_unique_str(prefix)
+        r_name = cf.gen_unique_str(prefix)
+        c_name = cf.gen_unique_str(prefix)
+        u, _ = self.utility_wrap.create_user(user=user, password=password)
+
+        self.utility_wrap.init_role(r_name)
+        self.utility_wrap.create_role()
+        self.utility_wrap.role_add_user(user)
+
+        self.init_collection_wrap(name=c_name)
+
+        # grant user collection insert privilege
+        self.utility_wrap.role_grant("Collection", c_name, "Insert")
+
+        # verify user specific collection insert privilege
+        self.connection_wrap.disconnect(alias=DefaultConfig.DEFAULT_USING)
+        self.connection_wrap.connect(host=host, port=port, user=user,
+                                     password=password, check_task=ct.CheckTasks.ccr)
+        collection_w = self.init_collection_wrap(name=c_name)
+        data = cf.gen_default_list_data(ct.default_nb)
+        collection_w.insert(data=data)
+
+        # revoke privilege
+        self.connection_wrap.disconnect(alias=DefaultConfig.DEFAULT_USING)
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+        self.utility_wrap.init_role(r_name)
+        self.utility_wrap.role_revoke("Collection", c_name, "Insert")
+
+        # verify revoke is success
+        self.connection_wrap.disconnect(alias=DefaultConfig.DEFAULT_USING)
+        self.connection_wrap.connect(host=host, port=port, user=user,
+                                     password=password, check_task=ct.CheckTasks.ccr)
+        error = {ct.err_code: 1}
+        collection_w = self.init_collection_wrap(name=c_name)
+        collection_w.insert(data=data, check_task=CheckTasks.err_res, check_items=error)
+
+    @pytest.mark.tags(CaseLabel.L3)
+    def test_role_list_grants(self, host, port):
+        """
+        target: test grant role privileges and list them
+        method: grant role privileges and list them
+        expected: assert list granted privileges success
+        """
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+        user = cf.gen_unique_str(prefix)
+        password = cf.gen_unique_str(prefix)
+        r_name = cf.gen_unique_str(prefix)
+        c_name = cf.gen_unique_str(prefix)
+        u, _ = self.utility_wrap.create_user(user=user, password=password)
+
+        self.utility_wrap.init_role(r_name)
+        self.utility_wrap.create_role()
+        self.utility_wrap.role_add_user(user)
+
+        self.init_collection_wrap(name=c_name)
+
+        # grant user privilege
+        self.utility_wrap.init_role(r_name)
+        grant_list = cf.gen_grant_list(c_name)
+        for grant_item in grant_list:
+            self.utility_wrap.role_grant(grant_item["object"], grant_item["object_name"], grant_item["privilege"])
+
+        # list grants
+        g_list, _ = self.utility_wrap.role_list_grants()
+        assert len(g_list.groups) == len(grant_list)

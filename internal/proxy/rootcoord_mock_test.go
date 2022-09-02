@@ -24,8 +24,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/milvus-io/milvus/internal/proto/indexpb"
-
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/types"
 
@@ -100,6 +98,7 @@ type RootCoordMock struct {
 
 	describeCollectionFunc describeCollectionFuncType
 	showPartitionsFunc     showPartitionsFuncType
+	showConfigurationsFunc showConfigurationsFuncType
 	getMetricsFunc         getMetricsFuncType
 
 	// TODO(dragondriver): index-related
@@ -720,71 +719,71 @@ func (coord *RootCoordMock) ShowPartitions(ctx context.Context, req *milvuspb.Sh
 	}, nil
 }
 
-func (coord *RootCoordMock) CreateIndex(ctx context.Context, req *milvuspb.CreateIndexRequest) (*commonpb.Status, error) {
-	code := coord.state.Load().(internalpb.StateCode)
-	if code != internalpb.StateCode_Healthy {
-		return &commonpb.Status{
-			ErrorCode: commonpb.ErrorCode_UnexpectedError,
-			Reason:    fmt.Sprintf("state code = %s", internalpb.StateCode_name[int32(code)]),
-		}, nil
-	}
-	return &commonpb.Status{
-		ErrorCode: commonpb.ErrorCode_Success,
-		Reason:    "",
-	}, nil
-}
+//func (coord *RootCoordMock) CreateIndex(ctx context.Context, req *milvuspb.CreateIndexRequest) (*commonpb.Status, error) {
+//	code := coord.state.Load().(internalpb.StateCode)
+//	if code != internalpb.StateCode_Healthy {
+//		return &commonpb.Status{
+//			ErrorCode: commonpb.ErrorCode_UnexpectedError,
+//			Reason:    fmt.Sprintf("state code = %s", internalpb.StateCode_name[int32(code)]),
+//		}, nil
+//	}
+//	return &commonpb.Status{
+//		ErrorCode: commonpb.ErrorCode_Success,
+//		Reason:    "",
+//	}, nil
+//}
 
-func (coord *RootCoordMock) DescribeIndex(ctx context.Context, req *milvuspb.DescribeIndexRequest) (*milvuspb.DescribeIndexResponse, error) {
-	code := coord.state.Load().(internalpb.StateCode)
-	if code != internalpb.StateCode_Healthy {
-		return &milvuspb.DescribeIndexResponse{
-			Status: &commonpb.Status{
-				ErrorCode: commonpb.ErrorCode_UnexpectedError,
-				Reason:    fmt.Sprintf("state code = %s", internalpb.StateCode_name[int32(code)]),
-			},
-			IndexDescriptions: nil,
-		}, nil
-	}
-	return &milvuspb.DescribeIndexResponse{
-		Status: &commonpb.Status{
-			ErrorCode: commonpb.ErrorCode_Success,
-			Reason:    "",
-		},
-		IndexDescriptions: nil,
-	}, nil
-}
+//func (coord *RootCoordMock) DescribeIndex(ctx context.Context, req *milvuspb.DescribeIndexRequest) (*milvuspb.DescribeIndexResponse, error) {
+//	code := coord.state.Load().(internalpb.StateCode)
+//	if code != internalpb.StateCode_Healthy {
+//		return &milvuspb.DescribeIndexResponse{
+//			Status: &commonpb.Status{
+//				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+//				Reason:    fmt.Sprintf("state code = %s", internalpb.StateCode_name[int32(code)]),
+//			},
+//			IndexDescriptions: nil,
+//		}, nil
+//	}
+//	return &milvuspb.DescribeIndexResponse{
+//		Status: &commonpb.Status{
+//			ErrorCode: commonpb.ErrorCode_Success,
+//			Reason:    "",
+//		},
+//		IndexDescriptions: nil,
+//	}, nil
+//}
 
-func (coord *RootCoordMock) GetIndexState(ctx context.Context, req *milvuspb.GetIndexStateRequest) (*indexpb.GetIndexStatesResponse, error) {
-	code := coord.state.Load().(internalpb.StateCode)
-	if code != internalpb.StateCode_Healthy {
-		return &indexpb.GetIndexStatesResponse{
-			Status: &commonpb.Status{
-				ErrorCode: commonpb.ErrorCode_UnexpectedError,
-				Reason:    fmt.Sprintf("state code = %s", internalpb.StateCode_name[int32(code)]),
-			},
-		}, nil
-	}
-	return &indexpb.GetIndexStatesResponse{
-		Status: &commonpb.Status{
-			ErrorCode: commonpb.ErrorCode_Success,
-			Reason:    "",
-		},
-	}, nil
-}
+//func (coord *RootCoordMock) GetIndexState(ctx context.Context, req *milvuspb.GetIndexStateRequest) (*indexpb.GetIndexStatesResponse, error) {
+//	code := coord.state.Load().(internalpb.StateCode)
+//	if code != internalpb.StateCode_Healthy {
+//		return &indexpb.GetIndexStatesResponse{
+//			Status: &commonpb.Status{
+//				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+//				Reason:    fmt.Sprintf("state code = %s", internalpb.StateCode_name[int32(code)]),
+//			},
+//		}, nil
+//	}
+//	return &indexpb.GetIndexStatesResponse{
+//		Status: &commonpb.Status{
+//			ErrorCode: commonpb.ErrorCode_Success,
+//			Reason:    "",
+//		},
+//	}, nil
+//}
 
-func (coord *RootCoordMock) DropIndex(ctx context.Context, req *milvuspb.DropIndexRequest) (*commonpb.Status, error) {
-	code := coord.state.Load().(internalpb.StateCode)
-	if code != internalpb.StateCode_Healthy {
-		return &commonpb.Status{
-			ErrorCode: commonpb.ErrorCode_UnexpectedError,
-			Reason:    fmt.Sprintf("state code = %s", internalpb.StateCode_name[int32(code)]),
-		}, nil
-	}
-	return &commonpb.Status{
-		ErrorCode: commonpb.ErrorCode_Success,
-		Reason:    "",
-	}, nil
-}
+//func (coord *RootCoordMock) DropIndex(ctx context.Context, req *milvuspb.DropIndexRequest) (*commonpb.Status, error) {
+//	code := coord.state.Load().(internalpb.StateCode)
+//	if code != internalpb.StateCode_Healthy {
+//		return &commonpb.Status{
+//			ErrorCode: commonpb.ErrorCode_UnexpectedError,
+//			Reason:    fmt.Sprintf("state code = %s", internalpb.StateCode_name[int32(code)]),
+//		}, nil
+//	}
+//	return &commonpb.Status{
+//		ErrorCode: commonpb.ErrorCode_Success,
+//		Reason:    "",
+//	}, nil
+//}
 
 func (coord *RootCoordMock) AllocTimestamp(ctx context.Context, req *rootcoordpb.AllocTimestampRequest) (*rootcoordpb.AllocTimestampResponse, error) {
 	code := coord.state.Load().(internalpb.StateCode)
@@ -939,6 +938,28 @@ func (coord *RootCoordMock) SegmentFlushCompleted(ctx context.Context, in *datap
 	return &commonpb.Status{
 		ErrorCode: commonpb.ErrorCode_Success,
 		Reason:    "",
+	}, nil
+}
+
+func (coord *RootCoordMock) ShowConfigurations(ctx context.Context, req *internalpb.ShowConfigurationsRequest) (*internalpb.ShowConfigurationsResponse, error) {
+	if !coord.healthy() {
+		return &internalpb.ShowConfigurationsResponse{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+				Reason:    "unhealthy",
+			},
+		}, nil
+	}
+
+	if coord.getMetricsFunc != nil {
+		return coord.showConfigurationsFunc(ctx, req)
+	}
+
+	return &internalpb.ShowConfigurationsResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_UnexpectedError,
+			Reason:    "not implemented",
+		},
 	}, nil
 }
 
@@ -1120,7 +1141,8 @@ type ShowSegmentsFunc func(ctx context.Context, request *milvuspb.ShowSegmentsRe
 type DescribeSegmentsFunc func(ctx context.Context, request *rootcoordpb.DescribeSegmentsRequest) (*rootcoordpb.DescribeSegmentsResponse, error)
 type ImportFunc func(ctx context.Context, req *milvuspb.ImportRequest) (*milvuspb.ImportResponse, error)
 type DropCollectionFunc func(ctx context.Context, request *milvuspb.DropCollectionRequest) (*commonpb.Status, error)
-type GetIndexStateFunc func(ctx context.Context, request *milvuspb.GetIndexStateRequest) (*indexpb.GetIndexStatesResponse, error)
+
+type GetGetCredentialFunc func(ctx context.Context, req *rootcoordpb.GetCredentialRequest) (*rootcoordpb.GetCredentialResponse, error)
 
 type mockRootCoord struct {
 	types.RootCoord
@@ -1131,7 +1153,15 @@ type mockRootCoord struct {
 	DescribeSegmentsFunc
 	ImportFunc
 	DropCollectionFunc
-	GetIndexStateFunc
+	GetGetCredentialFunc
+}
+
+func (m *mockRootCoord) GetCredential(ctx context.Context, request *rootcoordpb.GetCredentialRequest) (*rootcoordpb.GetCredentialResponse, error) {
+	if m.GetGetCredentialFunc != nil {
+		return m.GetGetCredentialFunc(ctx, request)
+	}
+	return nil, errors.New("mock")
+
 }
 
 func (m *mockRootCoord) DescribeCollection(ctx context.Context, request *milvuspb.DescribeCollectionRequest) (*milvuspb.DescribeCollectionResponse, error) {
@@ -1148,23 +1178,9 @@ func (m *mockRootCoord) ShowPartitions(ctx context.Context, request *milvuspb.Sh
 	return nil, errors.New("mock")
 }
 
-func (m *mockRootCoord) DescribeIndex(ctx context.Context, request *milvuspb.DescribeIndexRequest) (*milvuspb.DescribeIndexResponse, error) {
-	if m.DescribeIndexFunc != nil {
-		return m.DescribeIndexFunc(ctx, request)
-	}
-	return nil, errors.New("mock")
-}
-
 func (m *mockRootCoord) ShowSegments(ctx context.Context, request *milvuspb.ShowSegmentsRequest) (*milvuspb.ShowSegmentsResponse, error) {
 	if m.ShowSegmentsFunc != nil {
 		return m.ShowSegmentsFunc(ctx, request)
-	}
-	return nil, errors.New("mock")
-}
-
-func (m *mockRootCoord) DescribeSegments(ctx context.Context, request *rootcoordpb.DescribeSegmentsRequest) (*rootcoordpb.DescribeSegmentsResponse, error) {
-	if m.DescribeSegmentsFunc != nil {
-		return m.DescribeSegmentsFunc(ctx, request)
 	}
 	return nil, errors.New("mock")
 }
@@ -1179,13 +1195,6 @@ func (m *mockRootCoord) Import(ctx context.Context, request *milvuspb.ImportRequ
 func (m *mockRootCoord) DropCollection(ctx context.Context, request *milvuspb.DropCollectionRequest) (*commonpb.Status, error) {
 	if m.DropCollectionFunc != nil {
 		return m.DropCollectionFunc(ctx, request)
-	}
-	return nil, errors.New("mock")
-}
-
-func (m *mockRootCoord) GetIndexState(ctx context.Context, request *milvuspb.GetIndexStateRequest) (*indexpb.GetIndexStatesResponse, error) {
-	if m.GetIndexStateFunc != nil {
-		return m.GetIndexStateFunc(ctx, request)
 	}
 	return nil, errors.New("mock")
 }

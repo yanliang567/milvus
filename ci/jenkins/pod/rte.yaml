@@ -3,7 +3,7 @@ kind: Pod
 metadata:
   labels:
     app: milvus-e2e
-  namespace: jenkins
+  namespace: milvus-ci
 spec:
   enableServiceLinks: false
   containers:
@@ -41,7 +41,7 @@ spec:
     - mountPath: /ci-logs
       name: ci-logs  
   - name: pytest
-    image: harbor.milvus.io/dockerhub/milvusdb/pytest:20220728-a2e24ab
+    image: harbor.milvus.io/dockerhub/milvusdb/pytest:20220826-1bd87e7
     resources:
       limits:
         cpu: "6"

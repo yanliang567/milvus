@@ -34,9 +34,9 @@ service DataCoord {
   rpc GetRecoveryInfo(GetRecoveryInfoRequest) returns (GetRecoveryInfoResponse){}
   rpc GetFlushedSegments(GetFlushedSegmentsRequest) returns(GetFlushedSegmentsResponse){}
 
+  rpc ShowConfigurations(internal.ShowConfigurationsRequest) returns (internal.ShowConfigurationsResponse){}
   // https://wiki.lfaidata.foundation/display/MIL/MEP+8+--+Add+metrics+for+proxy
   rpc GetMetrics(milvus.GetMetricsRequest) returns (milvus.GetMetricsResponse) {}
-  rpc CompleteCompaction(CompactionResult) returns (common.Status) {}
   rpc ManualCompaction(milvus.ManualCompactionRequest) returns (milvus.ManualCompactionResponse) {}
   rpc GetCompactionState(milvus.GetCompactionStateRequest) returns (milvus.GetCompactionStateResponse) {}
   rpc GetCompactionStateWithPlans(milvus.GetCompactionPlansRequest) returns (milvus.GetCompactionPlansResponse) {}
@@ -58,14 +58,17 @@ service DataCoord {
 
 service DataNode {
   rpc GetComponentStates(internal.GetComponentStatesRequest) returns (internal.ComponentStates) {}
-  rpc GetStatisticsChannel(internal.GetStatisticsChannelRequest) returns(milvus.StringResponse){}
+  rpc GetStatisticsChannel(internal.GetStatisticsChannelRequest) returns (milvus.StringResponse) {}
 
   rpc WatchDmChannels(WatchDmChannelsRequest) returns (common.Status) {}
   rpc FlushSegments(FlushSegmentsRequest) returns(common.Status) {}
 
+  rpc ShowConfigurations(internal.ShowConfigurationsRequest) returns (internal.ShowConfigurationsResponse){}
   // https://wiki.lfaidata.foundation/display/MIL/MEP+8+--+Add+metrics+for+proxy
   rpc GetMetrics(milvus.GetMetricsRequest) returns (milvus.GetMetricsResponse) {}
+
   rpc Compaction(CompactionPlan) returns (common.Status) {}
+  rpc GetCompactionState(CompactionStateRequest) returns (CompactionStateResponse) {}
 
   // https://wiki.lfaidata.foundation/display/MIL/MEP+24+--+Support+bulk+load
   rpc Import(ImportTaskRequest) returns(common.Status) {}
@@ -252,7 +255,6 @@ message SegmentInfo {
   repeated FieldBinlog statslogs = 12;
   // deltalogs consists of delete binlogs. FieldID is not used yet since delete is always applied on primary key
   repeated FieldBinlog deltalogs = 13;
-  
   bool createdByCompaction = 14;
   repeated int64 compactionFrom = 15;
   uint64 dropped_at = 16; // timestamp when segment marked drop
@@ -345,7 +347,7 @@ message Binlog {
   uint64 timestamp_from = 2;
   uint64 timestamp_to = 3;
   string log_path = 4;
-  int64 log_size = 5; 
+  int64 log_size = 5;
 }
 
 message GetRecoveryInfoResponse {
@@ -392,6 +394,10 @@ enum CompactionType {
   MixCompaction = 3;
 }
 
+message CompactionStateRequest {
+  common.MsgBase base = 1;
+}
+
 message CompactionSegmentBinlogs {
   int64 segmentID = 1;
   repeated FieldBinlog fieldBinlogs = 2;
@@ -419,6 +425,17 @@ message CompactionResult {
   repeated FieldBinlog deltalogs = 6;
 }
 
+message CompactionStateResult {
+  int64 planID = 1;
+  common.CompactionState state = 2;
+  CompactionResult result = 3;
+}
+
+message CompactionStateResponse {
+  common.Status status = 1;
+  repeated CompactionStateResult results = 2;
+}
+
 // Deprecated
 message SegmentFieldBinlogMeta {
   int64  fieldID = 1;
@@ -428,6 +445,7 @@ message SegmentFieldBinlogMeta {
 message WatchChannelsRequest {
   int64 collectionID = 1;
   repeated string channelNames = 2;
+  repeated common.KeyDataPair start_positions = 3;
 }
 
 message WatchChannelsResponse {

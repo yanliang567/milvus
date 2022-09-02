@@ -21,6 +21,8 @@ import (
 	"errors"
 	"sync/atomic"
 
+	"github.com/milvus-io/milvus/internal/log"
+
 	"github.com/milvus-io/milvus/internal/types"
 
 	"github.com/milvus-io/milvus/internal/util/funcutil"
@@ -39,7 +41,8 @@ type IndexCoordMock struct {
 
 	state atomic.Value // internal.StateCode
 
-	getMetricsFunc getMetricsFuncType
+	showConfigurationsFunc showConfigurationsFuncType
+	getMetricsFunc         getMetricsFuncType
 
 	statisticsChannel string
 	timeTickChannel   string
@@ -116,13 +119,10 @@ func (coord *IndexCoordMock) GetTimeTickChannel(ctx context.Context) (*milvuspb.
 	}, nil
 }
 
-func (coord *IndexCoordMock) BuildIndex(ctx context.Context, req *indexpb.BuildIndexRequest) (*indexpb.BuildIndexResponse, error) {
-	return &indexpb.BuildIndexResponse{
-		Status: &commonpb.Status{
-			ErrorCode: commonpb.ErrorCode_Success,
-			Reason:    "",
-		},
-		IndexBuildID: 0,
+func (coord *IndexCoordMock) CreateIndex(ctx context.Context, req *indexpb.CreateIndexRequest) (*commonpb.Status, error) {
+	return &commonpb.Status{
+		ErrorCode: commonpb.ErrorCode_Success,
+		Reason:    "",
 	}, nil
 }
 
@@ -133,30 +133,75 @@ func (coord *IndexCoordMock) DropIndex(ctx context.Context, req *indexpb.DropInd
 	}, nil
 }
 
-func (coord *IndexCoordMock) RemoveIndex(ctx context.Context, req *indexpb.RemoveIndexRequest) (*commonpb.Status, error) {
-	return &commonpb.Status{
-		ErrorCode: commonpb.ErrorCode_Success,
-		Reason:    "",
-	}, nil
-}
-
-func (coord *IndexCoordMock) GetIndexStates(ctx context.Context, req *indexpb.GetIndexStatesRequest) (*indexpb.GetIndexStatesResponse, error) {
-	return &indexpb.GetIndexStatesResponse{
+func (coord *IndexCoordMock) GetIndexState(ctx context.Context, req *indexpb.GetIndexStateRequest) (*indexpb.GetIndexStateResponse, error) {
+	return &indexpb.GetIndexStateResponse{
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_Success,
 			Reason:    "",
 		},
-		States: nil,
+		State:      commonpb.IndexState_Finished,
+		FailReason: "",
 	}, nil
 }
 
-func (coord *IndexCoordMock) GetIndexFilePaths(ctx context.Context, req *indexpb.GetIndexFilePathsRequest) (*indexpb.GetIndexFilePathsResponse, error) {
-	return &indexpb.GetIndexFilePathsResponse{
+// GetSegmentIndexState gets the index state of the segments in the request from RootCoord.
+func (coord *IndexCoordMock) GetSegmentIndexState(ctx context.Context, req *indexpb.GetSegmentIndexStateRequest) (*indexpb.GetSegmentIndexStateResponse, error) {
+	return &indexpb.GetSegmentIndexStateResponse{
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_Success,
 			Reason:    "",
 		},
-		FilePaths: nil,
+	}, nil
+}
+
+// GetIndexInfos gets the index files of the IndexBuildIDs in the request from RootCoordinator.
+func (coord *IndexCoordMock) GetIndexInfos(ctx context.Context, req *indexpb.GetIndexInfoRequest) (*indexpb.GetIndexInfoResponse, error) {
+	return &indexpb.GetIndexInfoResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+			Reason:    "",
+		},
+	}, nil
+}
+
+// DescribeIndex describe the index info of the collection.
+func (coord *IndexCoordMock) DescribeIndex(ctx context.Context, req *indexpb.DescribeIndexRequest) (*indexpb.DescribeIndexResponse, error) {
+	return &indexpb.DescribeIndexResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+		},
+		IndexInfos: nil,
+	}, nil
+}
+
+// GetIndexBuildProgress get the index building progress by num rows.
+func (coord *IndexCoordMock) GetIndexBuildProgress(ctx context.Context, req *indexpb.GetIndexBuildProgressRequest) (*indexpb.GetIndexBuildProgressResponse, error) {
+	return &indexpb.GetIndexBuildProgressResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+		},
+	}, nil
+}
+
+func (coord *IndexCoordMock) ShowConfigurations(ctx context.Context, req *internalpb.ShowConfigurationsRequest) (*internalpb.ShowConfigurationsResponse, error) {
+	if !coord.healthy() {
+		return &internalpb.ShowConfigurationsResponse{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+				Reason:    "unhealthy",
+			},
+		}, nil
+	}
+
+	if coord.showConfigurationsFunc != nil {
+		return coord.showConfigurationsFunc(ctx, req)
+	}
+
+	return &internalpb.ShowConfigurationsResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_UnexpectedError,
+			Reason:    "not implemented",
+		},
 	}, nil
 }
 
@@ -194,17 +239,19 @@ func NewIndexCoordMock() *IndexCoordMock {
 	}
 }
 
-type GetIndexStatesFunc func(ctx context.Context, request *indexpb.GetIndexStatesRequest) (*indexpb.GetIndexStatesResponse, error)
+type GetIndexStateFunc func(ctx context.Context, request *indexpb.GetIndexStateRequest) (*indexpb.GetIndexStateResponse, error)
 
 type mockIndexCoord struct {
 	types.IndexCoord
-	GetIndexStatesFunc
+	GetIndexStateFunc
 }
 
-func (m *mockIndexCoord) GetIndexStates(ctx context.Context, request *indexpb.GetIndexStatesRequest) (*indexpb.GetIndexStatesResponse, error) {
-	if m.GetIndexStatesFunc != nil {
-		return m.GetIndexStatesFunc(ctx, request)
+func (m *mockIndexCoord) GetIndexState(ctx context.Context, request *indexpb.GetIndexStateRequest) (*indexpb.GetIndexStateResponse, error) {
+	if m.GetIndexStateFunc != nil {
+		log.Warn("func not nil")
+		return m.GetIndexStateFunc(ctx, request)
 	}
+	log.Warn("func nil")
 	return nil, errors.New("mock")
 }
 

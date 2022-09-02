@@ -22,8 +22,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/milvus-io/milvus/internal/proto/indexpb"
-
 	"github.com/milvus-io/milvus/internal/kv"
 	memkv "github.com/milvus-io/milvus/internal/kv/mem"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
@@ -40,7 +38,7 @@ import (
 
 func newMemoryMeta(allocator allocator) (*meta, error) {
 	memoryKV := memkv.NewMemoryKV()
-	return newMeta(memoryKV)
+	return newMeta(context.TODO(), memoryKV)
 }
 
 var _ allocator = (*MockAllocator)(nil)
@@ -97,7 +95,7 @@ func (kv *saveFailKV) MultiSave(kvs map[string]string) error {
 type removeFailKV struct{ kv.TxnKV }
 
 // Remove override behavior, inject error
-func (kv *removeFailKV) Remove(key string) error {
+func (kv *removeFailKV) MultiRemove(key []string) error {
 	return errors.New("mocked fail")
 }
 
@@ -118,9 +116,11 @@ func newTestSchema() *schemapb.CollectionSchema {
 }
 
 type mockDataNodeClient struct {
-	id    int64
-	state internalpb.StateCode
-	ch    chan interface{}
+	id                  int64
+	state               internalpb.StateCode
+	ch                  chan interface{}
+	compactionStateResp *datapb.CompactionStateResponse
+	compactionResp      *commonpb.Status
 }
 
 func newMockDataNodeClient(id int64, ch chan interface{}) (*mockDataNodeClient, error) {
@@ -177,6 +177,15 @@ func (c *mockDataNodeClient) ResendSegmentStats(ctx context.Context, req *datapb
 	}, nil
 }
 
+func (c *mockDataNodeClient) ShowConfigurations(ctx context.Context, req *internalpb.ShowConfigurationsRequest) (*internalpb.ShowConfigurationsResponse, error) {
+	return &internalpb.ShowConfigurationsResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+			Reason:    "",
+		},
+	}, nil
+}
+
 func (c *mockDataNodeClient) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
 	// TODO(dragondriver): change the id, though it's not important in ut
 	nodeID := UniqueID(c.id)
@@ -212,8 +221,19 @@ func (c *mockDataNodeClient) GetMetrics(ctx context.Context, req *milvuspb.GetMe
 func (c *mockDataNodeClient) Compaction(ctx context.Context, req *datapb.CompactionPlan) (*commonpb.Status, error) {
 	if c.ch != nil {
 		c.ch <- struct{}{}
+		if c.compactionResp != nil {
+			return c.compactionResp, nil
+		}
+		return &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success}, nil
+	}
+	if c.compactionResp != nil {
+		return c.compactionResp, nil
 	}
 	return &commonpb.Status{ErrorCode: commonpb.ErrorCode_UnexpectedError, Reason: "not implemented"}, nil
+}
+
+func (c *mockDataNodeClient) GetCompactionState(ctx context.Context, req *datapb.CompactionStateRequest) (*datapb.CompactionStateResponse, error) {
+	return c.compactionStateResp, nil
 }
 
 func (c *mockDataNodeClient) Import(ctx context.Context, in *datapb.ImportTaskRequest) (*commonpb.Status, error) {
@@ -351,23 +371,6 @@ func (m *mockRootCoordService) ShowPartitions(ctx context.Context, req *milvuspb
 	}, nil
 }
 
-//index builder service
-func (m *mockRootCoordService) CreateIndex(ctx context.Context, req *milvuspb.CreateIndexRequest) (*commonpb.Status, error) {
-	panic("not implemented") // TODO: Implement
-}
-
-func (m *mockRootCoordService) DescribeIndex(ctx context.Context, req *milvuspb.DescribeIndexRequest) (*milvuspb.DescribeIndexResponse, error) {
-	panic("not implemented") // TODO: Implement
-}
-
-func (m *mockRootCoordService) GetIndexState(ctx context.Context, req *milvuspb.GetIndexStateRequest) (*indexpb.GetIndexStatesResponse, error) {
-	panic("not implemented") // TODO: Implement
-}
-
-func (m *mockRootCoordService) DropIndex(ctx context.Context, req *milvuspb.DropIndexRequest) (*commonpb.Status, error) {
-	panic("not implemented") // TODO: Implement
-}
-
 //global timestamp allocator
 func (m *mockRootCoordService) AllocTimestamp(ctx context.Context, req *rootcoordpb.AllocTimestampRequest) (*rootcoordpb.AllocTimestampResponse, error) {
 	if m.state != internalpb.StateCode_Healthy {
@@ -442,6 +445,15 @@ func (m *mockRootCoordService) SegmentFlushCompleted(ctx context.Context, in *da
 }
 func (m *mockRootCoordService) AddNewSegment(ctx context.Context, in *datapb.SegmentMsg) (*commonpb.Status, error) {
 	panic("not implemented") // TODO: Implement
+}
+
+func (m *mockRootCoordService) ShowConfigurations(ctx context.Context, req *internalpb.ShowConfigurationsRequest) (*internalpb.ShowConfigurationsResponse, error) {
+	return &internalpb.ShowConfigurationsResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+			Reason:    "",
+		},
+	}, nil
 }
 
 func (m *mockRootCoordService) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
@@ -538,15 +550,15 @@ func (h *mockCompactionHandler) execCompactionPlan(signal *compactionSignal, pla
 	panic("not implemented")
 }
 
-// completeCompaction record the result of a compaction
-func (h *mockCompactionHandler) completeCompaction(result *datapb.CompactionResult) error {
-	if f, ok := h.methods["completeCompaction"]; ok {
-		if ff, ok := f.(func(result *datapb.CompactionResult) error); ok {
-			return ff(result)
-		}
-	}
-	panic("not implemented")
-}
+// // completeCompaction record the result of a compaction
+// func (h *mockCompactionHandler) completeCompaction(result *datapb.CompactionResult) error {
+// 	if f, ok := h.methods["completeCompaction"]; ok {
+// 		if ff, ok := f.(func(result *datapb.CompactionResult) error); ok {
+// 			return ff(result)
+// 		}
+// 	}
+// 	panic("not implemented")
+// }
 
 // getCompaction return compaction task. If planId does not exist, return nil.
 func (h *mockCompactionHandler) getCompaction(planID int64) *compactionTask {
@@ -559,7 +571,7 @@ func (h *mockCompactionHandler) getCompaction(planID int64) *compactionTask {
 }
 
 // expireCompaction set the compaction state to expired
-func (h *mockCompactionHandler) expireCompaction(ts Timestamp) error {
+func (h *mockCompactionHandler) updateCompaction(ts Timestamp) error {
 	if f, ok := h.methods["expireCompaction"]; ok {
 		if ff, ok := f.(func(ts Timestamp) error); ok {
 			return ff(ts)
@@ -701,10 +713,10 @@ func newMockHandler() *mockHandler {
 	return &mockHandler{}
 }
 
-func (h *mockHandler) GetVChanPositions(channel string, collectionID UniqueID, partitionID UniqueID) *datapb.VchannelInfo {
+func (h *mockHandler) GetVChanPositions(channel *channel, partitionID UniqueID) *datapb.VchannelInfo {
 	return &datapb.VchannelInfo{
-		CollectionID: collectionID,
-		ChannelName:  channel,
+		CollectionID: channel.CollectionID,
+		ChannelName:  channel.Name,
 	}
 }
 

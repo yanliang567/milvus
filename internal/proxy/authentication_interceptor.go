@@ -4,14 +4,11 @@ import (
 	"context"
 	"strings"
 
+	"google.golang.org/grpc/metadata"
+
 	"github.com/milvus-io/milvus/internal/util"
 
-	"go.uber.org/zap"
-
-	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/util/crypto"
-
-	"google.golang.org/grpc/metadata"
 )
 
 // validAuth validates the authentication
@@ -31,13 +28,7 @@ func validAuth(ctx context.Context, authorization []string) bool {
 	username := secrets[0]
 	password := secrets[1]
 
-	credInfo, err := globalMetaCache.GetCredentialInfo(ctx, username)
-	if err != nil {
-		log.Error("found no credential", zap.String("username", username), zap.Error(err))
-		return false
-	}
-
-	return crypto.PasswordVerify(password, credInfo)
+	return passwordVerify(ctx, username, password, globalMetaCache)
 }
 
 func validSourceID(ctx context.Context, authorization []string) bool {

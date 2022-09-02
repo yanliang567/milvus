@@ -28,9 +28,32 @@ import (
 	"github.com/milvus-io/milvus/internal/log"
 
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
+	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 )
+
+//getComponentConfigurations returns the configurations of queryCoord matching req.Pattern
+func getComponentConfigurations(ctx context.Context, req *internalpb.ShowConfigurationsRequest) *internalpb.ShowConfigurationsResponse {
+	prefix := "querycoord."
+	matchedConfig := Params.QueryCoordCfg.Base.GetByPattern(prefix + req.Pattern)
+	configList := make([]*commonpb.KeyValuePair, 0, len(matchedConfig))
+	for key, value := range matchedConfig {
+		configList = append(configList,
+			&commonpb.KeyValuePair{
+				Key:   key,
+				Value: value,
+			})
+	}
+
+	return &internalpb.ShowConfigurationsResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+			Reason:    "",
+		},
+		Configuations: configList,
+	}
+}
 
 // TODO(dragondriver): add more detail metrics
 func getSystemInfoMetrics(
@@ -75,9 +98,8 @@ func getSystemInfoMetrics(
 				BaseComponentInfos: metricsinfo.BaseComponentInfos{
 					HasError:    true,
 					ErrorReason: nodeMetrics.err.Error(),
-					// Name doesn't matter here because we can't get it when error occurs, using address as the Name?
-					Name: "",
-					ID:   int64(uniquegenerator.GetUniqueIntGeneratorIns().GetInt()),
+					Name:        metricsinfo.ConstructComponentName(typeutil.QueryNodeRole, nodeMetrics.nodeID),
+					ID:          int64(uniquegenerator.GetUniqueIntGeneratorIns().GetInt()),
 				},
 			})
 			continue

@@ -196,3 +196,191 @@ func TestQueryTask_all(t *testing.T) {
 
 	assert.NoError(t, task.PostExecute(ctx))
 }
+
+func Test_translateToOutputFieldIDs(t *testing.T) {
+	type testCases struct {
+		name          string
+		outputFields  []string
+		schema        *schemapb.CollectionSchema
+		expectedError bool
+		expectedIDs   []int64
+	}
+
+	cases := []testCases{
+		{
+			name:         "empty output fields",
+			outputFields: []string{},
+			schema: &schemapb.CollectionSchema{
+				Fields: []*schemapb.FieldSchema{
+					{
+						FieldID: common.RowIDField,
+						Name:    common.RowIDFieldName,
+					},
+					{
+						FieldID:      100,
+						Name:         "ID",
+						IsPrimaryKey: true,
+					},
+					{
+						FieldID: 101,
+						Name:    "Vector",
+					},
+				},
+			},
+			expectedError: false,
+			expectedIDs:   []int64{100, 101},
+		},
+		{
+			name:         "nil output fields",
+			outputFields: nil,
+			schema: &schemapb.CollectionSchema{
+				Fields: []*schemapb.FieldSchema{
+					{
+						FieldID: common.RowIDField,
+						Name:    common.RowIDFieldName,
+					},
+					{
+						FieldID:      100,
+						Name:         "ID",
+						IsPrimaryKey: true,
+					},
+					{
+						FieldID: 101,
+						Name:    "Vector",
+					},
+				},
+			},
+			expectedError: false,
+			expectedIDs:   []int64{100, 101},
+		},
+		{
+			name:         "full list",
+			outputFields: []string{"ID", "Vector"},
+			schema: &schemapb.CollectionSchema{
+				Fields: []*schemapb.FieldSchema{
+					{
+						FieldID: common.RowIDField,
+						Name:    common.RowIDFieldName,
+					},
+					{
+						FieldID:      100,
+						Name:         "ID",
+						IsPrimaryKey: true,
+					},
+					{
+						FieldID: 101,
+						Name:    "Vector",
+					},
+				},
+			},
+			expectedError: false,
+			expectedIDs:   []int64{100, 101},
+		},
+		{
+			name:         "vector only",
+			outputFields: []string{"Vector"},
+			schema: &schemapb.CollectionSchema{
+				Fields: []*schemapb.FieldSchema{
+					{
+						FieldID: common.RowIDField,
+						Name:    common.RowIDFieldName,
+					},
+					{
+						FieldID:      100,
+						Name:         "ID",
+						IsPrimaryKey: true,
+					},
+					{
+						FieldID: 101,
+						Name:    "Vector",
+					},
+				},
+			},
+			expectedError: false,
+			expectedIDs:   []int64{101, 100},
+		},
+		{
+			name:         "with field not exist",
+			outputFields: []string{"ID", "Vector", "Extra"},
+			schema: &schemapb.CollectionSchema{
+				Fields: []*schemapb.FieldSchema{
+					{
+						FieldID: common.RowIDField,
+						Name:    common.RowIDFieldName,
+					},
+					{
+						FieldID:      100,
+						Name:         "ID",
+						IsPrimaryKey: true,
+					},
+					{
+						FieldID: 101,
+						Name:    "Vector",
+					},
+				},
+			},
+			expectedError: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ids, err := translateToOutputFieldIDs(tc.outputFields, tc.schema)
+			if tc.expectedError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				require.Equal(t, len(tc.expectedIDs), len(ids))
+				for idx, expectedID := range tc.expectedIDs {
+					assert.Equal(t, expectedID, ids[idx])
+				}
+			}
+		})
+	}
+}
+
+func TestTaskQuery_functions(t *testing.T) {
+	t.Run("test parseQueryParams", func(t *testing.T) {
+		tests := []struct {
+			description string
+
+			inKey   []string
+			inValue []string
+
+			expectErr bool
+			outLimit  int64
+			outOffset int64
+		}{
+			{"empty input", []string{}, []string{}, false, 0, 0},
+			{"valid limit=1", []string{LimitKey}, []string{"1"}, false, 1, 0},
+			{"valid limit=1, offset=2", []string{LimitKey, OffsetKey}, []string{"1", "2"}, false, 1, 2},
+			{"valid no limit, offset=2", []string{OffsetKey}, []string{"2"}, false, 0, 0},
+			{"invalid limit str", []string{LimitKey}, []string{"a"}, true, 0, 0},
+			{"invalid limit zero", []string{LimitKey}, []string{"0"}, true, 0, 0},
+			{"invalid offset negative", []string{LimitKey, OffsetKey}, []string{"1", "-1"}, true, 0, 0},
+			{"invalid limit=16384 offset=16384", []string{LimitKey, OffsetKey}, []string{"16384", "16384"}, true, 0, 0},
+		}
+
+		for _, test := range tests {
+			t.Run(test.description, func(t *testing.T) {
+				var inParams []*commonpb.KeyValuePair
+				for i := range test.inKey {
+					inParams = append(inParams, &commonpb.KeyValuePair{
+						Key:   test.inKey[i],
+						Value: test.inValue[i],
+					})
+
+				}
+				ret, err := parseQueryParams(inParams)
+				if test.expectErr {
+					assert.Error(t, err)
+					assert.Empty(t, ret)
+				} else {
+					assert.NoError(t, err)
+					assert.Equal(t, test.outLimit, ret.limit)
+					assert.Equal(t, test.outOffset, ret.offset)
+				}
+			})
+		}
+	})
+}

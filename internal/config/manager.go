@@ -64,9 +64,11 @@ func (m *Manager) GetConfig(key string) (string, error) {
 }
 
 //GetConfigsByPattern returns key values that matched pattern
-func (m *Manager) GetConfigsByPattern(pattern string) map[string]string {
+// withPrefix : whether key include the prefix of pattern
+func (m *Manager) GetConfigsByPattern(pattern string, withPrefix bool) map[string]string {
+
 	m.RLock()
-	defer m.RLock()
+	defer m.RUnlock()
 	matchedConfig := make(map[string]string)
 	pattern = strings.ToLower(pattern)
 	for key, value := range m.keySourceMap {
@@ -77,7 +79,16 @@ func (m *Manager) GetConfigsByPattern(pattern string) map[string]string {
 			if err != nil {
 				continue
 			}
-			matchedConfig[key] = sValue
+
+			checkAndCutOffKey := func() string {
+				if withPrefix {
+					return key
+				}
+				return strings.Replace(key, pattern, "", 1)
+			}
+
+			finalKey := checkAndCutOffKey()
+			matchedConfig[finalKey] = sValue
 		}
 	}
 	return matchedConfig
@@ -86,7 +97,7 @@ func (m *Manager) GetConfigsByPattern(pattern string) map[string]string {
 // Configs returns all the key values
 func (m *Manager) Configs() map[string]string {
 	m.RLock()
-	defer m.RLock()
+	defer m.RUnlock()
 	config := make(map[string]string)
 
 	for key, value := range m.keySourceMap {

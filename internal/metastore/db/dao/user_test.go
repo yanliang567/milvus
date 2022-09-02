@@ -62,33 +62,42 @@ func TestUser_GetByUsername_Error(t *testing.T) {
 }
 
 func TestUser_ListUsername(t *testing.T) {
-	var usernames = []string{
-		"test_username_1",
-		"test_username_2",
-	}
+	var (
+		usernames = []string{
+			"test_username_1",
+			"test_username_2",
+		}
+		user = &dbmodel.User{
+			TenantID:          tenantID,
+			EncryptedPassword: "xxx",
+			IsSuper:           false,
+		}
+	)
 
 	// expectation
-	mock.ExpectQuery("SELECT `username` FROM `credential_users` WHERE tenant_id = ? AND is_deleted = false").
+	mock.ExpectQuery("SELECT * FROM `credential_users` WHERE tenant_id = ? AND is_deleted = false").
 		WithArgs(tenantID).
 		WillReturnRows(
-			sqlmock.NewRows([]string{"username"}).
-				AddRow(usernames[0]).
-				AddRow(usernames[1]))
+			sqlmock.NewRows([]string{"tenant_id", "username", "encrypted_password", "is_super"}).
+				AddRow(user.TenantID, usernames[0], user.EncryptedPassword, user.IsSuper).
+				AddRow(user.TenantID, usernames[1], user.EncryptedPassword, user.IsSuper))
 
 	// actual
-	res, err := userTestDb.ListUsername(tenantID)
+	res, err := userTestDb.ListUser(tenantID)
 	assert.Nil(t, err)
-	assert.Equal(t, usernames, res)
+	assert.Equal(t, 2, len(res))
+	assert.Equal(t, usernames[0], res[0].Username)
+	assert.Equal(t, usernames[1], res[1].Username)
 }
 
 func TestUser_ListUsername_Error(t *testing.T) {
 	// expectation
-	mock.ExpectQuery("SELECT `username` FROM `credential_users` WHERE tenant_id = ? AND is_deleted = false").
+	mock.ExpectQuery("SELECT * FROM `credential_users` WHERE tenant_id = ? AND is_deleted = false").
 		WithArgs(tenantID).
 		WillReturnError(errors.New("test error"))
 
 	// actual
-	res, err := userTestDb.ListUsername(tenantID)
+	res, err := userTestDb.ListUser(tenantID)
 	assert.Nil(t, res)
 	assert.Error(t, err)
 }
@@ -144,7 +153,7 @@ func TestUser_MarkDeletedByUsername(t *testing.T) {
 
 	// expectation
 	mock.ExpectBegin()
-	mock.ExpectExec("UPDATE `indexes` SET `is_deleted`=?,`updated_at`=? WHERE tenant_id = ? AND username = ?").
+	mock.ExpectExec("UPDATE `credential_users` SET `is_deleted`=?,`updated_at`=? WHERE tenant_id = ? AND username = ?").
 		WithArgs(true, AnyTime{}, tenantID, username).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
@@ -159,12 +168,44 @@ func TestUser_MarkDeletedByUsername_Error(t *testing.T) {
 
 	// expectation
 	mock.ExpectBegin()
-	mock.ExpectExec("UPDATE `indexes` SET `is_deleted`=?,`updated_at`=? WHERE tenant_id = ? AND username = ?").
+	mock.ExpectExec("UPDATE `credential_users` SET `is_deleted`=?,`updated_at`=? WHERE tenant_id = ? AND username = ?").
 		WithArgs(true, AnyTime{}, tenantID, username).
 		WillReturnError(errors.New("test error"))
 	mock.ExpectRollback()
 
 	// actual
 	err := userTestDb.MarkDeletedByUsername(tenantID, username)
+	assert.Error(t, err)
+}
+
+func TestUser_UpdatePassword(t *testing.T) {
+	username := "test_username_1"
+	encryptedPassword := "test_encrypted_password_1"
+
+	// expectation
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `credential_users` SET `encrypted_password`=?,`updated_at`=? WHERE tenant_id = ? AND username = ?").
+		WithArgs(encryptedPassword, AnyTime{}, tenantID, username).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	// actual
+	err := userTestDb.UpdatePassword(tenantID, username, encryptedPassword)
+	assert.Nil(t, err)
+}
+
+func TestUser_UpdatePassword_Error(t *testing.T) {
+	username := "test_username_1"
+	encryptedPassword := "test_encrypted_password_1"
+
+	// expectation
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `credential_users` SET `encrypted_password`=?,`updated_at`=? WHERE tenant_id = ? AND username = ?").
+		WithArgs(encryptedPassword, AnyTime{}, tenantID, username).
+		WillReturnError(errors.New("test error"))
+	mock.ExpectRollback()
+
+	// actual
+	err := userTestDb.UpdatePassword(tenantID, username, encryptedPassword)
 	assert.Error(t, err)
 }

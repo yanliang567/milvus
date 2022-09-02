@@ -49,16 +49,16 @@ func (_m *IUserDb) Insert(in *dbmodel.User) error {
 	return r0
 }
 
-// ListUsername provides a mock function with given fields: tenantID
-func (_m *IUserDb) ListUsername(tenantID string) ([]string, error) {
+// ListUser provides a mock function with given fields: tenantID
+func (_m *IUserDb) ListUser(tenantID string) ([]*dbmodel.User, error) {
 	ret := _m.Called(tenantID)
 
-	var r0 []string
-	if rf, ok := ret.Get(0).(func(string) []string); ok {
+	var r0 []*dbmodel.User
+	if rf, ok := ret.Get(0).(func(string) []*dbmodel.User); ok {
 		r0 = rf(tenantID)
 	} else {
 		if ret.Get(0) != nil {
-			r0 = ret.Get(0).([]string)
+			r0 = ret.Get(0).([]*dbmodel.User)
 		}
 	}
 
@@ -79,6 +79,20 @@ func (_m *IUserDb) MarkDeletedByUsername(tenantID string, username string) error
 	var r0 error
 	if rf, ok := ret.Get(0).(func(string, string) error); ok {
 		r0 = rf(tenantID, username)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// UpdatePassword provides a mock function with given fields: tenantID, username, encryptedPassword
+func (_m *IUserDb) UpdatePassword(tenantID string, username string, encryptedPassword string) error {
+	ret := _m.Called(tenantID, username, encryptedPassword)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(string, string, string) error); ok {
+		r0 = rf(tenantID, username, encryptedPassword)
 	} else {
 		r0 = ret.Error(0)
 	}

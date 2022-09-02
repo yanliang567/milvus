@@ -27,6 +27,7 @@ service QueryCoord {
   rpc GetSegmentInfo(GetSegmentInfoRequest) returns (GetSegmentInfoResponse) {}
   rpc LoadBalance(LoadBalanceRequest) returns (common.Status) {}
 
+  rpc ShowConfigurations(internal.ShowConfigurationsRequest) returns (internal.ShowConfigurationsResponse){}
   // https://wiki.lfaidata.foundation/display/MIL/MEP+8+--+Add+metrics+for+proxy
   rpc GetMetrics(milvus.GetMetricsRequest) returns (milvus.GetMetricsResponse) {}
 
@@ -182,6 +183,8 @@ message WatchDmChannelsRequest {
   LoadMetaInfo load_meta = 8;
   int64 replicaID = 9;
   map<int64, data.SegmentInfo> segment_infos = 10;
+  // for node down load balance, need to remove offline node in time after every watchDmChannel finish.
+  int64 offlineNodeID = 11;
 }
 
 message SegmentLoadInfo {
@@ -202,6 +205,7 @@ message SegmentLoadInfo {
 
 message FieldIndexInfo {
   int64 fieldID =1;
+  // deprecated
   bool enable_index = 2;
   string index_name = 3;
   int64 indexID = 4;
@@ -350,6 +354,7 @@ message SegmentInfo {
   repeated FieldIndexInfo index_infos = 13;
   repeated int64 replica_ids = 14;
   repeated int64 node_ids = 15;
+  bool enable_index = 16;
 }
 
 message CollectionInfo {

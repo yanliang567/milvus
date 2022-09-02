@@ -16,7 +16,7 @@ FROM centos:centos7
 RUN yum install -y wget && \
     wget -P /etc/yum.repos.d/ http://mirrors.aliyun.com/repo/epel-7.repo && \
     yum clean all && yum makecache && \
-    yum install -y libgomp libgfortran4 tbb-devel && \
+    yum install -y libgomp libgfortran4 tbb-devel libzstd-devel && \
     rm -rf /var/cache/yum/*
 
 COPY --from=openblas /usr/lib/libopenblas-r0.3.9.so /usr/lib/
@@ -32,6 +32,7 @@ COPY ./lib/ /milvus/lib/
 
 ENV PATH=/milvus/bin:$PATH
 ENV LD_LIBRARY_PATH=/milvus/lib:$LD_LIBRARY_PATH:/usr/lib
+ENV LD_PRELOAD=/milvus/lib/libjemalloc.so
 
 # Add Tini
 ADD https://github.com/krallin/tini/releases/download/v0.19.0/tini /tini

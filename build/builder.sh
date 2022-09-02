@@ -5,7 +5,7 @@ set -euo pipefail
 # Absolute path to the toplevel milvus directory.
 toplevel=$(dirname "$(cd "$(dirname "${0}")"; pwd)")
 
-export OS_NAME="${OS_NAME:-ubuntu18.04}"
+export OS_NAME="${OS_NAME:-ubuntu20.04}"
 
 pushd "${toplevel}"
 
@@ -44,9 +44,9 @@ if [[ "${CHECK_BUILDER:-}" == "1" ]]; then
 fi
 
 if [[ "$(id -u)" != "0" ]]; then
-    docker-compose run --rm -u "$uid:$gid" builder "$@"
+    docker-compose run --no-deps --rm -u "$uid:$gid" builder "$@"
 else
-    docker-compose run --rm --entrypoint "/tini -- /entrypoint.sh" builder "$@"
+    docker-compose run --no-deps --rm --entrypoint "/tini -- /entrypoint.sh" builder "$@"
 fi
 
 popd

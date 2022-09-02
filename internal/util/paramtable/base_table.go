@@ -158,7 +158,7 @@ func (gp *BaseTable) initConfPath() string {
 		configDir = runPath + "/configs/"
 		if _, err := os.Stat(configDir); err != nil {
 			_, fpath, _, _ := runtime.Caller(0)
-			configDir = path.Dir(fpath) + "/../../../configs/"
+			configDir = path.Dir(fpath) + "/../../../configs"
 		}
 	}
 	return configDir
@@ -212,7 +212,11 @@ func (gp *BaseTable) Get(key string) string {
 }
 
 func (gp *BaseTable) GetByPattern(pattern string) map[string]string {
-	return gp.mgr.GetConfigsByPattern(pattern)
+	return gp.mgr.GetConfigsByPattern(pattern, true)
+}
+
+func (gp *BaseTable) GetConfigSubSet(pattern string) map[string]string {
+	return gp.mgr.GetConfigsByPattern(pattern, false)
 }
 
 // For compatible reason, only visiable for Test

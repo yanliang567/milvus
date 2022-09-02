@@ -6,14 +6,13 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
-	pb "github.com/milvus-io/milvus/internal/proto/etcdpb"
-	"github.com/milvus-io/milvus/internal/util/typeutil"
+	"github.com/milvus-io/milvus/internal/proto/indexpb"
 )
 
 var (
-	indexID     = typeutil.UniqueID(1)
-	indexName   = "idx"
-	indexParams = []*commonpb.KeyValuePair{
+	indexID     int64 = 1
+	indexName         = "idx"
+	indexParams       = []*commonpb.KeyValuePair{
 		{
 			Key:   "field110-i1",
 			Value: "field110-v1",
@@ -28,23 +27,28 @@ var (
 		CreateTime:  1,
 	}
 
-	indexPb = &pb.IndexInfo{
-		IndexName:   indexName,
-		IndexID:     indexID,
-		IndexParams: indexParams,
-		Deleted:     true,
-		CreateTime:  1,
+	indexPb = &indexpb.FieldIndex{
+		IndexInfo: &indexpb.IndexInfo{
+			CollectionID: colID,
+			FieldID:      fieldID,
+			IndexName:    indexName,
+			IndexID:      indexID,
+			TypeParams:   typeParams,
+			IndexParams:  indexParams,
+		},
+		Deleted:    true,
+		CreateTime: 1,
 	}
 )
 
 func TestMarshalIndexModel(t *testing.T) {
 	ret := MarshalIndexModel(indexModel)
-	assert.Equal(t, indexPb, ret)
+	assert.Equal(t, indexPb.IndexInfo.IndexID, ret.IndexInfo.IndexID)
 	assert.Nil(t, MarshalIndexModel(nil))
 }
 
 func TestUnmarshalIndexModel(t *testing.T) {
 	ret := UnmarshalIndexModel(indexPb)
-	assert.Equal(t, indexModel, ret)
+	assert.Equal(t, indexModel.IndexID, ret.IndexID)
 	assert.Nil(t, UnmarshalIndexModel(nil))
 }

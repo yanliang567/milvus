@@ -10,8 +10,10 @@ from pymilvus import DataType
 from base.schema_wrapper import ApiCollectionSchemaWrapper, ApiFieldSchemaWrapper
 from common import common_type as ct
 from utils.util_log import test_log as log
+from customize.milvus_operator import MilvusOperator
 
 """" Methods of processing data """
+
 
 class ParamInfo:
     def __init__(self):
@@ -54,10 +56,14 @@ def gen_bool_field(name=ct.default_bool_field_name, description=ct.default_desc,
                                                               is_primary=is_primary, **kwargs)
     return bool_field
 
-def gen_string_field(name=ct.default_string_field_name, description=ct.default_desc, is_primary=False, max_length=ct.default_length, **kwargs):
-    string_field, _ = ApiFieldSchemaWrapper().init_field_schema(name=name, dtype=DataType.VARCHAR, description=description, max_length=max_length, 
-                                                              is_primary=is_primary, **kwargs)
+
+def gen_string_field(name=ct.default_string_field_name, description=ct.default_desc, is_primary=False,
+                     max_length=ct.default_length, **kwargs):
+    string_field, _ = ApiFieldSchemaWrapper().init_field_schema(name=name, dtype=DataType.VARCHAR,
+                                                                description=description, max_length=max_length,
+                                                                is_primary=is_primary, **kwargs)
     return string_field
+
 
 def gen_int8_field(name=ct.default_int8_field_name, description=ct.default_desc, is_primary=False, **kwargs):
     int8_field, _ = ApiFieldSchemaWrapper().init_field_schema(name=name, dtype=DataType.INT8, description=description,
@@ -118,6 +124,7 @@ def gen_default_collection_schema(description=ct.default_desc, primary_field=ct.
                                                                     primary_field=primary_field, auto_id=auto_id)
     return schema
 
+
 def gen_general_collection_schema(description=ct.default_desc, primary_field=ct.default_int64_field_name,
                                   auto_id=False, is_binary=False, dim=ct.default_dim):
     if is_binary:
@@ -128,8 +135,9 @@ def gen_general_collection_schema(description=ct.default_desc, primary_field=ct.
                                                                     primary_field=primary_field, auto_id=auto_id)
     return schema
 
+
 def gen_string_pk_default_collection_schema(description=ct.default_desc, primary_field=ct.default_string_field_name,
-                                  auto_id=False, dim=ct.default_dim):
+                                            auto_id=False, dim=ct.default_dim):
     fields = [gen_int64_field(), gen_float_field(), gen_string_field(), gen_float_vec_field(dim=dim)]
     schema, _ = ApiCollectionSchemaWrapper().init_collection_schema(fields=fields, description=description,
                                                                     primary_field=primary_field, auto_id=auto_id)
@@ -162,15 +170,16 @@ def gen_default_binary_collection_schema(description=ct.default_desc, primary_fi
 
 
 def gen_schema_multi_vector_fields(vec_fields):
-    fields = [gen_int64_field(), gen_float_field(),gen_string_field(), gen_float_vec_field()]
+    fields = [gen_int64_field(), gen_float_field(), gen_string_field(), gen_float_vec_field()]
     fields.extend(vec_fields)
     primary_field = ct.default_int64_field_name
     schema, _ = ApiCollectionSchemaWrapper().init_collection_schema(fields=fields, description=ct.default_desc,
                                                                     primary_field=primary_field, auto_id=False)
     return schema
 
+
 def gen_schema_multi_string_fields(string_fields):
-    fields =[gen_int64_field(), gen_float_field(),gen_string_field(),gen_float_vec_field()]
+    fields = [gen_int64_field(), gen_float_field(), gen_string_field(), gen_float_vec_field()]
     fields.extend(string_fields)
     primary_field = ct.default_int64_field_name
     schema, _ = ApiCollectionSchemaWrapper().init_collection_schema(fields=fields, description=ct.default_desc,
@@ -178,16 +187,16 @@ def gen_schema_multi_string_fields(string_fields):
     return schema
 
 
-
 def gen_vectors(nb, dim):
     vectors = [[random.random() for _ in range(dim)] for _ in range(nb)]
     vectors = preprocessing.normalize(vectors, axis=1, norm='l2')
     return vectors.tolist()
 
+
 def gen_string(nb):
     string_values = [str(random.random()) for _ in range(nb)]
     return string_values
-    
+
 
 def gen_binary_vectors(num, dim):
     raw_vectors = []
@@ -238,6 +247,7 @@ def gen_dataframe_multi_vec_fields(vec_fields, nb=ct.default_nb):
             vec_values = gen_binary_vectors(nb, dim)[1]
         df[field.name] = vec_values
     return df
+
 
 def gen_dataframe_multi_string_fields(string_fields, nb=ct.default_nb):
     """
@@ -474,10 +484,31 @@ def gen_normal_expressions():
         "int64 == 0 || int64 == 1 || int64 == 2",
         "0 < int64 < 400",
         "500 <= int64 < 1000",
-        "200+300 < int64 <= 500+500"
+        "200+300 < int64 <= 500+500",
+        "int64 in [300/2, 900%40, -10*30+800, 2048/2%200, (100+200)*2]",
+        "float in [+3**6, 2**10/2]",
+        "(int64 % 100 == 0) && int64 < 500",
+        "float <= 4**5/2 && float > 500-1 && float != 500/2+260",
+        "int64 > 400 && int64 < 200",
+        "float < -2**8",
+        "(int64 + 1) == 3 || int64 * 2 == 64 || float == 10**2"
     ]
     return expressions
 
+def gen_field_compare_expressions():
+    expressions = [
+        "int64_1 | int64_2 == 1",
+        "int64_1 && int64_2 ==1",
+        "int64_1 + int64_2 == 10",
+        "int64_1 - int64_2 == 2",
+        "int64_1 * int64_2 == 8",
+        "int64_1 / int64_2 == 2",
+        "int64_1 ** int64_2 == 4",
+        "int64_1 % int64_2 == 0",
+        "int64_1 in int64_2",
+        "int64_1 + int64_2 >= 10"
+    ]
+    return expressions
 
 def gen_normal_string_expressions(field):
     expressions = [
@@ -488,17 +519,18 @@ def gen_normal_string_expressions(field):
         f"{field} == \"0\"|| {field} == \"1\"|| {field} ==\"2\"",
         f"{field} != \"0\"",
         f"{field} not in [\"0\", \"1\", \"2\"]",
-        f"{field} in [\"0\", \"1\", \"2\"]"    
+        f"{field} in [\"0\", \"1\", \"2\"]"
     ]
     return expressions
+
 
 def gen_invaild_string_expressions():
     expressions = [
         "varchar in [0,  \"1\"]",
-        "varchar not in [\"0\", 1, 2]"    
+        "varchar not in [\"0\", 1, 2]"
     ]
     return expressions
-    
+
 
 def gen_normal_expressions_field(field):
     expressions = [
@@ -510,7 +542,13 @@ def gen_normal_expressions_field(field):
         f"{field} == 0 || {field} == 1 || {field} == 2",
         f"0 < {field} < 400",
         f"500 <= {field} <= 1000",
-        f"200+300 <= {field} <= 500+500"
+        f"200+300 <= {field} <= 500+500",
+        f"{field} in [300/2, 900%40, -10*30+800, 2048/2%200, (100+200)*2]",
+        f"{field} in [+3**6, 2**10/2]",
+        f"{field} <= 4**5/2 && {field} > 500-1 && {field} != 500/2+260",
+        f"{field} > 400 && {field} < 200",
+        f"{field} < -2**8",
+        f"({field} + 1) == 3 || {field} * 2 == 64 || {field} == 10**2"
     ]
     return expressions
 
@@ -538,7 +576,12 @@ def hamming(x, y):
 def tanimoto(x, y):
     x = np.asarray(x, np.bool)
     y = np.asarray(y, np.bool)
-    return -np.log2(np.double(np.bitwise_and(x, y).sum()) / np.double(np.bitwise_or(x, y).sum()))
+    res = np.double(np.bitwise_and(x, y).sum()) / np.double(np.bitwise_or(x, y).sum())
+    if res == 0:
+        value = 0
+    else:
+        value = -np.log2(res)
+    return value
 
 
 def tanimoto_calc(x, y):
@@ -692,6 +735,7 @@ def get_segment_distribution(res):
 
     return segment_distribution
 
+
 def percent_to_int(string):
     """
     transform percent(0%--100%) to int
@@ -707,3 +751,88 @@ def percent_to_int(string):
         new_int = int(string.strip("%"))
 
     return new_int
+
+
+def gen_grant_list(collection_name):
+    grant_list = [{"object": "Collection", "object_name": collection_name, "privilege": "Load"},
+                  {"object": "Collection", "object_name": collection_name, "privilege": "Release"},
+                  {"object": "Collection", "object_name": collection_name, "privilege": "Compaction"},
+                  {"object": "Collection", "object_name": collection_name, "privilege": "Delete"},
+                  {"object": "Collection", "object_name": collection_name, "privilege": "GetStatistics"},
+                  {"object": "Collection", "object_name": collection_name, "privilege": "CreateIndex"},
+                  {"object": "Collection", "object_name": collection_name, "privilege": "IndexDetail"},
+                  {"object": "Collection", "object_name": collection_name, "privilege": "DropIndex"},
+                  {"object": "Collection", "object_name": collection_name, "privilege": "Search"},
+                  {"object": "Collection", "object_name": collection_name, "privilege": "Flush"},
+                  {"object": "Collection", "object_name": collection_name, "privilege": "Query"},
+                  {"object": "Collection", "object_name": collection_name, "privilege": "LoadBalance"},
+                  {"object": "Collection", "object_name": collection_name, "privilege": "Import"},
+                  {"object": "Global", "object_name": "*", "privilege": "All"},
+                  {"object": "Global", "object_name": "*", "privilege": "CreateCollection"},
+                  {"object": "Global", "object_name": "*", "privilege": "DropCollection"},
+                  {"object": "Global", "object_name": "*", "privilege": "DescribeCollection"},
+                  {"object": "Global", "object_name": "*", "privilege": "ShowCollections"},
+                  {"object": "Global", "object_name": "*", "privilege": "CreateOwnership"},
+                  {"object": "Global", "object_name": "*", "privilege": "DropOwnership"},
+                  {"object": "Global", "object_name": "*", "privilege": "SelectOwnership"},
+                  {"object": "Global", "object_name": "*", "privilege": "ManageOwnership"},
+                  {"object": "User", "object_name": "*", "privilege": "UpdateUser"},
+                  {"object": "User", "object_name": "*", "privilege": "SelectUser"}]
+    return grant_list
+
+def install_milvus_operator_specific_config(namespace, milvus_mode, release_name, image,
+                                            rate_limit_enable, collection_rate_limit):
+    """
+    namespace : str
+    milvus_mode : str -> standalone or cluster
+    release_name : str
+    image: str -> image tag including repository
+    rate_limit_enable: str -> true or false, switch for rate limit
+    collection_rate_limit: int -> collection rate limit numbers
+    input_content ：the content that need to insert to the file
+    return: milvus host name
+    """
+
+    if not isinstance(namespace, str):
+        log.error("[namespace] is not a string.")
+
+    if not isinstance(milvus_mode, str):
+        log.error("[milvus_mode] is not a string.")
+
+    if not isinstance(release_name, str):
+        log.error("[release_name] is not a string.")
+
+    if not isinstance(image, str):
+        log.error("[image] is not a string.")
+
+    if not isinstance(rate_limit_enable, str):
+        log.error("[rate_limit_enable] is not a string.")
+
+    if not isinstance(collection_rate_limit, int):
+        log.error("[collection_rate_limit] is not an integer.")
+
+    if milvus_mode not in ["standalone", "cluster"]:
+        log.error("[milvus_mode] is not 'standalone' or 'cluster'")
+    
+    if rate_limit_enable not in ["true", "false"]:
+        log.error("[rate_limit_enable] is not 'true' or 'false'")
+
+    data_config = {
+        'metadata.namespace': namespace,
+        'spec.mode': milvus_mode,
+        'metadata.name': release_name,
+        'spec.components.image': image,
+        'spec.components.proxy.serviceType': 'LoadBalancer',
+        'spec.components.dataNode.replicas': 2,
+        'spec.config.common.retentionDuration': 60,
+        'spec.config.quotaAndLimits.enable': rate_limit_enable,
+        'spec.config.quotaAndLimits.ddl.collectionRate': collection_rate_limit,
+    }
+    mil = MilvusOperator()
+    mil.install(data_config)
+    if mil.wait_for_healthy(release_name, NAMESPACE, timeout=TIMEOUT):
+        host = mic.endpoint(release_name, NAMESPACE).split(':')[0]
+    else:
+        raise MilvusException(message=f'Milvus healthy timeout 1800s')
+    
+    return host

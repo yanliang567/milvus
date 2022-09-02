@@ -1,4 +1,4 @@
-# Copyright (C) 2019-2020 Zilliz. All rights reserved.
+# Copyright (C) 2019-2022 Zilliz. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
 # with the License. You may obtain a copy of the License at
@@ -15,7 +15,7 @@ FROM milvusdb/openblas:ubuntu18.04-20210428 AS openblas
 FROM ubuntu:bionic-20200921
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends libtbb-dev gfortran netcat iputils-ping ca-certificates && \
+    apt-get install -y --no-install-recommends libtbb-dev  libzstd-dev gfortran netcat iputils-ping ca-certificates && \
     apt-get remove --purge -y && \
     rm -rf /var/lib/apt/lists/*
 
@@ -32,6 +32,7 @@ COPY ./lib/ /milvus/lib/
 
 ENV PATH=/milvus/bin:$PATH
 ENV LD_LIBRARY_PATH=/milvus/lib:$LD_LIBRARY_PATH:/usr/lib
+ENV LD_PRELOAD=/milvus/lib/libjemalloc.so
 
 # Add Tini
 ADD https://github.com/krallin/tini/releases/download/v0.19.0/tini /tini

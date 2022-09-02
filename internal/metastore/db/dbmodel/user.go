@@ -24,9 +24,10 @@ func (v User) TableName() string {
 //go:generate mockery --name=IUserDb
 type IUserDb interface {
 	GetByUsername(tenantID string, username string) (*User, error)
-	ListUsername(tenantID string) ([]string, error)
+	ListUser(tenantID string) ([]*User, error)
 	Insert(in *User) error
 	MarkDeletedByUsername(tenantID string, username string) error
+	UpdatePassword(tenantID string, username string, encryptedPassword string) error
 }
 
 // model <---> db

@@ -22,19 +22,19 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/proto/etcdpb"
+	"go.uber.org/atomic"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
-
 	"github.com/milvus-io/milvus/internal/common"
+	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
+	"github.com/milvus-io/milvus/internal/proto/etcdpb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/proxypb"
+	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
@@ -334,6 +334,7 @@ type dataCoordMock struct {
 	channelNumPerCol    int
 	returnError         bool
 	returnGrpcError     bool
+	returnErrorCount    atomic.Int32
 	segmentState        commonpb.SegmentState
 	errLevel            int
 
@@ -376,14 +377,27 @@ func (data *dataCoordMock) GetRecoveryInfo(ctx context.Context, req *datapb.GetR
 		}, nil
 	}
 
+	if data.returnErrorCount.Load() > 0 {
+		data.returnErrorCount.Dec()
+		return &datapb.GetRecoveryInfoResponse{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+				Reason:    "limited get recovery info failed",
+			},
+		}, nil
+	}
+
 	if _, ok := data.col2DmChannels[collectionID]; !ok {
 		channelInfos := make([]*datapb.VchannelInfo, 0)
 		data.collections = append(data.collections, collectionID)
 		for i := int32(0); i < common.DefaultShardsNum; i++ {
 			vChannel := fmt.Sprintf("%s_%d_%dv%d", Params.CommonCfg.RootCoordDml, i, collectionID, i)
 			channelInfo := &datapb.VchannelInfo{
-				CollectionID: collectionID,
-				ChannelName:  vChannel,
+				CollectionID:        collectionID,
+				ChannelName:         vChannel,
+				UnflushedSegmentIds: []int64{int64(i*1000 + 1)},
+				FlushedSegmentIds:   []int64{int64(i*1000 + 2)},
+				DroppedSegmentIds:   []int64{int64(i*1000 + 3)},
 				SeekPosition: &internalpb.MsgPosition{
 					ChannelName: vChannel,
 				},
@@ -528,6 +542,16 @@ func (data *dataCoordMock) GetSegmentInfo(ctx context.Context, req *datapb.GetSe
 		}, nil
 	}
 
+	if data.returnErrorCount.Load() > 0 {
+		data.returnErrorCount.Dec()
+		return &datapb.GetSegmentInfoResponse{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+				Reason:    "limited mock get segmentInfo failed",
+			},
+		}, nil
+	}
+
 	var segmentInfos []*datapb.SegmentInfo
 	for _, segmentID := range req.SegmentIDs {
 		segmentInfos = append(segmentInfos, &datapb.SegmentInfo{
@@ -557,13 +581,13 @@ func newIndexCoordMock(path string) (*indexCoordMock, error) {
 	}, nil
 }
 
-func (c *indexCoordMock) GetIndexFilePaths(ctx context.Context, req *indexpb.GetIndexFilePathsRequest) (*indexpb.GetIndexFilePathsResponse, error) {
+func (c *indexCoordMock) GetIndexInfos(ctx context.Context, req *indexpb.GetIndexInfoRequest) (*indexpb.GetIndexInfoResponse, error) {
 	if c.returnGrpcError {
 		return nil, errors.New("get index file paths failed")
 	}
 
 	if c.returnError {
-		return &indexpb.GetIndexFilePathsResponse{
+		return &indexpb.GetIndexInfoResponse{
 			Status: &commonpb.Status{
 				ErrorCode: commonpb.ErrorCode_UnexpectedError,
 				Reason:    "get index file path failed",
@@ -571,9 +595,9 @@ func (c *indexCoordMock) GetIndexFilePaths(ctx context.Context, req *indexpb.Get
 		}, nil
 	}
 
-	indexPathInfos, err := generateIndexFileInfo(req.IndexBuildIDs, c.chunkManager)
+	indexPathInfos, err := generateIndexFileInfo(req.SegmentIDs, c.chunkManager)
 	if err != nil {
-		return &indexpb.GetIndexFilePathsResponse{
+		return &indexpb.GetIndexInfoResponse{
 			Status: &commonpb.Status{
 				ErrorCode: commonpb.ErrorCode_UnexpectedError,
 				Reason:    err.Error(),
@@ -581,10 +605,10 @@ func (c *indexCoordMock) GetIndexFilePaths(ctx context.Context, req *indexpb.Get
 		}, nil
 	}
 
-	return &indexpb.GetIndexFilePathsResponse{
+	return &indexpb.GetIndexInfoResponse{
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_Success,
 		},
-		FilePaths: indexPathInfos,
+		SegmentInfo: indexPathInfos,
 	}, nil
 }

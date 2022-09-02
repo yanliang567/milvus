@@ -228,8 +228,7 @@ func (t *compactionTrigger) handleGlobalSignal(signal *compactionSignal) {
 		return (signal.collectionID == 0 || segment.CollectionID == signal.collectionID) &&
 			isSegmentHealthy(segment) &&
 			isFlush(segment) &&
-			!segment.isCompacting && // not compacting now
-			!t.segRefer.HasSegmentLock(segment.ID) // not reference
+			!segment.isCompacting // not compacting now
 	}) // m is list of chanPartSegments, which is channel-partition organized segments
 	for _, group := range m {
 		if !signal.isForce && t.compactionHandler.isFull() {
@@ -461,7 +460,7 @@ func (t *compactionTrigger) getCandidateSegments(channel string, partitionID Uni
 	var res []*SegmentInfo
 	for _, s := range segments {
 		if !isSegmentHealthy(s) || !isFlush(s) || s.GetInsertChannel() != channel ||
-			s.GetPartitionID() != partitionID || s.isCompacting || t.segRefer.HasSegmentLock(s.ID) {
+			s.GetPartitionID() != partitionID || s.isCompacting {
 			continue
 		}
 		res = append(res, s)
@@ -479,12 +478,7 @@ func (t *compactionTrigger) fillOriginPlan(plan *datapb.CompactionPlan) error {
 	if err != nil {
 		return err
 	}
-	ts, err := t.allocator.allocTimestamp(context.TODO())
-	if err != nil {
-		return err
-	}
 	plan.PlanID = id
-	plan.StartTime = ts
 	plan.TimeoutInSeconds = Params.DataCoordCfg.CompactionTimeoutInSeconds
 	return nil
 }

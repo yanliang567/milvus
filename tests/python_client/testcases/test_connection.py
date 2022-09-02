@@ -845,6 +845,19 @@ class TestConnect(TestcaseBase):
         address = "{}:{}".format(host, port)
         self.connection_wrap.connect(alias=connect_name, address=address, check_task=ct.CheckTasks.ccr)
 
+    @pytest.mark.tags(ct.CaseLabel.L3)
+    @pytest.mark.parametrize("connect_name", [DefaultConfig.DEFAULT_USING])
+    def test_connect_with_default_user_password(self, host, port, connect_name):
+        """
+        target: test the user and password parameter to get a normal connection
+        method: get a connection with the user and password parameter
+        expected: connected is True
+        """
+        self.connection_wrap.connect(alias=connect_name, host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+        res = self.utility_wrap.list_collections()[0]
+        assert len(res) == 0
+
 
 class TestConnectIPInvalid(TestcaseBase):
     """
@@ -975,3 +988,56 @@ class TestConnectAddressInvalid(TestcaseBase):
         address = "{}:{}".format(host, port)
         self.connection_wrap.connect(alias=connect_name, address=address, check_task=ct.CheckTasks.err_res,
                                      check_items={ct.err_code: 2})
+
+
+class TestConnectUserPasswordInvalid(TestcaseBase):
+    """
+    Test connect server with user and password , the result should be failed
+    """
+
+    @pytest.mark.tags(ct.CaseLabel.L3)
+    @pytest.mark.parametrize("port", ["19530"])
+    def test_connect_without_user_password_after_authorization_enabled(self, host, port):
+        """
+        target: test connect without user password after authorization enabled
+        method: connect without parameters of user and password
+        excepted: connected is false
+        """
+        self.connection_wrap.connect(host=host, port=port, check_task=ct.CheckTasks.ccr)
+        self.utility_wrap.list_collections(check_task=ct.CheckTasks.err_res,
+                                           check_items={ct.err_code: 1})
+
+    @pytest.mark.tags(ct.CaseLabel.L3)
+    @pytest.mark.parametrize("user", ["alice3333"])
+    def test_connect_with_invalid_user_connection(self, host, port, user):
+        """
+        target: test the nonexistent to connect
+        method: connect with the nonexistent user
+        excepted: connected is false
+        """
+        self.connection_wrap.connect(host=host, port=port, user=user, password="abc123",
+                                     check_task=ct.CheckTasks.ccr)
+        self.utility_wrap.list_collections(check_task=ct.CheckTasks.err_res,
+                                           check_items={ct.err_code: 1})
+
+    @pytest.mark.tags(ct.CaseLabel.L3)
+    @pytest.mark.parametrize("user", ["anny015"])
+    @pytest.mark.parametrize("connect_name", [DefaultConfig.DEFAULT_USING])
+    def test_connect_with_password_invalid(self, host, port, user, connect_name):
+        """
+        target: test the wrong password when connecting
+        method: connect with the wrong password
+        excepted: connected is false
+        """
+        # 1.default user login
+        self.connection_wrap.connect(host=host, port=port, user=ct.default_user,
+                                     password=ct.default_password, check_task=ct.CheckTasks.ccr)
+
+        # 2.create a credential
+        self.utility_wrap.create_user(user=user, password="qwaszx0")
+
+        # 3.connect with the created user and wrong password
+        self.connection_wrap.disconnect(alias=connect_name)
+        self.connection_wrap.connect(host=host, port=port, user=user, password=ct.default_password)
+        self.utility_wrap.list_collections(check_task=ct.CheckTasks.err_res,
+                                           check_items={ct.err_code: 1})

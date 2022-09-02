@@ -35,7 +35,7 @@ class TestQueryParams(TestcaseBase):
     test Query interface
     query(collection_name, expr, output_fields=None, partition_names=None, timeout=None)
     """
-    
+
     @pytest.mark.tags(CaseLabel.L2)
     def test_query_invalid(self):
         """
@@ -269,8 +269,6 @@ class TestQueryParams(TestcaseBase):
                                        check_task=CheckTasks.check_query_results, check_items={exp_res: res})
 
     @pytest.mark.tags(CaseLabel.L2)
-    # @pytest.mark.xfail(reason="issue #12210 #7522")
-    @pytest.mark.xfail(reason="https://github.com/milvus-io/milvus/issues/7522")
     def test_query_expr_by_bool_field(self):
         """
         target: test query by bool field and output bool field
@@ -525,7 +523,7 @@ class TestQueryParams(TestcaseBase):
         collection_w, vectors = self.init_collection_general(prefix, insert_data=True)[0:2]
         for fields in [None, []]:
             res, _ = collection_w.query(default_term_expr, output_fields=fields)
-            assert list(res[0].keys()) == [ct.default_int64_field_name]
+            assert res[0].keys() == {ct.default_int64_field_name}
 
     @pytest.mark.tags(CaseLabel.L0)
     def test_query_output_one_field(self):
@@ -545,12 +543,13 @@ class TestQueryParams(TestcaseBase):
         method: query with output field=None
         expected: return all fields
         """
-        collection_w = self.init_collection_wrap(name=cf.gen_unique_str(prefix))
-        df = cf.gen_default_dataframe_data()
-        collection_w.insert(df)
-        assert collection_w.num_entities == ct.default_nb
-        all_fields = [ct.default_int64_field_name, ct.default_float_field_name, ct.default_string_field_name, ct.default_float_vec_field_name]
-        res = df.iloc[:2].to_dict('records')
+        # 1. initialize with data
+        collection_w, df, _, insert_ids = self.init_collection_general(prefix, True, nb=10,
+                                                                       is_all_data_type=True)[0:4]
+        all_fields = [ct.default_int64_field_name, ct.default_int32_field_name, ct.default_int16_field_name,
+                      ct.default_int8_field_name, ct.default_bool_field_name, ct.default_float_field_name,
+                      ct.default_double_field_name, ct.default_string_field_name, ct.default_float_vec_field_name]
+        res = df[0].iloc[:2].to_dict('records')
         collection_w.load()
         actual_res, _ = collection_w.query(default_term_expr, output_fields=all_fields,
                                            check_task=CheckTasks.check_query_results,
@@ -647,7 +646,7 @@ class TestQueryParams(TestcaseBase):
         fields = [[ct.default_binary_vec_field_name], [ct.default_int64_field_name, ct.default_binary_vec_field_name]]
         for output_fields in fields:
             res, _ = collection_w.query(default_term_expr, output_fields=output_fields)
-            assert list(res[0].keys()) == fields[-1]
+            assert res[0].keys() == set(fields[-1])
 
     @pytest.mark.tags(CaseLabel.L1)
     def test_query_output_primary_field(self):
@@ -658,7 +657,7 @@ class TestQueryParams(TestcaseBase):
         """
         collection_w, vectors = self.init_collection_general(prefix, insert_data=True)[0:2]
         res, _ = collection_w.query(default_term_expr, output_fields=[ct.default_int64_field_name])
-        assert list(res[0].keys()) == [ct.default_int64_field_name]
+        assert res[0].keys() == {ct.default_int64_field_name}
 
     @pytest.mark.tags(CaseLabel.L2)
     def test_query_output_not_existed_field(self):
@@ -1095,7 +1094,7 @@ class TestQueryOperation(TestcaseBase):
         collection_w.create_index(ct.default_binary_vec_field_name, binary_index_params)
         assert collection_w.has_index()[0]
         res, _ = collection_w.query(default_term_expr, output_fields=[ct.default_binary_vec_field_name])
-        assert list(res[0].keys()) == fields
+        assert res[0].keys() == set(fields)
 
     @pytest.mark.tags(CaseLabel.L2)
     def test_query_partition_repeatedly(self):
@@ -1208,7 +1207,7 @@ class  TestqueryString(TestcaseBase):
       The following cases are used to test query with string
     ******************************************************************
     """
-      
+
     @pytest.mark.tags(CaseLabel.L1)
     def test_query_string_is_not_primary(self):
         """
@@ -1218,13 +1217,13 @@ class  TestqueryString(TestcaseBase):
                 query with string expr in string field is not primary
         expected: query successfully
         """
-     
+
         collection_w, vectors = self.init_collection_general(prefix, insert_data=True)[0:2]
         res = vectors[0].iloc[:2, :3].to_dict('records')
         output_fields = [default_float_field_name, default_string_field_name]
-        collection_w.query(default_string_term_expr, output_fields=output_fields, 
+        collection_w.query(default_string_term_expr, output_fields=output_fields,
                            check_task=CheckTasks.check_query_results, check_items={exp_res: res})
-    
+
     @pytest.mark.tags(CaseLabel.L1)
     @pytest.mark.parametrize("expression", cf.gen_normal_string_expressions(default_string_field_name))
     def test_query_string_is_primary(self, expression):
@@ -1235,7 +1234,7 @@ class  TestqueryString(TestcaseBase):
         """
         collection_w, vectors = self.init_collection_general(prefix, insert_data=True, primary_field=ct.default_string_field_name)[0:2]
         res, _ = collection_w.query(expression, output_fields=[ct.default_string_field_name])
-        assert list(res[0].keys()) == [ct.default_string_field_name]
+        assert res[0].keys() == {ct.default_string_field_name}
 
 
     @pytest.mark.tags(CaseLabel.L1)
@@ -1249,7 +1248,7 @@ class  TestqueryString(TestcaseBase):
         collection_w, vectors = self.init_collection_general(prefix, insert_data=True, primary_field=ct.default_string_field_name)[0:2]
         res = vectors[0].iloc[:, 1:3].to_dict('records')
         output_fields = [default_float_field_name, default_string_field_name]
-        collection_w.query(default_mix_expr, output_fields=output_fields, 
+        collection_w.query(default_mix_expr, output_fields=output_fields,
                                    check_task=CheckTasks.check_query_results, check_items={exp_res: res})
 
 
@@ -1265,12 +1264,12 @@ class  TestqueryString(TestcaseBase):
         collection_w = self.init_collection_general(prefix, insert_data=True)[0]
         collection_w.query(expression, check_task=CheckTasks.err_res,
                            check_items={ct.err_code: 1, ct.err_msg: "type mismatch"})
-       
+
     @pytest.mark.tags(CaseLabel.L1)
     def test_query_string_expr_with_binary(self):
         """
         target: test query string expr with binary
-        method: query string expr with binary 
+        method: query string expr with binary
         expected: verify query successfully
         """
         collection_w, vectors= self.init_collection_general(prefix, insert_data=True, is_binary=True, is_index=True)[0:2]
@@ -1283,7 +1282,7 @@ class  TestqueryString(TestcaseBase):
     @pytest.mark.tags(CaseLabel.L1)
     def test_query_string_expr_with_prefixes(self):
         """
-        target: test query with 
+        target: test query with prefix string expression
         method: specify string is primary field, use prefix string expr
         expected: verify query successfully
         """
@@ -1291,13 +1290,13 @@ class  TestqueryString(TestcaseBase):
         res = vectors[0].iloc[:1, :3].to_dict('records')
         expression = 'varchar like "0%"'
         output_fields = [default_int_field_name, default_float_field_name, default_string_field_name]
-        collection_w.query(expression, output_fields=output_fields, 
+        collection_w.query(expression, output_fields=output_fields,
                            check_task=CheckTasks.check_query_results, check_items={exp_res: res})
-    
+
     @pytest.mark.tags(CaseLabel.L1)
     def test_query_string_with_invaild_prefix_expr(self):
         """
-        target: test query with 
+        target: test query with invalid prefix string expression
         method: specify string primary field, use invaild prefix string expr
         expected: raise error
         """
@@ -1310,7 +1309,7 @@ class  TestqueryString(TestcaseBase):
     @pytest.mark.tags(CaseLabel.L1)
     def test_query_compare_two_fields(self):
         """
-        target: test query with 
+        target: test query with bool expression comparing two fields
         method: specify string primary field, compare two fields
         expected: verify query successfully
         """
@@ -1318,13 +1317,13 @@ class  TestqueryString(TestcaseBase):
         res = []
         expression = 'float > int64'
         output_fields = [default_int_field_name, default_float_field_name, default_string_field_name]
-        collection_w.query(expression, output_fields=output_fields, 
+        collection_w.query(expression, output_fields=output_fields,
                            check_task=CheckTasks.check_query_results, check_items={exp_res: res})
 
     @pytest.mark.tags(CaseLabel.L1)
     def test_query_compare_invalid_fields(self):
         """
-        target: test query with 
+        target: test query with
         method: specify string primary field, compare string and int field
         expected: raise error
         """
@@ -1379,4 +1378,3 @@ class  TestqueryString(TestcaseBase):
                            check_items={exp_res: df_dict_list,
                                         "primary_field": default_int_field_name,
                                         "with_vec": True})
-

@@ -3,6 +3,7 @@ import numbers
 import random
 
 import pytest
+import pandas as pd
 from time import sleep
 
 from base.client_base import TestcaseBase
@@ -26,7 +27,7 @@ default_nq = ct.default_nq
 default_dim = ct.default_dim
 default_limit = ct.default_limit
 default_search_exp = "int64 >= 0"
-default_search_string_exp =  "varchar >= \"0\""
+default_search_string_exp = "varchar >= \"0\""
 default_search_mix_exp = "int64 >= 0 && varchar >= \"0\""
 default_invaild_string_exp = "varchar >= 0"
 perfix_expr = 'varchar like "0%"'
@@ -389,6 +390,40 @@ class TestCollectionSearchInvalid(TestcaseBase):
                                          "err_msg": "The type of expr must be string ,"
                                                     "but {} is given".format(type(invalid_search_expr))})
 
+    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.parametrize("expression", cf.gen_field_compare_expressions())
+    def test_search_with_expression_join_two_fields(self, expression):
+        """
+        target: test search with expressions linking two fields such as 'and'
+        method: create a collection and search with different conjunction
+        expected: raise exception and report the error
+        """
+        # 1. create a collection
+        nb = 1000
+        dim = 1
+        fields = [cf.gen_int64_field("int64_1"), cf.gen_int64_field("int64_2"),
+                  cf.gen_float_vec_field(dim=dim)]
+        schema = cf.gen_collection_schema(fields=fields, primary_field="int64_1")
+        collection_w = self.init_collection_wrap(schema=schema)
+
+        # 2. insert data
+        values = pd.Series(data=[i for i in range(0, nb)])
+        dataframe = pd.DataFrame({"int64_1": values, "int64_2": values,
+                                  ct.default_float_vec_field_name: cf.gen_vectors(nb, dim)})
+        collection_w.insert(dataframe)
+
+        # 3. search with expression
+        log.info("test_search_with_expression: searching with expression: %s" % expression)
+        collection_w.load()
+        expression = expression.replace("&&", "and").replace("||", "or")
+        vectors = [[random.random() for _ in range(dim)] for _ in range(default_nq)]
+        collection_w.search(vectors[:default_nq], default_search_field,
+                            default_search_params, nb, expression,
+                            check_task=CheckTasks.err_res,
+                            check_items={"err_code": 1,
+                                         "err_msg": "failed to create query plan: "
+                                                    "cannot parse expression: %s" % expression})
+
     @pytest.mark.tags(CaseLabel.L2)
     def test_search_param_invalid_expr_value(self, get_invalid_expr_value):
         """
@@ -427,6 +462,31 @@ class TestCollectionSearchInvalid(TestcaseBase):
                             check_task=CheckTasks.err_res,
                             check_items={"err_code": 1,
                                          "err_msg": "failed to create query plan"})
+
+    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.parametrize("expression", ["int64 like 33", "float LIKE 33"])
+    def test_search_with_expression_invalid_like(self, expression):
+        """
+        target: test search int64 and float with like
+        method: test search int64 and float with like
+        expected: searched failed
+        """
+        nb = 1000
+        dim = 8
+        collection_w, _vectors, _, insert_ids = self.init_collection_general(prefix, True,
+                                                                             nb, dim=dim,
+                                                                             is_index=True)[0:4]
+        index_param = {"index_type": "IVF_FLAT", "metric_type": "L2", "params": {"nlist": 100}}
+        collection_w.create_index("float_vector", index_param)
+        collection_w.load()
+        log.info("test_search_with_expression: searching with expression: %s" % expression)
+        vectors = [[random.random() for _ in range(dim)] for _ in range(default_nq)]
+        search_res, _ = collection_w.search(vectors[:default_nq], default_search_field,
+                                            default_search_params, nb, expression,
+                                            check_task=CheckTasks.err_res,
+                                            check_items={"err_code": 1,
+                                                         "err_msg": "failed to create query plan: cannot parse "
+                                                                    "expression: %s" % expression})
 
     @pytest.mark.tags(CaseLabel.L2)
     def test_search_partition_invalid_type(self, get_invalid_partition):
@@ -1274,7 +1334,6 @@ class TestCollectionSearch(TestcaseBase):
                                              "_async": _async})
 
     @pytest.mark.tags(CaseLabel.L2)
-    @pytest.mark.skip(reason="issue #18479")
     @pytest.mark.parametrize("index, params",
                              zip(ct.all_index_types[:9],
                                  ct.default_index_params[:9]))
@@ -1291,11 +1350,9 @@ class TestCollectionSearch(TestcaseBase):
                                                                                   dim=min_dim, is_index=True)[0:5]
         # 2. create index and load
         if params.get("m"):
-            if (min_dim % params["m"]) != 0:
-                params["m"] = min_dim // 4
+            params["m"] = min_dim
         if params.get("PQM"):
-            if (min_dim % params["PQM"]) != 0:
-                params["PQM"] = min_dim // 4
+            params["PQM"] = min_dim
         default_index = {"index_type": index, "params": params, "metric_type": "L2"}
         collection_w.create_index("float_vector", default_index)
         collection_w.load()
@@ -2020,7 +2077,8 @@ class TestCollectionSearch(TestcaseBase):
                                   default_search_params, default_limit,
                                   search_exp, _async=_async,
                                   output_fields=[default_int64_field_name,
-                                                 default_float_field_name],
+                                                 default_float_field_name,
+                                                 default_bool_field_name],
                                   check_task=CheckTasks.check_search_results,
                                   check_items={"nq": nq,
                                                "ids": insert_ids,
@@ -2030,7 +2088,55 @@ class TestCollectionSearch(TestcaseBase):
             res.done()
             res = res.result()
         assert len(res[0][0].entity._row_data) != 0
-        assert (default_int64_field_name and default_float_field_name) in res[0][0].entity._row_data
+        assert (default_int64_field_name and default_float_field_name and default_bool_field_name) \
+               in res[0][0].entity._row_data
+
+    @pytest.mark.tags(CaseLabel.L1)
+    def test_search_with_comparative_expression(self, _async):
+        """
+        target: test search with expression comparing two fields
+        method: create a collection, insert data and search with comparative expression
+        expected: search successfully
+        """
+        #1. create a collection
+        nb = 10
+        dim = 1
+        fields = [cf.gen_int64_field("int64_1"), cf.gen_int64_field("int64_2"),
+                  cf.gen_float_vec_field(dim=dim)]
+        schema = cf.gen_collection_schema(fields=fields, primary_field="int64_1")
+        collection_w = self.init_collection_wrap(name="comparison", schema=schema)
+
+        #2. inset data
+        values = pd.Series(data=[i for i in range(0, nb)])
+        dataframe = pd.DataFrame({"int64_1": values, "int64_2": values,
+                                  ct.default_float_vec_field_name: cf.gen_vectors(nb, dim)})
+        insert_res = collection_w.insert(dataframe)[0]
+
+        insert_ids = []
+        filter_ids = []
+        insert_ids.extend(insert_res.primary_keys)
+        for _id in enumerate(insert_ids):
+            filter_ids.extend(_id)
+
+        #3. search with expression
+        collection_w.load()
+        expression = "int64_1 <= int64_2"
+        vectors = [[random.random() for _ in range(dim)] for _ in range(default_nq)]
+        res = collection_w.search(vectors[:nq], default_search_field,
+                                  default_search_params, default_limit,
+                                  expression, _async=_async,
+                                  check_task=CheckTasks.check_search_results,
+                                  check_items={"nq": nq,
+                                               "ids": insert_ids,
+                                               "limit": default_limit,
+                                               "_async": _async})[0]
+        if _async:
+            res.done()
+            res = res.result()
+        filter_ids_set = set(filter_ids)
+        for hits in res:
+            ids = hits.ids
+            assert set(ids).issubset(filter_ids_set)
 
     @pytest.mark.tags(CaseLabel.L2)
     def test_search_with_output_fields_empty(self, nb, nq, dim, auto_id, _async):
@@ -2516,6 +2622,7 @@ class TestCollectionSearch(TestcaseBase):
                                          "ids": insert_ids,
                                          "limit": nb_old + nb_new,
                                          "_async": _async}) 
+
 
 class TestSearchBase(TestcaseBase):
     @pytest.fixture(

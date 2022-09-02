@@ -24,6 +24,8 @@ import (
 
 	"go.uber.org/zap"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
@@ -31,7 +33,6 @@ import (
 	queryPb "github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	"golang.org/x/sync/errgroup"
 )
 
 type task interface {
@@ -151,6 +152,23 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) (err error) {
 	// init collection meta
 	coll := w.node.metaReplica.addCollection(collectionID, w.req.Schema)
 
+	loadedChannelCounter := 0
+	for _, toLoadChannel := range vChannels {
+		for _, loadedChannel := range coll.vChannels {
+			if toLoadChannel == loadedChannel {
+				loadedChannelCounter++
+				break
+			}
+		}
+	}
+
+	// check if all channels has been loaded, if YES, should do nothing and return
+	// in case of query coord trigger same watchDmChannelTask on multi
+	if len(vChannels) == loadedChannelCounter {
+		log.Warn("All channel has been loaded, skip this watchDmChannelsTask")
+		return nil
+	}
+
 	//add shard cluster
 	for _, vchannel := range vChannels {
 		w.node.ShardClusterService.addShardCluster(w.req.GetCollectionID(), w.req.GetReplicaID(), vchannel)
@@ -170,8 +188,12 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) (err error) {
 	for _, info := range w.req.Infos {
 		for _, ufInfoID := range info.GetUnflushedSegmentIds() {
 			// unFlushed segment may not have binLogs, skip loading
-			ufInfo := w.req.SegmentInfos[ufInfoID]
-			if len(ufInfo.Binlogs) > 0 {
+			ufInfo := w.req.GetSegmentInfos()[ufInfoID]
+			if ufInfo == nil {
+				log.Warn("an unflushed segment is not found in segment infos", zap.Int64("segment ID", ufInfoID))
+				continue
+			}
+			if len(ufInfo.GetBinlogs()) > 0 {
 				unFlushedSegments = append(unFlushedSegments, &queryPb.SegmentLoadInfo{
 					SegmentID:     ufInfo.ID,
 					PartitionID:   ufInfo.PartitionID,
@@ -182,7 +204,7 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) (err error) {
 					Deltalogs:     ufInfo.Deltalogs,
 					InsertChannel: ufInfo.InsertChannel,
 				})
-				unFlushedSegmentIDs = append(unFlushedSegmentIDs, ufInfo.ID)
+				unFlushedSegmentIDs = append(unFlushedSegmentIDs, ufInfo.GetID())
 			}
 		}
 	}

@@ -60,6 +60,33 @@ func TestLessOrEqualThan(t *testing.T) {
 	ret, err = rid2.LessOrEqualThan(rid1.Serialize())
 	assert.Nil(t, err)
 	assert.False(t, ret)
+
+	ret, err = rid1.LessOrEqualThan(rid1.Serialize())
+	assert.Nil(t, err)
+	assert.True(t, ret)
+}
+
+func Test_Equal(t *testing.T) {
+	rid1 := &rmqID{
+		messageID: 0,
+	}
+
+	rid2 := &rmqID{
+		messageID: math.MaxInt64,
+	}
+
+	{
+		ret, err := rid1.Equal(rid1.Serialize())
+		assert.Nil(t, err)
+		assert.True(t, ret)
+
+	}
+
+	{
+		ret, err := rid1.Equal(rid2.Serialize())
+		assert.Nil(t, err)
+		assert.False(t, ret)
+	}
 }
 
 func Test_SerializeRmqID(t *testing.T) {

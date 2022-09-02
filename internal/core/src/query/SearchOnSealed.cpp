@@ -16,19 +16,20 @@
 #include "knowhere/index/vector_index/ConfAdapterMgr.h"
 #include "knowhere/index/vector_index/helpers/IndexParameter.h"
 #include "knowhere/index/vector_index/adapter/VectorAdapter.h"
+#include "query/SearchBruteForce.h"
 #include "query/SearchOnSealed.h"
+#include "query/helper.h"
 
 namespace milvus::query {
 
 void
-SearchOnSealed(const Schema& schema,
-               const segcore::SealedIndexingRecord& record,
-               const SearchInfo& search_info,
-               const void* query_data,
-               int64_t num_queries,
-               const BitsetView& bitset,
-               SearchResult& result,
-               int64_t segment_id) {
+SearchOnSealedIndex(const Schema& schema,
+                    const segcore::SealedIndexingRecord& record,
+                    const SearchInfo& search_info,
+                    const void* query_data,
+                    int64_t num_queries,
+                    const BitsetView& bitset,
+                    SearchResult& result) {
     auto topk = search_info.topk_;
     auto round_decimal = search_info.round_decimal_;
 
@@ -62,8 +63,6 @@ SearchOnSealed(const Schema& schema,
     float* distances = (float*)knowhere::GetDatasetDistance(final);
 
     auto total_num = num_queries * topk;
-
-    const float multiplier = pow(10.0, round_decimal);
     if (round_decimal != -1) {
         const float multiplier = pow(10.0, round_decimal);
         for (int i = 0; i < total_num; i++) {
@@ -78,4 +77,30 @@ SearchOnSealed(const Schema& schema,
     std::copy_n(ids, total_num, result.seg_offsets_.data());
     std::copy_n(distances, total_num, result.distances_.data());
 }
+
+void
+SearchOnSealed(const Schema& schema,
+               const segcore::InsertRecord& record,
+               const SearchInfo& search_info,
+               const void* query_data,
+               int64_t num_queries,
+               int64_t row_count,
+               const BitsetView& bitset,
+               SearchResult& result) {
+    auto field_id = search_info.field_id_;
+    auto& field = schema[field_id];
+
+    query::dataset::SearchDataset dataset{search_info.metric_type_,   num_queries,     search_info.topk_,
+                                          search_info.round_decimal_, field.get_dim(), query_data};
+    auto vec_data = record.get_field_data_base(field_id);
+    AssertInfo(vec_data->num_chunk() == 1, "num chunk not equal to 1 for sealed segment");
+    auto chunk_data = vec_data->get_chunk_data(0);
+    auto sub_qr = query::BruteForceSearch(dataset, chunk_data, row_count, bitset);
+
+    result.distances_ = std::move(sub_qr.mutable_distances());
+    result.seg_offsets_ = std::move(sub_qr.mutable_seg_offsets());
+    result.unity_topK_ = dataset.topk;
+    result.total_nq_ = dataset.num_queries;
+}
+
 }  // namespace milvus::query

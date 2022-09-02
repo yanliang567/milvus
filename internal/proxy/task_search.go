@@ -93,9 +93,12 @@ func parseQueryInfo(searchParamsPair []*commonpb.KeyValuePair) (*planpb.QueryInf
 	if err != nil {
 		return nil, errors.New(TopKKey + " not found in search_params")
 	}
-	topK, err := strconv.Atoi(topKStr)
+	topK, err := strconv.ParseInt(topKStr, 0, 64)
 	if err != nil {
-		return nil, errors.New(TopKKey + " " + topKStr + " is not invalid")
+		return nil, fmt.Errorf("%s [%s] is invalid", TopKKey, topKStr)
+	}
+	if err := validateTopK(topK); err != nil {
+		return nil, fmt.Errorf("invalid limit, %w", err)
 	}
 
 	metricType, err := funcutil.GetAttrByKeyFromRepeatedKV(MetricTypeKey, searchParamsPair)
@@ -112,20 +115,20 @@ func parseQueryInfo(searchParamsPair []*commonpb.KeyValuePair) (*planpb.QueryInf
 	if err != nil {
 		roundDecimalStr = "-1"
 	}
-	roundDecimal, err := strconv.Atoi(roundDecimalStr)
+	roundDecimal, err := strconv.ParseInt(roundDecimalStr, 0, 64)
 	if err != nil {
-		return nil, errors.New(RoundDecimalKey + " " + roundDecimalStr + " is not invalid")
+		return nil, fmt.Errorf("%s [%s] is invalid, should be -1 or an integer in range [0, 6]", RoundDecimalKey, roundDecimalStr)
 	}
 
 	if roundDecimal != -1 && (roundDecimal > 6 || roundDecimal < 0) {
-		return nil, errors.New(RoundDecimalKey + " " + roundDecimalStr + " is not invalid")
+		return nil, fmt.Errorf("%s [%s] is invalid, should be -1 or an integer in range [0, 6]", RoundDecimalKey, roundDecimalStr)
 	}
 
 	return &planpb.QueryInfo{
-		Topk:         int64(topK),
+		Topk:         topK,
 		MetricType:   metricType,
 		SearchParams: searchParams,
-		RoundDecimal: int64(roundDecimal),
+		RoundDecimal: roundDecimal,
 	}, nil
 }
 
@@ -210,7 +213,7 @@ func (t *searchTask) PreExecute(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	log.Debug("translate output fields", zap.Int64("msgID", t.ID()),
+	log.Ctx(ctx).Debug("translate output fields", zap.Int64("msgID", t.ID()),
 		zap.Strings("output fields", t.request.GetOutputFields()))
 
 	if t.request.GetDslType() == commonpb.DslType_BoolExprV1 {
@@ -226,12 +229,12 @@ func (t *searchTask) PreExecute(ctx context.Context) error {
 
 		plan, err := planparserv2.CreateSearchPlan(t.schema, t.request.Dsl, annsField, queryInfo)
 		if err != nil {
-			log.Debug("failed to create query plan", zap.Error(err), zap.Int64("msgID", t.ID()),
+			log.Ctx(ctx).Warn("failed to create query plan", zap.Error(err), zap.Int64("msgID", t.ID()),
 				zap.String("dsl", t.request.Dsl), // may be very large if large term passed.
 				zap.String("anns field", annsField), zap.Any("query info", queryInfo))
 			return fmt.Errorf("failed to create query plan: %v", err)
 		}
-		log.Debug("create query plan", zap.Int64("msgID", t.ID()),
+		log.Ctx(ctx).Debug("create query plan", zap.Int64("msgID", t.ID()),
 			zap.String("dsl", t.request.Dsl), // may be very large if large term passed.
 			zap.String("anns field", annsField), zap.Any("query info", queryInfo))
 
@@ -242,6 +245,7 @@ func (t *searchTask) PreExecute(ctx context.Context) error {
 		t.SearchRequest.OutputFieldsId = outputFieldIDs
 		plan.OutputFieldIds = outputFieldIDs
 
+		t.SearchRequest.Topk = queryInfo.GetTopk()
 		t.SearchRequest.MetricType = queryInfo.GetMetricType()
 		t.SearchRequest.DslType = commonpb.DslType_BoolExprV1
 		t.SearchRequest.SerializedExprPlan, err = proto.Marshal(plan)
@@ -249,11 +253,7 @@ func (t *searchTask) PreExecute(ctx context.Context) error {
 			return err
 		}
 
-		t.SearchRequest.Topk = queryInfo.GetTopk()
-		if err := validateTopK(queryInfo.GetTopk()); err != nil {
-			return err
-		}
-		log.Debug("Proxy::searchTask::PreExecute", zap.Int64("msgID", t.ID()),
+		log.Ctx(ctx).Debug("Proxy::searchTask::PreExecute", zap.Int64("msgID", t.ID()),
 			zap.Int64s("plan.OutputFieldIds", plan.GetOutputFieldIds()),
 			zap.String("plan", plan.String())) // may be very large if large term passed.
 	}
@@ -282,7 +282,7 @@ func (t *searchTask) PreExecute(ctx context.Context) error {
 	if t.SearchRequest.Nq, err = getNq(t.request); err != nil {
 		return err
 	}
-	log.Info("search PreExecute done.", zap.Int64("msgID", t.ID()),
+	log.Ctx(ctx).Debug("search PreExecute done.", zap.Int64("msgID", t.ID()),
 		zap.Uint64("travel_ts", travelTimestamp), zap.Uint64("guarantee_ts", guaranteeTs),
 		zap.Uint64("timeout_ts", t.SearchRequest.GetTimeoutTimestamp()))
 
@@ -294,7 +294,7 @@ func (t *searchTask) Execute(ctx context.Context) error {
 	defer sp.Finish()
 
 	tr := timerecord.NewTimeRecorder(fmt.Sprintf("proxy execute search %d", t.ID()))
-	defer tr.Elapse("done")
+	defer tr.CtxElapse(ctx, "done")
 
 	executeSearch := func(withCache bool) error {
 		shard2Leaders, err := globalMetaCache.GetShards(ctx, withCache, t.collectionName)
@@ -304,7 +304,7 @@ func (t *searchTask) Execute(ctx context.Context) error {
 		t.resultBuf = make(chan *internalpb.SearchResults, len(shard2Leaders))
 		t.toReduceResults = make([]*internalpb.SearchResults, 0, len(shard2Leaders))
 		if err := t.searchShardPolicy(ctx, t.shardMgr, t.searchShard, shard2Leaders); err != nil {
-			log.Warn("failed to do search", zap.Error(err), zap.String("Shards", fmt.Sprintf("%v", shard2Leaders)))
+			log.Ctx(ctx).Warn("failed to do search", zap.Error(err), zap.String("Shards", fmt.Sprintf("%v", shard2Leaders)))
 			return err
 		}
 		return nil
@@ -312,7 +312,7 @@ func (t *searchTask) Execute(ctx context.Context) error {
 
 	err := executeSearch(WithCache)
 	if errors.Is(err, errInvalidShardLeaders) || funcutil.IsGrpcErr(err) || errors.Is(err, grpcclient.ErrConnect) {
-		log.Warn("first search failed, updating shardleader caches and retry search",
+		log.Ctx(ctx).Warn("first search failed, updating shardleader caches and retry search",
 			zap.Int64("msgID", t.ID()), zap.Error(err))
 		return executeSearch(WithoutCache)
 	}
@@ -320,7 +320,7 @@ func (t *searchTask) Execute(ctx context.Context) error {
 		return fmt.Errorf("fail to search on all shard leaders, err=%v", err)
 	}
 
-	log.Debug("Search Execute done.", zap.Int64("msgID", t.ID()))
+	log.Ctx(ctx).Debug("Search Execute done.", zap.Int64("msgID", t.ID()))
 	return nil
 }
 
@@ -329,34 +329,34 @@ func (t *searchTask) PostExecute(ctx context.Context) error {
 	defer sp.Finish()
 	tr := timerecord.NewTimeRecorder("searchTask PostExecute")
 	defer func() {
-		tr.Elapse("done")
+		tr.CtxElapse(ctx, "done")
 	}()
 
 	select {
 	// in case timeout happened
 	case <-t.TraceCtx().Done():
-		log.Debug("wait to finish timeout!", zap.Int64("msgID", t.ID()))
+		log.Ctx(ctx).Debug("wait to finish timeout!", zap.Int64("msgID", t.ID()))
 		return nil
 	default:
-		log.Debug("all searches are finished or canceled", zap.Int64("msgID", t.ID()))
+		log.Ctx(ctx).Debug("all searches are finished or canceled", zap.Int64("msgID", t.ID()))
 		close(t.resultBuf)
 		for res := range t.resultBuf {
 			t.toReduceResults = append(t.toReduceResults, res)
-			log.Debug("proxy receives one query result", zap.Int64("sourceID", res.GetBase().GetSourceID()), zap.Int64("msgID", t.ID()))
+			log.Ctx(ctx).Debug("proxy receives one query result", zap.Int64("sourceID", res.GetBase().GetSourceID()), zap.Int64("msgID", t.ID()))
 		}
 	}
-	tr.Record("decodeResultStart")
-	validSearchResults, err := decodeSearchResults(t.toReduceResults)
+	tr.CtxRecord(ctx, "decodeResultStart")
+	validSearchResults, err := decodeSearchResults(ctx, t.toReduceResults)
 	if err != nil {
 		return err
 	}
 	metrics.ProxyDecodeResultLatency.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10),
 		metrics.SearchLabel).Observe(float64(tr.RecordSpan().Milliseconds()))
 
-	log.Debug("proxy search post execute stage 2", zap.Int64("msgID", t.ID()),
+	log.Ctx(ctx).Debug("proxy search post execute stage 2", zap.Int64("msgID", t.ID()),
 		zap.Int("len(validSearchResults)", len(validSearchResults)))
 	if len(validSearchResults) <= 0 {
-		log.Warn("search result is empty", zap.Int64("msgID", t.ID()))
+		log.Ctx(ctx).Warn("search result is empty", zap.Int64("msgID", t.ID()))
 
 		t.result = &milvuspb.SearchResults{
 			Status: &commonpb.Status{
@@ -375,12 +375,13 @@ func (t *searchTask) PostExecute(ctx context.Context) error {
 		return nil
 	}
 
-	tr.Record("reduceResultStart")
+	tr.CtxRecord(ctx, "reduceResultStart")
 	primaryFieldSchema, err := typeutil.GetPrimaryFieldSchema(t.schema)
 	if err != nil {
 		return err
 	}
-	t.result, err = reduceSearchResultData(validSearchResults, t.toReduceResults[0].NumQueries, t.toReduceResults[0].TopK, t.toReduceResults[0].MetricType, primaryFieldSchema.DataType)
+	t.result, err = reduceSearchResultData(ctx, validSearchResults, t.toReduceResults[0].NumQueries,
+		t.toReduceResults[0].TopK, t.toReduceResults[0].MetricType, primaryFieldSchema.DataType)
 	if err != nil {
 		return err
 	}
@@ -403,7 +404,7 @@ func (t *searchTask) PostExecute(ctx context.Context) error {
 			}
 		}
 	}
-	log.Info("Search post execute done", zap.Int64("msgID", t.ID()))
+	log.Ctx(ctx).Debug("Search post execute done", zap.Int64("msgID", t.ID()))
 	return nil
 }
 
@@ -415,17 +416,17 @@ func (t *searchTask) searchShard(ctx context.Context, nodeID int64, qn types.Que
 	}
 	result, err := qn.Search(ctx, req)
 	if err != nil {
-		log.Warn("QueryNode search return error", zap.Int64("msgID", t.ID()),
+		log.Ctx(ctx).Warn("QueryNode search return error", zap.Int64("msgID", t.ID()),
 			zap.Int64("nodeID", nodeID), zap.Strings("channels", channelIDs), zap.Error(err))
 		return err
 	}
 	if result.GetStatus().GetErrorCode() == commonpb.ErrorCode_NotShardLeader {
-		log.Warn("QueryNode is not shardLeader", zap.Int64("msgID", t.ID()),
+		log.Ctx(ctx).Warn("QueryNode is not shardLeader", zap.Int64("msgID", t.ID()),
 			zap.Int64("nodeID", nodeID), zap.Strings("channels", channelIDs))
 		return errInvalidShardLeaders
 	}
 	if result.GetStatus().GetErrorCode() != commonpb.ErrorCode_Success {
-		log.Warn("QueryNode search result error", zap.Int64("msgID", t.ID()), zap.Int64("nodeID", nodeID),
+		log.Ctx(ctx).Warn("QueryNode search result error", zap.Int64("msgID", t.ID()), zap.Int64("nodeID", nodeID),
 			zap.String("reason", result.GetStatus().GetReason()))
 		return fmt.Errorf("fail to Search, QueryNode ID=%d, reason=%s", nodeID, result.GetStatus().GetReason())
 	}
@@ -443,55 +444,35 @@ func checkIfLoaded(ctx context.Context, qc types.QueryCoord, collectionName stri
 	if info.isLoaded {
 		return true, nil
 	}
-
-	// If request to search partitions
-	if len(searchPartitionIDs) > 0 {
-		resp, err := qc.ShowPartitions(ctx, &querypb.ShowPartitionsRequest{
-			Base: &commonpb.MsgBase{
-				MsgType:  commonpb.MsgType_ShowPartitions,
-				SourceID: Params.ProxyCfg.GetNodeID(),
-			},
-			CollectionID: info.collID,
-			PartitionIDs: searchPartitionIDs,
-		})
-		if err != nil {
-			return false, fmt.Errorf("showPartitions failed, collection = %s, partitionIDs = %v, err = %s", collectionName, searchPartitionIDs, err)
-		}
-
-		if resp.Status.ErrorCode != commonpb.ErrorCode_Success {
-			return false, fmt.Errorf("showPartitions failed, collection = %s, partitionIDs = %v, reason = %s", collectionName, searchPartitionIDs, resp.GetStatus().GetReason())
-		}
-		// Current logic: show partitions won't return error if the given partitions are all loaded
-		return true, nil
+	if len(searchPartitionIDs) == 0 {
+		return false, nil
 	}
 
-	// If request to search collection and collection is not fully loaded
+	// If request to search partitions
 	resp, err := qc.ShowPartitions(ctx, &querypb.ShowPartitionsRequest{
 		Base: &commonpb.MsgBase{
 			MsgType:  commonpb.MsgType_ShowPartitions,
 			SourceID: Params.ProxyCfg.GetNodeID(),
 		},
 		CollectionID: info.collID,
+		PartitionIDs: searchPartitionIDs,
 	})
 	if err != nil {
 		return false, fmt.Errorf("showPartitions failed, collection = %s, partitionIDs = %v, err = %s", collectionName, searchPartitionIDs, err)
 	}
-
 	if resp.Status.ErrorCode != commonpb.ErrorCode_Success {
 		return false, fmt.Errorf("showPartitions failed, collection = %s, partitionIDs = %v, reason = %s", collectionName, searchPartitionIDs, resp.GetStatus().GetReason())
 	}
 
-	if len(resp.GetPartitionIDs()) > 0 {
-		log.Warn("collection not fully loaded, search on these partitions",
-			zap.String("collection", collectionName),
-			zap.Int64("collectionID", info.collID), zap.Int64s("partitionIDs", resp.GetPartitionIDs()))
-		return true, nil
+	for _, persent := range resp.InMemoryPercentages {
+		if persent < 100 {
+			return false, nil
+		}
 	}
-
-	return false, nil
+	return true, nil
 }
 
-func decodeSearchResults(searchResults []*internalpb.SearchResults) ([]*schemapb.SearchResultData, error) {
+func decodeSearchResults(ctx context.Context, searchResults []*internalpb.SearchResults) ([]*schemapb.SearchResultData, error) {
 	tr := timerecord.NewTimeRecorder("decodeSearchResults")
 	results := make([]*schemapb.SearchResultData, 0)
 	for _, partialSearchResult := range searchResults {
@@ -507,7 +488,7 @@ func decodeSearchResults(searchResults []*internalpb.SearchResults) ([]*schemapb
 
 		results = append(results, &partialResultData)
 	}
-	tr.Elapse("decodeSearchResults done")
+	tr.CtxElapse(ctx, "decodeSearchResults done")
 	return results, nil
 }
 
@@ -544,14 +525,13 @@ func selectSearchResultData(dataArray []*schemapb.SearchResultData, resultOffset
 	return sel
 }
 
-func reduceSearchResultData(searchResultData []*schemapb.SearchResultData, nq int64, topk int64, metricType string, pkType schemapb.DataType) (*milvuspb.SearchResults, error) {
-
+func reduceSearchResultData(ctx context.Context, searchResultData []*schemapb.SearchResultData, nq int64, topk int64, metricType string, pkType schemapb.DataType) (*milvuspb.SearchResults, error) {
 	tr := timerecord.NewTimeRecorder("reduceSearchResultData")
 	defer func() {
-		tr.Elapse("done")
+		tr.CtxElapse(ctx, "done")
 	}()
 
-	log.Debug("reduceSearchResultData", zap.Int("len(searchResultData)", len(searchResultData)),
+	log.Ctx(ctx).Debug("reduceSearchResultData", zap.Int("len(searchResultData)", len(searchResultData)),
 		zap.Int64("nq", nq), zap.Int64("topk", topk), zap.String("metricType", metricType))
 
 	ret := &milvuspb.SearchResults{
@@ -585,14 +565,14 @@ func reduceSearchResultData(searchResultData []*schemapb.SearchResultData, nq in
 	}
 
 	for i, sData := range searchResultData {
-		log.Debug("reduceSearchResultData",
+		log.Ctx(ctx).Debug("reduceSearchResultData",
 			zap.Int("result No.", i),
 			zap.Int64("nq", sData.NumQueries),
 			zap.Int64("topk", sData.TopK),
 			zap.Any("len(topks)", len(sData.Topks)),
 			zap.Any("len(FieldsData)", len(sData.FieldsData)))
 		if err := checkSearchResultData(sData, nq, topk); err != nil {
-			log.Warn("invalid search results", zap.Error(err))
+			log.Ctx(ctx).Warn("invalid search results", zap.Error(err))
 			return ret, err
 		}
 		//printSearchResultData(sData, strconv.FormatInt(int64(i), 10))
@@ -637,13 +617,13 @@ func reduceSearchResultData(searchResultData []*schemapb.SearchResultData, nq in
 			offsets[sel]++
 		}
 		if realTopK != -1 && realTopK != j {
-			log.Warn("Proxy Reduce Search Result", zap.Error(errors.New("the length (topk) between all result of query is different")))
+			log.Ctx(ctx).Warn("Proxy Reduce Search Result", zap.Error(errors.New("the length (topk) between all result of query is different")))
 			// return nil, errors.New("the length (topk) between all result of query is different")
 		}
 		realTopK = j
 		ret.Results.Topks = append(ret.Results.Topks, realTopK)
 	}
-	log.Debug("skip duplicated search result", zap.Int64("count", skipDupCnt))
+	log.Ctx(ctx).Debug("skip duplicated search result", zap.Int64("count", skipDupCnt))
 	ret.Results.TopK = realTopK
 
 	if !distance.PositivelyRelated(metricType) {
@@ -666,18 +646,6 @@ func reduceSearchResultData(searchResultData []*schemapb.SearchResultData, nq in
 //		log.Debug("", zap.Int("i", i), zap.Int64("id", data.Ids.GetIntId().Data[i]), zap.Float32("score", data.Scores[i]))
 //	}
 //}
-
-// func printSearchResult(partialSearchResult *internalpb.SearchResults) {
-//     for i := 0; i < len(partialSearchResult.Hits); i++ {
-//         testHits := milvuspb.Hits{}
-//         err := proto.Unmarshal(partialSearchResult.Hits[i], &testHits)
-//         if err != nil {
-//             panic(err)
-//         }
-//         fmt.Println(testHits.IDs)
-//         fmt.Println(testHits.Scores)
-//     }
-// }
 
 func (t *searchTask) TraceCtx() context.Context {
 	return t.ctx

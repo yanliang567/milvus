@@ -1137,8 +1137,8 @@ TEST(CApiTest, ReudceNullResult) {
     dataset.timestamps_.push_back(1);
 
     {
-        auto slice_nqs = std::vector<int32_t>{10};
-        auto slice_topKs = std::vector<int32_t>{1};
+        auto slice_nqs = std::vector<int64_t>{10};
+        auto slice_topKs = std::vector<int64_t>{1};
         std::vector<CSearchResult> results;
         CSearchResult res;
         status = Search(segment, plan, placeholderGroup, dataset.timestamps_[0], &res, -1);
@@ -1214,8 +1214,8 @@ TEST(CApiTest, ReduceRemoveDuplicates) {
     dataset.timestamps_.push_back(1);
 
     {
-        auto slice_nqs = std::vector<int32_t>{num_queries / 2, num_queries / 2};
-        auto slice_topKs = std::vector<int32_t>{topK / 2, topK};
+        auto slice_nqs = std::vector<int64_t>{num_queries / 2, num_queries / 2};
+        auto slice_topKs = std::vector<int64_t>{topK / 2, topK};
         std::vector<CSearchResult> results;
         CSearchResult res1, res2;
         status = Search(segment, plan, placeholderGroup, dataset.timestamps_[0], &res1, -1);
@@ -1239,8 +1239,8 @@ TEST(CApiTest, ReduceRemoveDuplicates) {
         int nq1 = num_queries / 3;
         int nq2 = num_queries / 3;
         int nq3 = num_queries - nq1 - nq2;
-        auto slice_nqs = std::vector<int32_t>{nq1, nq2, nq3};
-        auto slice_topKs = std::vector<int32_t>{topK / 2, topK, topK};
+        auto slice_nqs = std::vector<int64_t>{nq1, nq2, nq3};
+        auto slice_topKs = std::vector<int64_t>{topK / 2, topK, topK};
         std::vector<CSearchResult> results;
         CSearchResult res1, res2, res3;
         status = Search(segment, plan, placeholderGroup, dataset.timestamps_[0], &res1, -1);
@@ -1324,13 +1324,13 @@ testReduceSearchWithExpr(int N, int topK, int num_queries) {
     results.push_back(res1);
     results.push_back(res2);
 
-    auto slice_nqs = std::vector<int32_t>{num_queries / 2, num_queries / 2};
+    auto slice_nqs = std::vector<int64_t>{num_queries / 2, num_queries / 2};
     if (num_queries == 1) {
-        slice_nqs = std::vector<int32_t>{num_queries};
+        slice_nqs = std::vector<int64_t>{num_queries};
     }
-    auto slice_topKs = std::vector<int32_t>{topK / 2, topK};
+    auto slice_topKs = std::vector<int64_t>{topK / 2, topK};
     if (topK == 1) {
-        slice_topKs = std::vector<int32_t>{topK, topK};
+        slice_topKs = std::vector<int64_t>{topK, topK};
     }
 
     // 1. reduce
@@ -2749,8 +2749,8 @@ TEST(CApiTest, Indexing_With_binary_Predicate_Term) {
     std::vector<CSearchResult> results;
     results.push_back(c_search_result_on_bigIndex);
 
-    auto slice_nqs = std::vector<int32_t>{num_queries};
-    auto slice_topKs = std::vector<int32_t>{topK};
+    auto slice_nqs = std::vector<int64_t>{num_queries};
+    auto slice_topKs = std::vector<int64_t>{topK};
 
     CSearchResultDataBlobs cSearchResultData;
     status = ReduceSearchResultsAndFillData(&cSearchResultData, plan, results.data(), results.size(), slice_nqs.data(),
@@ -2762,7 +2762,8 @@ TEST(CApiTest, Indexing_With_binary_Predicate_Term) {
 
     auto search_result_on_bigIndex = (SearchResult*)c_search_result_on_bigIndex;
     for (int i = 0; i < num_queries; ++i) {
-        auto offset = search_result_on_bigIndex->get_result_count(i);
+        ASSERT_EQ(search_result_on_bigIndex->topk_per_nq_prefix_sum_.size(), search_result_on_bigIndex->total_nq_ + 1);
+        auto offset = search_result_on_bigIndex->topk_per_nq_prefix_sum_[i];
         ASSERT_EQ(search_result_on_bigIndex->seg_offsets_[offset], 42000 + i);
         ASSERT_EQ(search_result_on_bigIndex->distances_[offset], search_result_on_raw_index->distances_[i * TOPK]);
     }
@@ -2914,8 +2915,8 @@ TEST(CApiTest, Indexing_Expr_With_binary_Predicate_Term) {
     std::vector<CSearchResult> results;
     results.push_back(c_search_result_on_bigIndex);
 
-    auto slice_nqs = std::vector<int32_t>{num_queries};
-    auto slice_topKs = std::vector<int32_t>{topK};
+    auto slice_nqs = std::vector<int64_t>{num_queries};
+    auto slice_topKs = std::vector<int64_t>{topK};
 
     CSearchResultDataBlobs cSearchResultData;
     status = ReduceSearchResultsAndFillData(&cSearchResultData, plan, results.data(), results.size(), slice_nqs.data(),
@@ -2927,7 +2928,8 @@ TEST(CApiTest, Indexing_Expr_With_binary_Predicate_Term) {
 
     auto search_result_on_bigIndex = (SearchResult*)c_search_result_on_bigIndex;
     for (int i = 0; i < num_queries; ++i) {
-        auto offset = search_result_on_bigIndex->get_result_count(i);
+        ASSERT_EQ(search_result_on_bigIndex->topk_per_nq_prefix_sum_.size(), search_result_on_bigIndex->total_nq_ + 1);
+        auto offset = search_result_on_bigIndex->topk_per_nq_prefix_sum_[i];
         ASSERT_EQ(search_result_on_bigIndex->seg_offsets_[offset], 42000 + i);
         ASSERT_EQ(search_result_on_bigIndex->distances_[offset], search_result_on_raw_index->distances_[i * TOPK]);
     }

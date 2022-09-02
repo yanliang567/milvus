@@ -696,6 +696,27 @@ func (node *DataNode) GetStatisticsChannel(ctx context.Context) (*milvuspb.Strin
 	}, nil
 }
 
+//ShowConfigurations returns the configurations of DataNode matching req.Pattern
+func (node *DataNode) ShowConfigurations(ctx context.Context, req *internalpb.ShowConfigurationsRequest) (*internalpb.ShowConfigurationsResponse, error) {
+	log.Debug("DataNode.ShowConfigurations", zap.String("pattern", req.Pattern))
+	if !node.isHealthy() {
+		log.Warn("DataNode.ShowConfigurations failed",
+			zap.Int64("nodeId", Params.QueryNodeCfg.GetNodeID()),
+			zap.String("req", req.Pattern),
+			zap.Error(errDataNodeIsUnhealthy(Params.QueryNodeCfg.GetNodeID())))
+
+		return &internalpb.ShowConfigurationsResponse{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+				Reason:    msgDataNodeIsUnhealthy(Params.QueryNodeCfg.GetNodeID()),
+			},
+			Configuations: nil,
+		}, nil
+	}
+
+	return getComponentConfigurations(ctx, req), nil
+}
+
 // GetMetrics return datanode metrics
 // TODO(dragondriver): cache the Metrics and set a retention to the cache
 func (node *DataNode) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
@@ -788,7 +809,6 @@ func (node *DataNode) Compaction(ctx context.Context, req *datapb.CompactionPlan
 		ds.replica,
 		ds.flushManager,
 		ds.idAllocator,
-		node.dataCoord,
 		req,
 	)
 
@@ -796,6 +816,42 @@ func (node *DataNode) Compaction(ctx context.Context, req *datapb.CompactionPlan
 
 	return &commonpb.Status{
 		ErrorCode: commonpb.ErrorCode_Success,
+	}, nil
+}
+
+// GetCompactionState called by DataCoord
+// return status of all compaction plans
+func (node *DataNode) GetCompactionState(ctx context.Context, req *datapb.CompactionStateRequest) (*datapb.CompactionStateResponse, error) {
+	log.Info("DataNode.GetCompactionState")
+	if !node.isHealthy() {
+		return &datapb.CompactionStateResponse{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+				Reason:    "DataNode is unhealthy",
+			},
+		}, nil
+	}
+	results := make([]*datapb.CompactionStateResult, 0)
+	node.compactionExecutor.executing.Range(func(k, v any) bool {
+		results = append(results, &datapb.CompactionStateResult{
+			State:  commonpb.CompactionState_Executing,
+			PlanID: k.(UniqueID),
+		})
+		return true
+	})
+	node.compactionExecutor.completed.Range(func(k, v any) bool {
+		results = append(results, &datapb.CompactionStateResult{
+			State:  commonpb.CompactionState_Completed,
+			PlanID: k.(UniqueID),
+			Result: v.(*datapb.CompactionResult),
+		})
+		node.compactionExecutor.completed.Delete(k)
+		return true
+	})
+	log.Debug("Compaction results", zap.Any("results", results))
+	return &datapb.CompactionStateResponse{
+		Status:  &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success},
+		Results: results,
 	}, nil
 }
 
@@ -1058,7 +1114,7 @@ func importFlushReqFunc(node *DataNode, req *datapb.ImportTaskRequest, res *root
 			// no error raise if alloc=false
 			k := JoinIDPath(req.GetImportTask().GetCollectionId(), req.GetImportTask().GetPartitionId(), segmentID, fieldID, logidx)
 
-			key := path.Join(Params.DataNodeCfg.InsertBinlogRootPath, k)
+			key := path.Join(node.chunkManager.RootPath(), common.SegmentInsertLogPath, k)
 			kvs[key] = blob.Value[:]
 			field2Insert[fieldID] = &datapb.Binlog{
 				EntriesNum:    data.size,
@@ -1084,7 +1140,7 @@ func importFlushReqFunc(node *DataNode, req *datapb.ImportTaskRequest, res *root
 			// no error raise if alloc=false
 			k := JoinIDPath(req.GetImportTask().GetCollectionId(), req.GetImportTask().GetPartitionId(), segmentID, fieldID, logidx)
 
-			key := path.Join(Params.DataNodeCfg.StatsBinlogRootPath, k)
+			key := path.Join(node.chunkManager.RootPath(), common.SegmentStatslogPath, k)
 			kvs[key] = blob.Value
 			field2Stats[fieldID] = &datapb.Binlog{
 				EntriesNum:    0,
