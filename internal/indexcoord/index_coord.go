@@ -22,27 +22,28 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
-	"github.com/golang/protobuf/proto"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	v3rpc "go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/milvuspb"
 	"github.com/milvus-io/milvus/internal/common"
+	"github.com/milvus-io/milvus/internal/kv"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metastore/model"
 	"github.com/milvus-io/milvus/internal/metrics"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
-	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util"
@@ -78,7 +79,7 @@ type IndexCoord struct {
 
 	factory      dependency.Factory
 	etcdCli      *clientv3.Client
-	etcdKV       *etcdkv.EtcdKV
+	etcdKV       kv.MetaKv
 	chunkManager storage.ChunkManager
 
 	metaTable             *metaTable
@@ -201,7 +202,7 @@ func (i *IndexCoord) Init() error {
 			}
 			//}()
 		}
-		log.Debug("IndexCoord", zap.Int("IndexNode number", len(i.nodeManager.nodeClients)))
+		log.Debug("IndexCoord", zap.Int("IndexNode number", len(i.nodeManager.GetAllClients())))
 		i.indexBuilder = newIndexBuilder(i.loopCtx, i, i.metaTable, aliveNodeID)
 
 		// TODO silverxia add Rewatch logic
@@ -435,7 +436,6 @@ func (i *IndexCoord) CreateIndex(ctx context.Context, req *indexpb.CreateIndexRe
 		return ret, nil
 	}
 
-	i.garbageCollector.Notify()
 	ret.ErrorCode = commonpb.ErrorCode_Success
 	return ret, nil
 }
@@ -513,7 +513,7 @@ func (i *IndexCoord) GetSegmentIndexState(ctx context.Context, req *indexpb.GetS
 		States: make([]*indexpb.SegmentIndexState, 0),
 	}
 	indexID2CreateTs := i.metaTable.GetIndexIDByName(req.CollectionID, req.IndexName)
-	if len(indexID2CreateTs) != 1 {
+	if len(indexID2CreateTs) == 0 {
 		errMsg := fmt.Sprintf("there is no index on collection: %d with the index name: %s", req.CollectionID, req.IndexName)
 		log.Error("IndexCoord get index state fail", zap.Int64("collectionID", req.CollectionID),
 			zap.String("indexName", req.IndexName), zap.String("fail reason", errMsg))
@@ -524,15 +524,13 @@ func (i *IndexCoord) GetSegmentIndexState(ctx context.Context, req *indexpb.GetS
 			},
 		}, nil
 	}
-	for indexID := range indexID2CreateTs {
-		for _, segID := range req.SegmentIDs {
-			state := i.metaTable.GetSegmentIndexState(segID, indexID)
-			ret.States = append(ret.States, &indexpb.SegmentIndexState{
-				SegmentID:  segID,
-				State:      state.state,
-				FailReason: state.failReason,
-			})
-		}
+	for _, segID := range req.SegmentIDs {
+		state := i.metaTable.GetSegmentIndexState(segID)
+		ret.States = append(ret.States, &indexpb.SegmentIndexState{
+			SegmentID:  segID,
+			State:      state.state,
+			FailReason: state.failReason,
+		})
 	}
 	return ret, nil
 }
@@ -696,7 +694,7 @@ func (i *IndexCoord) GetIndexInfos(ctx context.Context, req *indexpb.GetIndexInf
 	}
 
 	log.Info("IndexCoord GetIndexFilePaths ", zap.Int("segIDs num", len(req.SegmentIDs)),
-		zap.Int("file path num", len(ret.SegmentInfo)), zap.Any("ret ", ret.SegmentInfo))
+		zap.Int("file path num", len(ret.SegmentInfo)))
 
 	return ret, nil
 }
@@ -957,11 +955,11 @@ func (i *IndexCoord) assignTask(builderClient types.IndexNode, req *indexpb.Crea
 func (i *IndexCoord) createIndexForSegment(segIdx *model.SegmentIndex) (bool, UniqueID, error) {
 	log.Info("create index for flushed segment", zap.Int64("collID", segIdx.CollectionID),
 		zap.Int64("segID", segIdx.SegmentID), zap.Int64("numRows", segIdx.NumRows))
-	if segIdx.NumRows < Params.IndexCoordCfg.MinSegmentNumRowsToEnableIndex {
-		log.Debug("no need to build index", zap.Int64("collID", segIdx.CollectionID),
-			zap.Int64("segID", segIdx.SegmentID), zap.Int64("numRows", segIdx.NumRows))
-		return false, 0, nil
-	}
+	//if segIdx.NumRows < Params.IndexCoordCfg.MinSegmentNumRowsToEnableIndex {
+	//	log.Debug("no need to build index", zap.Int64("collID", segIdx.CollectionID),
+	//		zap.Int64("segID", segIdx.SegmentID), zap.Int64("numRows", segIdx.NumRows))
+	//	return false, 0, nil
+	//}
 
 	hasIndex, indexBuildID := i.metaTable.HasSameIndex(segIdx.SegmentID, segIdx.IndexID)
 	if hasIndex {
@@ -1038,16 +1036,14 @@ func (i *IndexCoord) watchFlushedSegmentLoop() {
 			for _, event := range events {
 				switch event.Type {
 				case mvccpb.PUT:
-					segmentInfo := &datapb.SegmentInfo{}
-					if err := proto.Unmarshal(event.Kv.Value, segmentInfo); err != nil {
-						log.Error("watchFlushedSegmentLoop unmarshal fail", zap.Error(err))
+					segmentID, err := strconv.ParseInt(string(event.Kv.Value), 10, 64)
+					if err != nil {
+						log.Error("IndexCoord watch flushed segment, but parse segmentID fail",
+							zap.String("event.Value", string(event.Kv.Value)), zap.Error(err))
 						continue
 					}
-
-					log.Debug("watchFlushedSegmentLoop watch event", zap.Int64("segID", segmentInfo.ID),
-						zap.Int64("collID", segmentInfo.CollectionID), zap.Int64("num rows", segmentInfo.NumOfRows),
-						zap.Int64s("compactForm", segmentInfo.CompactionFrom))
-					i.flushedSegmentWatcher.enqueueInternalTask(segmentInfo)
+					log.Debug("watchFlushedSegmentLoop watch event", zap.Int64("segID", segmentID))
+					i.flushedSegmentWatcher.enqueueInternalTask(segmentID)
 				case mvccpb.DELETE:
 					log.Debug("the segment info has been deleted", zap.String("key", string(event.Kv.Key)))
 				}

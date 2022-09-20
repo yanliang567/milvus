@@ -20,13 +20,14 @@ import (
 	"context"
 	"math"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/milvus-io/milvus/api/commonpb"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/util/dependency"
 )
@@ -73,16 +74,14 @@ func TestNodeCtx_Start(t *testing.T) {
 	produceStream.Produce(&msgPack)
 
 	nodeName := "input_node"
-	inputNode := &InputNode{
-		inStream: msgStream,
-		name:     nodeName,
-	}
+	inputNode := NewInputNode(msgStream, nodeName, 100, 100)
 
 	node := &nodeCtx{
 		node:                   inputNode,
 		inputChannels:          make([]chan Msg, 2),
 		downstreamInputChanIdx: make(map[string]int),
 		closeCh:                make(chan struct{}),
+		closeWg:                &sync.WaitGroup{},
 	}
 
 	for i := 0; i < len(node.inputChannels); i++ {

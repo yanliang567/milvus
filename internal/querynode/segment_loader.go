@@ -28,16 +28,16 @@ import (
 	"github.com/panjf2000/ants/v2"
 	"go.uber.org/zap"
 
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
-	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/concurrency"
@@ -147,7 +147,7 @@ func (loader *segmentLoader) LoadSegment(req *querypb.LoadSegmentsRequest, segme
 			return err
 		}
 
-		segment, err := newSegment(collection, segmentID, partitionID, collectionID, vChannelID, segmentType, loader.cgoPool)
+		segment, err := newSegment(collection, segmentID, partitionID, collectionID, vChannelID, segmentType, req.GetVersion(), loader.cgoPool)
 		if err != nil {
 			log.Error("load segment failed when create new segment",
 				zap.Int64("collectionID", collectionID),
@@ -239,7 +239,7 @@ func (loader *segmentLoader) loadFiles(segment *Segment,
 	if segment.getType() == segmentTypeSealed {
 		fieldID2IndexInfo := make(map[int64]*querypb.FieldIndexInfo)
 		for _, indexInfo := range loadInfo.IndexInfos {
-			if indexInfo != nil && indexInfo.EnableIndex {
+			if indexInfo != nil && indexInfo.EnableIndex && len(indexInfo.IndexFilePaths) > 0 {
 				fieldID := indexInfo.FieldID
 				fieldID2IndexInfo[fieldID] = indexInfo
 			}
@@ -425,6 +425,7 @@ func (loader *segmentLoader) loadFieldBinlogsAsync(field *datapb.FieldBinlog) []
 		future := loader.ioPool.Submit(func() (interface{}, error) {
 			binLog, err := loader.cm.Read(path)
 			if err != nil {
+				log.Warn("failed to load binlog", zap.String("filePath", path), zap.Error(err))
 				return nil, err
 			}
 			blob := &storage.Blob{
@@ -471,7 +472,12 @@ func (loader *segmentLoader) loadFieldIndexData(segment *Segment, indexInfo *que
 			indexFuture := loader.cpuPool.Submit(func() (interface{}, error) {
 				indexBlobFuture := loader.ioPool.Submit(func() (interface{}, error) {
 					log.Debug("load index file", zap.String("path", indexPath))
-					return loader.cm.Read(indexPath)
+					data, err := loader.cm.Read(indexPath)
+					if err != nil {
+						log.Warn("failed to load index file", zap.String("path", indexPath), zap.Error(err))
+						return nil, err
+					}
+					return data, nil
 				})
 
 				indexBlob, err := indexBlobFuture.Await()

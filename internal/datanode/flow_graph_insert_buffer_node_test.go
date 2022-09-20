@@ -19,6 +19,7 @@ package datanode
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -37,11 +38,11 @@ import (
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
 
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus/api/schemapb"
 	"github.com/milvus-io/milvus/internal/proto/etcdpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
-	"github.com/milvus-io/milvus/internal/proto/milvuspb"
-	"github.com/milvus-io/milvus/internal/proto/schemapb"
 )
 
 var insertNodeTestDir = "/tmp/milvus_test/insert_node"
@@ -234,7 +235,7 @@ func TestFlowGraphInsertBufferNode_Operate(t *testing.T) {
 	assert.Panics(t, func() { iBNode.Operate([]flowgraph.Msg{&inMsg}) })
 
 	// test flushBufferData failed
-	flowGraphRetryOpt = retry.Attempts(1)
+	setFlowGraphRetryOpt(retry.Attempts(1))
 	inMsg = genFlowGraphInsertMsg(insertChannelName)
 	iBNode.flushManager = &mockFlushManager{returnError: true}
 	iBNode.insertBuffer.Store(inMsg.insertMessages[0].SegmentID, &BufferData{})
@@ -1030,6 +1031,56 @@ func TestInsertBufferNode_BufferData(te *testing.T) {
 				assert.Nil(t, idata)
 			}
 		})
+	}
+}
 
+func TestInsertBufferNode_BufferData_updateTimeRange(t *testing.T) {
+	Params.DataNodeCfg.FlushInsertBufferSize = 16 * (1 << 20) // 16 MB
+
+	type testCase struct {
+		tag string
+
+		trs        []TimeRange
+		expectFrom Timestamp
+		expectTo   Timestamp
+	}
+
+	cases := []testCase{
+		{
+			tag:        "no input range",
+			expectTo:   0,
+			expectFrom: math.MaxUint64,
+		},
+		{
+			tag: "single range",
+			trs: []TimeRange{
+				{timestampMin: 100, timestampMax: 200},
+			},
+			expectFrom: 100,
+			expectTo:   200,
+		},
+		{
+			tag: "multiple range",
+			trs: []TimeRange{
+				{timestampMin: 150, timestampMax: 250},
+				{timestampMin: 100, timestampMax: 200},
+				{timestampMin: 50, timestampMax: 180},
+			},
+			expectFrom: 50,
+			expectTo:   250,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.tag, func(t *testing.T) {
+			bd, err := newBufferData(16)
+			require.NoError(t, err)
+			for _, tr := range tc.trs {
+				bd.updateTimeRange(tr)
+			}
+
+			assert.Equal(t, tc.expectFrom, bd.tsFrom)
+			assert.Equal(t, tc.expectTo, bd.tsTo)
+		})
 	}
 }

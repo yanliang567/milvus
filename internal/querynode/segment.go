@@ -29,6 +29,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"unsafe"
 
@@ -42,12 +43,12 @@ import (
 	"github.com/golang/protobuf/proto"
 	"go.uber.org/zap"
 
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
-	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/proto/segcorepb"
 	"github.com/milvus-io/milvus/internal/storage"
 )
@@ -77,6 +78,7 @@ type Segment struct {
 	segmentID    UniqueID
 	partitionID  UniqueID
 	collectionID UniqueID
+	version      UniqueID
 
 	vChannelID   Channel
 	lastMemSize  int64
@@ -164,7 +166,14 @@ func (s *Segment) hasLoadIndexForIndexedField(fieldID int64) bool {
 	return false
 }
 
-func newSegment(collection *Collection, segmentID UniqueID, partitionID UniqueID, collectionID UniqueID, vChannelID Channel, segType segmentType, pool *concurrency.Pool) (*Segment, error) {
+func newSegment(collection *Collection,
+	segmentID UniqueID,
+	partitionID UniqueID,
+	collectionID UniqueID,
+	vChannelID Channel,
+	segType segmentType,
+	version UniqueID,
+	pool *concurrency.Pool) (*Segment, error) {
 	/*
 		CSegmentInterface
 		NewSegment(CCollection collection, uint64_t segment_id, SegmentType seg_type);
@@ -204,6 +213,7 @@ func newSegment(collection *Collection, segmentID UniqueID, partitionID UniqueID
 		segmentID:         segmentID,
 		partitionID:       partitionID,
 		collectionID:      collectionID,
+		version:           version,
 		vChannelID:        vChannelID,
 		indexedFieldInfos: make(map[UniqueID]*IndexedFieldInfo),
 
@@ -336,7 +346,7 @@ func (s *Segment) search(searchReq *searchRequest) (*SearchResult, error) {
 	s.pool.Submit(func() (interface{}, error) {
 		tr := timerecord.NewTimeRecorder("cgoSearch")
 		status = C.Search(s.segmentPtr, searchReq.plan.cSearchPlan, searchReq.cPlaceholderGroup,
-			C.uint64_t(searchReq.timestamp), &searchResult.cSearchResult, C.int64_t(s.segmentID))
+			C.uint64_t(searchReq.timestamp), &searchResult.cSearchResult)
 		metrics.QueryNodeSQSegmentLatencyInCore.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID()), metrics.SearchLabel).Observe(float64(tr.ElapseSpan().Milliseconds()))
 		return nil, nil
 	}).Await()
@@ -379,6 +389,8 @@ func (s *Segment) retrieve(plan *RetrievePlan) (*segcorepb.RetrieveResults, erro
 	if err := HandleCProto(&retrieveResult.cRetrieveResult, result); err != nil {
 		return nil, err
 	}
+
+	sort.Sort(&byPK{result})
 	return result, nil
 }
 

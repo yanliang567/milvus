@@ -35,13 +35,13 @@ import (
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/types"
 
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus/api/schemapb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
-	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/planpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
-	"github.com/milvus-io/milvus/internal/proto/schemapb"
 
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/indexparamcheck"
@@ -314,7 +314,9 @@ func (dct *dropCollectionTask) PreExecute(ctx context.Context) error {
 func (dct *dropCollectionTask) Execute(ctx context.Context) error {
 	collID, err := globalMetaCache.GetCollectionID(ctx, dct.CollectionName)
 	if err != nil {
-		return err
+		// make dropping collection idempotent.
+		dct.result = &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success}
+		return nil
 	}
 
 	dct.result, err = dct.rootCoord.DropCollection(ctx, dct.DropCollectionRequest)
@@ -529,6 +531,7 @@ func (dct *describeCollectionTask) Execute(ctx context.Context) error {
 		CollectionID:         0,
 		VirtualChannelNames:  nil,
 		PhysicalChannelNames: nil,
+		CollectionName:       dct.GetCollectionName(),
 	}
 
 	result, err := dct.rootCoord.DescribeCollection(ctx, dct.DescribeCollectionRequest)
@@ -799,8 +802,8 @@ func (cpt *createPartitionTask) PreExecute(ctx context.Context) error {
 
 func (cpt *createPartitionTask) Execute(ctx context.Context) (err error) {
 	cpt.result, err = cpt.rootCoord.CreatePartition(ctx, cpt.CreatePartitionRequest)
-	if cpt.result == nil {
-		return errors.New("get collection statistics resp is nil")
+	if err != nil {
+		return err
 	}
 	if cpt.result.ErrorCode != commonpb.ErrorCode_Success {
 		return errors.New(cpt.result.Reason)
@@ -876,8 +879,8 @@ func (dpt *dropPartitionTask) PreExecute(ctx context.Context) error {
 
 func (dpt *dropPartitionTask) Execute(ctx context.Context) (err error) {
 	dpt.result, err = dpt.rootCoord.DropPartition(ctx, dpt.DropPartitionRequest)
-	if dpt.result == nil {
-		return errors.New("get collection statistics resp is nil")
+	if err != nil {
+		return err
 	}
 	if dpt.result.ErrorCode != commonpb.ErrorCode_Success {
 		return errors.New(dpt.result.Reason)
@@ -952,8 +955,8 @@ func (hpt *hasPartitionTask) PreExecute(ctx context.Context) error {
 
 func (hpt *hasPartitionTask) Execute(ctx context.Context) (err error) {
 	hpt.result, err = hpt.rootCoord.HasPartition(ctx, hpt.HasPartitionRequest)
-	if hpt.result == nil {
-		return errors.New("get collection statistics resp is nil")
+	if err != nil {
+		return err
 	}
 	if hpt.result.Status.ErrorCode != commonpb.ErrorCode_Success {
 		return errors.New(hpt.result.Status.Reason)
@@ -1331,8 +1334,8 @@ func (cit *createIndexTask) Execute(ctx context.Context) error {
 	}
 	cit.result, err = cit.indexCoord.CreateIndex(ctx, req)
 	//cit.result, err = cit.rootCoord.CreateIndex(ctx, cit.CreateIndexRequest)
-	if cit.result == nil {
-		return errors.New("get collection statistics resp is nil")
+	if err != nil {
+		return err
 	}
 	if cit.result.ErrorCode != commonpb.ErrorCode_Success {
 		return errors.New(cit.result.Reason)
@@ -1774,6 +1777,8 @@ func (ft *flushTask) PreExecute(ctx context.Context) error {
 
 func (ft *flushTask) Execute(ctx context.Context) error {
 	coll2Segments := make(map[string]*schemapb.LongArray)
+	flushColl2Segments := make(map[string]*schemapb.LongArray)
+	coll2SealTimes := make(map[string]int64)
 	for _, collName := range ft.CollectionNames {
 		collID, err := globalMetaCache.GetCollectionID(ctx, collName)
 		if err != nil {
@@ -1797,14 +1802,18 @@ func (ft *flushTask) Execute(ctx context.Context) error {
 			return errors.New(resp.Status.Reason)
 		}
 		coll2Segments[collName] = &schemapb.LongArray{Data: resp.GetSegmentIDs()}
+		flushColl2Segments[collName] = &schemapb.LongArray{Data: resp.GetFlushSegmentIDs()}
+		coll2SealTimes[collName] = resp.GetTimeOfSeal()
 	}
 	ft.result = &milvuspb.FlushResponse{
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_Success,
 			Reason:    "",
 		},
-		DbName:     "",
-		CollSegIDs: coll2Segments,
+		DbName:          "",
+		CollSegIDs:      coll2Segments,
+		FlushCollSegIDs: flushColl2Segments,
+		CollSealTimes:   coll2SealTimes,
 	}
 	return nil
 }

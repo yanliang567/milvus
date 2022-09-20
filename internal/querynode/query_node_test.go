@@ -66,7 +66,7 @@ func initTestMeta(t *testing.T, node *QueryNode, collectionID UniqueID, segmentI
 	err = node.metaReplica.addPartition(collection.ID(), defaultPartitionID)
 	assert.NoError(t, err)
 
-	err = node.metaReplica.addSegment(segmentID, defaultPartitionID, collectionID, "", segmentTypeSealed)
+	err = node.metaReplica.addSegment(segmentID, defaultPartitionID, collectionID, "", defaultSegmentVersion, segmentTypeSealed)
 	assert.NoError(t, err)
 }
 
@@ -132,12 +132,12 @@ func startEmbedEtcdServer() (*embed.Etcd, error) {
 	config.Dir = os.TempDir()
 	config.LogLevel = "warn"
 	config.LogOutputs = []string{"default"}
-	u, err := url.Parse("http://localhost:2389")
+	u, err := url.Parse("http://localhost:8989")
 	if err != nil {
 		return nil, err
 	}
 	config.LCUrls = []url.URL{*u}
-	u, err = url.Parse("http://localhost:2390")
+	u, err = url.Parse("http://localhost:8990")
 	if err != nil {
 		return nil, err
 	}
@@ -148,8 +148,12 @@ func startEmbedEtcdServer() (*embed.Etcd, error) {
 
 func TestMain(m *testing.M) {
 	setup()
-	// init embed etcd
 	var err error
+	rateCol, err = newRateCollector()
+	if err != nil {
+		panic("init test failed, err = " + err.Error())
+	}
+	// init embed etcd
 	embedetcdServer, err = startEmbedEtcdServer()
 	if err != nil {
 		os.Exit(1)

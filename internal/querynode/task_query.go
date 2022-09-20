@@ -24,8 +24,8 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/milvus-io/milvus/api/commonpb"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
@@ -103,7 +103,7 @@ func (q *queryTask) queryOnHistorical() error {
 	// check ctx timeout
 	ctx := q.Ctx()
 	if !funcutil.CheckCtxValid(ctx) {
-		return errors.New("search context timeout3$")
+		return errors.New("search context timeout")
 	}
 
 	// check if collection has been released, check historical since it's released first
@@ -131,6 +131,7 @@ func (q *queryTask) queryOnHistorical() error {
 	if err != nil {
 		return err
 	}
+
 	mergedResult, err := mergeSegcoreRetrieveResults(ctx, retrieveResults)
 	if err != nil {
 		return err
@@ -140,6 +141,7 @@ func (q *queryTask) queryOnHistorical() error {
 		Ids:        mergedResult.Ids,
 		FieldsData: mergedResult.FieldsData,
 	}
+
 	return nil
 }
 

@@ -24,18 +24,19 @@ import (
 	"strconv"
 	"sync"
 
+	"go.uber.org/atomic"
+	"go.uber.org/zap"
+
+	"github.com/milvus-io/milvus/api/commonpb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/etcdpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
-	"go.uber.org/atomic"
-	"go.uber.org/zap"
 )
 
 // flushManager defines a flush manager signature
@@ -391,8 +392,8 @@ func (m *rendezvousFlushManager) flushBufferData(data *BufferData, segStats []by
 		kvs[key] = blob.Value[:]
 		field2Insert[fieldID] = &datapb.Binlog{
 			EntriesNum:    data.size,
-			TimestampFrom: 0, //TODO
-			TimestampTo:   0, //TODO,
+			TimestampFrom: data.tsFrom,
+			TimestampTo:   data.tsTo,
 			LogPath:       key,
 			LogSize:       int64(fieldMemorySize[fieldID]),
 		}
@@ -566,12 +567,14 @@ type flushBufferInsertTask struct {
 // flushInsertData implements flushInsertTask
 func (t *flushBufferInsertTask) flushInsertData() error {
 	if t.ChunkManager != nil && len(t.data) > 0 {
-		for _, d := range t.data {
-			metrics.DataNodeFlushedSize.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.InsertLabel).Add(float64(len(d)))
-		}
 		tr := timerecord.NewTimeRecorder("insertData")
 		err := t.MultiWrite(t.data)
 		metrics.DataNodeSave2StorageLatency.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.InsertLabel).Observe(float64(tr.ElapseSpan().Milliseconds()))
+		if err == nil {
+			for _, d := range t.data {
+				metrics.DataNodeFlushedSize.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.InsertLabel).Add(float64(len(d)))
+			}
+		}
 		return err
 	}
 	return nil
@@ -585,12 +588,14 @@ type flushBufferDeleteTask struct {
 // flushDeleteData implements flushDeleteTask
 func (t *flushBufferDeleteTask) flushDeleteData() error {
 	if len(t.data) > 0 && t.ChunkManager != nil {
-		for _, d := range t.data {
-			metrics.DataNodeFlushedSize.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.DeleteLabel).Add(float64(len(d)))
-		}
 		tr := timerecord.NewTimeRecorder("deleteData")
 		err := t.MultiWrite(t.data)
 		metrics.DataNodeSave2StorageLatency.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.DeleteLabel).Observe(float64(tr.ElapseSpan().Milliseconds()))
+		if err == nil {
+			for _, d := range t.data {
+				metrics.DataNodeFlushedSize.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.DeleteLabel).Add(float64(len(d)))
+			}
+		}
 		return err
 	}
 	return nil

@@ -26,12 +26,12 @@ import (
 	"github.com/opentracing/opentracing-go"
 	"go.uber.org/zap"
 
+	"github.com/milvus-io/milvus/api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
-	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/trace"
@@ -183,7 +183,7 @@ func (dn *deleteNode) Operate(in []Msg) []Msg {
 			} else {
 				err := retry.Do(dn.ctx, func() error {
 					return dn.flushManager.flushDelData(buf.(*DelDataBuf), segmentToFlush, fgMsg.endPositions[0])
-				}, flowGraphRetryOpt)
+				}, getFlowGraphRetryOpt())
 				if err != nil {
 					err = fmt.Errorf("failed to flush delete data, err = %s", err)
 					log.Error(err.Error())

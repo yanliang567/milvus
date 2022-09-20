@@ -10,14 +10,14 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus/api/schemapb"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
-	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/proxypb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
-	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
@@ -71,6 +71,23 @@ func (broker *globalMetaBroker) invalidateCollectionMetaCache(ctx context.Contex
 	log.Info("InvalidateCollMetaCacheRequest successfully", zap.Int64("collectionID", collectionID))
 
 	return nil
+}
+
+func (broker *globalMetaBroker) describeCollection(ctx context.Context, collectionID UniqueID) (*schemapb.CollectionSchema, error) {
+	req := &milvuspb.DescribeCollectionRequest{
+		Base: &commonpb.MsgBase{
+			MsgType: commonpb.MsgType_DescribeCollection,
+		},
+		CollectionID: collectionID,
+	}
+
+	resp, err := broker.rootCoord.DescribeCollection(ctx, req)
+	if err != nil {
+		log.Warn("failed to describe collection schema", zap.Int64("collectionID", collectionID), zap.Error(err))
+		return nil, err
+	}
+
+	return resp.GetSchema(), nil
 }
 
 func (broker *globalMetaBroker) showPartitionIDs(ctx context.Context, collectionID UniqueID) ([]UniqueID, error) {
@@ -226,11 +243,6 @@ func (broker *globalMetaBroker) getFullIndexInfos(ctx context.Context, collectio
 				IndexParams:    info.IndexParams,
 				IndexFilePaths: info.IndexFilePaths,
 				IndexSize:      int64(info.SerializedSize),
-			}
-
-			if len(info.IndexFilePaths) <= 0 {
-				log.Warn("index not ready", zap.Int64("index_build_id", info.BuildID))
-				return nil, fmt.Errorf("index not ready, index build id: %d", info.BuildID)
 			}
 
 			ret[segmentID] = append(ret[segmentID], indexInfo)

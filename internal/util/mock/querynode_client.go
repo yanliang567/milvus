@@ -19,9 +19,9 @@ package mock
 import (
 	"context"
 
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
-	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/types"
 )
@@ -107,4 +107,16 @@ func (q QueryNodeClient) GetMetrics(ctx context.Context, req *milvuspb.GetMetric
 
 func (q QueryNodeClient) ShowConfigurations(ctx context.Context, req *internalpb.ShowConfigurationsRequest) (*internalpb.ShowConfigurationsResponse, error) {
 	return q.grpcClient.ShowConfigurations(ctx, req)
+}
+
+func (q QueryNodeClient) UnsubDmChannel(ctx context.Context, req *querypb.UnsubDmChannelRequest) (*commonpb.Status, error) {
+	return q.grpcClient.UnsubDmChannel(ctx, req)
+}
+
+func (q QueryNodeClient) GetDataDistribution(ctx context.Context, req *querypb.GetDataDistributionRequest) (*querypb.GetDataDistributionResponse, error) {
+	return q.grpcClient.GetDataDistribution(ctx, req)
+}
+
+func (q QueryNodeClient) SyncDistribution(ctx context.Context, req *querypb.SyncDistributionRequest) (*commonpb.Status, error) {
+	return q.grpcClient.SyncDistribution(ctx, req)
 }

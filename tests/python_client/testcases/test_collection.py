@@ -1517,7 +1517,7 @@ class TestCollectionCountBinary(TestcaseBase):
         assert collection_w.num_entities == insert_count
 
     @pytest.mark.tags(CaseLabel.L1)
-    @pytest.mark.parametrize("auto_id",[True, False])
+    @pytest.mark.parametrize("auto_id", [True, False])
     def test_binary_collection_with_min_dim(self, auto_id):
         """
         target: test binary collection when dim=1
@@ -1741,8 +1741,10 @@ class TestDropCollection(TestcaseBase):
         c_name = cf.gen_unique_str()
         self.init_collection_wrap(name=c_name)
         c_name_2 = cf.gen_unique_str()
-        error = {ct.err_code: 0, ct.err_msg: 'DescribeCollection failed: can\'t find collection: %s' % c_name_2}
-        self.utility_wrap.drop_collection(c_name_2, check_task=CheckTasks.err_res, check_items=error)
+        # error = {ct.err_code: 0, ct.err_msg: 'DescribeCollection failed: can\'t find collection: %s' % c_name_2}
+        # self.utility_wrap.drop_collection(c_name_2, check_task=CheckTasks.err_res, check_items=error)
+        # @longjiquan: dropping collection should be idempotent.
+        self.utility_wrap.drop_collection(c_name_2)
 
     @pytest.mark.tags(CaseLabel.L1)
     def test_create_drop_collection_multithread(self):
@@ -2062,7 +2064,7 @@ class TestLoadCollection(TestcaseBase):
         c_name = cf.gen_unique_str()
         collection_wr = self.init_collection_wrap(name=c_name)
         collection_wr.drop()
-        error = {ct.err_code: 0,
+        error = {ct.err_code: 1,
                  ct.err_msg: "DescribeCollection failed: can't find collection: %s" % c_name}
         collection_wr.load(check_task=CheckTasks.err_res, check_items=error)
 
@@ -2077,7 +2079,7 @@ class TestLoadCollection(TestcaseBase):
         c_name = cf.gen_unique_str()
         collection_wr = self.init_collection_wrap(name=c_name)
         collection_wr.drop()
-        error = {ct.err_code: 0,
+        error = {ct.err_code: 1,
                  ct.err_msg: "DescribeCollection failed: can't find collection: %s" % c_name}
         collection_wr.release(check_task=CheckTasks.err_res, check_items=error)
 
@@ -2139,7 +2141,7 @@ class TestLoadCollection(TestcaseBase):
         collection_wr.load()
         collection_wr.release()
         collection_wr.drop()
-        error = {ct.err_code: 0,
+        error = {ct.err_code: 1,
                  ct.err_msg: "DescribeCollection failed: can't find collection: %s" % c_name}
         collection_wr.load(check_task=CheckTasks.err_res, check_items=error)
         collection_wr.release(check_task=CheckTasks.err_res, check_items=error)
@@ -2157,7 +2159,7 @@ class TestLoadCollection(TestcaseBase):
         collection_wr.load()
         collection_wr.drop()
         error = {ct.err_code: 0,
-                 ct.err_msg: "DescribeCollection failed: can't find collection: %s" % c_name}
+                 ct.err_msg: "can't find collection"}
         collection_wr.release(check_task=CheckTasks.err_res, check_items=error)
 
     @pytest.mark.tags(CaseLabel.L0)
@@ -2584,9 +2586,6 @@ class TestLoadPartition(TestcaseBase):
         params=gen_simple_index()
     )
     def get_simple_index(self, request, connect):
-        # if str(connect._cmd("mode")) == "CPU":
-        #     if request.param["index_type"] in index_cpu_not_support():
-        #         pytest.skip("sq8h not support in cpu mode")
         return request.param
 
     @pytest.fixture(
@@ -2617,8 +2616,8 @@ class TestLoadPartition(TestcaseBase):
         # for metric_type in ct.binary_metrics:
         binary_index["metric_type"] = metric_type
         if binary_index["index_type"] == "BIN_IVF_FLAT" and metric_type in ct.structure_metrics:
-            error = {ct.err_code: -1, ct.err_msg: 'Invalid metric_type: SUBSTRUCTURE, '
-                                                  'which does not match the index type: %s' % metric_type}
+            error = {ct.err_code: 1, ct.err_msg: 'Invalid metric_type: SUBSTRUCTURE, '
+                                                 'which does not match the index type: BIN_IVF_FLAT'}
             collection_w.create_index(ct.default_binary_vec_field_name, binary_index,
                                       check_task=CheckTasks.err_res, check_items=error)
         else:
@@ -2776,7 +2775,7 @@ class TestLoadPartition(TestcaseBase):
                                                             "is_empty": True, "num_entities": 0}
                                                )
         collection_w.drop()
-        error = {ct.err_code: 0, ct.err_msg: "HasPartition failed: can\'t find collection: %s" % name}
+        error = {ct.err_code: 0, ct.err_msg: "can\'t find collection"}
         partition_w.load(check_task=CheckTasks.err_res, check_items=error)
         partition_w.release(check_task=CheckTasks.err_res, check_items=error)
 
@@ -2851,7 +2850,7 @@ class TestCollectionString(TestcaseBase):
         max_length = 100000
         string_field = cf.gen_string_field(max_length=max_length)
         schema = cf.gen_collection_schema([int_field, string_field, vec_field])
-        error = {ct.err_code: 0, ct.err_msg: "invalid max_length: %s" % max_length}
+        error = {ct.err_code: 1, ct.err_msg: "invalid max_length: %s" % max_length}
         self.collection_wrap.init_collection(name=c_name, schema=schema,
                                              check_task=CheckTasks.err_res, check_items=error)
 

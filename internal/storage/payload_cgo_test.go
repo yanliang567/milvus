@@ -23,7 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/milvus-io/milvus/internal/proto/schemapb"
+	"github.com/milvus-io/milvus/api/schemapb"
 )
 
 func TestPayload_CGO_ReaderandWriter(t *testing.T) {
@@ -333,7 +333,7 @@ func TestPayload_CGO_ReaderandWriter(t *testing.T) {
 	})
 
 	t.Run("TestBinaryVector", func(t *testing.T) {
-		w, err := NewPayloadWriter(schemapb.DataType_BinaryVector)
+		w, err := NewPayloadWriter(schemapb.DataType_BinaryVector, 8)
 		require.Nil(t, err)
 		require.NotNil(t, w)
 
@@ -382,7 +382,7 @@ func TestPayload_CGO_ReaderandWriter(t *testing.T) {
 	})
 
 	t.Run("TestFloatVector", func(t *testing.T) {
-		w, err := NewPayloadWriter(schemapb.DataType_FloatVector)
+		w, err := NewPayloadWriter(schemapb.DataType_FloatVector, 1)
 		require.Nil(t, err)
 		require.NotNil(t, w)
 
@@ -567,14 +567,14 @@ func TestPayload_CGO_ReaderandWriter(t *testing.T) {
 		assert.NotNil(t, err)
 
 		err = w.AddOneStringToPayload("")
-		assert.NotNil(t, err)
+		assert.Nil(t, err)
 		err = w.FinishPayloadWriter()
 		assert.Nil(t, err)
 		err = w.AddOneStringToPayload("c")
 		assert.NotNil(t, err)
 	})
 	t.Run("TestAddBinVectorAfterFinish", func(t *testing.T) {
-		w, err := NewPayloadWriter(schemapb.DataType_BinaryVector)
+		w, err := NewPayloadWriter(schemapb.DataType_BinaryVector, 8)
 		require.Nil(t, err)
 		require.NotNil(t, w)
 		defer w.Close()
@@ -591,14 +591,14 @@ func TestPayload_CGO_ReaderandWriter(t *testing.T) {
 		assert.NotNil(t, err)
 
 		err = w.AddBinaryVectorToPayload([]byte{1, 0, 0, 0, 0, 0, 0, 0}, 8)
-		assert.Nil(t, err)
+		assert.NotNil(t, err)
 		err = w.FinishPayloadWriter()
-		assert.Nil(t, err)
+		assert.NotNil(t, err)
 		err = w.AddBinaryVectorToPayload([]byte{1, 0, 0, 0, 0, 0, 0, 0}, 8)
 		assert.NotNil(t, err)
 	})
 	t.Run("TestAddFloatVectorAfterFinish", func(t *testing.T) {
-		w, err := NewPayloadWriter(schemapb.DataType_FloatVector)
+		w, err := NewPayloadWriter(schemapb.DataType_FloatVector, 8)
 		require.Nil(t, err)
 		require.NotNil(t, w)
 		defer w.Close()
@@ -612,9 +612,9 @@ func TestPayload_CGO_ReaderandWriter(t *testing.T) {
 		assert.NotNil(t, err)
 
 		err = w.AddFloatVectorToPayload([]float32{1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}, 8)
-		assert.Nil(t, err)
+		assert.NotNil(t, err)
 		err = w.FinishPayloadWriter()
-		assert.Nil(t, err)
+		assert.NotNil(t, err)
 		err = w.AddFloatVectorToPayload([]float32{1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}, 8)
 		assert.NotNil(t, err)
 	})
@@ -881,7 +881,7 @@ func TestPayload_CGO_ReaderandWriter(t *testing.T) {
 			vec = append(vec, 1)
 		}
 
-		w, err := NewPayloadWriter(schemapb.DataType_FloatVector)
+		w, err := NewPayloadWriter(schemapb.DataType_FloatVector, 128)
 		assert.Nil(t, err)
 
 		err = w.AddFloatVectorToPayload(vec, 128)

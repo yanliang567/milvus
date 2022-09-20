@@ -21,11 +21,11 @@ import (
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
-	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/proxypb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
@@ -35,6 +35,13 @@ import (
 // TimeTickProvider is the interface all services implement
 type TimeTickProvider interface {
 	GetTimeTickChannel(ctx context.Context) (*milvuspb.StringResponse, error)
+}
+
+// Limiter defines the interface to perform request rate limiting.
+// If Limit function return true, the request will be rejected.
+// Otherwise, the request will pass. Limit also returns limit of limiter.
+type Limiter interface {
+	Limit(rt internalpb.RateType, n int) (bool, float64)
 }
 
 // Component is the interface all services implement
@@ -133,8 +140,12 @@ type DataCoord interface {
 	// ctx is the context to control request deadline and cancellation
 	// req contains the request params, which are database name(not used for now) and collection id
 	//
-	// response struct `FlushResponse` contains related db & collection meta
-	// and the affected segment ids
+	// response struct `FlushResponse` contains
+	// 		1, related db id
+	// 		2, related collection id
+	// 		3, affected segment ids
+	// 		4, already flush/flushing segment ids of related collection before this request
+	// 		5, timeOfSeal, all data before timeOfSeal is guaranteed to be sealed or flushed
 	// error is returned only when some communication issue occurs
 	// if some error occurs in the process of `Flush`, it will be recorded and returned in `Status` field of response
 	//
@@ -305,6 +316,8 @@ type DataCoordComponent interface {
 	// SetEtcdClient set EtcdClient for DataCoord
 	// `etcdClient` is a client of etcd
 	SetEtcdClient(etcdClient *clientv3.Client)
+
+	SetIndexCoord(indexCoord IndexCoord)
 }
 
 // IndexNode is the interface `indexnode` package implements
@@ -328,7 +341,7 @@ type IndexNode interface {
 	QueryJobs(context.Context, *indexpb.QueryJobsRequest) (*indexpb.QueryJobsResponse, error)
 	// DropJobs cancel index building jobs specified by BuildIDs. Notes that dropping task may have finished.
 	DropJobs(context.Context, *indexpb.DropJobsRequest) (*commonpb.Status, error)
-	// GetJobNum returns metrics of indexnode, including available job queue info, available task slots and finished job infos.
+	// GetJobStats returns metrics of indexnode, including available job queue info, available task slots and finished job infos.
 	GetJobStats(context.Context, *indexpb.GetJobStatsRequest) (*indexpb.GetJobStatsResponse, error)
 
 	ShowConfigurations(ctx context.Context, req *internalpb.ShowConfigurationsRequest) (*internalpb.ShowConfigurationsResponse, error)
@@ -629,20 +642,6 @@ type RootCoord interface {
 	// error is always nil
 	ShowSegments(ctx context.Context, req *milvuspb.ShowSegmentsRequest) (*milvuspb.ShowSegmentsResponse, error)
 
-	//DescribeSegments(ctx context.Context, in *rootcoordpb.DescribeSegmentsRequest) (*rootcoordpb.DescribeSegmentsResponse, error)
-
-	// ReleaseDQLMessageStream notifies RootCoord to release and close the search message stream of specific collection.
-	//
-	// ctx is the request to control request deadline and cancellation.
-	// request contains the request params, which are database id(not used) and collection id.
-	//
-	// The `ErrorCode` of `Status` is `Success` if drop index successfully;
-	// otherwise, the `ErrorCode` of `Status` will be `Error`, and the `Reason` of `Status` will record the fail cause.
-	// error is always nil
-	//
-	// RootCoord just forwards this request to Proxy client
-	ReleaseDQLMessageStream(ctx context.Context, in *proxypb.ReleaseDQLMessageStreamRequest) (*commonpb.Status, error)
-
 	// InvalidateCollectionMetaCache notifies RootCoord to clear the meta cache of specific collection in Proxies.
 	// If `CollectionID` is specified in request, all the collection meta cache with the specified collectionID will be
 	// invalidated, if only the `CollectionName` is specified in request, only the collection meta cache with the
@@ -807,22 +806,12 @@ type Proxy interface {
 
 	UpdateCredentialCache(ctx context.Context, request *proxypb.UpdateCredCacheRequest) (*commonpb.Status, error)
 
-	// ReleaseDQLMessageStream notifies Proxy to release and close the search message stream of specific collection.
-	//
-	// ReleaseDQLMessageStream should be called when the specific collection was released.
-	//
-	// ctx is the request to control request deadline and cancellation.
-	// request contains the request params, which are database id(not used now) and collection id.
-	//
-	// ReleaseDQLMessageStream should always succeed even though the specific collection doesn't exist in Proxy.
-	// So the code of response `Status` should be always `Success`.
-	//
-	// error is returned only when some communication issue occurs.
-	ReleaseDQLMessageStream(ctx context.Context, in *proxypb.ReleaseDQLMessageStreamRequest) (*commonpb.Status, error)
+	// SetRates notifies Proxy to limit rates of requests.
+	SetRates(ctx context.Context, req *proxypb.SetRatesRequest) (*commonpb.Status, error)
 
-	SendSearchResult(ctx context.Context, req *internalpb.SearchResults) (*commonpb.Status, error)
-	SendRetrieveResult(ctx context.Context, req *internalpb.RetrieveResults) (*commonpb.Status, error)
-
+	// GetProxyMetrics gets the metrics of proxy, it's an internal interface which is different from GetMetrics interface,
+	// because it only obtains the metrics of Proxy, not including the topological metrics of Query cluster and Data cluster.
+	GetProxyMetrics(ctx context.Context, request *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error)
 	RefreshPolicyInfoCache(ctx context.Context, req *proxypb.RefreshPolicyInfoCacheRequest) (*commonpb.Status, error)
 }
 
@@ -849,6 +838,9 @@ type ProxyComponent interface {
 	// SetQueryCoordClient set QueryCoord for Proxy
 	//  `queryCoord` is a client of query coordinator.
 	SetQueryCoordClient(queryCoord QueryCoord)
+
+	// GetRateLimiter returns the rateLimiter in Proxy
+	GetRateLimiter() (Limiter, error)
 
 	// UpdateStateCode updates state code for Proxy
 	//  `stateCode` is current statement of this proxy node, indicating whether it's healthy.
@@ -1261,6 +1253,7 @@ type QueryNode interface {
 	TimeTickProvider
 
 	WatchDmChannels(ctx context.Context, req *querypb.WatchDmChannelsRequest) (*commonpb.Status, error)
+	UnsubDmChannel(ctx context.Context, req *querypb.UnsubDmChannelRequest) (*commonpb.Status, error)
 	// LoadSegments notifies QueryNode to load the sealed segments from storage. The load tasks are sync to this
 	// rpc, QueryNode will return after all the sealed segments are loaded.
 	//
@@ -1283,6 +1276,8 @@ type QueryNode interface {
 	ShowConfigurations(ctx context.Context, req *internalpb.ShowConfigurationsRequest) (*internalpb.ShowConfigurationsResponse, error)
 	// GetMetrics gets the metrics about QueryNode.
 	GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error)
+	GetDataDistribution(context.Context, *querypb.GetDataDistributionRequest) (*querypb.GetDataDistributionResponse, error)
+	SyncDistribution(context.Context, *querypb.SyncDistributionRequest) (*commonpb.Status, error)
 }
 
 // QueryNodeComponent is used by grpc server of QueryNode

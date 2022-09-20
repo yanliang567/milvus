@@ -22,9 +22,9 @@ import (
 
 	"google.golang.org/grpc"
 
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
-	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/grpcclient"
@@ -145,6 +145,20 @@ func (c *Client) WatchDmChannels(ctx context.Context, req *querypb.WatchDmChanne
 			return nil, ctx.Err()
 		}
 		return client.(querypb.QueryNodeClient).WatchDmChannels(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*commonpb.Status), err
+}
+
+// UnsubDmChannel unsubscribes the channels about data manipulation.
+func (c *Client) UnsubDmChannel(ctx context.Context, req *querypb.UnsubDmChannelRequest) (*commonpb.Status, error) {
+	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(querypb.QueryNodeClient).UnsubDmChannel(ctx, req)
 	})
 	if err != nil || ret == nil {
 		return nil, err
@@ -304,4 +318,30 @@ func (c *Client) GetStatistics(ctx context.Context, request *querypb.GetStatisti
 		return nil, err
 	}
 	return ret.(*internalpb.GetStatisticsResponse), err
+}
+
+func (c *Client) GetDataDistribution(ctx context.Context, req *querypb.GetDataDistributionRequest) (*querypb.GetDataDistributionResponse, error) {
+	ret, err := c.grpcClient.Call(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(querypb.QueryNodeClient).GetDataDistribution(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*querypb.GetDataDistributionResponse), err
+}
+
+func (c *Client) SyncDistribution(ctx context.Context, req *querypb.SyncDistributionRequest) (*commonpb.Status, error) {
+	ret, err := c.grpcClient.Call(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(querypb.QueryNodeClient).SyncDistribution(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*commonpb.Status), err
 }

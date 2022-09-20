@@ -23,7 +23,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
+	"github.com/milvus-io/milvus/api/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/util/dependency"
 )
@@ -62,15 +62,6 @@ func TestTimetickSync(t *testing.T) {
 	})
 
 	wg.Add(1)
-	t.Run("RemoveDdlTimeTick", func(t *testing.T) {
-		defer wg.Done()
-		ttSync.addDdlTimeTick(uint64(1), "1")
-		ttSync.addDdlTimeTick(uint64(2), "2")
-		ttSync.removeDdlTimeTick(uint64(1), "1")
-		assert.Equal(t, ttSync.ddlMinTs, uint64(2))
-	})
-
-	wg.Add(1)
 	t.Run("UpdateTimeTick", func(t *testing.T) {
 		defer wg.Done()
 		msg := &internalpb.ChannelTimeTickMsg{
@@ -93,11 +84,9 @@ func TestTimetickSync(t *testing.T) {
 		cttMsg := newChanTsMsg(msg, 1)
 		ttSync.sess2ChanTsMap[msg.Base.SourceID] = cttMsg
 
-		ttSync.ddlMinTs = uint64(100)
 		err = ttSync.updateTimeTick(msg, "1")
 		assert.Nil(t, err)
 
-		ttSync.ddlMinTs = uint64(300)
 		ttSync.sourceID = int64(1)
 		err = ttSync.updateTimeTick(msg, "1")
 		assert.Nil(t, err)

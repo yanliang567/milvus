@@ -28,13 +28,14 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/mocks"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
-	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/concurrency"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
@@ -184,6 +185,7 @@ func TestSegmentLoader_loadSegmentFieldsData(t *testing.T) {
 			defaultCollectionID,
 			defaultDMLChannel,
 			segmentTypeSealed,
+			defaultSegmentVersion,
 			pool)
 		assert.Nil(t, err)
 
@@ -309,6 +311,94 @@ func TestSegmentLoader_invalid(t *testing.T) {
 		err = loader.LoadSegment(req, commonpb.SegmentState_Dropped)
 		assert.Error(t, err)
 	})
+
+	t.Run("Test load file failed", func(t *testing.T) {
+		node, err := genSimpleQueryNode(ctx)
+		assert.NoError(t, err)
+		loader := node.loader
+		assert.NotNil(t, loader)
+
+		pool, err := concurrency.NewPool(runtime.GOMAXPROCS(0))
+		require.NoError(t, err)
+
+		cm := &mocks.ChunkManager{}
+		cm.EXPECT().Read(mock.AnythingOfType("string")).Return(nil, errors.New("mocked"))
+
+		loader.cm = cm
+		fieldPk := genPKFieldSchema(simpleInt64Field)
+		fieldVector := genVectorFieldSchema(simpleFloatVecField)
+		schema := &schemapb.CollectionSchema{
+			Name:   defaultCollectionName,
+			AutoID: true,
+			Fields: []*schemapb.FieldSchema{fieldPk, fieldVector},
+		}
+
+		loader.metaReplica.removeSegment(defaultSegmentID, segmentTypeSealed)
+
+		col := newCollection(defaultCollectionID, schema)
+		assert.NotNil(t, col)
+		segment, err := newSegment(col,
+			defaultSegmentID,
+			defaultPartitionID,
+			defaultCollectionID,
+			defaultDMLChannel,
+			segmentTypeSealed,
+			defaultSegmentVersion,
+			pool)
+		assert.Nil(t, err)
+
+		binlog, _, err := saveBinLog(ctx, defaultCollectionID, defaultPartitionID, defaultSegmentID, defaultMsgLength, schema)
+		assert.NoError(t, err)
+
+		err = loader.loadSealedSegmentFields(segment, binlog, &querypb.SegmentLoadInfo{})
+		assert.Error(t, err)
+	})
+
+	t.Run("Test load index failed", func(t *testing.T) {
+
+		node, err := genSimpleQueryNode(ctx)
+		assert.NoError(t, err)
+		loader := node.loader
+		assert.NotNil(t, loader)
+
+		pool, err := concurrency.NewPool(runtime.GOMAXPROCS(0))
+		require.NoError(t, err)
+
+		cm := &mocks.ChunkManager{}
+		cm.EXPECT().Read(mock.AnythingOfType("string")).Return(nil, errors.New("mocked"))
+
+		loader.cm = cm
+		fieldPk := genPKFieldSchema(simpleInt64Field)
+		fieldVector := genVectorFieldSchema(simpleFloatVecField)
+		schema := &schemapb.CollectionSchema{
+			Name:   defaultCollectionName,
+			AutoID: true,
+			Fields: []*schemapb.FieldSchema{fieldPk, fieldVector},
+		}
+
+		loader.metaReplica.removeSegment(defaultSegmentID, segmentTypeSealed)
+
+		col := newCollection(defaultCollectionID, schema)
+		assert.NotNil(t, col)
+		segment, err := newSegment(col,
+			defaultSegmentID,
+			defaultPartitionID,
+			defaultCollectionID,
+			defaultDMLChannel,
+			segmentTypeSealed,
+			defaultSegmentVersion,
+			pool)
+		assert.Nil(t, err)
+
+		err = loader.loadFieldIndexData(segment, &querypb.FieldIndexInfo{
+			FieldID:     fieldVector.FieldID,
+			EnableIndex: true,
+
+			IndexFilePaths: []string{"simpleindex"},
+		})
+
+		assert.Error(t, err)
+	})
 }
 
 func TestSegmentLoader_checkSegmentSize(t *testing.T) {
@@ -337,7 +427,7 @@ func TestSegmentLoader_testLoadGrowing(t *testing.T) {
 		collection, err := node.metaReplica.getCollectionByID(defaultCollectionID)
 		assert.NoError(t, err)
 
-		segment, err := newSegment(collection, defaultSegmentID+1, defaultPartitionID, defaultCollectionID, defaultDMLChannel, segmentTypeGrowing, loader.cgoPool)
+		segment, err := newSegment(collection, defaultSegmentID+1, defaultPartitionID, defaultCollectionID, defaultDMLChannel, segmentTypeGrowing, defaultSegmentVersion, loader.cgoPool)
 		assert.Nil(t, err)
 
 		insertData, err := genInsertData(defaultMsgLength, collection.schema)
@@ -366,7 +456,7 @@ func TestSegmentLoader_testLoadGrowing(t *testing.T) {
 		collection, err := node.metaReplica.getCollectionByID(defaultCollectionID)
 		assert.NoError(t, err)
 
-		segment, err := newSegment(collection, defaultSegmentID+1, defaultPartitionID, defaultCollectionID, defaultDMLChannel, segmentTypeGrowing, node.loader.cgoPool)
+		segment, err := newSegment(collection, defaultSegmentID+1, defaultPartitionID, defaultCollectionID, defaultDMLChannel, segmentTypeGrowing, defaultSegmentVersion, node.loader.cgoPool)
 		assert.Nil(t, err)
 
 		insertData, err := genInsertData(defaultMsgLength, collection.schema)

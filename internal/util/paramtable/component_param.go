@@ -38,7 +38,8 @@ type ComponentParam struct {
 	ServiceParam
 	once sync.Once
 
-	CommonCfg commonConfig
+	CommonCfg   commonConfig
+	QuotaConfig quotaConfig
 
 	RootCoordCfg  rootCoordConfig
 	ProxyCfg      proxyConfig
@@ -62,6 +63,7 @@ func (p *ComponentParam) Init() {
 	p.ServiceParam.Init()
 
 	p.CommonCfg.init(&p.BaseTable)
+	p.QuotaConfig.init(&p.BaseTable)
 
 	p.RootCoordCfg.init(&p.BaseTable)
 	p.ProxyCfg.init(&p.BaseTable)
@@ -612,6 +614,12 @@ type queryCoordConfig struct {
 	OverloadedMemoryThresholdPercentage float64
 	BalanceIntervalSeconds              int64
 	MemoryUsageMaxDifferencePercentage  float64
+	CheckInterval                       time.Duration
+	ChannelTaskTimeout                  time.Duration
+	SegmentTaskTimeout                  time.Duration
+	DistPullInterval                    time.Duration
+	LoadTimeoutSeconds                  time.Duration
+	CheckHandoffInterval                time.Duration
 }
 
 func (p *queryCoordConfig) init(base *BaseTable) {
@@ -630,6 +638,12 @@ func (p *queryCoordConfig) init(base *BaseTable) {
 	p.initOverloadedMemoryThresholdPercentage()
 	p.initBalanceIntervalSeconds()
 	p.initMemoryUsageMaxDifferencePercentage()
+	p.initCheckInterval()
+	p.initChannelTaskTimeout()
+	p.initSegmentTaskTimeout()
+	p.initDistPullInterval()
+	p.initLoadTimeoutSeconds()
+	p.initCheckHandoffInterval()
 }
 
 func (p *queryCoordConfig) initTaskRetryNum() {
@@ -685,6 +699,60 @@ func (p *queryCoordConfig) initMemoryUsageMaxDifferencePercentage() {
 		panic(err)
 	}
 	p.MemoryUsageMaxDifferencePercentage = float64(diffPercentage) / 100
+}
+
+func (p *queryCoordConfig) initCheckInterval() {
+	interval := p.Base.LoadWithDefault("queryCoord.checkInterval", "1000")
+	checkInterval, err := strconv.ParseInt(interval, 10, 64)
+	if err != nil {
+		panic(err)
+	}
+	p.CheckInterval = time.Duration(checkInterval) * time.Millisecond
+}
+
+func (p *queryCoordConfig) initChannelTaskTimeout() {
+	timeout := p.Base.LoadWithDefault("queryCoord.channelTaskTimeout", "60000")
+	taskTimeout, err := strconv.ParseInt(timeout, 10, 64)
+	if err != nil {
+		panic(err)
+	}
+	p.ChannelTaskTimeout = time.Duration(taskTimeout) * time.Millisecond
+}
+
+func (p *queryCoordConfig) initSegmentTaskTimeout() {
+	timeout := p.Base.LoadWithDefault("queryCoord.segmentTaskTimeout", "15000")
+	taskTimeout, err := strconv.ParseInt(timeout, 10, 64)
+	if err != nil {
+		panic(err)
+	}
+	p.SegmentTaskTimeout = time.Duration(taskTimeout) * time.Millisecond
+}
+
+func (p *queryCoordConfig) initDistPullInterval() {
+	interval := p.Base.LoadWithDefault("queryCoord.distPullInterval", "500")
+	pullInterval, err := strconv.ParseInt(interval, 10, 64)
+	if err != nil {
+		panic(err)
+	}
+	p.DistPullInterval = time.Duration(pullInterval) * time.Millisecond
+}
+
+func (p *queryCoordConfig) initLoadTimeoutSeconds() {
+	timeout := p.Base.LoadWithDefault("queryCoord.loadTimeoutSeconds", "600")
+	loadTimeout, err := strconv.ParseInt(timeout, 10, 64)
+	if err != nil {
+		panic(err)
+	}
+	p.LoadTimeoutSeconds = time.Duration(loadTimeout) * time.Second
+}
+
+func (p *queryCoordConfig) initCheckHandoffInterval() {
+	interval := p.Base.LoadWithDefault("queryCoord.checkHandoffInterval", "5000")
+	checkHandoffInterval, err := strconv.ParseInt(interval, 10, 64)
+	if err != nil {
+		panic(err)
+	}
+	p.CheckHandoffInterval = time.Duration(checkHandoffInterval) * time.Millisecond
 }
 
 func (p *queryCoordConfig) SetNodeID(id UniqueID) {

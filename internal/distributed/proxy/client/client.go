@@ -20,9 +20,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
-	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/proxypb"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/grpcclient"
@@ -136,46 +136,6 @@ func (c *Client) InvalidateCollectionMetaCache(ctx context.Context, req *proxypb
 	return ret.(*commonpb.Status), err
 }
 
-// ReleaseDQLMessageStream release dql message stream by request
-func (c *Client) ReleaseDQLMessageStream(ctx context.Context, req *proxypb.ReleaseDQLMessageStreamRequest) (*commonpb.Status, error) {
-	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
-		if !funcutil.CheckCtxValid(ctx) {
-			return nil, ctx.Err()
-		}
-		return client.(proxypb.ProxyClient).ReleaseDQLMessageStream(ctx, req)
-	})
-	if err != nil || ret == nil {
-		return nil, err
-	}
-	return ret.(*commonpb.Status), err
-}
-
-func (c *Client) SendSearchResult(ctx context.Context, results *internalpb.SearchResults) (*commonpb.Status, error) {
-	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
-		if !funcutil.CheckCtxValid(ctx) {
-			return nil, ctx.Err()
-		}
-		return client.(proxypb.ProxyClient).SendSearchResult(ctx, results)
-	})
-	if err != nil || ret == nil {
-		return nil, err
-	}
-	return ret.(*commonpb.Status), err
-}
-
-func (c *Client) SendRetrieveResult(ctx context.Context, results *internalpb.RetrieveResults) (*commonpb.Status, error) {
-	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
-		if !funcutil.CheckCtxValid(ctx) {
-			return nil, ctx.Err()
-		}
-		return client.(proxypb.ProxyClient).SendRetrieveResult(ctx, results)
-	})
-	if err != nil || ret == nil {
-		return nil, err
-	}
-	return ret.(*commonpb.Status), err
-}
-
 func (c *Client) InvalidateCredentialCache(ctx context.Context, req *proxypb.InvalidateCredCacheRequest) (*commonpb.Status, error) {
 	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
 		if !funcutil.CheckCtxValid(ctx) {
@@ -208,6 +168,35 @@ func (c *Client) RefreshPolicyInfoCache(ctx context.Context, req *proxypb.Refres
 			return nil, ctx.Err()
 		}
 		return client.(proxypb.ProxyClient).RefreshPolicyInfoCache(ctx, req)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return ret.(*commonpb.Status), err
+}
+
+// GetProxyMetrics gets the metrics of proxy, it's an internal interface which is different from GetMetrics interface,
+// because it only obtains the metrics of Proxy, not including the topological metrics of Query cluster and Data cluster.
+func (c *Client) GetProxyMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
+	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(proxypb.ProxyClient).GetProxyMetrics(ctx, req)
+	})
+	if err != nil || ret == nil {
+		return nil, err
+	}
+	return ret.(*milvuspb.GetMetricsResponse), err
+}
+
+// SetRates notifies Proxy to limit rates of requests.
+func (c *Client) SetRates(ctx context.Context, req *proxypb.SetRatesRequest) (*commonpb.Status, error) {
+	ret, err := c.grpcClient.ReCall(ctx, func(client interface{}) (interface{}, error) {
+		if !funcutil.CheckCtxValid(ctx) {
+			return nil, ctx.Err()
+		}
+		return client.(proxypb.ProxyClient).SetRates(ctx, req)
 	})
 	if err != nil {
 		return nil, err

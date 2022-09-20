@@ -7,9 +7,9 @@ import (
 
 	"github.com/golang/protobuf/descriptor"
 	"github.com/golang/protobuf/proto"
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/milvuspb"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
-	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -33,21 +33,22 @@ func GetVersion(m proto.GeneratedMessage) (string, error) {
 func GetPrivilegeExtObj(m proto.GeneratedMessage) (commonpb.PrivilegeExt, error) {
 	_, md := descriptor.MessageDescriptorProto(m)
 	if md == nil {
-		log.Error("MessageDescriptorProto result is nil")
+		log.Warn("MessageDescriptorProto result is nil")
 		return commonpb.PrivilegeExt{}, fmt.Errorf("MessageDescriptorProto result is nil")
 	}
 
 	extObj, err := proto.GetExtension(md.Options, commonpb.E_PrivilegeExtObj)
 	if err != nil {
-		log.Error("GetExtension fail", zap.Error(err))
+		log.Warn("GetExtension fail", zap.Error(err))
 		return commonpb.PrivilegeExt{}, err
 	}
 	privilegeExt := extObj.(*commonpb.PrivilegeExt)
 	log.Debug("GetPrivilegeExtObj success", zap.String("resource_type", privilegeExt.ObjectType.String()), zap.String("resource_privilege", privilegeExt.ObjectPrivilege.String()))
 	return commonpb.PrivilegeExt{
-		ObjectType:      privilegeExt.ObjectType,
-		ObjectPrivilege: privilegeExt.ObjectPrivilege,
-		ObjectNameIndex: privilegeExt.ObjectNameIndex,
+		ObjectType:       privilegeExt.ObjectType,
+		ObjectPrivilege:  privilegeExt.ObjectPrivilege,
+		ObjectNameIndex:  privilegeExt.ObjectNameIndex,
+		ObjectNameIndexs: privilegeExt.ObjectNameIndexs,
 	}, nil
 }
 

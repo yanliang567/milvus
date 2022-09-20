@@ -4,7 +4,9 @@
 
 For better tracking and debugging Milvus, the script `export-milvus-log.sh` is provided for exporting all Milvus logs at once. For those pods that have been restarted, this script can export the logs of the running pods and the logs of the previously pods.
 
-> Note: This script only works with Milvus installed with k8s.
+> Note: This script only works with Milvus installed on k8s cluster.
+>
+>For milvus installed with helm-chart, if `log.persistence.enabled` is set to true (default false), the tool cannot be used to export milvus logs and the log files can be found directly under the path specified by `log.persistence.mountPath`.
 >
 > For Milvus installed with docker-compose, you can use `docker-compose logs > milvus.log` to export the logs.
 
@@ -19,7 +21,7 @@ For better tracking and debugging Milvus, the script `export-milvus-log.sh` is p
 | m          | Export Minio logs                                 | false        |
 | u          | Export pulsar logs                                | false        |
 | k          | Export Kafka logs                                 | False        |
-
+| s          | Only return logs newer than a relative duration like 5s, 2m,or 3h. Defaults to all logs                                | all        |
 > By default, the script only exports the logs of the Milvus component.
 >
 > If you need to export the logs of etcd, minio, and pulsar components, you need to add the parameters -e, -m, -u.
@@ -52,5 +54,11 @@ For better tracking and debugging Milvus, the script `export-milvus-log.sh` is p
 
 ```
 ./export-milvus-log.sh -i my-release -n milvus -p ./logs -k
+```
+
+5. Export the logs for only latest 24h.
+
+```
+./export-milvus-log.sh -i my-release -s 24h
 ```
 

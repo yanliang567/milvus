@@ -24,16 +24,17 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/milvuspb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
-	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/util/logutil"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/trace"
+	"github.com/milvus-io/milvus/internal/util/tsoutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 	"github.com/samber/lo"
 	"go.uber.org/zap"
@@ -84,18 +85,47 @@ func (s *Server) Flush(ctx context.Context, req *datapb.FlushRequest) (*datapb.F
 		resp.Status.Reason = serverNotServingErrMsg
 		return resp, nil
 	}
-	sealedSegments, err := s.segmentManager.SealAllSegments(ctx, req.GetCollectionID(), req.GetSegmentIDs())
+
+	// generate a timestamp timeOfSeal, all data before timeOfSeal is guaranteed to be sealed or flushed
+	ts, err := s.allocator.allocTimestamp(ctx)
+	if err != nil {
+		log.Warn("unable to alloc timestamp", zap.Error(err))
+	}
+	timeOfSeal, _ := tsoutil.ParseTS(ts)
+
+	sealedSegmentIDs, err := s.segmentManager.SealAllSegments(ctx, req.GetCollectionID(), req.GetSegmentIDs())
 	if err != nil {
 		resp.Status.Reason = fmt.Sprintf("failed to flush %d, %s", req.CollectionID, err)
 		return resp, nil
 	}
+
+	sealedSegmentsIDDict := make(map[UniqueID]bool)
+	for _, sealedSegmentID := range sealedSegmentIDs {
+		sealedSegmentsIDDict[sealedSegmentID] = true
+	}
+
+	segments := s.meta.GetSegmentsOfCollection(req.GetCollectionID())
+	flushSegmentIDs := make([]UniqueID, 0, len(segments))
+	for _, segment := range segments {
+		if segment != nil &&
+			(segment.GetState() == commonpb.SegmentState_Flushed ||
+				segment.GetState() == commonpb.SegmentState_Flushing) &&
+			!sealedSegmentsIDDict[segment.GetID()] {
+			flushSegmentIDs = append(flushSegmentIDs, segment.GetID())
+		}
+	}
+
 	log.Info("flush response with segments",
 		zap.Int64("collectionID", req.GetCollectionID()),
-		zap.Any("segments", sealedSegments))
+		zap.Int64s("sealSegments", sealedSegmentIDs),
+		zap.Int64s("flushSegments", flushSegmentIDs),
+		zap.Int64("timeOfSeal", timeOfSeal.Unix()))
 	resp.Status.ErrorCode = commonpb.ErrorCode_Success
 	resp.DbID = req.GetDbID()
 	resp.CollectionID = req.GetCollectionID()
-	resp.SegmentIDs = sealedSegments
+	resp.SegmentIDs = sealedSegmentIDs
+	resp.TimeOfSeal = timeOfSeal.Unix()
+	resp.FlushSegmentIDs = flushSegmentIDs
 	return resp, nil
 }
 
@@ -320,14 +350,14 @@ func (s *Server) GetSegmentInfo(ctx context.Context, req *datapb.GetSegmentInfoR
 			info = s.meta.GetAllSegment(id)
 			if info == nil {
 				log.Warn("failed to get segment, this may have been cleaned", zap.Int64("segmentID", id))
-				resp.Status.Reason = fmt.Sprintf("failed to get segment %d", id)
+				resp.Status.Reason = msgSegmentNotFound(id)
 				return resp, nil
 			}
 			infos = append(infos, info.SegmentInfo)
 		} else {
 			info = s.meta.GetSegment(id)
 			if info == nil {
-				resp.Status.Reason = fmt.Sprintf("failed to get segment %d", id)
+				resp.Status.Reason = msgSegmentNotFound(id)
 				return resp, nil
 			}
 			infos = append(infos, info.SegmentInfo)
@@ -413,7 +443,7 @@ func (s *Server) SaveBinlogPaths(ctx context.Context, req *datapb.SaveBinlogPath
 			cctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
 			defer cancel()
 
-			ct, err := getCompactTime(cctx, s.allocator)
+			ct, err := GetCompactTime(cctx, s.allocator)
 			if err == nil {
 				err = s.compactionTrigger.triggerSingleCompaction(segment.GetCollectionID(),
 					segment.GetPartitionID(), segmentID, segment.GetInsertChannel(), ct)
@@ -557,9 +587,11 @@ func (s *Server) GetComponentStates(ctx context.Context) (*internalpb.ComponentS
 func (s *Server) GetRecoveryInfo(ctx context.Context, req *datapb.GetRecoveryInfoRequest) (*datapb.GetRecoveryInfoResponse, error) {
 	collectionID := req.GetCollectionID()
 	partitionID := req.GetPartitionID()
-	log.Info("receive get recovery info request",
+	log := log.With(
 		zap.Int64("collectionID", collectionID),
-		zap.Int64("partitionID", partitionID))
+		zap.Int64("partitionID", partitionID),
+	)
+	log.Info("receive get recovery info request")
 	resp := &datapb.GetRecoveryInfoResponse{
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
@@ -569,35 +601,56 @@ func (s *Server) GetRecoveryInfo(ctx context.Context, req *datapb.GetRecoveryInf
 		resp.Status.Reason = serverNotServingErrMsg
 		return resp, nil
 	}
-	segmentIDs := s.meta.GetSegmentsIDOfPartition(collectionID, partitionID)
+
+	dresp, err := s.rootCoordClient.DescribeCollection(s.ctx, &milvuspb.DescribeCollectionRequest{
+		Base: &commonpb.MsgBase{
+			MsgType:  commonpb.MsgType_DescribeCollection,
+			SourceID: Params.DataCoordCfg.GetNodeID(),
+		},
+		CollectionID: collectionID,
+	})
+	if err = VerifyResponse(dresp, err); err != nil {
+		log.Error("get collection info from rootcoord failed",
+			zap.Error(err))
+
+		resp.Status.Reason = err.Error()
+		return resp, nil
+	}
+	channels := dresp.GetVirtualChannelNames()
+	channelInfos := make([]*datapb.VchannelInfo, 0, len(channels))
+	flushedIDs := make(typeutil.UniqueSet)
+	for _, c := range channels {
+		channelInfo := s.handler.GetVChanPositions(&channel{Name: c, CollectionID: collectionID}, partitionID)
+		channelInfos = append(channelInfos, channelInfo)
+		log.Debug("datacoord append channelInfo in GetRecoveryInfo",
+			zap.Any("channelInfo", channelInfo),
+		)
+
+		flushedIDs.Insert(channelInfo.GetFlushedSegmentIds()...)
+	}
+
 	segment2Binlogs := make(map[UniqueID][]*datapb.FieldBinlog)
 	segment2StatsBinlogs := make(map[UniqueID][]*datapb.FieldBinlog)
 	segment2DeltaBinlogs := make(map[UniqueID][]*datapb.FieldBinlog)
 	segment2InsertChannel := make(map[UniqueID]string)
 	segmentsNumOfRows := make(map[UniqueID]int64)
-
-	flushedIDs := make(map[int64]struct{})
-	for _, id := range segmentIDs {
-		segment := s.meta.GetSegment(id)
+	for id := range flushedIDs {
+		segment := s.meta.GetSegmentUnsafe(id)
 		if segment == nil {
 			errMsg := fmt.Sprintf("failed to get segment %d", id)
 			log.Error(errMsg)
 			resp.Status.Reason = errMsg
 			return resp, nil
 		}
-		if segment.State != commonpb.SegmentState_Flushed && segment.State != commonpb.SegmentState_Flushing {
+		if segment.State != commonpb.SegmentState_Flushed && segment.State != commonpb.SegmentState_Flushing && segment.State != commonpb.SegmentState_Dropped {
 			continue
 		}
 		segment2InsertChannel[segment.ID] = segment.InsertChannel
 		binlogs := segment.GetBinlogs()
 
 		if len(binlogs) == 0 {
+			flushedIDs.Remove(id)
 			continue
-		}
-
-		_, ok := flushedIDs[id]
-		if !ok {
-			flushedIDs[id] = struct{}{}
 		}
 
 		field2Binlog := make(map[UniqueID][]*datapb.Binlog)
@@ -647,35 +700,8 @@ func (s *Server) GetRecoveryInfo(ctx context.Context, req *datapb.GetRecoveryInf
 		binlogs = append(binlogs, sbl)
 	}
 
-	dresp, err := s.rootCoordClient.DescribeCollection(s.ctx, &milvuspb.DescribeCollectionRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:  commonpb.MsgType_DescribeCollection,
-			SourceID: Params.DataCoordCfg.GetNodeID(),
-		},
-		CollectionID: collectionID,
-	})
-	if err = VerifyResponse(dresp, err); err != nil {
-		log.Error("get collection info from rootcoord failed",
-			zap.Int64("collectionID", collectionID),
-			zap.Error(err))
-
-		resp.Status.Reason = err.Error()
-		return resp, nil
-	}
-
-	channels := dresp.GetVirtualChannelNames()
-	channelInfos := make([]*datapb.VchannelInfo, 0, len(channels))
-	for _, c := range channels {
-		channelInfo := s.handler.GetVChanPositions(&channel{Name: c, CollectionID: collectionID}, partitionID)
-		channelInfos = append(channelInfos, channelInfo)
-		log.Debug("datacoord append channelInfo in GetRecoveryInfo",
-			zap.Any("collectionID", collectionID),
-			zap.Any("channelInfo", channelInfo),
-		)
-	}
-
-	resp.Binlogs = binlogs
 	resp.Channels = channelInfos
+	resp.Binlogs = binlogs
 	resp.Status.ErrorCode = commonpb.ErrorCode_Success
 	return resp, nil
 }
@@ -692,21 +718,24 @@ func (s *Server) GetFlushedSegments(ctx context.Context, req *datapb.GetFlushedS
 	partitionID := req.GetPartitionID()
 	log.Debug("received get flushed segments request",
 		zap.Int64("collectionID", collectionID),
-		zap.Int64("partitionID", partitionID))
+		zap.Int64("partitionID", partitionID),
+	)
 	if s.isClosed() {
 		resp.Status.Reason = serverNotServingErrMsg
 		return resp, nil
 	}
 	var segmentIDs []UniqueID
 	if partitionID < 0 {
-		segmentIDs = s.meta.GetSegmentsIDOfCollection(collectionID)
+		segmentIDs = s.meta.GetSegmentsIDOfCollectionWithDropped(collectionID)
 	} else {
-		segmentIDs = s.meta.GetSegmentsIDOfPartition(collectionID, partitionID)
+		segmentIDs = s.meta.GetSegmentsIDOfPartitionWithDropped(collectionID, partitionID)
 	}
 	ret := make([]UniqueID, 0, len(segmentIDs))
 	for _, id := range segmentIDs {
 		segment := s.meta.GetSegment(id)
-		if segment != nil && segment.GetState() != commonpb.SegmentState_Flushed {
+		if segment != nil &&
+			segment.GetState() != commonpb.SegmentState_Dropped &&
+			segment.GetState() != commonpb.SegmentState_Flushed {
 			continue
 		}
 
@@ -842,7 +871,7 @@ func (s *Server) ManualCompaction(ctx context.Context, req *milvuspb.ManualCompa
 		return resp, nil
 	}
 
-	ct, err := getCompactTime(ctx, s.allocator)
+	ct, err := GetCompactTime(ctx, s.allocator)
 	if err != nil {
 		log.Warn("failed to get compact time", zap.Int64("collectionID", req.GetCollectionID()), zap.Error(err))
 		resp.Status.Reason = err.Error()

@@ -18,7 +18,10 @@ package indexcoord
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -26,13 +29,14 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 
+	"github.com/milvus-io/milvus/api/commonpb"
 	"github.com/milvus-io/milvus/internal/kv"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metastore/model"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/util"
+	"github.com/milvus-io/milvus/internal/util/logutil"
 )
 
 type flushedSegmentWatcher struct {
@@ -44,9 +48,7 @@ type flushedSegmentWatcher struct {
 	scheduleDuration time.Duration
 
 	internalTaskMutex sync.RWMutex
-	childrenTaskMutex sync.RWMutex
 	internalNotify    chan struct{}
-	childrenNotify    chan struct{}
 
 	etcdRevision int64
 	watchChan    clientv3.WatchChan
@@ -56,18 +58,11 @@ type flushedSegmentWatcher struct {
 	ic      *IndexCoord
 
 	internalTasks map[UniqueID]*internalTask
-	// segmentID -> indexID -> flushedSegmentTask, if there is no index or no need to build index, indexID is zero.
-	childrenTasks map[UniqueID]map[UniqueID]*childrenTask
 }
 
 type internalTask struct {
 	state       indexTaskState
 	segmentInfo *datapb.SegmentInfo
-}
-
-type childrenTask struct {
-	internalTask
-	indexInfo *querypb.FieldIndexInfo
 }
 
 func newFlushSegmentWatcher(ctx context.Context, kv kv.MetaKv, meta *metaTable, builder *indexBuilder, ic *IndexCoord) (*flushedSegmentWatcher, error) {
@@ -78,10 +73,8 @@ func newFlushSegmentWatcher(ctx context.Context, kv kv.MetaKv, meta *metaTable, 
 		kvClient:          kv,
 		wg:                sync.WaitGroup{},
 		internalTaskMutex: sync.RWMutex{},
-		childrenTaskMutex: sync.RWMutex{},
-		scheduleDuration:  time.Second * 10,
+		scheduleDuration:  time.Second,
 		internalNotify:    make(chan struct{}, 1),
-		childrenNotify:    make(chan struct{}, 1),
 		meta:              meta,
 		builder:           builder,
 		ic:                ic,
@@ -96,19 +89,18 @@ func newFlushSegmentWatcher(ctx context.Context, kv kv.MetaKv, meta *metaTable, 
 func (fsw *flushedSegmentWatcher) reloadFromKV() error {
 	log.Info("flushSegmentWatcher reloadFromKV")
 	fsw.internalTasks = make(map[UniqueID]*internalTask)
-	fsw.childrenTasks = make(map[int64]map[int64]*childrenTask)
 	_, values, version, err := fsw.kvClient.LoadWithRevision(util.FlushedSegmentPrefix)
 	if err != nil {
 		log.Error("flushSegmentWatcher reloadFromKV fail", zap.String("prefix", util.FlushedSegmentPrefix), zap.Error(err))
 		return err
 	}
 	for _, value := range values {
-		segmentInfo := &datapb.SegmentInfo{}
-		if err = proto.Unmarshal([]byte(value), segmentInfo); err != nil {
-			log.Error("flushSegmentWatcher unmarshal segment info fail", zap.Error(err))
+		segID, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			log.Error("flushSegmentWatcher parse segmentID fail", zap.String("value", value), zap.Error(err))
 			return err
 		}
-		fsw.enqueueInternalTask(segmentInfo)
+		fsw.enqueueInternalTask(segID)
 	}
 	fsw.etcdRevision = version
 	return nil
@@ -117,75 +109,28 @@ func (fsw *flushedSegmentWatcher) reloadFromKV() error {
 func (fsw *flushedSegmentWatcher) Start() {
 	fsw.wg.Add(1)
 	go fsw.internalScheduler()
-
-	fsw.wg.Add(1)
-	go fsw.childrenScheduler()
 }
 
 func (fsw *flushedSegmentWatcher) Stop() {
 	fsw.cancel()
-	close(fsw.internalNotify)
-	close(fsw.childrenNotify)
 	fsw.wg.Wait()
 }
 
-func (fsw *flushedSegmentWatcher) enqueueInternalTask(segmentInfo *datapb.SegmentInfo) {
+func (fsw *flushedSegmentWatcher) enqueueInternalTask(segmentID UniqueID) {
+	defer fsw.internalNotifyFunc()
 	fsw.internalTaskMutex.Lock()
 	defer fsw.internalTaskMutex.Unlock()
 
-	fsw.internalTasks[segmentInfo.ID] = &internalTask{
-		segmentInfo: segmentInfo,
-		state:       indexTaskInit,
-	}
-	select {
-	case fsw.internalNotify <- struct{}{}:
-	default:
-	}
-}
+	logutil.Logger(fsw.ctx).Info("flushedSegmentWatcher enqueueInternalTask", zap.Int64("segmentID", segmentID))
 
-func (fsw *flushedSegmentWatcher) enqueueChildrenTask(segmentInfo *datapb.SegmentInfo, index *model.Index) {
-	fsw.childrenTaskMutex.Lock()
-	defer fsw.childrenTaskMutex.Unlock()
-
-	if _, ok := fsw.childrenTasks[segmentInfo.ID]; !ok {
-		fsw.childrenTasks[segmentInfo.ID] = make(map[int64]*childrenTask)
-	}
-	fsw.childrenTasks[segmentInfo.ID][index.IndexID] = &childrenTask{
-		internalTask: internalTask{
-			state:       indexTaskInit,
-			segmentInfo: segmentInfo,
-		},
-		indexInfo: &querypb.FieldIndexInfo{
-			FieldID:     index.FieldID,
-			EnableIndex: true,
-			IndexName:   index.IndexName,
-			IndexID:     index.IndexID,
-			IndexParams: index.IndexParams,
-		},
-	}
-	log.Debug("IndexCoord flushedSegmentWatcher create index for flushed segment",
-		zap.Int64("segID", segmentInfo.ID), zap.Int64("indexID", index.IndexID))
-	hasIndex, buildID := fsw.meta.HasSameIndex(segmentInfo.ID, index.IndexID)
-	if hasIndex {
-		fsw.childrenTasks[segmentInfo.ID][index.IndexID].indexInfo.BuildID = buildID
-		state := fsw.meta.GetSegmentIndexState(segmentInfo.ID, index.IndexID)
-		switch state.state {
-		case commonpb.IndexState_IndexStateNone:
-			fsw.childrenTasks[segmentInfo.ID][index.IndexID].state = indexTaskInit
-
-		case commonpb.IndexState_InProgress, commonpb.IndexState_Unissued, commonpb.IndexState_Retry:
-			fsw.childrenTasks[segmentInfo.ID][index.IndexID].state = indexTaskInProgress
-
-		case commonpb.IndexState_Finished, commonpb.IndexState_Failed:
-			fsw.childrenTasks[segmentInfo.ID][index.IndexID].state = indexTaskDone
-		default:
-			// can not to here
+	if _, ok := fsw.internalTasks[segmentID]; !ok {
+		fsw.internalTasks[segmentID] = &internalTask{
+			state:       indexTaskPrepare,
+			segmentInfo: nil,
 		}
+		return
 	}
-	select {
-	case fsw.childrenNotify <- struct{}{}:
-	default:
-	}
+	logutil.Logger(fsw.ctx).Info("flushedSegmentWatcher already have the task", zap.Int64("segmentID", segmentID))
 }
 
 func (fsw *flushedSegmentWatcher) internalScheduler() {
@@ -208,94 +153,118 @@ func (fsw *flushedSegmentWatcher) internalScheduler() {
 	}
 }
 
-func (fsw *flushedSegmentWatcher) childrenScheduler() {
-	log.Info("IndexCoord flushedSegmentWatcher childrenScheduler start...")
-	defer fsw.wg.Done()
-
-	ticker := time.NewTicker(fsw.scheduleDuration)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-fsw.ctx.Done():
-			log.Warn("IndexCoord flushedSegmentWatcher context done")
-			return
-		case <-ticker.C:
-			fsw.childrenRun()
-		case <-fsw.childrenNotify:
-			fsw.childrenRun()
-		}
-	}
-}
-
 func (fsw *flushedSegmentWatcher) internalRun() {
-	fsw.internalTaskMutex.Lock()
-	defer fsw.internalTaskMutex.Unlock()
+	fsw.internalTaskMutex.RLock()
+	segmentIDs := make([]UniqueID, 0, len(fsw.internalTasks))
 	if len(fsw.internalTasks) > 0 {
 		log.Debug("IndexCoord flushedSegmentWatcher schedule internal tasks", zap.Int("internal task num", len(fsw.internalTasks)))
-		for _, t := range fsw.internalTasks {
-			fsw.internalProcess(t)
+		for segID := range fsw.internalTasks {
+			segmentIDs = append(segmentIDs, segID)
 		}
+		sort.Slice(segmentIDs, func(i, j int) bool {
+			return segmentIDs[i] < segmentIDs[j]
+		})
+	}
+	fsw.internalTaskMutex.RUnlock()
+
+	for _, segmentID := range segmentIDs {
+		fsw.internalProcess(segmentID)
 	}
 }
 
-func (fsw *flushedSegmentWatcher) childrenRun() {
-	fsw.childrenTaskMutex.Lock()
-	defer fsw.childrenTaskMutex.Unlock()
-	if len(fsw.childrenTasks) > 0 {
-		log.Debug("IndexCoord flushedSegmentWatcher schedule children tasks", zap.Int("internal task num", len(fsw.childrenTasks)))
-		for _, tasks := range fsw.childrenTasks {
-			for _, t := range tasks {
-				fsw.childrenProcess(t)
-			}
-		}
+func (fsw *flushedSegmentWatcher) internalNotifyFunc() {
+	select {
+	case fsw.internalNotify <- struct{}{}:
+	default:
 	}
 }
 
-func (fsw *flushedSegmentWatcher) removeCompactedTasks(t *internalTask) {
-	log.Debug("IndexCoord flushedSegmentWatcher mark task as deleted which is compacted", zap.Int64("segID", t.segmentInfo.ID),
-		zap.Int64s("compactionFrom", t.segmentInfo.CompactionFrom))
-	fsw.builder.markTasksAsDeleted(fsw.meta.GetBuildIDsFromSegIDs(t.segmentInfo.CompactionFrom))
-	for _, segID := range t.segmentInfo.CompactionFrom {
+func (fsw *flushedSegmentWatcher) updateInternalTaskState(segID UniqueID, state indexTaskState) {
+	fsw.internalTaskMutex.Lock()
+	defer fsw.internalTaskMutex.Unlock()
+	log.Debug("flushedSegmentWatcher updateInternalTaskState", zap.Int64("segID", segID), zap.String("state", state.String()))
+	if _, ok := fsw.internalTasks[segID]; ok {
+		fsw.internalTasks[segID].state = state
+	}
+}
+
+func (fsw *flushedSegmentWatcher) deleteInternalTask(segID UniqueID) {
+	fsw.internalTaskMutex.Lock()
+	defer fsw.internalTaskMutex.Unlock()
+
+	delete(fsw.internalTasks, segID)
+	log.Debug("flushedSegmentWatcher delete the internal task", zap.Int64("segID", segID))
+}
+
+func (fsw *flushedSegmentWatcher) getInternalTask(segID UniqueID) *internalTask {
+	fsw.internalTaskMutex.RLock()
+	defer fsw.internalTaskMutex.RUnlock()
+
+	return &internalTask{
+		state:       fsw.internalTasks[segID].state,
+		segmentInfo: fsw.internalTasks[segID].segmentInfo,
+	}
+}
+
+func (fsw *flushedSegmentWatcher) setInternalTaskSegmentInfo(segID UniqueID, segInfo *datapb.SegmentInfo) {
+	fsw.internalTaskMutex.Lock()
+	defer fsw.internalTaskMutex.Unlock()
+
+	if _, ok := fsw.internalTasks[segID]; ok {
+		fsw.internalTasks[segID].segmentInfo = segInfo
+	}
+	log.Debug("flushedSegmentWatcher set internal task segment info success", zap.Int64("segID", segID))
+}
+
+func (fsw *flushedSegmentWatcher) allParentsDone(segIDs []UniqueID) bool {
+	fsw.internalTaskMutex.RLock()
+	defer fsw.internalTaskMutex.RUnlock()
+	done := true
+	for _, segID := range segIDs {
 		if _, ok := fsw.internalTasks[segID]; ok {
-			fsw.internalTasks[segID].state = indexTaskDeleted
+			done = false
+			break
 		}
 	}
+	return done
 }
 
-func (fsw *flushedSegmentWatcher) internalProcess(t *internalTask) {
-	log.Debug("IndexCoord flushedSegmentWatcher process internal task", zap.Int64("segID", t.segmentInfo.ID),
+func (fsw *flushedSegmentWatcher) internalProcess(segID UniqueID) {
+	t := fsw.getInternalTask(segID)
+	log.Debug("IndexCoord flushedSegmentWatcher process internal task", zap.Int64("segID", segID),
 		zap.String("state", t.state.String()))
+
 	switch t.state {
-	case indexTaskInit:
-		if t.segmentInfo.CreatedByCompaction {
-			fsw.removeCompactedTasks(t)
-		}
-		if err := fsw.constructTask(t); err != nil {
-			log.Error("IndexCoord flushedSegmentWatcher construct task fail", zap.Int64("segID", t.segmentInfo.ID),
-				zap.Int64s("compactFrom", t.segmentInfo.CompactionFrom), zap.Error(err))
+	case indexTaskPrepare:
+		if err := fsw.prepare(segID); err != nil {
+			log.Error("flushedSegmentWatcher prepare internal task fail", zap.Int64("segID", segID), zap.Error(err))
 			return
 		}
-		fsw.internalTasks[t.segmentInfo.ID].state = indexTaskInProgress
-		select {
-		case fsw.internalNotify <- struct{}{}:
-		default:
+		fsw.updateInternalTaskState(segID, indexTaskInit)
+	case indexTaskInit:
+		if err := fsw.constructTask(t); err != nil {
+			log.Error("flushedSegmentWatcher construct task fail", zap.Int64("segID", segID), zap.Error(err))
+			return
 		}
-		return
+		fsw.updateInternalTaskState(segID, indexTaskInProgress)
+		fsw.internalNotifyFunc()
 	case indexTaskInProgress:
-		fsw.childrenTaskMutex.RLock()
-		defer fsw.childrenTaskMutex.RUnlock()
-		if tasks, ok := fsw.childrenTasks[t.segmentInfo.ID]; !ok || len(tasks) == 0 {
-			fsw.internalTasks[t.segmentInfo.ID].state = indexTaskDone
-			select {
-			case fsw.internalNotify <- struct{}{}:
-			default:
-			}
+		state := fsw.meta.GetSegmentIndexState(segID)
+		if state.state == commonpb.IndexState_Finished || state.state == commonpb.IndexState_Failed || state.state == commonpb.IndexState_IndexStateNone {
+			log.Debug("all tasks are finished", zap.Int64("segID", segID), zap.String("state", state.state.String()))
+			fsw.updateInternalTaskState(segID, indexTaskDone)
+			fsw.internalNotifyFunc()
 		}
-		return
 	case indexTaskDone:
+		if !fsw.allParentsDone(t.segmentInfo.CompactionFrom) {
+			log.Debug("flushed segment create index done, but there are still parent task that haven't written handoff event",
+				zap.Int64("segID", segID), zap.Int64s("compactionFrom", t.segmentInfo.CompactionFrom))
+			return
+		}
+		indexInfos := fsw.meta.GetSegmentIndexes(segID)
+		enableIndex := len(indexInfos) > 0
 		handoffTask := &querypb.SegmentInfo{
-			SegmentID:           t.segmentInfo.ID,
+			SegmentID:           segID,
 			CollectionID:        t.segmentInfo.CollectionID,
 			PartitionID:         t.segmentInfo.PartitionID,
 			NumRows:             t.segmentInfo.NumOfRows,
@@ -305,113 +274,37 @@ func (fsw *flushedSegmentWatcher) internalProcess(t *internalTask) {
 			CompactionFrom:      t.segmentInfo.CompactionFrom,
 			CreatedByCompaction: t.segmentInfo.CreatedByCompaction,
 			SegmentState:        t.segmentInfo.State,
-			IndexInfos:          nil,
-			EnableIndex:         false,
+			IndexInfos:          make([]*querypb.FieldIndexInfo, 0),
+			EnableIndex:         enableIndex,
 		}
+		for _, indexInfo := range indexInfos {
+			handoffTask.IndexInfos = append(handoffTask.IndexInfos, &querypb.FieldIndexInfo{
+				FieldID:     fsw.meta.GetFieldIDByIndexID(t.segmentInfo.CollectionID, indexInfo.IndexID),
+				EnableIndex: true,
+				IndexName:   fsw.meta.GetIndexNameByID(t.segmentInfo.CollectionID, indexInfo.IndexID),
+				IndexID:     indexInfo.IndexID,
+				BuildID:     indexInfo.BuildID,
+				IndexParams: fsw.meta.GetIndexParams(t.segmentInfo.CollectionID, indexInfo.IndexID),
+				//IndexFilePaths: nil,
+				//IndexSize:      0,
+			})
+		}
+
 		if err := fsw.writeHandoffSegment(handoffTask); err != nil {
-			log.Error("IndexCoord flushSegmentWatcher writeHandoffSegment with no index fail",
-				zap.Int64("segID", t.segmentInfo.ID), zap.Error(err))
+			log.Error("IndexCoord flushSegmentWatcher writeHandoffSegment with no index info fail",
+				zap.Int64("segID", segID), zap.Error(err))
 			return
 		}
 		if err := fsw.removeFlushedSegment(t); err != nil {
 			log.Error("IndexCoord flushSegmentWatcher removeFlushedSegment fail",
-				zap.Int64("segID", t.segmentInfo.ID), zap.Error(err))
+				zap.Int64("segID", segID), zap.Error(err))
 			return
 		}
-		delete(fsw.internalTasks, t.segmentInfo.ID)
-		return
-	case indexTaskDeleted:
-		if t.segmentInfo.CreatedByCompaction {
-			fsw.removeCompactedTasks(t)
-		}
-		fsw.childrenTaskMutex.Lock()
-		delete(fsw.childrenTasks, t.segmentInfo.ID)
-		fsw.childrenTaskMutex.Unlock()
-		fsw.internalTasks[t.segmentInfo.ID].state = indexTaskDone
-		return
+		fsw.deleteInternalTask(segID)
+		fsw.internalNotifyFunc()
 	default:
-		log.Debug("IndexCoord flushedSegmentWatcher internal task get invalid state", zap.Int64("segID", t.segmentInfo.ID),
+		log.Debug("IndexCoord flushedSegmentWatcher internal task get invalid state", zap.Int64("segID", segID),
 			zap.String("state", t.state.String()))
-	}
-}
-
-func (fsw *flushedSegmentWatcher) childrenProcess(task *childrenTask) {
-	log.Debug("IndexCoord flushedSegmentWatcher process child task", zap.Int64("segID", task.segmentInfo.ID),
-		zap.Int64("indexID", task.indexInfo.IndexID), zap.String("state", task.state.String()))
-	segID := task.segmentInfo.ID
-	switch task.state {
-	case indexTaskInit:
-		//get binLogs
-		binLogs := make([]string, 0)
-		for _, fieldBinLog := range task.segmentInfo.Binlogs {
-			if fieldBinLog.GetFieldID() == task.indexInfo.FieldID {
-				for _, binLog := range fieldBinLog.GetBinlogs() {
-					binLogs = append(binLogs, binLog.LogPath)
-				}
-				break
-			}
-		}
-		segIdx := &model.SegmentIndex{
-			SegmentID:    segID,
-			CollectionID: task.segmentInfo.CollectionID,
-			PartitionID:  task.segmentInfo.PartitionID,
-			NumRows:      task.segmentInfo.NumOfRows,
-			IndexID:      task.indexInfo.IndexID,
-			CreateTime:   task.segmentInfo.StartPosition.Timestamp,
-		}
-
-		//create index task for metaTable
-		// send to indexBuilder
-		have, buildID, err := fsw.ic.createIndexForSegment(segIdx)
-		if err != nil {
-			log.Warn("IndexCoord create index for segment fail", zap.Int64("segID", segID),
-				zap.Int64("indexID", task.indexInfo.IndexID), zap.Error(err))
-			return
-		}
-		if !have {
-			fsw.builder.enqueue(buildID)
-		}
-
-		fsw.childrenTasks[segID][task.indexInfo.IndexID].state = indexTaskInProgress
-		return
-	case indexTaskInProgress:
-		filePath, err := fsw.meta.GetIndexFilePathInfo(segID, task.indexInfo.IndexID)
-		if err != nil {
-			log.Warn("IndexCoord get index file path fail", zap.Int64("collID", task.segmentInfo.CollectionID),
-				zap.Int64("partID", task.segmentInfo.PartitionID), zap.Int64("segID", segID), zap.Error(err))
-			return
-		}
-		fsw.childrenTasks[segID][task.indexInfo.IndexID].indexInfo.IndexFilePaths = filePath.IndexFilePaths
-		fsw.childrenTasks[segID][task.indexInfo.IndexID].indexInfo.IndexSize = int64(filePath.SerializedSize)
-		fsw.childrenTasks[segID][task.indexInfo.IndexID].state = indexTaskDone
-
-		return
-	case indexTaskDone:
-		handoffTask := &querypb.SegmentInfo{
-			SegmentID:           task.segmentInfo.ID,
-			CollectionID:        task.segmentInfo.CollectionID,
-			PartitionID:         task.segmentInfo.PartitionID,
-			NumRows:             task.segmentInfo.NumOfRows,
-			IndexName:           task.indexInfo.IndexName,
-			IndexID:             task.indexInfo.IndexID,
-			CompactionFrom:      task.segmentInfo.CompactionFrom,
-			CreatedByCompaction: task.segmentInfo.CreatedByCompaction,
-			SegmentState:        task.segmentInfo.State,
-			IndexInfos:          []*querypb.FieldIndexInfo{task.indexInfo},
-			EnableIndex:         true,
-		}
-		if err := fsw.writeHandoffSegment(handoffTask); err != nil {
-			log.Warn("IndexCoord writeHandoffSegment fail, wait to retry", zap.Int64("collID", task.segmentInfo.CollectionID),
-				zap.Int64("partID", task.segmentInfo.PartitionID), zap.Int64("segID", task.segmentInfo.ID), zap.Error(err))
-			return
-		}
-		log.Warn("IndexCoord writeHandoffSegment success", zap.Int64("collID", task.segmentInfo.CollectionID),
-			zap.Int64("partID", task.segmentInfo.PartitionID), zap.Int64("segID", task.segmentInfo.ID))
-		delete(fsw.childrenTasks[task.segmentInfo.ID], task.indexInfo.IndexID)
-		return
-	default:
-		log.Debug("IndexCoord flushedSegmentWatcher internal task get invalid state", zap.Int64("segID", task.segmentInfo.ID),
-			zap.String("state", task.state.String()))
 	}
 }
 
@@ -419,7 +312,7 @@ func (fsw *flushedSegmentWatcher) constructTask(t *internalTask) error {
 	log.Debug("IndexCoord flushedSegmentWatcher construct tasks by segment info", zap.Int64("segID", t.segmentInfo.ID),
 		zap.Int64s("compactionFrom", t.segmentInfo.CompactionFrom))
 	fieldIndexes := fsw.meta.GetIndexesForCollection(t.segmentInfo.CollectionID, "")
-	if t.segmentInfo.NumOfRows < Params.IndexCoordCfg.MinSegmentNumRowsToEnableIndex || len(fieldIndexes) == 0 {
+	if len(fieldIndexes) == 0 {
 		log.Debug("segment no need to build index", zap.Int64("segmentID", t.segmentInfo.ID),
 			zap.Int64("num of rows", t.segmentInfo.NumOfRows), zap.Int("collection indexes num", len(fieldIndexes)))
 		// no need to build index
@@ -427,8 +320,29 @@ func (fsw *flushedSegmentWatcher) constructTask(t *internalTask) error {
 	}
 
 	for _, index := range fieldIndexes {
-		fsw.enqueueChildrenTask(t.segmentInfo, index)
+		segIdx := &model.SegmentIndex{
+			SegmentID:    t.segmentInfo.ID,
+			CollectionID: t.segmentInfo.CollectionID,
+			PartitionID:  t.segmentInfo.PartitionID,
+			NumRows:      t.segmentInfo.NumOfRows,
+			IndexID:      index.IndexID,
+			CreateTime:   t.segmentInfo.StartPosition.Timestamp,
+		}
+
+		//create index task for metaTable
+		// send to indexBuilder
+		have, buildID, err := fsw.ic.createIndexForSegment(segIdx)
+		if err != nil {
+			log.Warn("IndexCoord create index for segment fail", zap.Int64("segID", t.segmentInfo.ID),
+				zap.Int64("indexID", index.IndexID), zap.Error(err))
+			return err
+		}
+		if !have {
+			fsw.builder.enqueue(buildID)
+		}
 	}
+	log.Debug("flushedSegmentWatcher construct children task success", zap.Int64("segID", t.segmentInfo.ID),
+		zap.Int("tasks num", len(fieldIndexes)))
 	return nil
 }
 
@@ -453,16 +367,6 @@ func (fsw *flushedSegmentWatcher) writeHandoffSegment(t *querypb.SegmentInfo) er
 }
 
 func (fsw *flushedSegmentWatcher) removeFlushedSegment(t *internalTask) error {
-	if t.segmentInfo.CreatedByCompaction {
-		log.Debug("IndexCoord flushedSegmentWatcher mark the segments indexes as deleted which is compacted", zap.Int64("segID", t.segmentInfo.ID),
-			zap.Int64s("compactionFrom", t.segmentInfo.CompactionFrom))
-		if err := fsw.meta.MarkSegmentsIndexAsDeleted(t.segmentInfo.CompactionFrom); err != nil {
-			log.Error("IndexCoord mark compacted segments' index fail", zap.Int64("segID", t.segmentInfo.ID),
-				zap.Int64s("compactFrom", t.segmentInfo.CompactionFrom), zap.Error(err))
-			return err
-		}
-	}
-
 	deletedKeys := fmt.Sprintf("%s/%d/%d/%d", util.FlushedSegmentPrefix, t.segmentInfo.CollectionID, t.segmentInfo.PartitionID, t.segmentInfo.ID)
 	err := fsw.kvClient.RemoveWithPrefix(deletedKeys)
 	if err != nil {
@@ -474,3 +378,73 @@ func (fsw *flushedSegmentWatcher) removeFlushedSegment(t *internalTask) error {
 		zap.Int64("partID", t.segmentInfo.PartitionID), zap.Int64("segID", t.segmentInfo.ID))
 	return nil
 }
+
+func (fsw *flushedSegmentWatcher) pullSegmentInfo(segmentID UniqueID) error {
+	t := fsw.getInternalTask(segmentID)
+	if t.segmentInfo != nil {
+		return nil
+	}
+	resp, err := fsw.ic.dataCoordClient.GetSegmentInfo(fsw.ctx, &datapb.GetSegmentInfoRequest{
+		SegmentIDs:       []int64{segmentID},
+		IncludeUnHealthy: true,
+	})
+	if err != nil {
+		log.Error("flushedSegmentWatcher get segment info fail", zap.Int64("segID", segmentID), zap.Error(err))
+		return err
+	}
+	if resp.Status.GetErrorCode() != commonpb.ErrorCode_Success {
+		log.Error("flushedSegmentWatcher get segment info fail", zap.Int64("segID", segmentID),
+			zap.String("fail reason", resp.Status.GetReason()))
+		if resp.Status.GetReason() == msgSegmentNotFound(segmentID) {
+			return errSegmentNotFound(segmentID)
+		}
+		return errors.New(resp.Status.GetReason())
+	}
+	for _, info := range resp.Infos {
+		if info.ID == segmentID {
+			fsw.setInternalTaskSegmentInfo(segmentID, info)
+			return nil
+		}
+	}
+	errMsg := fmt.Sprintf("flushedSegmentWatcher get segment info fail, the segment is not include in the response with ID: %d", segmentID)
+	log.Error(errMsg)
+	return errors.New(errMsg)
+}
+
+func (fsw *flushedSegmentWatcher) prepare(segID UniqueID) error {
+	defer fsw.internalNotifyFunc()
+	log.Debug("prepare flushed segment task", zap.Int64("segID", segID))
+	if err := fsw.pullSegmentInfo(segID); err != nil {
+		log.Error("flushedSegmentWatcher get segment info fail", zap.Int64("segID", segID),
+			zap.Error(err))
+		if errors.Is(err, ErrSegmentNotFound) {
+			fsw.deleteInternalTask(segID)
+			return err
+		}
+		return err
+	}
+	//t := fsw.getInternalTask(segID)
+	//if t.segmentInfo.CreatedByCompaction {
+	//	if err := fsw.removeCompactedTasks(t); err != nil {
+	//		return err
+	//	}
+	//}
+	return nil
+}
+
+//func (fsw *flushedSegmentWatcher) removeCompactedTasks(t *internalTask) error {
+//	log.Debug("IndexCoord flushedSegmentWatcher mark task as deleted which is compacted", zap.Int64("segID", t.segmentInfo.ID),
+//		zap.Int64s("compactionFrom", t.segmentInfo.CompactionFrom))
+//	if err := fsw.builder.markTasksAsDeleted(fsw.meta.GetBuildIDsFromSegIDs(t.segmentInfo.CompactionFrom)); err != nil {
+//		log.Error("mark index meta fail, try again", zap.Int64s("compacted segIDs", t.segmentInfo.CompactionFrom),
+//			zap.Error(err))
+//		return err
+//	}
+//	for _, segID := range t.segmentInfo.CompactionFrom {
+//		fsw.deleteChildrenTask(segID)
+//		if _, ok := fsw.internalTasks[segID]; ok {
+//			fsw.updateInternalTaskState(segID, indexTaskDeleted)
+//		}
+//	}
+//	return nil
+//}

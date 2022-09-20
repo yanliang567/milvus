@@ -36,10 +36,10 @@ import (
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
-	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/proxypb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/util/crypto"
@@ -122,29 +122,6 @@ func (node *Proxy) InvalidateCollectionMetaCache(ctx context.Context, request *p
 		zap.String("db", request.DbName),
 		zap.String("collection", collectionName),
 		zap.Int64("collectionID", collectionID))
-
-	return &commonpb.Status{
-		ErrorCode: commonpb.ErrorCode_Success,
-		Reason:    "",
-	}, nil
-}
-
-// ReleaseDQLMessageStream release the query message stream of specific collection.
-func (node *Proxy) ReleaseDQLMessageStream(ctx context.Context, request *proxypb.ReleaseDQLMessageStreamRequest) (*commonpb.Status, error) {
-	ctx = logutil.WithModule(ctx, moduleName)
-	logutil.Logger(ctx).Debug("received request to release DQL message strem",
-		zap.Any("role", typeutil.ProxyRole),
-		zap.Any("db", request.DbID),
-		zap.Any("collection", request.CollectionID))
-
-	if !node.checkHealthy() {
-		return unhealthyStatus(), nil
-	}
-
-	logutil.Logger(ctx).Debug("complete to release DQL message stream",
-		zap.Any("role", typeutil.ProxyRole),
-		zap.Any("db", request.DbID),
-		zap.Any("collection", request.CollectionID))
 
 	return &commonpb.Status{
 		ErrorCode: commonpb.ErrorCode_Success,
@@ -2297,7 +2274,8 @@ func (node *Proxy) Insert(ctx context.Context, request *milvuspb.InsertRequest) 
 	method := "Insert"
 	tr := timerecord.NewTimeRecorder(method)
 	receiveSize := proto.Size(request)
-	metrics.ProxyMutationReceiveBytes.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10)).Add(float64(receiveSize))
+	rateCol.Add(internalpb.RateType_DMLInsert.String(), float64(receiveSize))
+	metrics.ProxyReceiveBytes.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), metrics.InsertLabel).Add(float64(receiveSize))
 
 	defer func() {
 		metrics.ProxyDMLFunctionCall.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), method,
@@ -2420,7 +2398,8 @@ func (node *Proxy) Delete(ctx context.Context, request *milvuspb.DeleteRequest) 
 	defer log.Info("Finish processing delete request in Proxy", zap.String("traceID", traceID))
 
 	receiveSize := proto.Size(request)
-	metrics.ProxyMutationReceiveBytes.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10)).Add(float64(receiveSize))
+	rateCol.Add(internalpb.RateType_DMLDelete.String(), float64(receiveSize))
+	metrics.ProxyReceiveBytes.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), metrics.DeleteLabel).Add(float64(receiveSize))
 
 	if !node.checkHealthy() {
 		return &milvuspb.MutationResult{
@@ -2509,6 +2488,11 @@ func (node *Proxy) Delete(ctx context.Context, request *milvuspb.DeleteRequest) 
 
 // Search search the most similar records of requests.
 func (node *Proxy) Search(ctx context.Context, request *milvuspb.SearchRequest) (*milvuspb.SearchResults, error) {
+	receiveSize := proto.Size(request)
+	metrics.ProxyReceiveBytes.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), metrics.SearchLabel).Add(float64(receiveSize))
+
+	rateCol.Add(internalpb.RateType_DQLSearch.String(), float64(request.GetNq()))
+
 	if !node.checkHealthy() {
 		return &milvuspb.SearchResults{
 			Status: unhealthyStatus(),
@@ -2750,6 +2734,11 @@ func (node *Proxy) Flush(ctx context.Context, request *milvuspb.FlushRequest) (*
 
 // Query get the records by primary keys.
 func (node *Proxy) Query(ctx context.Context, request *milvuspb.QueryRequest) (*milvuspb.QueryResults, error) {
+	receiveSize := proto.Size(request)
+	metrics.ProxyReceiveBytes.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), metrics.QueryLabel).Add(float64(receiveSize))
+
+	rateCol.Add(internalpb.RateType_DQLQuery.String(), 1)
+
 	if !node.checkHealthy() {
 		return &milvuspb.QueryResults{
 			Status: unhealthyStatus(),
@@ -3579,6 +3568,95 @@ func (node *Proxy) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsReque
 	}, nil
 }
 
+// GetProxyMetrics gets the metrics of proxy, it's an internal interface which is different from GetMetrics interface,
+// because it only obtains the metrics of Proxy, not including the topological metrics of Query cluster and Data cluster.
+func (node *Proxy) GetProxyMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
+	log.Debug("Proxy.GetProxyMetrics",
+		zap.Int64("node_id", Params.ProxyCfg.GetNodeID()),
+		zap.String("req", req.Request))
+
+	if !node.checkHealthy() {
+		log.Warn("Proxy.GetProxyMetrics failed",
+			zap.Int64("node_id", Params.ProxyCfg.GetNodeID()),
+			zap.String("req", req.Request),
+			zap.Error(errProxyIsUnhealthy(Params.ProxyCfg.GetNodeID())))
+
+		return &milvuspb.GetMetricsResponse{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+				Reason:    msgProxyIsUnhealthy(Params.ProxyCfg.GetNodeID()),
+			},
+		}, nil
+	}
+
+	metricType, err := metricsinfo.ParseMetricType(req.Request)
+	if err != nil {
+		log.Warn("Proxy.GetProxyMetrics failed to parse metric type",
+			zap.Int64("node_id", Params.ProxyCfg.GetNodeID()),
+			zap.String("req", req.Request),
+			zap.Error(err))
+
+		return &milvuspb.GetMetricsResponse{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+				Reason:    err.Error(),
+			},
+		}, nil
+	}
+
+	log.Debug("Proxy.GetProxyMetrics",
+		zap.String("metric_type", metricType))
+
+	msgID := UniqueID(0)
+	msgID, err = node.idAllocator.AllocOne()
+	if err != nil {
+		log.Warn("Proxy.GetProxyMetrics failed to allocate id",
+			zap.Error(err))
+	}
+	req.Base = &commonpb.MsgBase{
+		MsgType:  commonpb.MsgType_SystemInfo,
+		MsgID:    msgID,
+		SourceID: Params.ProxyCfg.GetNodeID(),
+	}
+
+	if metricType == metricsinfo.SystemInfoMetrics {
+		proxyMetrics, err := getProxyMetrics(ctx, req, node)
+		if err != nil {
+			log.Warn("Proxy.GetProxyMetrics failed to getProxyMetrics",
+				zap.Int64("node_id", Params.ProxyCfg.GetNodeID()),
+				zap.String("req", req.Request),
+				zap.Error(err))
+
+			return &milvuspb.GetMetricsResponse{
+				Status: &commonpb.Status{
+					ErrorCode: commonpb.ErrorCode_UnexpectedError,
+					Reason:    err.Error(),
+				},
+			}, nil
+		}
+
+		log.Debug("Proxy.GetProxyMetrics",
+			zap.Int64("node_id", Params.ProxyCfg.GetNodeID()),
+			zap.String("req", req.Request),
+			zap.String("metric_type", metricType),
+			zap.Error(err))
+
+		return proxyMetrics, nil
+	}
+
+	log.Debug("Proxy.GetProxyMetrics failed, request metric type is not implemented yet",
+		zap.Int64("node_id", Params.ProxyCfg.GetNodeID()),
+		zap.String("req", req.Request),
+		zap.String("metric_type", metricType))
+
+	return &milvuspb.GetMetricsResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_UnexpectedError,
+			Reason:    metricsinfo.MsgUnimplementedMetric,
+		},
+	}, nil
+}
+
 // LoadBalance would do a load balancing operation between query nodes
 func (node *Proxy) LoadBalance(ctx context.Context, req *milvuspb.LoadBalanceRequest) (*commonpb.Status, error) {
 	log.Debug("Proxy.LoadBalance",
@@ -3813,7 +3891,7 @@ func (node *Proxy) InvalidateCredentialCache(ctx context.Context, request *proxy
 		zap.String("role", typeutil.ProxyRole),
 		zap.String("username", request.Username))
 	if !node.checkHealthy() {
-		return unhealthyStatus(), errorutil.UnhealthyError()
+		return unhealthyStatus(), nil
 	}
 
 	username := request.Username
@@ -3837,7 +3915,7 @@ func (node *Proxy) UpdateCredentialCache(ctx context.Context, request *proxypb.U
 		zap.String("role", typeutil.ProxyRole),
 		zap.String("username", request.Username))
 	if !node.checkHealthy() {
-		return unhealthyStatus(), errorutil.UnhealthyError()
+		return unhealthyStatus(), nil
 	}
 
 	credInfo := &internalpb.CredentialInfo{
@@ -3860,7 +3938,7 @@ func (node *Proxy) UpdateCredentialCache(ctx context.Context, request *proxypb.U
 func (node *Proxy) CreateCredential(ctx context.Context, req *milvuspb.CreateCredentialRequest) (*commonpb.Status, error) {
 	log.Debug("CreateCredential", zap.String("role", typeutil.ProxyRole), zap.String("username", req.Username))
 	if !node.checkHealthy() {
-		return unhealthyStatus(), errorutil.UnhealthyError()
+		return unhealthyStatus(), nil
 	}
 	// validate params
 	username := req.Username
@@ -3913,7 +3991,7 @@ func (node *Proxy) CreateCredential(ctx context.Context, req *milvuspb.CreateCre
 func (node *Proxy) UpdateCredential(ctx context.Context, req *milvuspb.UpdateCredentialRequest) (*commonpb.Status, error) {
 	log.Debug("UpdateCredential", zap.String("role", typeutil.ProxyRole), zap.String("username", req.Username))
 	if !node.checkHealthy() {
-		return unhealthyStatus(), errorutil.UnhealthyError()
+		return unhealthyStatus(), nil
 	}
 	rawOldPassword, err := crypto.Base64Decode(req.OldPassword)
 	if err != nil {
@@ -3974,7 +4052,7 @@ func (node *Proxy) UpdateCredential(ctx context.Context, req *milvuspb.UpdateCre
 func (node *Proxy) DeleteCredential(ctx context.Context, req *milvuspb.DeleteCredentialRequest) (*commonpb.Status, error) {
 	log.Debug("DeleteCredential", zap.String("role", typeutil.ProxyRole), zap.String("username", req.Username))
 	if !node.checkHealthy() {
-		return unhealthyStatus(), errorutil.UnhealthyError()
+		return unhealthyStatus(), nil
 	}
 
 	if req.Username == util.UserRoot {
@@ -3997,7 +4075,7 @@ func (node *Proxy) DeleteCredential(ctx context.Context, req *milvuspb.DeleteCre
 func (node *Proxy) ListCredUsers(ctx context.Context, req *milvuspb.ListCredUsersRequest) (*milvuspb.ListCredUsersResponse, error) {
 	log.Debug("ListCredUsers", zap.String("role", typeutil.ProxyRole))
 	if !node.checkHealthy() {
-		return &milvuspb.ListCredUsersResponse{Status: unhealthyStatus()}, errorutil.UnhealthyError()
+		return &milvuspb.ListCredUsersResponse{Status: unhealthyStatus()}, nil
 	}
 	rootCoordReq := &milvuspb.ListCredUsersRequest{
 		Base: &commonpb.MsgBase{
@@ -4021,26 +4099,10 @@ func (node *Proxy) ListCredUsers(ctx context.Context, req *milvuspb.ListCredUser
 	}, nil
 }
 
-// SendSearchResult needs to be removed TODO
-func (node *Proxy) SendSearchResult(ctx context.Context, req *internalpb.SearchResults) (*commonpb.Status, error) {
-	return &commonpb.Status{
-		ErrorCode: commonpb.ErrorCode_UnexpectedError,
-		Reason:    "Not implemented",
-	}, nil
-}
-
-// SendRetrieveResult needs to be removed TODO
-func (node *Proxy) SendRetrieveResult(ctx context.Context, req *internalpb.RetrieveResults) (*commonpb.Status, error) {
-	return &commonpb.Status{
-		ErrorCode: commonpb.ErrorCode_UnexpectedError,
-		Reason:    "Not implemented",
-	}, nil
-}
-
 func (node *Proxy) CreateRole(ctx context.Context, req *milvuspb.CreateRoleRequest) (*commonpb.Status, error) {
 	logger.Debug("CreateRole", zap.Any("req", req))
 	if code, ok := node.checkHealthyAndReturnCode(); !ok {
-		return errorutil.UnhealthyStatus(code), errorutil.UnhealthyError()
+		return errorutil.UnhealthyStatus(code), nil
 	}
 
 	var roleName string
@@ -4051,7 +4113,7 @@ func (node *Proxy) CreateRole(ctx context.Context, req *milvuspb.CreateRoleReque
 		return &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_IllegalArgument,
 			Reason:    err.Error(),
-		}, err
+		}, nil
 	}
 
 	result, err := node.rootCoord.CreateRole(ctx, req)
@@ -4060,7 +4122,7 @@ func (node *Proxy) CreateRole(ctx context.Context, req *milvuspb.CreateRoleReque
 		return &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 			Reason:    err.Error(),
-		}, err
+		}, nil
 	}
 	return result, nil
 }
@@ -4068,20 +4130,20 @@ func (node *Proxy) CreateRole(ctx context.Context, req *milvuspb.CreateRoleReque
 func (node *Proxy) DropRole(ctx context.Context, req *milvuspb.DropRoleRequest) (*commonpb.Status, error) {
 	logger.Debug("DropRole", zap.Any("req", req))
 	if code, ok := node.checkHealthyAndReturnCode(); !ok {
-		return errorutil.UnhealthyStatus(code), errorutil.UnhealthyError()
+		return errorutil.UnhealthyStatus(code), nil
 	}
 	if err := ValidateRoleName(req.RoleName); err != nil {
 		return &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_IllegalArgument,
 			Reason:    err.Error(),
-		}, err
+		}, nil
 	}
 	if IsDefaultRole(req.RoleName) {
 		errMsg := fmt.Sprintf("the role[%s] is a default role, which can't be droped", req.RoleName)
 		return &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_IllegalArgument,
 			Reason:    errMsg,
-		}, errors.New(errMsg)
+		}, nil
 	}
 	result, err := node.rootCoord.DropRole(ctx, req)
 	if err != nil {
@@ -4089,7 +4151,7 @@ func (node *Proxy) DropRole(ctx context.Context, req *milvuspb.DropRoleRequest) 
 		return &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 			Reason:    err.Error(),
-		}, err
+		}, nil
 	}
 	return result, nil
 }
@@ -4097,19 +4159,19 @@ func (node *Proxy) DropRole(ctx context.Context, req *milvuspb.DropRoleRequest) 
 func (node *Proxy) OperateUserRole(ctx context.Context, req *milvuspb.OperateUserRoleRequest) (*commonpb.Status, error) {
 	logger.Debug("OperateUserRole", zap.Any("req", req))
 	if code, ok := node.checkHealthyAndReturnCode(); !ok {
-		return errorutil.UnhealthyStatus(code), errorutil.UnhealthyError()
+		return errorutil.UnhealthyStatus(code), nil
 	}
 	if err := ValidateUsername(req.Username); err != nil {
 		return &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_IllegalArgument,
 			Reason:    err.Error(),
-		}, err
+		}, nil
 	}
 	if err := ValidateRoleName(req.RoleName); err != nil {
 		return &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_IllegalArgument,
 			Reason:    err.Error(),
-		}, err
+		}, nil
 	}
 
 	result, err := node.rootCoord.OperateUserRole(ctx, req)
@@ -4118,7 +4180,7 @@ func (node *Proxy) OperateUserRole(ctx context.Context, req *milvuspb.OperateUse
 		return &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 			Reason:    err.Error(),
-		}, err
+		}, nil
 	}
 	return result, nil
 }
@@ -4126,7 +4188,7 @@ func (node *Proxy) OperateUserRole(ctx context.Context, req *milvuspb.OperateUse
 func (node *Proxy) SelectRole(ctx context.Context, req *milvuspb.SelectRoleRequest) (*milvuspb.SelectRoleResponse, error) {
 	logger.Debug("SelectRole", zap.Any("req", req))
 	if code, ok := node.checkHealthyAndReturnCode(); !ok {
-		return &milvuspb.SelectRoleResponse{Status: errorutil.UnhealthyStatus(code)}, errorutil.UnhealthyError()
+		return &milvuspb.SelectRoleResponse{Status: errorutil.UnhealthyStatus(code)}, nil
 	}
 
 	if req.Role != nil {
@@ -4136,7 +4198,7 @@ func (node *Proxy) SelectRole(ctx context.Context, req *milvuspb.SelectRoleReque
 					ErrorCode: commonpb.ErrorCode_IllegalArgument,
 					Reason:    err.Error(),
 				},
-			}, err
+			}, nil
 		}
 	}
 
@@ -4148,7 +4210,7 @@ func (node *Proxy) SelectRole(ctx context.Context, req *milvuspb.SelectRoleReque
 				ErrorCode: commonpb.ErrorCode_UnexpectedError,
 				Reason:    err.Error(),
 			},
-		}, err
+		}, nil
 	}
 	return result, nil
 }
@@ -4156,7 +4218,7 @@ func (node *Proxy) SelectRole(ctx context.Context, req *milvuspb.SelectRoleReque
 func (node *Proxy) SelectUser(ctx context.Context, req *milvuspb.SelectUserRequest) (*milvuspb.SelectUserResponse, error) {
 	logger.Debug("SelectUser", zap.Any("req", req))
 	if code, ok := node.checkHealthyAndReturnCode(); !ok {
-		return &milvuspb.SelectUserResponse{Status: errorutil.UnhealthyStatus(code)}, errorutil.UnhealthyError()
+		return &milvuspb.SelectUserResponse{Status: errorutil.UnhealthyStatus(code)}, nil
 	}
 
 	if req.User != nil {
@@ -4166,7 +4228,7 @@ func (node *Proxy) SelectUser(ctx context.Context, req *milvuspb.SelectUserReque
 					ErrorCode: commonpb.ErrorCode_IllegalArgument,
 					Reason:    err.Error(),
 				},
-			}, err
+			}, nil
 		}
 	}
 
@@ -4178,7 +4240,7 @@ func (node *Proxy) SelectUser(ctx context.Context, req *milvuspb.SelectUserReque
 				ErrorCode: commonpb.ErrorCode_UnexpectedError,
 				Reason:    err.Error(),
 			},
-		}, err
+		}, nil
 	}
 	return result, nil
 }
@@ -4218,20 +4280,20 @@ func (node *Proxy) validPrivilegeParams(req *milvuspb.OperatePrivilegeRequest) e
 func (node *Proxy) OperatePrivilege(ctx context.Context, req *milvuspb.OperatePrivilegeRequest) (*commonpb.Status, error) {
 	logger.Debug("OperatePrivilege", zap.Any("req", req))
 	if code, ok := node.checkHealthyAndReturnCode(); !ok {
-		return errorutil.UnhealthyStatus(code), errorutil.UnhealthyError()
+		return errorutil.UnhealthyStatus(code), nil
 	}
 	if err := node.validPrivilegeParams(req); err != nil {
 		return &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_IllegalArgument,
 			Reason:    err.Error(),
-		}, err
+		}, nil
 	}
 	curUser, err := GetCurUserFromContext(ctx)
 	if err != nil {
 		return &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 			Reason:    err.Error(),
-		}, err
+		}, nil
 	}
 	req.Entity.Grantor.User = &milvuspb.UserEntity{Name: curUser}
 	result, err := node.rootCoord.OperatePrivilege(ctx, req)
@@ -4240,7 +4302,7 @@ func (node *Proxy) OperatePrivilege(ctx context.Context, req *milvuspb.OperatePr
 		return &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 			Reason:    err.Error(),
-		}, err
+		}, nil
 	}
 	return result, nil
 }
@@ -4274,7 +4336,7 @@ func (node *Proxy) validGrantParams(req *milvuspb.SelectGrantRequest) error {
 func (node *Proxy) SelectGrant(ctx context.Context, req *milvuspb.SelectGrantRequest) (*milvuspb.SelectGrantResponse, error) {
 	logger.Debug("SelectGrant", zap.Any("req", req))
 	if code, ok := node.checkHealthyAndReturnCode(); !ok {
-		return &milvuspb.SelectGrantResponse{Status: errorutil.UnhealthyStatus(code)}, errorutil.UnhealthyError()
+		return &milvuspb.SelectGrantResponse{Status: errorutil.UnhealthyStatus(code)}, nil
 	}
 
 	if err := node.validGrantParams(req); err != nil {
@@ -4283,7 +4345,7 @@ func (node *Proxy) SelectGrant(ctx context.Context, req *milvuspb.SelectGrantReq
 				ErrorCode: commonpb.ErrorCode_IllegalArgument,
 				Reason:    err.Error(),
 			},
-		}, err
+		}, nil
 	}
 
 	result, err := node.rootCoord.SelectGrant(ctx, req)
@@ -4294,7 +4356,7 @@ func (node *Proxy) SelectGrant(ctx context.Context, req *milvuspb.SelectGrantReq
 				ErrorCode: commonpb.ErrorCode_UnexpectedError,
 				Reason:    err.Error(),
 			},
-		}, err
+		}, nil
 	}
 	return result, nil
 }
@@ -4323,4 +4385,25 @@ func (node *Proxy) RefreshPolicyInfoCache(ctx context.Context, req *proxypb.Refr
 	return &commonpb.Status{
 		ErrorCode: commonpb.ErrorCode_Success,
 	}, nil
+}
+
+// SetRates limits the rates of requests.
+func (node *Proxy) SetRates(ctx context.Context, request *proxypb.SetRatesRequest) (*commonpb.Status, error) {
+	log.Debug("SetRates", zap.String("role", typeutil.ProxyRole), zap.Any("rates", request.GetRates()))
+	resp := &commonpb.Status{
+		ErrorCode: commonpb.ErrorCode_UnexpectedError,
+	}
+	if !node.checkHealthy() {
+		resp = unhealthyStatus()
+		return resp, nil
+	}
+
+	err := node.multiRateLimiter.globalRateLimiter.setRates(request.GetRates())
+	// TODO: set multiple rate limiter rates
+	if err != nil {
+		resp.Reason = err.Error()
+		return resp, nil
+	}
+	resp.ErrorCode = commonpb.ErrorCode_Success
+	return resp, nil
 }

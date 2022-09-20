@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/milvus-io/milvus/api/commonpb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metastore/model"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 	"go.uber.org/zap"
 )
@@ -21,6 +21,7 @@ type Collection struct {
 	ShardsNum        int32              `gorm:"shards_num"`
 	StartPosition    string             `gorm:"start_position"`
 	ConsistencyLevel int32              `gorm:"consistency_level"`
+	Status           int32              `gorm:"status"`
 	Ts               typeutil.Timestamp `gorm:"ts"`
 	IsDeleted        bool               `gorm:"is_deleted"`
 	CreatedAt        time.Time          `gorm:"created_at"`
@@ -39,6 +40,7 @@ type ICollectionDb interface {
 	Get(tenantID string, collectionID typeutil.UniqueID, ts typeutil.Timestamp) (*Collection, error)
 	GetCollectionIDByName(tenantID string, collectionName string, ts typeutil.Timestamp) (typeutil.UniqueID, error)
 	Insert(in *Collection) error
+	Update(in *Collection) error
 }
 
 // model <---> db

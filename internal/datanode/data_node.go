@@ -39,19 +39,19 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus/api/schemapb"
 	allocator2 "github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/kv"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/etcdpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
-	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
-	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/dependency"
@@ -84,6 +84,9 @@ var _ types.DataNode = (*DataNode)(nil)
 
 // Params from config.yaml
 var Params paramtable.ComponentParam
+
+// rateCol is global rateCollector in DataNode.
+var rateCol *rateCollector
 
 // DataNode communicates with outside services and unioun all
 // services in datanode package.
@@ -205,6 +208,18 @@ func (node *DataNode) initSession() error {
 	return nil
 }
 
+// initRateCollector creates and starts rateCollector in QueryNode.
+func (node *DataNode) initRateCollector() error {
+	var err error
+	rateCol, err = newRateCollector()
+	if err != nil {
+		return err
+	}
+	rateCol.Register(metricsinfo.InsertConsumeThroughput)
+	rateCol.Register(metricsinfo.DeleteConsumeThroughput)
+	return nil
+}
+
 // Init function does nothing now.
 func (node *DataNode) Init() error {
 	log.Info("DataNode Init",
@@ -214,6 +229,13 @@ func (node *DataNode) Init() error {
 		log.Error("DataNode init session failed", zap.Error(err))
 		return err
 	}
+
+	err := node.initRateCollector()
+	if err != nil {
+		log.Error("DataNode init rateCollector failed", zap.Int64("nodeID", Params.QueryNodeCfg.GetNodeID()), zap.Error(err))
+		return err
+	}
+	log.Info("DataNode init rateCollector done", zap.Int64("nodeID", Params.QueryNodeCfg.GetNodeID()))
 
 	idAllocator, err := allocator2.NewIDAllocator(node.ctx, node.rootCoord, Params.DataNodeCfg.GetNodeID())
 	if err != nil {

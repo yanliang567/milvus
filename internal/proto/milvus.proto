@@ -1,7 +1,7 @@
 syntax = "proto3";
 package milvus.proto.milvus;
 
-option go_package = "github.com/milvus-io/milvus/internal/proto/milvuspb";
+option go_package = "github.com/milvus-io/milvus/api/milvuspb";
 
 option java_multiple_files = true;
 option java_package = "io.milvus.grpc";
@@ -742,6 +742,8 @@ message FlushResponse{
   common.Status status = 1;
   string db_name = 2;
   map<string, schema.LongArray> coll_segIDs = 3;
+  map<string, schema.LongArray> flush_coll_segIDs = 4;
+  map<string, int64> coll_seal_times = 5;
 }
 
 message QueryRequest {

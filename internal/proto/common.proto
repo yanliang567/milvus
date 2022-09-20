@@ -1,7 +1,7 @@
 syntax = "proto3";
 package milvus.proto.common;
 
-option go_package="github.com/milvus-io/milvus/internal/proto/commonpb";
+option go_package="github.com/milvus-io/milvus/api/commonpb";
 
 option java_multiple_files = true;
 option java_package = "io.milvus.grpc";
@@ -58,6 +58,8 @@ enum ErrorCode {
     NotShardLeader = 45;
     NoReplicaAvailable = 46;
     SegmentNotFound = 47;
+    ForceDeny = 48;
+    RateLimit = 49;
 
     // internal error code.
     DDRequestRace = 1000;
@@ -187,6 +189,9 @@ enum MsgType {
     WatchDeltaChannels = 513;
     GetShardLeaders = 514;
     GetReplicas = 515;
+    UnsubDmChannel = 516;
+    GetDistribution = 517;
+    SyncDistribution = 518;
 
     /* DATA SERVICE */
     SegmentInfo = 600;

@@ -32,13 +32,14 @@ import (
 
 	"github.com/golang/protobuf/proto"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"go.uber.org/zap"
 
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/milvuspb"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
-	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/util"
 	"github.com/milvus-io/milvus/internal/util/dependency"
@@ -635,15 +636,24 @@ func TestQueryCoord_watchHandoffSegmentLoop(t *testing.T) {
 	assert.Nil(t, err)
 	etcdKV := etcdkv.NewEtcdKV(etcdCli, Params.EtcdCfg.MetaRootPath)
 
+	broker, _, _, err := getMockGlobalMetaBroker(ctx)
+	require.NoError(t, err)
+	scheduler, err := newTaskScheduler(ctx, nil, nil, etcdKV, broker, func() (UniqueID, error) {
+		return 1, nil
+	})
+	require.NoError(t, err)
+
 	qc := &QueryCoord{
 		loopCtx:  ctx,
 		loopWg:   sync.WaitGroup{},
 		kvClient: etcdKV,
 		handoffHandler: &HandoffHandler{
-			ctx:    ctx,
-			cancel: cancel,
-			client: etcdKV,
+			ctx:       ctx,
+			cancel:    cancel,
+			client:    etcdKV,
+			scheduler: scheduler,
 		},
+		scheduler: scheduler,
 	}
 
 	t.Run("chan closed", func(t *testing.T) {

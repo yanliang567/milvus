@@ -160,6 +160,8 @@ enum ErrorCode : int {
   NotShardLeader = 45,
   NoReplicaAvailable = 46,
   SegmentNotFound = 47,
+  ForceDeny = 48,
+  RateLimit = 49,
   DDRequestRace = 1000,
   ErrorCode_INT_MIN_SENTINEL_DO_NOT_USE_ = std::numeric_limits<::PROTOBUF_NAMESPACE_ID::int32>::min(),
   ErrorCode_INT_MAX_SENTINEL_DO_NOT_USE_ = std::numeric_limits<::PROTOBUF_NAMESPACE_ID::int32>::max()
@@ -319,6 +321,9 @@ enum MsgType : int {
   WatchDeltaChannels = 513,
   GetShardLeaders = 514,
   GetReplicas = 515,
+  UnsubDmChannel = 516,
+  GetDistribution = 517,
+  SyncDistribution = 518,
   SegmentInfo = 600,
   SystemInfo = 601,
   GetRecoveryInfo = 602,

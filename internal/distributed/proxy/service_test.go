@@ -32,12 +32,12 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/milvuspb"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
-	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/proxypb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
@@ -179,10 +179,6 @@ func (m *MockRootCoord) UpdateChannelTimeTick(ctx context.Context, req *internal
 }
 
 func (m *MockRootCoord) ShowSegments(ctx context.Context, req *milvuspb.ShowSegmentsRequest) (*milvuspb.ShowSegmentsResponse, error) {
-	return nil, nil
-}
-
-func (m *MockRootCoord) ReleaseDQLMessageStream(ctx context.Context, in *proxypb.ReleaseDQLMessageStreamRequest) (*commonpb.Status, error) {
 	return nil, nil
 }
 
@@ -597,10 +593,6 @@ func (m *MockProxy) InvalidateCollectionMetaCache(ctx context.Context, request *
 	return nil, nil
 }
 
-func (m *MockProxy) ReleaseDQLMessageStream(ctx context.Context, in *proxypb.ReleaseDQLMessageStreamRequest) (*commonpb.Status, error) {
-	return nil, nil
-}
-
 func (m *MockProxy) CreateCollection(ctx context.Context, request *milvuspb.CreateCollectionRequest) (*commonpb.Status, error) {
 	return nil, nil
 }
@@ -745,6 +737,14 @@ func (m *MockProxy) AlterAlias(ctx context.Context, request *milvuspb.AlterAlias
 	return nil, nil
 }
 
+func (m *MockProxy) SetRates(ctx context.Context, request *proxypb.SetRatesRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+
+func (m *MockProxy) GetProxyMetrics(ctx context.Context, request *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
+	return nil, nil
+}
+
 func (m *MockProxy) SetRootCoordClient(rootCoord types.RootCoord) {
 
 }
@@ -759,6 +759,10 @@ func (m *MockProxy) SetIndexCoordClient(indexCoord types.IndexCoord) {
 
 func (m *MockProxy) SetQueryCoordClient(queryCoord types.QueryCoord) {
 
+}
+
+func (m *MockProxy) GetRateLimiter() (types.Limiter, error) {
+	return nil, nil
 }
 
 func (m *MockProxy) UpdateStateCode(stateCode internalpb.StateCode) {
@@ -781,14 +785,6 @@ func (m *MockProxy) GetCompactionStateWithPlans(ctx context.Context, req *milvus
 }
 
 func (m *MockProxy) GetFlushState(ctx context.Context, req *milvuspb.GetFlushStateRequest) (*milvuspb.GetFlushStateResponse, error) {
-	return nil, nil
-}
-
-func (m *MockProxy) SendSearchResult(ctx context.Context, req *internalpb.SearchResults) (*commonpb.Status, error) {
-	return nil, nil
-}
-
-func (m *MockProxy) SendRetrieveResult(ctx context.Context, req *internalpb.RetrieveResults) (*commonpb.Status, error) {
 	return nil, nil
 }
 
@@ -1011,11 +1007,6 @@ func Test_NewServer(t *testing.T) {
 
 	t.Run("InvalidateCollectionMetaCache", func(t *testing.T) {
 		_, err := server.InvalidateCollectionMetaCache(ctx, nil)
-		assert.Nil(t, err)
-	})
-
-	t.Run("ReleaseDQLMessageStream", func(t *testing.T) {
-		_, err := server.ReleaseDQLMessageStream(ctx, nil)
 		assert.Nil(t, err)
 	})
 

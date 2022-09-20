@@ -23,10 +23,13 @@ import (
 	"path"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/metrics"
+
 	"github.com/milvus-io/milvus/internal/common"
 
-	"github.com/milvus-io/milvus/internal/log"
 	clientv3 "go.etcd.io/etcd/client/v3"
+
+	"github.com/milvus-io/milvus/internal/log"
 
 	"go.uber.org/zap"
 )
@@ -282,7 +285,7 @@ func (kv *EtcdKV) LoadWithRevision(key string) ([]string, []string, int64, error
 	ctx, cancel := context.WithTimeout(context.TODO(), RequestTimeout)
 	defer cancel()
 	resp, err := kv.client.Get(ctx, key, clientv3.WithPrefix(),
-		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
+		clientv3.WithSort(clientv3.SortByCreateRevision, clientv3.SortAscend))
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -687,6 +690,7 @@ func (kv *EtcdKV) CompareVersionAndSwapBytes(key string, source int64, target []
 // CheckElapseAndWarn checks the elapsed time and warns if it is too long.
 func CheckElapseAndWarn(start time.Time, message string, fields ...zap.Field) bool {
 	elapsed := time.Since(start)
+	metrics.EtcdRequestLatency.Observe(float64(elapsed))
 	if elapsed.Milliseconds() > 2000 {
 		log.Warn(message, append([]zap.Field{zap.String("time spent", elapsed.String())}, fields...)...)
 		return true
@@ -696,6 +700,7 @@ func CheckElapseAndWarn(start time.Time, message string, fields ...zap.Field) bo
 
 func CheckValueSizeAndWarn(key string, value interface{}) bool {
 	size := binary.Size(value)
+	metrics.EtcdPutKvSize.Observe(float64(size))
 	if size > 102400 {
 		log.Warn("value size large than 100kb", zap.String("key", key), zap.Int("value_size(kb)", size/1024))
 		return true

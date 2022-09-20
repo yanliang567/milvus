@@ -31,11 +31,11 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/milvuspb"
 	pnc "github.com/milvus-io/milvus/internal/distributed/proxy/client"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
-	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/proxypb"
 	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
 	"github.com/milvus-io/milvus/internal/rootcoord"
@@ -403,11 +403,6 @@ func (s *Server) UpdateChannelTimeTick(ctx context.Context, in *internalpb.Chann
 // ShowSegments gets all segments
 func (s *Server) ShowSegments(ctx context.Context, in *milvuspb.ShowSegmentsRequest) (*milvuspb.ShowSegmentsResponse, error) {
 	return s.rootCoord.ShowSegments(ctx, in)
-}
-
-// ReleaseDQLMessageStream notifies RootCoord to release and close the search message stream of specific collection.
-func (s *Server) ReleaseDQLMessageStream(ctx context.Context, in *proxypb.ReleaseDQLMessageStreamRequest) (*commonpb.Status, error) {
-	return s.rootCoord.ReleaseDQLMessageStream(ctx, in)
 }
 
 // InvalidateCollectionMetaCache notifies RootCoord to release the collection cache in Proxies.

@@ -22,11 +22,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/milvus-io/milvus/api/commonpb"
 	memkv "github.com/milvus-io/milvus/internal/kv/mem"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metastore/kv/datacoord"
 	"github.com/milvus-io/milvus/internal/mocks"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
 	"github.com/stretchr/testify/assert"
@@ -256,53 +256,6 @@ func Test_compactionPlanHandler_completeCompaction(t *testing.T) {
 			},
 			true,
 			nil,
-		},
-		{
-			"test complete inner compaction",
-			fields{
-				map[int64]*compactionTask{
-					1: {
-						triggerInfo: &compactionSignal{id: 1},
-						state:       executing,
-						plan: &datapb.CompactionPlan{
-							PlanID: 1,
-							SegmentBinlogs: []*datapb.CompactionSegmentBinlogs{
-								{SegmentID: 1, FieldBinlogs: []*datapb.FieldBinlog{getFieldBinlogPaths(1, "log1")}},
-							},
-							Type: datapb.CompactionType_InnerCompaction,
-						},
-					},
-				},
-				nil,
-				&meta{
-					catalog: &datacoord.Catalog{Txn: memkv.NewMemoryKV()},
-					segments: &SegmentsInfo{
-						map[int64]*SegmentInfo{
-							1: {SegmentInfo: &datapb.SegmentInfo{ID: 1, Binlogs: []*datapb.FieldBinlog{getFieldBinlogPaths(1, "log1")}}},
-						},
-					},
-				},
-				make(chan UniqueID, 1),
-			},
-			args{
-				result: &datapb.CompactionResult{
-					PlanID:     1,
-					SegmentID:  1,
-					InsertLogs: []*datapb.FieldBinlog{getFieldBinlogPaths(1, "log2")},
-				},
-			},
-			false,
-			&compactionTask{
-				triggerInfo: &compactionSignal{id: 1},
-				state:       completed,
-				plan: &datapb.CompactionPlan{
-					PlanID: 1,
-					SegmentBinlogs: []*datapb.CompactionSegmentBinlogs{
-						{SegmentID: 1, FieldBinlogs: []*datapb.FieldBinlog{getFieldBinlogPaths(1, "log1")}},
-					},
-					Type: datapb.CompactionType_InnerCompaction,
-				},
-			},
 		},
 		{
 			"test complete merge compaction",

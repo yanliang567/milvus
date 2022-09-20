@@ -35,17 +35,17 @@ import (
 	"github.com/golang/protobuf/proto"
 	"go.uber.org/zap"
 
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/etcdpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/planpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
-	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util"
 	"github.com/milvus-io/milvus/internal/util/etcd"
@@ -75,6 +75,8 @@ const (
 	defaultSubName      = "query-node-unittest-sub-name-0"
 
 	defaultLocalStorage = "/tmp/milvus_test/querynode"
+
+	defaultSegmentVersion = int64(1001)
 )
 
 const (
@@ -1223,6 +1225,7 @@ func genSealedSegment(schema *schemapb.CollectionSchema,
 		collectionID,
 		vChannel,
 		segmentTypeSealed,
+		defaultSegmentVersion,
 		pool)
 	if err != nil {
 		return nil, err
@@ -1316,6 +1319,7 @@ func genSimpleReplicaWithGrowingSegment() (ReplicaInterface, error) {
 		defaultPartitionID,
 		defaultCollectionID,
 		defaultDMLChannel,
+		defaultSegmentVersion,
 		segmentTypeGrowing)
 	if err != nil {
 		return nil, err
@@ -1729,6 +1733,10 @@ func genSimpleQueryNodeWithMQFactory(ctx context.Context, fac dependency.Factory
 
 	// start task scheduler
 	go node.scheduler.Start()
+	err = node.initRateCollector()
+	if err != nil {
+		return nil, err
+	}
 
 	// init shard cluster service
 	node.ShardClusterService = newShardClusterService(node.etcdCli, node.session, node)
@@ -1826,6 +1834,22 @@ func genFieldData(fieldName string, fieldID int64, fieldType schemapb.DataType, 
 			},
 			FieldId: fieldID,
 		}
+	case schemapb.DataType_VarChar:
+		fieldData = &schemapb.FieldData{
+			Type:      schemapb.DataType_VarChar,
+			FieldName: fieldName,
+			Field: &schemapb.FieldData_Scalars{
+				Scalars: &schemapb.ScalarField{
+					Data: &schemapb.ScalarField_StringData{
+						StringData: &schemapb.StringArray{
+							Data: fieldValue.([]string),
+						},
+					},
+				},
+			},
+			FieldId: fieldID,
+		}
+
 	case schemapb.DataType_BinaryVector:
 		fieldData = &schemapb.FieldData{
 			Type:      schemapb.DataType_BinaryVector,

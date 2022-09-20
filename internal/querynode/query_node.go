@@ -29,6 +29,7 @@ import "C"
 import (
 	"context"
 	"fmt"
+	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"os"
 	"path"
 	"path/filepath"
@@ -43,10 +44,9 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/panjf2000/ants/v2"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	v3rpc "go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
-
-	v3rpc "go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
@@ -69,6 +69,9 @@ var _ types.QueryNode = (*QueryNode)(nil)
 var _ types.QueryNodeComponent = (*QueryNode)(nil)
 
 var Params paramtable.ComponentParam
+
+// rateCol is global rateCollector in QueryNode.
+var rateCol *rateCollector
 
 // QueryNode communicates with outside services and union all
 // services in querynode package.
@@ -172,6 +175,20 @@ func (node *QueryNode) Register() error {
 	return nil
 }
 
+// initRateCollector creates and starts rateCollector in QueryNode.
+func (node *QueryNode) initRateCollector() error {
+	var err error
+	rateCol, err = newRateCollector()
+	if err != nil {
+		return err
+	}
+	rateCol.Register(metricsinfo.NQPerSecond)
+	rateCol.Register(metricsinfo.SearchThroughput)
+	rateCol.Register(metricsinfo.InsertConsumeThroughput)
+	rateCol.Register(metricsinfo.DeleteConsumeThroughput)
+	return nil
+}
+
 // InitSegcore set init params of segCore, such as chunckRows, SIMD type...
 func (node *QueryNode) InitSegcore() {
 	cEasyloggingYaml := C.CString(path.Join(Params.BaseTable.GetConfigDir(), paramtable.DefaultEasyloggingYaml))
@@ -215,6 +232,14 @@ func (node *QueryNode) Init() error {
 
 		node.factory.Init(&Params)
 
+		err = node.initRateCollector()
+		if err != nil {
+			log.Error("QueryNode init rateCollector failed", zap.Int64("nodeID", Params.QueryNodeCfg.GetNodeID()), zap.Error(err))
+			initError = err
+			return
+		}
+		log.Info("QueryNode init rateCollector done", zap.Int64("nodeID", Params.QueryNodeCfg.GetNodeID()))
+
 		node.vectorStorage, err = node.factory.NewVectorStorageChunkManager(node.queryNodeLoopCtx)
 		if err != nil {
 			log.Error("QueryNode init vector storage failed", zap.Error(err))
@@ -240,15 +265,20 @@ func (node *QueryNode) Init() error {
 			return
 		}
 
+		// ensure every cgopool go routine is locked with a OS thread
+		// so openmp in knowhere won't create too much request
 		sig := make(chan struct{})
-
+		wg := sync.WaitGroup{}
+		wg.Add(cpuNum)
 		for i := 0; i < cpuNum; i++ {
 			node.cgoPool.Submit(func() (interface{}, error) {
 				runtime.LockOSThread()
+				wg.Done()
 				<-sig
 				return nil, nil
 			})
 		}
+		wg.Wait()
 		close(sig)
 
 		node.metaReplica = newCollectionReplica(node.cgoPool)

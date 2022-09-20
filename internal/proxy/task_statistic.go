@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/milvus-io/milvus/api/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
-	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 
+	"github.com/milvus-io/milvus/api/commonpb"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/types"
@@ -649,9 +649,9 @@ func (g *getCollectionStatisticsTask) Execute(ctx context.Context) error {
 		CollectionID: collID,
 	}
 
-	result, _ := g.dataCoord.GetCollectionStatistics(ctx, req)
-	if result == nil {
-		return errors.New("get collection statistics resp is nil")
+	result, err := g.dataCoord.GetCollectionStatistics(ctx, req)
+	if err != nil {
+		return err
 	}
 	if result.Status.ErrorCode != commonpb.ErrorCode_Success {
 		return errors.New(result.Status.Reason)

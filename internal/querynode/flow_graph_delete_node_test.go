@@ -22,9 +22,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/milvus-io/milvus/api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
-	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
 )
 
@@ -38,6 +38,7 @@ func TestFlowGraphDeleteNode_delete(t *testing.T) {
 			defaultPartitionID,
 			defaultCollectionID,
 			defaultDMLChannel,
+			defaultSegmentVersion,
 			segmentTypeSealed)
 		assert.NoError(t, err)
 
@@ -59,6 +60,7 @@ func TestFlowGraphDeleteNode_delete(t *testing.T) {
 			defaultPartitionID,
 			defaultCollectionID,
 			defaultDMLChannel,
+			defaultSegmentVersion,
 			segmentTypeSealed)
 		assert.NoError(t, err)
 
@@ -91,6 +93,7 @@ func TestFlowGraphDeleteNode_delete(t *testing.T) {
 			defaultPartitionID,
 			defaultCollectionID,
 			defaultDMLChannel,
+			defaultSegmentVersion,
 			segmentTypeGrowing)
 		assert.NoError(t, err)
 
@@ -111,6 +114,7 @@ func TestFlowGraphDeleteNode_operate(t *testing.T) {
 			defaultPartitionID,
 			defaultCollectionID,
 			defaultDMLChannel,
+			defaultSegmentVersion,
 			segmentTypeSealed)
 		assert.NoError(t, err)
 
@@ -145,6 +149,7 @@ func TestFlowGraphDeleteNode_operate(t *testing.T) {
 			defaultPartitionID,
 			defaultCollectionID,
 			defaultDMLChannel,
+			defaultSegmentVersion,
 			segmentTypeSealed)
 		assert.NoError(t, err)
 
@@ -169,6 +174,7 @@ func TestFlowGraphDeleteNode_operate(t *testing.T) {
 			defaultPartitionID,
 			defaultCollectionID,
 			defaultDMLChannel,
+			defaultSegmentVersion,
 			segmentTypeSealed)
 		assert.NoError(t, err)
 
@@ -196,6 +202,7 @@ func TestFlowGraphDeleteNode_operate(t *testing.T) {
 			defaultPartitionID,
 			defaultCollectionID,
 			defaultDMLChannel,
+			defaultSegmentVersion,
 			segmentTypeSealed)
 		assert.NoError(t, err)
 
@@ -222,6 +229,7 @@ func TestFlowGraphDeleteNode_operate(t *testing.T) {
 			defaultPartitionID,
 			defaultCollectionID,
 			defaultDMLChannel,
+			defaultSegmentVersion,
 			segmentTypeSealed)
 		assert.NoError(t, err)
 

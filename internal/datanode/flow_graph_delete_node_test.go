@@ -25,9 +25,9 @@ import (
 	"github.com/milvus-io/milvus/internal/util/retry"
 
 	"github.com/bits-and-blooms/bloom/v3"
+	"github.com/milvus-io/milvus/api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
-	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
 	"github.com/stretchr/testify/assert"
@@ -418,7 +418,7 @@ func TestFlowGraphDeleteNode_Operate(t *testing.T) {
 
 		var fgMsg flowgraph.Msg = &msg
 
-		flowGraphRetryOpt = retry.Attempts(1)
+		setFlowGraphRetryOpt(retry.Attempts(1))
 		assert.Panics(te, func() {
 			delNode.Operate([]flowgraph.Msg{fgMsg})
 		})
@@ -462,7 +462,7 @@ func TestFlowGraphDeleteNode_Operate(t *testing.T) {
 		delNode.flushManager = NewRendezvousFlushManager(&allocator{}, cm, replica, func(*segmentFlushPack) {}, emptyFlushAndDropFunc)
 
 		var fgMsg flowgraph.Msg = &msg
-		flowGraphRetryOpt = retry.Attempts(1)
+		setFlowGraphRetryOpt(retry.Attempts(1))
 		assert.NotPanics(t, func() {
 			delNode.Operate([]flowgraph.Msg{fgMsg})
 		})

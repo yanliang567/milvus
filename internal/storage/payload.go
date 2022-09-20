@@ -25,10 +25,12 @@ package storage
 import "C"
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"unsafe"
 
-	"github.com/milvus-io/milvus/internal/proto/schemapb"
+	"github.com/milvus-io/milvus/api/schemapb"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
 // PayloadWriterInterface abstracts PayloadWriter
@@ -78,8 +80,16 @@ type PayloadWriter struct {
 }
 
 // NewPayloadWriter is constructor of PayloadWriter
-func NewPayloadWriter(colType schemapb.DataType) (*PayloadWriter, error) {
-	w := C.NewPayloadWriter(C.int(colType))
+func NewPayloadWriter(colType schemapb.DataType, dim ...int) (*PayloadWriter, error) {
+	var w C.CPayloadWriter
+	if typeutil.IsVectorType(colType) {
+		if len(dim) != 1 {
+			return nil, fmt.Errorf("incorrect input numbers")
+		}
+		w = C.NewVectorPayloadWriter(C.int(colType), C.int(dim[0]))
+	} else {
+		w = C.NewPayloadWriter(C.int(colType))
+	}
 	if w == nil {
 		return nil, errors.New("create Payload writer failed")
 	}
@@ -270,14 +280,11 @@ func (w *PayloadWriter) AddDoubleToPayload(msgs []float64) error {
 
 func (w *PayloadWriter) AddOneStringToPayload(msg string) error {
 	length := len(msg)
-	if length == 0 {
-		return errors.New("can't add empty string into payload")
-	}
-
 	cmsg := C.CString(msg)
 	clength := C.int(length)
 	defer C.free(unsafe.Pointer(cmsg))
 
+	// the C.AddOneStringToPayload can handle empty string
 	status := C.AddOneStringToPayload(w.payloadWriterPtr, cmsg, clength)
 	return HandleCStatus(&status, "AddOneStringToPayload failed")
 }

@@ -24,7 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
+	"github.com/milvus-io/milvus/api/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 
@@ -320,7 +320,7 @@ func TestFlowGraph_DDNode_Operate(t *testing.T) {
 		var msgStreamMsg Msg = flowgraph.GenerateMsgStreamMsg(tsMessages, 0, 0, nil, nil)
 
 		// Test
-		flowGraphRetryOpt = retry.Attempts(1)
+		setFlowGraphRetryOpt(retry.Attempts(1))
 		assert.Panics(t, func() {
 			ddn.Operate([]Msg{msgStreamMsg})
 		})

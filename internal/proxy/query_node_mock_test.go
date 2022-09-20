@@ -22,9 +22,9 @@ import (
 
 	"github.com/milvus-io/milvus/internal/types"
 
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
-	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
@@ -119,5 +119,15 @@ func (m *QueryNodeMock) GetTimeTickChannel(ctx context.Context) (*milvuspb.Strin
 	return nil, nil
 }
 func (m *QueryNodeMock) ShowConfigurations(ctx context.Context, req *internalpb.ShowConfigurationsRequest) (*internalpb.ShowConfigurationsResponse, error) {
+	return nil, nil
+}
+
+func (m *QueryNodeMock) UnsubDmChannel(ctx context.Context, req *querypb.UnsubDmChannelRequest) (*commonpb.Status, error) {
+	return nil, nil
+}
+func (m *QueryNodeMock) GetDataDistribution(context.Context, *querypb.GetDataDistributionRequest) (*querypb.GetDataDistributionResponse, error) {
+	return nil, nil
+}
+func (m *QueryNodeMock) SyncDistribution(context.Context, *querypb.SyncDistributionRequest) (*commonpb.Status, error) {
 	return nil, nil
 }

@@ -25,17 +25,17 @@ import (
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
 
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus/api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/etcdpb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
-	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/proxypb"
 	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
-	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
@@ -221,23 +221,6 @@ func (rc *rootCoordMock) ShowPartitions(ctx context.Context, in *milvuspb.ShowPa
 			ErrorCode: commonpb.ErrorCode_Success,
 		},
 		PartitionIDs: rc.Col2partition[collectionID],
-	}, nil
-}
-
-func (rc *rootCoordMock) ReleaseDQLMessageStream(ctx context.Context, in *proxypb.ReleaseDQLMessageStreamRequest) (*commonpb.Status, error) {
-	if rc.returnGrpcError {
-		return nil, errors.New("release DQLMessage stream failed")
-	}
-
-	if rc.returnError {
-		return &commonpb.Status{
-			ErrorCode: commonpb.ErrorCode_UnexpectedError,
-			Reason:    "release DQLMessage stream failed",
-		}, nil
-	}
-
-	return &commonpb.Status{
-		ErrorCode: commonpb.ErrorCode_Success,
 	}, nil
 }
 

@@ -28,11 +28,11 @@ import (
 	"github.com/golang/protobuf/proto"
 	"go.uber.org/zap"
 
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
-	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/proto/segcorepb"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
@@ -778,6 +778,24 @@ func GetPkFromInsertData(collSchema *schemapb.CollectionSchema, data *InsertData
 	}
 
 	return realPfData, nil
+}
+
+// GetTimestampFromInsertData returns the Int64FieldData for timestamp field.
+func GetTimestampFromInsertData(data *InsertData) (*Int64FieldData, error) {
+	if data == nil {
+		return nil, errors.New("try to get timestamp from nil insert data")
+	}
+	fieldData, ok := data.Data[common.TimeStampField]
+	if !ok {
+		return nil, errors.New("no timestamp field in insert data")
+	}
+
+	ifd, ok := fieldData.(*Int64FieldData)
+	if !ok {
+		return nil, errors.New("timestamp field is not Int64")
+	}
+
+	return ifd, nil
 }
 
 func boolFieldDataToPbBytes(field *BoolFieldData) ([]byte, error) {

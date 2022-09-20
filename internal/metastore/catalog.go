@@ -3,9 +3,10 @@ package metastore
 import (
 	"context"
 
+	"github.com/milvus-io/milvus/api/milvuspb"
 	"github.com/milvus-io/milvus/internal/metastore/model"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
-	"github.com/milvus-io/milvus/internal/proto/milvuspb"
+	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
@@ -16,9 +17,11 @@ type RootCoordCatalog interface {
 	ListCollections(ctx context.Context, ts typeutil.Timestamp) (map[string]*model.Collection, error)
 	CollectionExists(ctx context.Context, collectionID typeutil.UniqueID, ts typeutil.Timestamp) bool
 	DropCollection(ctx context.Context, collectionInfo *model.Collection, ts typeutil.Timestamp) error
+	AlterCollection(ctx context.Context, oldColl *model.Collection, newColl *model.Collection, alterType AlterType, ts typeutil.Timestamp) error
 
 	CreatePartition(ctx context.Context, partition *model.Partition, ts typeutil.Timestamp) error
 	DropPartition(ctx context.Context, collectionID typeutil.UniqueID, partitionID typeutil.UniqueID, ts typeutil.Timestamp) error
+	AlterPartition(ctx context.Context, oldPart *model.Partition, newPart *model.Partition, alterType AlterType, ts typeutil.Timestamp) error
 
 	CreateAlias(ctx context.Context, alias *model.Alias, ts typeutil.Timestamp) error
 	DropAlias(ctx context.Context, alias string, ts typeutil.Timestamp) error
@@ -53,6 +56,18 @@ const (
 	MODIFY
 )
 
+func (t AlterType) String() string {
+	switch t {
+	case ADD:
+		return "ADD"
+	case DELETE:
+		return "DELETE"
+	case MODIFY:
+		return "MODIFY"
+	}
+	return ""
+}
+
 type DataCoordCatalog interface {
 	ListSegments(ctx context.Context) ([]*datapb.SegmentInfo, error)
 	AddSegment(ctx context.Context, segment *datapb.SegmentInfo) error
@@ -78,4 +93,18 @@ type IndexCoordCatalog interface {
 	AlterSegmentIndex(ctx context.Context, newSegIndex *model.SegmentIndex) error
 	AlterSegmentIndexes(ctx context.Context, newSegIdxes []*model.SegmentIndex) error
 	DropSegmentIndex(ctx context.Context, collID, partID, segID, buildID typeutil.UniqueID) error
+}
+
+type QueryCoordCatalog interface {
+	SaveCollection(info *querypb.CollectionLoadInfo) error
+	SavePartition(info ...*querypb.PartitionLoadInfo) error
+	SaveReplica(replica *querypb.Replica) error
+	GetCollections() ([]*querypb.CollectionLoadInfo, error)
+	GetPartitions() (map[int64][]*querypb.PartitionLoadInfo, error)
+	GetReplicas() ([]*querypb.Replica, error)
+	ReleaseCollection(id int64) error
+	ReleasePartition(collection int64, partitions ...int64) error
+	ReleaseReplicas(collectionID int64) error
+	ReleaseReplica(collection, replica int64) error
+	RemoveHandoffEvent(segmentInfo *querypb.SegmentInfo) error
 }

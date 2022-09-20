@@ -26,8 +26,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
 
+	"github.com/milvus-io/milvus/api/commonpb"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
@@ -1268,6 +1268,7 @@ func TestLoadBalanceAndRescheduleDmChannelTaskAfterNodeDown(t *testing.T) {
 		if len(activeTaskValues) != 0 {
 			break
 		}
+		time.Sleep(200 * time.Millisecond)
 	}
 
 	node3, err := startQueryNodeServer(ctx)
@@ -1288,6 +1289,7 @@ func TestLoadBalanceAndRescheduleDmChannelTaskAfterNodeDown(t *testing.T) {
 		if len(triggrtTaskValues) == 0 {
 			break
 		}
+		time.Sleep(200 * time.Millisecond)
 	}
 }
 

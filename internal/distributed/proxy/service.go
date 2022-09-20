@@ -47,15 +47,15 @@ import (
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/keepalive"
 
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/milvuspb"
 	dcc "github.com/milvus-io/milvus/internal/distributed/datacoord/client"
 	icc "github.com/milvus-io/milvus/internal/distributed/indexcoord/client"
 	"github.com/milvus-io/milvus/internal/distributed/proxy/httpserver"
 	qcc "github.com/milvus-io/milvus/internal/distributed/querycoord/client"
 	rcc "github.com/milvus-io/milvus/internal/distributed/rootcoord/client"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
-	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/proxypb"
 	"github.com/milvus-io/milvus/internal/proxy"
 	"github.com/milvus-io/milvus/internal/types"
@@ -162,6 +162,14 @@ func (s *Server) startExternalGrpc(grpcPort int, errChan chan error) {
 	}
 	log.Debug("Proxy server already listen on tcp", zap.Int("port", grpcPort))
 
+	limiter, err := s.proxy.GetRateLimiter()
+	if err != nil {
+		log.Error("Get proxy rate limiter failed", zap.Int("port", grpcPort), zap.Error(err))
+		errChan <- err
+		return
+	}
+	log.Debug("Get proxy rate limiter done", zap.Int("port", grpcPort))
+
 	opts := trace.GetInterceptorOpts()
 	grpcOpts := []grpc.ServerOption{
 		grpc.KeepaliveEnforcementPolicy(kaep),
@@ -173,6 +181,7 @@ func (s *Server) startExternalGrpc(grpcPort int, errChan chan error) {
 			grpc_auth.UnaryServerInterceptor(proxy.AuthenticationInterceptor),
 			proxy.UnaryServerInterceptor(proxy.PrivilegeInterceptor),
 			logutil.UnaryTraceLoggerInterceptor,
+			proxy.RateLimitInterceptor(limiter),
 		)),
 	}
 
@@ -548,11 +557,6 @@ func (s *Server) InvalidateCollectionMetaCache(ctx context.Context, request *pro
 	return s.proxy.InvalidateCollectionMetaCache(ctx, request)
 }
 
-// ReleaseDQLMessageStream notifies Proxy to release and close the search message stream of specific collection.
-func (s *Server) ReleaseDQLMessageStream(ctx context.Context, request *proxypb.ReleaseDQLMessageStreamRequest) (*commonpb.Status, error) {
-	return s.proxy.ReleaseDQLMessageStream(ctx, request)
-}
-
 // CreateCollection notifies Proxy to create a collection
 func (s *Server) CreateCollection(ctx context.Context, request *milvuspb.CreateCollectionRequest) (*commonpb.Status, error) {
 	return s.proxy.CreateCollection(ctx, request)
@@ -743,14 +747,6 @@ func (s *Server) GetFlushState(ctx context.Context, req *milvuspb.GetFlushStateR
 	return s.proxy.GetFlushState(ctx, req)
 }
 
-func (s *Server) SendSearchResult(ctx context.Context, results *internalpb.SearchResults) (*commonpb.Status, error) {
-	return s.proxy.SendSearchResult(ctx, results)
-}
-
-func (s *Server) SendRetrieveResult(ctx context.Context, results *internalpb.RetrieveResults) (*commonpb.Status, error) {
-	return s.proxy.SendRetrieveResult(ctx, results)
-}
-
 func (s *Server) Import(ctx context.Context, req *milvuspb.ImportRequest) (*milvuspb.ImportResponse, error) {
 	return s.proxy.Import(ctx, req)
 }
@@ -859,4 +855,14 @@ func (s *Server) SelectGrant(ctx context.Context, req *milvuspb.SelectGrantReque
 
 func (s *Server) RefreshPolicyInfoCache(ctx context.Context, req *proxypb.RefreshPolicyInfoCacheRequest) (*commonpb.Status, error) {
 	return s.proxy.RefreshPolicyInfoCache(ctx, req)
+}
+
+// SetRates notifies Proxy to limit rates of requests.
+func (s *Server) SetRates(ctx context.Context, request *proxypb.SetRatesRequest) (*commonpb.Status, error) {
+	return s.proxy.SetRates(ctx, request)
+}
+
+// GetProxyMetrics gets the metrics of proxy.
+func (s *Server) GetProxyMetrics(ctx context.Context, request *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
+	return s.proxy.GetProxyMetrics(ctx, request)
 }
