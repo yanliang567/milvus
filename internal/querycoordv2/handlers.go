@@ -2,14 +2,18 @@ package querycoordv2
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
-	"time"
+
+	"github.com/samber/lo"
+	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/api/commonpb"
 	"github.com/milvus-io/milvus/api/milvuspb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
+	"github.com/milvus-io/milvus/internal/querycoordv2/job"
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	"github.com/milvus-io/milvus/internal/querycoordv2/session"
 	"github.com/milvus-io/milvus/internal/querycoordv2/task"
@@ -17,8 +21,6 @@ import (
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 	"github.com/milvus-io/milvus/internal/util/uniquegenerator"
-	"github.com/samber/lo"
-	"go.uber.org/zap"
 )
 
 // checkAnyReplicaAvailable checks if the collection has enough distinct available shards. These shards
@@ -58,10 +60,6 @@ func (s *Server) getCollectionSegmentInfo(collection int64) []*querypb.SegmentIn
 // parseBalanceRequest parses the load balance request,
 // returns the collection, replica, and segments
 func (s *Server) balanceSegments(ctx context.Context, req *querypb.LoadBalanceRequest, replica *meta.Replica) error {
-	const (
-		manualBalanceTimeout = 10 * time.Second
-	)
-
 	srcNode := req.GetSourceNodeIDs()[0]
 	dstNodeSet := typeutil.NewUniqueSet(req.GetDstNodeIDs()...)
 	if dstNodeSet.Len() == 0 {
@@ -83,16 +81,26 @@ func (s *Server) balanceSegments(ctx context.Context, req *querypb.LoadBalanceRe
 		}
 	}
 
+	log := log.With(
+		zap.Int64("collectionID", req.GetCollectionID()),
+		zap.Int64("srcNodeID", srcNode),
+		zap.Int64s("destNodeIDs", dstNodeSet.Collect()),
+	)
+
 	plans := s.balancer.AssignSegment(toBalance.Collect(), dstNodeSet.Collect())
 	tasks := make([]task.Task, 0, len(plans))
 	for _, plan := range plans {
+		log.Info("manually balance segment...",
+			zap.Int64("destNodeID", plan.To),
+			zap.Int64("segmentID", plan.Segment.GetID()),
+		)
 		task := task.NewSegmentTask(ctx,
-			manualBalanceTimeout,
-			req.Base.GetMsgID(),
+			Params.QueryCoordCfg.SegmentTaskTimeout,
+			req.GetBase().GetMsgID(),
 			req.GetCollectionID(),
 			replica.GetID(),
 			task.NewSegmentAction(plan.To, task.ActionTypeGrow, plan.Segment.GetID()),
-			task.NewSegmentAction(plan.From, task.ActionTypeReduce, plan.Segment.GetID()),
+			task.NewSegmentAction(srcNode, task.ActionTypeReduce, plan.Segment.GetID()),
 		)
 		err := s.taskScheduler.Add(task)
 		if err != nil {
@@ -100,7 +108,7 @@ func (s *Server) balanceSegments(ctx context.Context, req *querypb.LoadBalanceRe
 		}
 		tasks = append(tasks, task)
 	}
-	return task.Wait(ctx, manualBalanceTimeout, tasks...)
+	return task.Wait(ctx, Params.QueryCoordCfg.SegmentTaskTimeout, tasks...)
 }
 
 // TODO(dragondriver): add more detail metrics
@@ -285,4 +293,11 @@ func (s *Server) fillReplicaInfo(replica *meta.Replica, withShardNodes bool) (*m
 		info.ShardReplicas = append(info.ShardReplicas, shard)
 	}
 	return info, nil
+}
+
+func errCode(err error) commonpb.ErrorCode {
+	if errors.Is(err, job.ErrLoadParameterMismatched) {
+		return commonpb.ErrorCode_IllegalArgument
+	}
+	return commonpb.ErrorCode_UnexpectedError
 }

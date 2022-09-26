@@ -45,6 +45,22 @@ func calBySchemaPolicy(schema *schemapb.CollectionSchema) (int, error) {
 	return int(threshold / float64(sizePerRecord)), nil
 }
 
+func calBySchemaPolicyWithDiskIndex(schema *schemapb.CollectionSchema) (int, error) {
+	if schema == nil {
+		return -1, errors.New("nil schema")
+	}
+	sizePerRecord, err := typeutil.EstimateSizePerRecord(schema)
+	if err != nil {
+		return -1, err
+	}
+	// check zero value, preventing panicking
+	if sizePerRecord == 0 {
+		return -1, errors.New("zero size record schema found")
+	}
+	threshold := Params.DataCoordCfg.DiskSegmentMaxSize * 1024 * 1024
+	return int(threshold / float64(sizePerRecord)), nil
+}
+
 // AllocatePolicy helper function definition to allocate Segment space
 type AllocatePolicy func(segments []*SegmentInfo, count int64,
 	maxCountPerSegment int64) ([]*Allocation, []*Allocation)
@@ -107,6 +123,22 @@ func sealByLifetimePolicy(lifetime time.Duration) segmentSealPolicy {
 		epts, _ := tsoutil.ParseTS(segment.GetLastExpireTime())
 		d := pts.Sub(epts)
 		return d >= lifetime
+	}
+}
+
+// sealLongTimeIdlePolicy seal segment if the segment has been written with a high frequency before.
+// serve for this case:
+// If users insert entities into segment continuously within a certain period of time, but they forgot to flush/(seal)
+// it and the size of segment didn't reach the seal proportion. Under this situation, Milvus will wait these segments to
+// be expired and during this period search latency may be a little high. We can assume that entities won't be inserted
+// into this segment anymore, so sealLongTimeIdlePolicy will seal these segments to trigger handoff of query cluster.
+// Q: Why we don't decrease the expiry time directly?
+// A: We don't want to influence segments which are accepting `frequent small` batch entities.
+func sealLongTimeIdlePolicy(idleTimeTolerance time.Duration, minSizeToSealIdleSegment float64, maxSizeOfSegment float64) segmentSealPolicy {
+	return func(segment *SegmentInfo, ts Timestamp) bool {
+		limit := (minSizeToSealIdleSegment / maxSizeOfSegment) * float64(segment.GetMaxRowNum())
+		return time.Since(segment.lastWrittenTime) > idleTimeTolerance &&
+			float64(segment.currRows) > limit
 	}
 }
 

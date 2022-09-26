@@ -33,7 +33,7 @@ type collectionChannels struct {
 }
 
 type createCollectionTask struct {
-	baseTaskV2
+	baseTask
 	Req      *milvuspb.CreateCollectionRequest
 	schema   *schemapb.CollectionSchema
 	collID   UniqueID
@@ -257,20 +257,27 @@ func (t *createCollectionTask) Execute(ctx context.Context) error {
 		return nil
 	}
 
-	undoTask := newBaseUndoTask()
-	undoTask.AddStep(&NullStep{}, &RemoveDmlChannelsStep{
+	undoTask := newBaseUndoTask(t.core.stepExecutor)
+	undoTask.AddStep(&nullStep{}, &removeDmlChannelsStep{
 		baseStep:  baseStep{core: t.core},
-		pchannels: chanNames,
+		pChannels: chanNames,
 	}) // remove dml channels if any error occurs.
-	undoTask.AddStep(&AddCollectionMetaStep{
+	undoTask.AddStep(&addCollectionMetaStep{
 		baseStep: baseStep{core: t.core},
 		coll:     &collInfo,
-	}, &DeleteCollectionMetaStep{
+	}, &deleteCollectionMetaStep{
 		baseStep:     baseStep{core: t.core},
 		collectionID: collID,
-		ts:           ts,
+		// When we undo createCollectionTask, this ts may be less than the ts when unwatch channels.
+		ts: ts,
 	})
-	undoTask.AddStep(&WatchChannelsStep{
+	// serve for this case: watching channels succeed in datacoord but failed due to network failure.
+	undoTask.AddStep(&nullStep{}, &unwatchChannelsStep{
+		baseStep:     baseStep{core: t.core},
+		collectionID: collID,
+		channels:     t.channels,
+	})
+	undoTask.AddStep(&watchChannelsStep{
 		baseStep: baseStep{core: t.core},
 		info: &watchInfo{
 			ts:             ts,
@@ -278,17 +285,13 @@ func (t *createCollectionTask) Execute(ctx context.Context) error {
 			vChannels:      t.channels.virtualChannels,
 			startPositions: toKeyDataPairs(startPositions),
 		},
-	}, &UnwatchChannelsStep{
-		baseStep:     baseStep{core: t.core},
-		collectionID: collID,
-		channels:     t.channels,
-	})
-	undoTask.AddStep(&ChangeCollectionStateStep{
+	}, &nullStep{})
+	undoTask.AddStep(&changeCollectionStateStep{
 		baseStep:     baseStep{core: t.core},
 		collectionID: collID,
 		state:        pb.CollectionState_CollectionCreated,
 		ts:           ts,
-	}, &NullStep{}) // We'll remove the whole collection anyway.
+	}, &nullStep{}) // We'll remove the whole collection anyway.
 
 	return undoTask.Execute(ctx)
 }

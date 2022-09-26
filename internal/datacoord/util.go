@@ -186,11 +186,7 @@ func extractSegmentsWithVectorIndex(vecFieldID map[int64]int64, segentIndexInfo 
 	return indexedSegments.Collect()
 }
 
-func IsParentDropped(meta *meta, segment *SegmentInfo) bool {
-	for _, from := range segment.CompactionFrom {
-		if meta.GetSegment(from) != nil {
-			return false
-		}
-	}
-	return true
+func getZeroTime() time.Time {
+	var t time.Time
+	return t
 }

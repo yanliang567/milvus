@@ -259,7 +259,7 @@ MergeDataArray(std::vector<std::pair<milvus::SearchResult*, int64_t>>& result_of
 
 // TODO: split scalar IndexBase with knowhere::Index
 std::unique_ptr<DataArray>
-ReverseDataFromIndex(const knowhere::Index* index,
+ReverseDataFromIndex(const index::IndexBase* index,
                      const int64_t* seg_offsets,
                      int64_t count,
                      const FieldMeta& field_meta) {
@@ -271,7 +271,7 @@ ReverseDataFromIndex(const knowhere::Index* index,
     auto scalar_array = data_array->mutable_scalars();
     switch (data_type) {
         case DataType::BOOL: {
-            using IndexType = scalar::ScalarIndex<bool>;
+            using IndexType = index::ScalarIndex<bool>;
             auto ptr = dynamic_cast<const IndexType*>(index);
             std::vector<bool> raw_data(count);
             for (int64_t i = 0; i < count; ++i) {
@@ -282,7 +282,7 @@ ReverseDataFromIndex(const knowhere::Index* index,
             break;
         }
         case DataType::INT8: {
-            using IndexType = scalar::ScalarIndex<int8_t>;
+            using IndexType = index::ScalarIndex<int8_t>;
             auto ptr = dynamic_cast<const IndexType*>(index);
             std::vector<int8_t> raw_data(count);
             for (int64_t i = 0; i < count; ++i) {
@@ -293,7 +293,7 @@ ReverseDataFromIndex(const knowhere::Index* index,
             break;
         }
         case DataType::INT16: {
-            using IndexType = scalar::ScalarIndex<int16_t>;
+            using IndexType = index::ScalarIndex<int16_t>;
             auto ptr = dynamic_cast<const IndexType*>(index);
             std::vector<int16_t> raw_data(count);
             for (int64_t i = 0; i < count; ++i) {
@@ -304,7 +304,7 @@ ReverseDataFromIndex(const knowhere::Index* index,
             break;
         }
         case DataType::INT32: {
-            using IndexType = scalar::ScalarIndex<int32_t>;
+            using IndexType = index::ScalarIndex<int32_t>;
             auto ptr = dynamic_cast<const IndexType*>(index);
             std::vector<int32_t> raw_data(count);
             for (int64_t i = 0; i < count; ++i) {
@@ -315,7 +315,7 @@ ReverseDataFromIndex(const knowhere::Index* index,
             break;
         }
         case DataType::INT64: {
-            using IndexType = scalar::ScalarIndex<int64_t>;
+            using IndexType = index::ScalarIndex<int64_t>;
             auto ptr = dynamic_cast<const IndexType*>(index);
             std::vector<int64_t> raw_data(count);
             for (int64_t i = 0; i < count; ++i) {
@@ -326,7 +326,7 @@ ReverseDataFromIndex(const knowhere::Index* index,
             break;
         }
         case DataType::FLOAT: {
-            using IndexType = scalar::ScalarIndex<float>;
+            using IndexType = index::ScalarIndex<float>;
             auto ptr = dynamic_cast<const IndexType*>(index);
             std::vector<float> raw_data(count);
             for (int64_t i = 0; i < count; ++i) {
@@ -337,7 +337,7 @@ ReverseDataFromIndex(const knowhere::Index* index,
             break;
         }
         case DataType::DOUBLE: {
-            using IndexType = scalar::ScalarIndex<double>;
+            using IndexType = index::ScalarIndex<double>;
             auto ptr = dynamic_cast<const IndexType*>(index);
             std::vector<double> raw_data(count);
             for (int64_t i = 0; i < count; ++i) {
@@ -348,7 +348,7 @@ ReverseDataFromIndex(const knowhere::Index* index,
             break;
         }
         case DataType::VARCHAR: {
-            using IndexType = scalar::ScalarIndex<std::string>;
+            using IndexType = index::ScalarIndex<std::string>;
             auto ptr = dynamic_cast<const IndexType*>(index);
             std::vector<std::string> raw_data(count);
             for (int64_t i = 0; i < count; ++i) {
@@ -364,85 +364,6 @@ ReverseDataFromIndex(const knowhere::Index* index,
     }
 
     return data_array;
-}
-
-// insert_barrier means num row of insert data in a segment
-// del_barrier means that if the pk of the insert data is in delete record[0 : del_barrier]
-// then the data corresponding to this pk may be ignored when searching/querying
-// and refer to func get_barrier, all ts in delete record[0 : del_barrier] < query_timestamp
-// assert old insert record pks = [5, 2, 4, 1, 3, 8, 7, 6]
-// assert old delete record pks = [2, 4, 3, 8, 5], old delete record ts = [100, 100, 150, 200, 400, 500, 500, 500]
-// if delete_barrier = 3, query time = 180, then insert records with pks in [2, 4, 3] will be deleted
-// then the old bitmap = [0, 1, 1, 0, 1, 0, 0, 0]
-std::shared_ptr<DeletedRecord::TmpBitmap>
-get_deleted_bitmap(int64_t del_barrier,
-                   int64_t insert_barrier,
-                   DeletedRecord& delete_record,
-                   const InsertRecord& insert_record,
-                   Timestamp query_timestamp) {
-    // if insert_barrier and del_barrier have not changed, use cache data directly
-    bool hit_cache = false;
-    int64_t old_del_barrier = 0;
-    auto current = delete_record.clone_lru_entry(insert_barrier, del_barrier, old_del_barrier, hit_cache);
-    if (hit_cache) {
-        return current;
-    }
-
-    auto bitmap = current->bitmap_ptr;
-
-    int64_t start, end;
-    if (del_barrier < old_del_barrier) {
-        // in this case, ts of delete record[current_del_barrier : old_del_barrier] > query_timestamp
-        // so these deletion records do not take effect in query/search
-        // so bitmap corresponding to those pks in delete record[current_del_barrier:old_del_barrier] wil be reset to 0
-        // for example, current_del_barrier = 2, query_time = 120, the bitmap will be reset to [0, 1, 1, 0, 0, 0, 0, 0]
-        start = del_barrier;
-        end = old_del_barrier;
-    } else {
-        // the cache is not enough, so update bitmap using new pks in delete record[old_del_barrier:current_del_barrier]
-        // for example, current_del_barrier = 4, query_time = 300, bitmap will be updated to [0, 1, 1, 0, 1, 1, 0, 0]
-        start = old_del_barrier;
-        end = del_barrier;
-    }
-
-    // Avoid invalid calculations when there are a lot of repeated delete pks
-    std::unordered_map<PkType, Timestamp> delete_timestamps;
-    for (auto del_index = start; del_index < end; ++del_index) {
-        auto pk = delete_record.pks_[del_index];
-        auto timestamp = delete_record.timestamps_[del_index];
-
-        delete_timestamps[pk] = timestamp > delete_timestamps[pk] ? timestamp : delete_timestamps[pk];
-    }
-
-    for (auto iter = delete_timestamps.begin(); iter != delete_timestamps.end(); iter++) {
-        auto pk = iter->first;
-        auto delete_timestamp = iter->second;
-        auto segOffsets = insert_record.search_pk(pk, insert_barrier);
-        for (auto offset : segOffsets) {
-            int64_t insert_row_offset = offset.get();
-            // for now, insert_barrier == insert count of segment, so this Assert will always work
-            AssertInfo(insert_row_offset < insert_barrier, "Timestamp offset is larger than insert barrier");
-
-            // insert after delete with same pk, delete will not task effect on this insert record
-            // and reset bitmap to 0
-            if (insert_record.timestamps_[insert_row_offset] > delete_timestamp) {
-                bitmap->reset(insert_row_offset);
-                continue;
-            }
-
-            // the deletion record do not take effect in search/query
-            // and reset bitmap to 0
-            if (delete_timestamp > query_timestamp) {
-                bitmap->reset(insert_row_offset);
-                continue;
-            }
-            // insert data corresponding to the insert_row_offset will be ignored in search/query
-            bitmap->set(insert_row_offset);
-        }
-    }
-
-    delete_record.insert_lru_entry(current);
-    return current;
 }
 
 }  // namespace milvus::segcore

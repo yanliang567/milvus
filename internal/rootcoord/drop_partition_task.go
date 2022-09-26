@@ -18,7 +18,7 @@ import (
 )
 
 type dropPartitionTask struct {
-	baseTaskV2
+	baseTask
 	Req      *milvuspb.DropPartitionRequest
 	collMeta *model.Collection
 }
@@ -53,23 +53,29 @@ func (t *dropPartitionTask) Execute(ctx context.Context) error {
 		return nil
 	}
 
-	redoTask := newBaseRedoTask()
-	redoTask.AddSyncStep(&ExpireCacheStep{
-		baseStep:        baseStep{core: t.core},
-		collectionNames: []string{t.Req.GetCollectionName()},
-		collectionID:    t.collMeta.CollectionID,
-		ts:              t.GetTs(),
-	})
-	redoTask.AddSyncStep(&ChangePartitionStateStep{
+	redoTask := newBaseRedoTask(t.core.stepExecutor)
+	redoTask.AddSyncStep(&changePartitionStateStep{
 		baseStep:     baseStep{core: t.core},
 		collectionID: t.collMeta.CollectionID,
 		partitionID:  partID,
 		state:        pb.PartitionState_PartitionDropping,
 		ts:           t.GetTs(),
 	})
+	redoTask.AddSyncStep(&expireCacheStep{
+		baseStep:        baseStep{core: t.core},
+		collectionNames: []string{t.Req.GetCollectionName()},
+		collectionID:    t.collMeta.CollectionID,
+		ts:              t.GetTs(),
+	})
+
+	redoTask.AddAsyncStep(&dropIndexStep{
+		baseStep: baseStep{core: t.core},
+		collID:   t.collMeta.CollectionID,
+		partIDs:  []UniqueID{partID},
+	})
 
 	// TODO: release partition when query coord is ready.
-	redoTask.AddAsyncStep(&DeletePartitionDataStep{
+	redoTask.AddAsyncStep(&deletePartitionDataStep{
 		baseStep: baseStep{core: t.core},
 		pchans:   t.collMeta.PhysicalChannelNames,
 		partition: &model.Partition{
@@ -77,13 +83,15 @@ func (t *dropPartitionTask) Execute(ctx context.Context) error {
 			PartitionName: t.Req.GetPartitionName(),
 			CollectionID:  t.collMeta.CollectionID,
 		},
-		ts: t.GetTs(),
 	})
-	redoTask.AddAsyncStep(&RemovePartitionMetaStep{
+	redoTask.AddAsyncStep(&removePartitionMetaStep{
 		baseStep:     baseStep{core: t.core},
 		collectionID: t.collMeta.CollectionID,
 		partitionID:  partID,
-		ts:           t.GetTs(),
+		// This ts is less than the ts when we notify data nodes to drop partition, but it's OK since we have already
+		// marked this partition as deleted. If we want to make this ts greater than the notification's ts, we should
+		// wrap a step who will have these children and connect them with ts.
+		ts: t.GetTs(),
 	})
 
 	return redoTask.Execute(ctx)

@@ -82,7 +82,7 @@ class TestOperations(TestBase):
         self.health_checkers = checkers
 
     @pytest.mark.tags(CaseLabel.L3)
-    def test_operations(self,collection_name):
+    def test_operations(self,collection_name, request_duration):
         # start the monitor threads to check the milvus ops
         log.info("*********************Test Start**********************")
         log.info(connections.get_connection_addr('default'))
@@ -90,9 +90,13 @@ class TestOperations(TestBase):
         self.init_health_checkers(collection_name=c_name)
         cc.start_monitor_threads(self.health_checkers)
         log.info("*********************Request Load Start**********************")
-        # wait 200s for the load request to be finished
+        # wait request_duration for the load request to be finished
+        request_duration = request_duration.replace("h","*3600+").replace("m","*60+").replace("s","")
+        if request_duration[-1] == "+":
+            request_duration = request_duration[:-1]
+        request_duration = eval(request_duration)
         for i in range(10):
-            sleep(20)
+            sleep(request_duration//10)
             for k,v in self.health_checkers.items():
                 v.check_result()
         log.info("******assert after chaos deleted: ")

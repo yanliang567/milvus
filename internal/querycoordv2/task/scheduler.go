@@ -111,6 +111,8 @@ func (queue *taskQueue) Range(fn func(task Task) bool) {
 }
 
 type Scheduler interface {
+	Start(ctx context.Context)
+	Stop()
 	Add(task Task) error
 	Dispatch(node int64)
 	RemoveByNode(node int64)
@@ -165,6 +167,14 @@ func NewScheduler(ctx context.Context,
 		processQueue: newTaskQueue(taskPoolSize),
 		waitQueue:    newTaskQueue(taskPoolSize * 10),
 	}
+}
+
+func (scheduler *taskScheduler) Start(ctx context.Context) {
+	scheduler.executor.Start(ctx)
+}
+
+func (scheduler *taskScheduler) Stop() {
+	scheduler.executor.Stop()
 }
 
 func (scheduler *taskScheduler) Add(task Task) error {
@@ -250,8 +260,8 @@ func (scheduler *taskScheduler) preAdd(task Task) error {
 
 func (scheduler *taskScheduler) promote(task Task) error {
 	log := log.With(
-		zap.Int64("collection", task.CollectionID()),
-		zap.Int64("task", task.ID()),
+		zap.Int64("collectionID", task.CollectionID()),
+		zap.Int64("taskID", task.ID()),
 		zap.Int64("source", task.SourceID()),
 	)
 	err := scheduler.prePromote(task)
@@ -395,26 +405,18 @@ func (scheduler *taskScheduler) schedule(node int64) {
 	scheduler.tryPromoteAll()
 
 	log.Debug("process tasks related to node",
-		zap.Int("processing-task-num", scheduler.processQueue.Len()),
-		zap.Int("waiting-task-num", scheduler.waitQueue.Len()),
-		zap.Int("segment-task-num", len(scheduler.segmentTasks)),
-		zap.Int("channel-task-num", len(scheduler.channelTasks)),
+		zap.Int("processingTaskNum", scheduler.processQueue.Len()),
+		zap.Int("waitingTaskNum", scheduler.waitQueue.Len()),
+		zap.Int("segmentTaskNum", len(scheduler.segmentTasks)),
+		zap.Int("channelTaskNum", len(scheduler.channelTasks)),
 	)
 
 	// Process tasks
 	toRemove := make([]Task, 0)
 	scheduler.processQueue.Range(func(task Task) bool {
-		log.Debug("check task related",
-			zap.Int64("task", task.ID()))
 		if scheduler.isRelated(task, node) {
 			scheduler.process(task)
-		} else {
-			log.Debug("task not related, skip it",
-				zap.Int64("task", task.ID()),
-				zap.Int64("taskActionNode", task.Actions()[0].Node()),
-			)
 		}
-
 		if task.Status() != TaskStatusStarted {
 			toRemove = append(toRemove, task)
 		}
@@ -430,10 +432,10 @@ func (scheduler *taskScheduler) schedule(node int64) {
 		zap.Int("toRemoveNum", len(toRemove)))
 
 	log.Debug("process tasks related to node done",
-		zap.Int("processing-task-num", scheduler.processQueue.Len()),
-		zap.Int("waiting-task-num", scheduler.waitQueue.Len()),
-		zap.Int("segment-task-num", len(scheduler.segmentTasks)),
-		zap.Int("channel-task-num", len(scheduler.channelTasks)),
+		zap.Int("processingTaskNum", scheduler.processQueue.Len()),
+		zap.Int("waitingTaskNum", scheduler.waitQueue.Len()),
+		zap.Int("segmentTaskNum", len(scheduler.segmentTasks)),
+		zap.Int("channelTaskNum", len(scheduler.channelTasks)),
 	)
 }
 
@@ -467,7 +469,7 @@ func (scheduler *taskScheduler) isRelated(task Task, node int64) bool {
 // return true if the task is started and succeeds to commit the current action
 func (scheduler *taskScheduler) process(task Task) bool {
 	log := log.With(
-		zap.Int64("task", task.ID()),
+		zap.Int64("taskID", task.ID()),
 		zap.Int32("type", GetTaskType(task)),
 		zap.Int64("source", task.SourceID()),
 	)
@@ -482,11 +484,11 @@ func (scheduler *taskScheduler) process(task Task) bool {
 		task.SetErr(ErrTaskStale)
 	}
 
-	actions, step := task.Actions(), task.Step()
+	step := task.Step()
 	log = log.With(zap.Int("step", step))
 	switch task.Status() {
 	case TaskStatusStarted:
-		if scheduler.executor.Execute(task, step, actions[step]) {
+		if scheduler.executor.Execute(task, step) {
 			return true
 		}
 
@@ -521,7 +523,8 @@ func (scheduler *taskScheduler) RemoveByNode(node int64) {
 
 func (scheduler *taskScheduler) remove(task Task) {
 	log := log.With(
-		zap.Int64("task", task.ID()),
+		zap.Int64("taskID", task.ID()),
+		zap.Int32("taskStatus", task.Status()),
 	)
 	task.Cancel()
 	scheduler.tasks.Remove(task.ID())
@@ -532,7 +535,7 @@ func (scheduler *taskScheduler) remove(task Task) {
 	case *SegmentTask:
 		index := replicaSegmentIndex{task.ReplicaID(), task.SegmentID()}
 		delete(scheduler.segmentTasks, index)
-		log = log.With(zap.Int64("segment", task.SegmentID()))
+		log = log.With(zap.Int64("segmentID", task.SegmentID()))
 
 	case *ChannelTask:
 		index := replicaChannelIndex{task.ReplicaID(), task.Channel()}
@@ -545,7 +548,7 @@ func (scheduler *taskScheduler) remove(task Task) {
 
 func (scheduler *taskScheduler) checkCanceled(task Task) bool {
 	log := log.With(
-		zap.Int64("task", task.ID()),
+		zap.Int64("taskID", task.ID()),
 		zap.Int64("source", task.SourceID()),
 	)
 
@@ -561,7 +564,7 @@ func (scheduler *taskScheduler) checkCanceled(task Task) bool {
 
 func (scheduler *taskScheduler) checkStale(task Task) bool {
 	log := log.With(
-		zap.Int64("task", task.ID()),
+		zap.Int64("taskID", task.ID()),
 		zap.Int64("source", task.SourceID()),
 	)
 
@@ -596,7 +599,7 @@ func (scheduler *taskScheduler) checkStale(task Task) bool {
 
 func (scheduler *taskScheduler) checkSegmentTaskStale(task *SegmentTask) bool {
 	log := log.With(
-		zap.Int64("task", task.ID()),
+		zap.Int64("taskID", task.ID()),
 		zap.Int64("source", task.SourceID()),
 	)
 
@@ -642,7 +645,7 @@ func (scheduler *taskScheduler) checkSegmentTaskStale(task *SegmentTask) bool {
 
 func (scheduler *taskScheduler) checkChannelTaskStale(task *ChannelTask) bool {
 	log := log.With(
-		zap.Int64("task", task.ID()),
+		zap.Int64("taskID", task.ID()),
 		zap.Int64("source", task.SourceID()),
 	)
 

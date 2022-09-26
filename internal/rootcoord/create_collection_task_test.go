@@ -6,6 +6,10 @@ import (
 	"testing"
 	"time"
 
+	mockrootcoord "github.com/milvus-io/milvus/internal/rootcoord/mocks"
+
+	"github.com/stretchr/testify/mock"
+
 	"github.com/golang/protobuf/proto"
 	"github.com/milvus-io/milvus/api/commonpb"
 	"github.com/milvus-io/milvus/api/milvuspb"
@@ -203,7 +207,7 @@ func Test_createCollectionTask_Prepare(t *testing.T) {
 		core := newTestCore(withInvalidIDAllocator())
 
 		task := createCollectionTask{
-			baseTaskV2: baseTaskV2{core: core},
+			baseTask: baseTask{core: core},
 			Req: &milvuspb.CreateCollectionRequest{
 				Base:           &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection},
 				CollectionName: collectionName,
@@ -240,7 +244,7 @@ func Test_createCollectionTask_Prepare(t *testing.T) {
 		assert.NoError(t, err)
 
 		task := createCollectionTask{
-			baseTaskV2: baseTaskV2{core: core},
+			baseTask: baseTask{core: core},
 			Req: &milvuspb.CreateCollectionRequest{
 				Base:           &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection},
 				CollectionName: collectionName,
@@ -269,7 +273,7 @@ func Test_createCollectionTask_Execute(t *testing.T) {
 		core := newTestCore(withMeta(meta), withTtSynchronizer(ticker))
 
 		task := &createCollectionTask{
-			baseTaskV2: baseTaskV2{core: core},
+			baseTask: baseTask{core: core},
 			Req: &milvuspb.CreateCollectionRequest{
 				Base:           &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection},
 				CollectionName: collectionName,
@@ -314,7 +318,7 @@ func Test_createCollectionTask_Execute(t *testing.T) {
 		core := newTestCore(withMeta(meta), withTtSynchronizer(ticker))
 
 		task := &createCollectionTask{
-			baseTaskV2: baseTaskV2{core: core},
+			baseTask: baseTask{core: core},
 			Req: &milvuspb.CreateCollectionRequest{
 				Base:           &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection},
 				CollectionName: collectionName,
@@ -334,7 +338,7 @@ func Test_createCollectionTask_Execute(t *testing.T) {
 		pchans := ticker.getDmlChannelNames(shardNum)
 		core := newTestCore(withTtSynchronizer(ticker))
 		task := &createCollectionTask{
-			baseTaskV2: baseTaskV2{core: core},
+			baseTask: baseTask{core: core},
 			channels: collectionChannels{
 				physicalChannels: pchans,
 				virtualChannels:  []string{funcutil.GenRandomStr(), funcutil.GenRandomStr()},
@@ -398,7 +402,7 @@ func Test_createCollectionTask_Execute(t *testing.T) {
 		assert.NoError(t, err)
 
 		task := createCollectionTask{
-			baseTaskV2: baseTaskV2{core: core},
+			baseTask: baseTask{core: core},
 			Req: &milvuspb.CreateCollectionRequest{
 				Base:           &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection},
 				CollectionName: collectionName,
@@ -446,17 +450,26 @@ func Test_createCollectionTask_Execute(t *testing.T) {
 		broker.WatchChannelsFunc = func(ctx context.Context, info *watchInfo) error {
 			return nil
 		}
+
 		unwatchChannelsCalled := false
 		unwatchChannelsChan := make(chan struct{}, 1)
-		broker.UnwatchChannelsFunc = func(ctx context.Context, info *watchInfo) error {
+		gc := mockrootcoord.NewGarbageCollector(t)
+		gc.On("GcCollectionData",
+			mock.Anything, // context.Context
+			mock.Anything, // *model.Collection
+		).Return(func(ctx context.Context, collection *model.Collection) (ddlTs Timestamp) {
+			for _, pchan := range pchans {
+				ticker.syncedTtHistogram.update(pchan, 101)
+			}
 			unwatchChannelsCalled = true
 			unwatchChannelsChan <- struct{}{}
-			return nil
-		}
+			return 100
+		}, nil)
 
 		core := newTestCore(withValidIDAllocator(),
 			withMeta(meta),
 			withTtSynchronizer(ticker),
+			withGarbageCollector(gc),
 			withBroker(broker))
 
 		schema := &schemapb.CollectionSchema{
@@ -471,7 +484,7 @@ func Test_createCollectionTask_Execute(t *testing.T) {
 		assert.NoError(t, err)
 
 		task := createCollectionTask{
-			baseTaskV2: baseTaskV2{core: core},
+			baseTask: baseTask{core: core},
 			Req: &milvuspb.CreateCollectionRequest{
 				Base:           &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection},
 				CollectionName: collectionName,

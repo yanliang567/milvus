@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"errors"
 	"math/rand"
 	"testing"
 	"time"
@@ -114,6 +115,7 @@ func (suite *TaskSuite) SetupTest() {
 	suite.cluster = session.NewMockCluster(suite.T())
 
 	suite.scheduler = suite.newScheduler()
+	suite.scheduler.Start(context.Background())
 }
 
 func (suite *TaskSuite) BeforeTest(suiteName, testName string) {
@@ -124,6 +126,7 @@ func (suite *TaskSuite) BeforeTest(suiteName, testName string) {
 	switch testName {
 	case "TestSubscribeChannelTask",
 		"TestLoadSegmentTask",
+		"TestLoadSegmentTaskFailed",
 		"TestSegmentTaskStale",
 		"TestMoveSegmentTask":
 		suite.meta.PutCollection(&meta.Collection{
@@ -364,6 +367,80 @@ func (suite *TaskSuite) TestLoadSegmentTask() {
 	for _, task := range tasks {
 		suite.Equal(TaskStatusSucceeded, task.Status())
 		suite.NoError(task.Err())
+	}
+}
+
+func (suite *TaskSuite) TestLoadSegmentTaskFailed() {
+	ctx := context.Background()
+	timeout := 10 * time.Second
+	targetNode := int64(3)
+	partition := int64(100)
+	channel := &datapb.VchannelInfo{
+		CollectionID: suite.collection,
+		ChannelName:  Params.CommonCfg.RootCoordDml + "-test",
+	}
+
+	// Expect
+	suite.broker.EXPECT().GetCollectionSchema(mock.Anything, suite.collection).Return(&schemapb.CollectionSchema{
+		Name: "TestSubscribeChannelTask",
+	}, nil)
+	suite.broker.EXPECT().GetPartitions(mock.Anything, suite.collection).Return([]int64{100, 101}, nil)
+	for _, segment := range suite.loadSegments {
+		suite.broker.EXPECT().GetSegmentInfo(mock.Anything, segment).Return([]*datapb.SegmentInfo{
+			{
+				ID:            segment,
+				CollectionID:  suite.collection,
+				PartitionID:   partition,
+				InsertChannel: channel.ChannelName,
+			},
+		}, nil)
+		suite.broker.EXPECT().GetIndexInfo(mock.Anything, suite.collection, segment).Return(nil, errors.New("index not ready"))
+	}
+
+	// Test load segment task
+	suite.dist.ChannelDistManager.Update(targetNode, meta.DmChannelFromVChannel(&datapb.VchannelInfo{
+		CollectionID: suite.collection,
+		ChannelName:  channel.ChannelName,
+	}))
+	tasks := []Task{}
+	for _, segment := range suite.loadSegments {
+		suite.target.AddSegment(&datapb.SegmentInfo{
+			ID:            segment,
+			CollectionID:  suite.collection,
+			PartitionID:   partition,
+			InsertChannel: channel.ChannelName,
+		})
+		task := NewSegmentTask(
+			ctx,
+			timeout,
+			0,
+			suite.collection,
+			suite.replica,
+			NewSegmentAction(targetNode, ActionTypeGrow, segment),
+		)
+		tasks = append(tasks, task)
+		err := suite.scheduler.Add(task)
+		suite.NoError(err)
+	}
+	segmentsNum := len(suite.loadSegments)
+	suite.AssertTaskNum(0, segmentsNum, 0, segmentsNum)
+
+	// Process tasks
+	suite.dispatchAndWait(targetNode)
+	suite.AssertTaskNum(segmentsNum, 0, 0, segmentsNum)
+
+	// Other nodes' HB can't trigger the procedure of tasks
+	suite.dispatchAndWait(targetNode + 1)
+	suite.AssertTaskNum(segmentsNum, 0, 0, segmentsNum)
+
+	// Process tasks done
+	// Dist contains channels
+	time.Sleep(timeout)
+	suite.dispatchAndWait(targetNode)
+	suite.AssertTaskNum(0, 0, 0, 0)
+
+	for _, task := range tasks {
+		suite.Equal(TaskStatusCanceled, task.Status())
 	}
 }
 
@@ -814,18 +891,24 @@ func (suite *TaskSuite) AssertTaskNum(process, wait, channel, segment int) {
 }
 
 func (suite *TaskSuite) dispatchAndWait(node int64) {
+	timeout := 10 * time.Second
 	suite.scheduler.Dispatch(node)
-	for {
-		count := 0
+	var keys []any
+	count := 0
+	for start := time.Now(); time.Since(start) < timeout; {
+		count = 0
+		keys = make([]any, 0)
 		suite.scheduler.executor.executingActions.Range(func(key, value any) bool {
+			keys = append(keys, key)
 			count++
 			return true
 		})
 		if count == 0 {
-			break
+			return
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+	suite.FailNow("executor hangs in executing tasks", "count=%d keys=%+v", count, keys)
 }
 
 func (suite *TaskSuite) newScheduler() *taskScheduler {

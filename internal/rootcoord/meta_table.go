@@ -68,6 +68,7 @@ const (
 	DefaultStringIndexType = "Trie"
 )
 
+//go:generate mockery --name=IMetaTable --outpkg=mockrootcoord
 type IMetaTable interface {
 	AddCollection(ctx context.Context, coll *model.Collection) error
 	ChangeCollectionState(ctx context.Context, collectionID UniqueID, state pb.CollectionState, ts Timestamp) error
@@ -223,7 +224,6 @@ func (mt *MetaTable) RemoveCollection(ctx context.Context, collectionID UniqueID
 	if err := mt.catalog.DropCollection(ctx1, &model.Collection{CollectionID: collectionID, Aliases: aliases}, ts); err != nil {
 		return err
 	}
-	delete(mt.collID2Meta, collectionID)
 
 	var name string
 	coll, ok := mt.collID2Meta[collectionID]
@@ -235,6 +235,8 @@ func (mt *MetaTable) RemoveCollection(ctx context.Context, collectionID UniqueID
 	for _, alias := range aliases {
 		delete(mt.collAlias2ID, alias)
 	}
+
+	delete(mt.collID2Meta, collectionID)
 
 	log.Info("remove collection", zap.String("name", name), zap.Int64("id", collectionID), zap.Strings("aliases", aliases))
 	return nil

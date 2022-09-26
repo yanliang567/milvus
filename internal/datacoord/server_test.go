@@ -1695,6 +1695,7 @@ func TestGetVChannelPos(t *testing.T) {
 			},
 		},
 	}
+	svr.indexCoord = mocks.NewMockIndexCoord(t)
 	svr.indexCoord.(*mocks.MockIndexCoord).EXPECT().GetIndexInfos(mock.Anything, mock.Anything).Return(mockResp, nil)
 
 	t.Run("get unexisted channel", func(t *testing.T) {
@@ -1977,6 +1978,7 @@ func TestGetRecoveryInfo(t *testing.T) {
 				},
 			},
 		}
+		svr.indexCoord = mocks.NewMockIndexCoord(t)
 		svr.indexCoord.(*mocks.MockIndexCoord).EXPECT().GetIndexInfos(mock.Anything, mock.Anything).Return(mockResp, nil)
 
 		req := &datapb.GetRecoveryInfoRequest{
@@ -2095,6 +2097,7 @@ func TestGetRecoveryInfo(t *testing.T) {
 				},
 			},
 		}
+		svr.indexCoord = mocks.NewMockIndexCoord(t)
 		svr.indexCoord.(*mocks.MockIndexCoord).EXPECT().GetIndexInfos(mock.Anything, mock.Anything).Return(mockResp, nil)
 		err = svr.channelManager.AddNode(0)
 		assert.Nil(t, err)
@@ -2675,7 +2678,7 @@ func TestDataCoordServer_SetSegmentState(t *testing.T) {
 		svr.meta.Lock()
 		func() {
 			defer svr.meta.Unlock()
-			svr.meta, _ = newMeta(context.TODO(), &mockTxnKVext{})
+			svr.meta, _ = newMeta(context.TODO(), &mockTxnKVext{}, "")
 		}()
 		defer closeTestServer(t, svr)
 		segment := &datapb.SegmentInfo{
@@ -2967,7 +2970,7 @@ func newTestServer(t *testing.T, receiveCh chan interface{}, opts ...Option) *Se
 		return newMockRootCoordService(), nil
 	}
 	indexCoord := mocks.NewMockIndexCoord(t)
-	indexCoord.EXPECT().GetIndexInfos(context.Background(), mock.Anything).Return(nil, nil).Maybe()
+	indexCoord.EXPECT().GetIndexInfos(mock.Anything, mock.Anything).Return(nil, nil).Maybe()
 	svr.indexCoord = indexCoord
 
 	err = svr.Init()
@@ -3080,13 +3083,14 @@ func Test_initServiceDiscovery(t *testing.T) {
 	closeTestServer(t, server)
 }
 
-func Test_initGarbageCollection(t *testing.T) {
+func Test_newChunkManagerFactory(t *testing.T) {
 	server := newTestServer2(t, nil)
 	Params.DataCoordCfg.EnableGarbageCollection = true
 
 	t.Run("err_minio_bad_address", func(t *testing.T) {
 		Params.MinioCfg.Address = "host:9000:bad"
-		err := server.initGarbageCollection()
+		storageCli, err := server.newChunkManagerFactory()
+		assert.Nil(t, storageCli)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "too many colons in address")
 	})
@@ -3100,19 +3104,51 @@ func Test_initGarbageCollection(t *testing.T) {
 		getCheckBucketFn = getCheckBucketFnBak
 	}()
 	Params.MinioCfg.Address = "minio:9000"
+
 	t.Run("ok", func(t *testing.T) {
-		err := server.initGarbageCollection()
+		storageCli, err := server.newChunkManagerFactory()
+		assert.NotNil(t, storageCli)
 		assert.NoError(t, err)
 	})
 	t.Run("iam_ok", func(t *testing.T) {
 		Params.MinioCfg.UseIAM = true
-		err := server.initGarbageCollection()
+		storageCli, err := server.newChunkManagerFactory()
+		assert.Nil(t, storageCli)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "404 Not Found")
 	})
 	t.Run("local storage init", func(t *testing.T) {
 		Params.CommonCfg.StorageType = "local"
-		err := server.initGarbageCollection()
+		storageCli, err := server.newChunkManagerFactory()
+		assert.NotNil(t, storageCli)
 		assert.NoError(t, err)
+	})
+	t.Run("bad storage type", func(t *testing.T) {
+		Params.CommonCfg.StorageType = "bad"
+		storageCli, err := server.newChunkManagerFactory()
+		assert.Nil(t, storageCli)
+		assert.Error(t, err)
+	})
+}
+
+func Test_initGarbageCollection(t *testing.T) {
+	server := newTestServer2(t, nil)
+	Params.DataCoordCfg.EnableGarbageCollection = true
+
+	// mock CheckBucketFn
+	getCheckBucketFnBak := getCheckBucketFn
+	getCheckBucketFn = func(cli *minio.Client) func() error {
+		return func() error { return nil }
+	}
+	defer func() {
+		getCheckBucketFn = getCheckBucketFnBak
+	}()
+	Params.MinioCfg.Address = "minio:9000"
+
+	t.Run("ok", func(t *testing.T) {
+		storageCli, err := server.newChunkManagerFactory()
+		assert.NotNil(t, storageCli)
+		assert.NoError(t, err)
+		server.initGarbageCollection(storageCli)
 	})
 }

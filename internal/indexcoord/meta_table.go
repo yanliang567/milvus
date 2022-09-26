@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/golang/protobuf/proto"
 	"go.uber.org/zap"
@@ -34,7 +33,6 @@ import (
 	"github.com/milvus-io/milvus/internal/metastore/model"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
-	"github.com/milvus-io/milvus/internal/util/tsoutil"
 )
 
 // metaTable maintains index-related information
@@ -369,7 +367,7 @@ func (mt *metaTable) BuildIndex(buildID UniqueID) error {
 		}
 		segIdx.IndexState = commonpb.IndexState_InProgress
 
-		err := mt.saveSegmentIndexMeta(segIdx)
+		err := mt.alterSegmentIndexes([]*model.SegmentIndex{segIdx})
 		if err != nil {
 			log.Error("IndexCoord metaTable BuildIndex fail", zap.Int64("buildID", segIdx.BuildID), zap.Error(err))
 			return err
@@ -419,19 +417,6 @@ func (mt *metaTable) CanCreateIndex(req *indexpb.CreateIndexRequest) bool {
 		}
 	}
 	return true
-}
-
-func (mt *metaTable) IsExpire(buildID UniqueID) bool {
-	mt.segmentIndexLock.RLock()
-	defer mt.segmentIndexLock.RUnlock()
-
-	segIdx, ok := mt.buildID2SegmentIndex[buildID]
-	if !ok {
-		return true
-	}
-
-	pTs, _ := tsoutil.ParseTS(segIdx.CreateTime)
-	return time.Since(pTs) > time.Minute*10
 }
 
 func (mt *metaTable) checkParams(fieldIndex *model.Index, req *indexpb.CreateIndexRequest) bool {
@@ -699,12 +684,15 @@ func (mt *metaTable) MarkIndexAsDeleted(collID UniqueID, indexIDs []UniqueID) er
 	indexes := make([]*model.Index, 0)
 	for _, indexID := range indexIDs {
 		index, ok := fieldIndexes[indexID]
-		if !ok {
+		if !ok || index.IsDeleted {
 			continue
 		}
 		clonedIndex := model.CloneIndex(index)
 		clonedIndex.IsDeleted = true
 		indexes = append(indexes, clonedIndex)
+	}
+	if len(indexes) == 0 {
+		return nil
 	}
 	err := mt.alterIndexes(indexes)
 	if err != nil {
@@ -718,38 +706,32 @@ func (mt *metaTable) MarkIndexAsDeleted(collID UniqueID, indexIDs []UniqueID) er
 }
 
 // MarkSegmentsIndexAsDeleted will mark the index on the segment corresponding the buildID as deleted, and recycleUnusedSegIndexes will recycle these tasks.
-func (mt *metaTable) MarkSegmentsIndexAsDeleted(segIDs []UniqueID) error {
-	log.Info("IndexCoord metaTable MarkSegmentsIndexAsDeleted", zap.Int64s("segIDs", segIDs))
-
+func (mt *metaTable) MarkSegmentsIndexAsDeleted(selector func(index *model.SegmentIndex) bool) error {
 	mt.segmentIndexLock.Lock()
 	defer mt.segmentIndexLock.Unlock()
 
 	buildIDs := make([]UniqueID, 0)
 	segIdxes := make([]*model.SegmentIndex, 0)
-	for _, segID := range segIDs {
-		if segIndexes, ok := mt.segmentIndexes[segID]; ok {
-			for _, segIdx := range segIndexes {
-				if segIdx.IsDeleted {
-					continue
-				}
-				clonedSegIdx := model.CloneSegmentIndex(segIdx)
-				clonedSegIdx.IsDeleted = true
-				segIdxes = append(segIdxes, clonedSegIdx)
-				buildIDs = append(buildIDs, segIdx.BuildID)
-			}
+	for _, segIdx := range mt.buildID2SegmentIndex {
+		if segIdx.IsDeleted {
+			continue
+		}
+		if selector(segIdx) {
+			clonedSegIdx := model.CloneSegmentIndex(segIdx)
+			clonedSegIdx.IsDeleted = true
+			segIdxes = append(segIdxes, clonedSegIdx)
+			buildIDs = append(buildIDs, segIdx.BuildID)
 		}
 	}
+
 	if len(segIdxes) == 0 {
-		log.Debug("IndexCoord metaTable MarkSegmentsIndexAsDeleted success, already have deleted",
-			zap.Int64s("segIDs", segIDs))
+		log.Debug("IndexCoord metaTable MarkSegmentsIndexAsDeleted success, no segment index need to mark")
 		return nil
 	}
 	err := mt.alterSegmentIndexes(segIdxes)
 	if err != nil {
-		log.Error("IndexCoord metaTable MarkSegmentsIndexAsDeleted fail", zap.Int64s("segIDs", segIDs), zap.Error(err))
 		return err
 	}
-	log.Info("IndexCoord metaTable MarkSegmentsIndexAsDeleted success", zap.Int64s("segIDs", segIDs))
 	return nil
 }
 
@@ -913,13 +895,17 @@ func (mt *metaTable) GetBuildIDsFromSegIDs(segIDs []UniqueID) []UniqueID {
 func (mt *metaTable) RemoveIndex(collID, indexID UniqueID) error {
 	mt.indexLock.Lock()
 	defer mt.indexLock.Unlock()
+	log.Info("IndexCoord meta table remove index", zap.Int64("collID", collID), zap.Int64("indexID", indexID))
 
 	err := mt.catalog.DropIndex(context.Background(), collID, indexID)
 	if err != nil {
+		log.Info("IndexCoord meta table remove index fail", zap.Int64("collID", collID),
+			zap.Int64("indexID", indexID), zap.Error(err))
 		return err
 	}
 
 	delete(mt.collectionIndexes[collID], indexID)
+	log.Info("IndexCoord meta table remove index success", zap.Int64("collID", collID), zap.Int64("indexID", indexID))
 	return nil
 }
 
@@ -1031,4 +1017,19 @@ func (mt *metaTable) MarkSegmentsIndexAsDeletedByBuildID(buildIDs []UniqueID) er
 	}
 	log.Info("IndexCoord metaTable MarkSegmentsIndexAsDeletedByBuildID success", zap.Int64s("buildIDs", buildIDs))
 	return nil
+}
+
+func (mt *metaTable) MarkSegmentWriteHandoff(segID UniqueID) error {
+	mt.segmentIndexLock.Lock()
+	defer mt.segmentIndexLock.Unlock()
+
+	segIdxes := make([]*model.SegmentIndex, 0)
+	if segIndexes, ok := mt.segmentIndexes[segID]; ok {
+		for _, segIdx := range segIndexes {
+			clonedSegIdx := model.CloneSegmentIndex(segIdx)
+			clonedSegIdx.WriteHandoff = true
+			segIdxes = append(segIdxes, clonedSegIdx)
+		}
+	}
+	return mt.alterSegmentIndexes(segIdxes)
 }

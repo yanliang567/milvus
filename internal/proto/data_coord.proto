@@ -69,6 +69,7 @@ service DataNode {
 
   rpc Compaction(CompactionPlan) returns (common.Status) {}
   rpc GetCompactionState(CompactionStateRequest) returns (CompactionStateResponse) {}
+  rpc SyncSegments(SyncSegmentsRequest) returns (common.Status) {}
 
   // https://wiki.lfaidata.foundation/display/MIL/MEP+24+--+Support+bulk+load
   rpc Import(ImportTaskRequest) returns(common.Status) {}
@@ -260,6 +261,10 @@ message SegmentInfo {
   bool createdByCompaction = 14;
   repeated int64 compactionFrom = 15;
   uint64 dropped_at = 16; // timestamp when segment marked drop
+  // A flag indicating if:
+  // (1) this segment is created by bulk load, and
+  // (2) the bulk load task that creates this segment has not yet reached `ImportCompleted` state.
+  bool is_importing = 17;
 }
 
 message SegmentStartPosition {
@@ -292,7 +297,7 @@ message DeltaLogInfo {
   uint64 timestamp_from = 2;
   uint64 timestamp_to = 3;
   string delta_log_path = 4;
-  int64 delta_log_size = 5; 
+  int64 delta_log_size = 5;
 }
 
 message DataNodeTtMsg {
@@ -348,8 +353,10 @@ message Binlog {
   int64 entries_num = 1;
   uint64 timestamp_from = 2;
   uint64 timestamp_to = 3;
+  // deprecated
   string log_path = 4;
   int64 log_size = 5;
+  int64 logID = 6;
 }
 
 message GetRecoveryInfoResponse {
@@ -398,6 +405,13 @@ enum CompactionType {
 
 message CompactionStateRequest {
   common.MsgBase base = 1;
+}
+
+message SyncSegmentsRequest {
+  int64 planID = 1;
+  int64 compacted_to = 2;
+  int64 num_of_rows = 3;
+  repeated int64 compacted_from = 4;
 }
 
 message CompactionSegmentBinlogs {
@@ -465,8 +479,8 @@ message SetSegmentStateResponse {
 }
 
 message DropVirtualChannelRequest {
-  common.MsgBase base = 1; 
-  string channel_name = 2; 
+  common.MsgBase base = 1;
+  string channel_name = 2;
   repeated DropVirtualChannelSegment segments = 3;
 }
 

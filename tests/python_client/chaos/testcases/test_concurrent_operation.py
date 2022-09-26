@@ -14,6 +14,7 @@ from common.cus_resource_opts import CustomResourceOperations as CusResource
 from utils.util_log import test_log as log
 from chaos import chaos_commons as cc
 from common import common_func as cf
+from chaos.chaos_commons import assert_statistic
 from common.common_type import CaseLabel
 from chaos import constants
 from delayed_assert import expect, assert_expectations
@@ -44,7 +45,7 @@ def get_all_collections():
             all_collections = data["all"]
     except Exception as e:
         log.error(f"get_all_collections error: {e}")
-        return []
+        return [None]
     return all_collections
 
 
@@ -97,19 +98,24 @@ class TestOperations(TestBase):
         yield request.param
 
     @pytest.mark.tags(CaseLabel.L3)
-    def test_operations(self):
+    def test_operations(self, request_duration, is_check, collection_name):
         # start the monitor threads to check the milvus ops
         log.info("*********************Test Start**********************")
         log.info(connections.get_connection_addr('default'))
-        c_name = cf.gen_unique_str("Checker_")
+        c_name = collection_name if collection_name else cf.gen_unique_str("Checker_")
         self.init_health_checkers(collection_name=c_name)
         cc.start_monitor_threads(self.health_checkers)
         log.info("*********************Load Start**********************")
-        # wait 200s
-
+        request_duration = request_duration.replace("h","*3600+").replace("m","*60+").replace("s","")
+        if request_duration[-1] == "+":
+            request_duration = request_duration[:-1]
+        request_duration = eval(request_duration)
         for i in range(10):
-            sleep(20)
+            sleep(request_duration//10)
             for k,v in self.health_checkers.items():
                 v.check_result()
                 # log.info(v.check_result())
+        if is_check:
+            assert_statistic(self.health_checkers)
+            assert_expectations()        
         log.info("*********************Chaos Test Completed**********************")

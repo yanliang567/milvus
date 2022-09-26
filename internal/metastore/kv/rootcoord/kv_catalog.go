@@ -6,7 +6,9 @@ import (
 	"fmt"
 
 	"github.com/milvus-io/milvus/internal/metastore"
+
 	"github.com/milvus-io/milvus/internal/util/crypto"
+	"github.com/milvus-io/milvus/internal/util/etcd"
 
 	"github.com/milvus-io/milvus/internal/util"
 
@@ -62,60 +64,18 @@ func buildAliasKey(aliasName string) string {
 	return fmt.Sprintf("%s/%s", AliasMetaPrefix, aliasName)
 }
 
-func buildKvs(keys, values []string) (map[string]string, error) {
-	if len(keys) != len(values) {
-		return nil, fmt.Errorf("length of keys (%d) and values (%d) are not equal", len(keys), len(values))
-	}
-	ret := make(map[string]string, len(keys))
-	for i, k := range keys {
-		_, ok := ret[k]
-		if ok {
-			return nil, fmt.Errorf("duplicated key was found: %s", k)
-		}
-		ret[k] = values[i]
-	}
-	return ret, nil
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func batchSave(snapshot kv.SnapShotKV, maxTxnNum int, kvs map[string]string, ts typeutil.Timestamp) error {
-	keys := make([]string, 0, len(kvs))
-	values := make([]string, 0, len(kvs))
-	for k, v := range kvs {
-		keys = append(keys, k)
-		values = append(values, v)
-	}
-	for i := 0; i < len(kvs); i = i + maxTxnNum {
-		end := min(i+maxTxnNum, len(keys))
-		batch, err := buildKvs(keys[i:end], values[i:end])
-		if err != nil {
-			return err
-		}
-		if err := snapshot.MultiSave(batch, ts); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func batchMultiSaveAndRemoveWithPrefix(snapshot kv.SnapShotKV, maxTxnNum int, saves map[string]string, removals []string, ts typeutil.Timestamp) error {
-	if err := batchSave(snapshot, maxTxnNum, saves, ts); err != nil {
+	saveFn := func(partialKvs map[string]string) error {
+		return snapshot.MultiSave(partialKvs, ts)
+	}
+	if err := etcd.SaveByBatch(saves, saveFn); err != nil {
 		return err
 	}
-	for i := 0; i < len(removals); i = i + maxTxnNum {
-		end := min(i+maxTxnNum, len(removals))
-		batch := removals[i:end]
-		if err := snapshot.MultiSaveAndRemoveWithPrefix(nil, batch, ts); err != nil {
-			return err
-		}
+
+	removeFn := func(partialKeys []string) error {
+		return snapshot.MultiSaveAndRemoveWithPrefix(nil, partialKeys, ts)
 	}
-	return nil
+	return etcd.RemoveByBatch(removals, removeFn)
 }
 
 func (kc *Catalog) CreateCollection(ctx context.Context, coll *model.Collection, ts typeutil.Timestamp) error {
@@ -168,14 +128,15 @@ func (kc *Catalog) CreateCollection(ctx context.Context, coll *model.Collection,
 
 	// Though batchSave is not atomic enough, we can promise the atomicity outside.
 	// Recovering from failure, if we found collection is creating, we should removing all these related meta.
-	return batchSave(kc.Snapshot, maxTxnNum, kvs, ts)
+	return etcd.SaveByBatch(kvs, func(partialKvs map[string]string) error {
+		return kc.Snapshot.MultiSave(partialKvs, ts)
+	})
 }
 
 func (kc *Catalog) loadCollection(ctx context.Context, collectionID typeutil.UniqueID, ts typeutil.Timestamp) (*pb.CollectionInfo, error) {
 	collKey := buildCollectionKey(collectionID)
 	collVal, err := kc.Snapshot.Load(collKey, ts)
 	if err != nil {
-		log.Error("get collection meta fail", zap.String("key", collKey), zap.Error(err))
 		return nil, fmt.Errorf("can't find collection: %d", collectionID)
 	}
 
@@ -310,10 +271,8 @@ func (kc *Catalog) listFieldsAfter210(ctx context.Context, collectionID typeutil
 }
 
 func (kc *Catalog) GetCollectionByID(ctx context.Context, collectionID typeutil.UniqueID, ts typeutil.Timestamp) (*model.Collection, error) {
-	collKey := buildCollectionKey(collectionID)
 	collMeta, err := kc.loadCollection(ctx, collectionID, ts)
 	if err != nil {
-		log.Error("collection meta marshal fail", zap.String("key", collKey), zap.Error(err))
 		return nil, err
 	}
 
@@ -373,8 +332,17 @@ func (kc *Catalog) DropCollection(ctx context.Context, collectionInfo *model.Col
 			fmt.Sprintf("%s/%s", CollectionAliasMetaPrefix, alias),
 		)
 	}
-	delMetakeysSnap = append(delMetakeysSnap, buildPartitionPrefix(collectionInfo.CollectionID))
-	delMetakeysSnap = append(delMetakeysSnap, buildFieldPrefix(collectionInfo.CollectionID))
+	// Snapshot will list all (k, v) pairs and then use Txn.MultiSave to save tombstone for these keys when it prepares
+	// to remove a prefix, so though we have very few prefixes, the final operations may exceed the max txn number.
+	// TODO(longjiquan): should we list all partitions & fields in KV anyway?
+	for _, partition := range collectionInfo.Partitions {
+		delMetakeysSnap = append(delMetakeysSnap, buildPartitionKey(collectionInfo.CollectionID, partition.PartitionID))
+	}
+	for _, field := range collectionInfo.Fields {
+		delMetakeysSnap = append(delMetakeysSnap, buildFieldKey(collectionInfo.CollectionID, field.FieldID))
+	}
+	// delMetakeysSnap = append(delMetakeysSnap, buildPartitionPrefix(collectionInfo.CollectionID))
+	// delMetakeysSnap = append(delMetakeysSnap, buildFieldPrefix(collectionInfo.CollectionID))
 
 	// Though batchMultiSaveAndRemoveWithPrefix is not atomic enough, we can promise atomicity outside.
 	// If we found collection under dropping state, we'll know that gc is not completely on this collection.

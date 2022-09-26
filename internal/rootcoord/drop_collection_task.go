@@ -17,7 +17,7 @@ import (
 )
 
 type dropCollectionTask struct {
-	baseTaskV2
+	baseTask
 	Req *milvuspb.DropCollectionRequest
 }
 
@@ -52,42 +52,45 @@ func (t *dropCollectionTask) Execute(ctx context.Context) error {
 
 	ts := t.GetTs()
 
-	redoTask := newBaseRedoTask()
+	redoTask := newBaseRedoTask(t.core.stepExecutor)
 
-	redoTask.AddSyncStep(&ExpireCacheStep{
-		baseStep:        baseStep{core: t.core},
-		collectionNames: append(aliases, collMeta.Name),
-		collectionID:    collMeta.CollectionID,
-		ts:              ts,
-	})
-	redoTask.AddSyncStep(&ChangeCollectionStateStep{
+	redoTask.AddSyncStep(&changeCollectionStateStep{
 		baseStep:     baseStep{core: t.core},
 		collectionID: collMeta.CollectionID,
 		state:        pb.CollectionState_CollectionDropping,
 		ts:           ts,
 	})
+	redoTask.AddSyncStep(&expireCacheStep{
+		baseStep:        baseStep{core: t.core},
+		collectionNames: append(aliases, collMeta.Name),
+		collectionID:    collMeta.CollectionID,
+		ts:              ts,
+	})
 
-	redoTask.AddAsyncStep(&ReleaseCollectionStep{
+	redoTask.AddAsyncStep(&releaseCollectionStep{
 		baseStep:     baseStep{core: t.core},
 		collectionID: collMeta.CollectionID,
 	})
-	redoTask.AddAsyncStep(&DropIndexStep{
+	redoTask.AddAsyncStep(&dropIndexStep{
 		baseStep: baseStep{core: t.core},
 		collID:   collMeta.CollectionID,
+		partIDs:  nil,
 	})
-	redoTask.AddAsyncStep(&DeleteCollectionDataStep{
+	redoTask.AddAsyncStep(&deleteCollectionDataStep{
 		baseStep: baseStep{core: t.core},
 		coll:     collMeta,
-		ts:       ts,
 	})
-	redoTask.AddAsyncStep(&RemoveDmlChannelsStep{
+	redoTask.AddAsyncStep(&removeDmlChannelsStep{
 		baseStep:  baseStep{core: t.core},
-		pchannels: collMeta.PhysicalChannelNames,
+		pChannels: collMeta.PhysicalChannelNames,
 	})
-	redoTask.AddAsyncStep(&DeleteCollectionMetaStep{
+	redoTask.AddAsyncStep(&deleteCollectionMetaStep{
 		baseStep:     baseStep{core: t.core},
 		collectionID: collMeta.CollectionID,
-		ts:           ts,
+		// This ts is less than the ts when we notify data nodes to drop collection, but it's OK since we have already
+		// marked this collection as deleted. If we want to make this ts greater than the notification's ts, we should
+		// wrap a step who will have these three children and connect them with ts.
+		ts: ts,
 	})
 
 	return redoTask.Execute(ctx)

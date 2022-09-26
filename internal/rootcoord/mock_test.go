@@ -259,6 +259,12 @@ func newTestCore(opts ...Opt) *Core {
 	c := &Core{
 		session: &sessionutil.Session{ServerID: TestRootCoordID},
 	}
+	executor := newMockStepExecutor()
+	executor.AddStepsFunc = func(s *stepStack) {
+		// no schedule, execute directly.
+		s.Execute(context.Background())
+	}
+	c.stepExecutor = executor
 	for _, opt := range opts {
 		opt(c)
 	}
@@ -287,6 +293,16 @@ func withInvalidProxyManager() Opt {
 			return succStatus(), errors.New("error mock InvalidateCollectionMetaCache")
 		}
 		c.proxyClientManager.proxyClient[TestProxyID] = p
+	}
+}
+
+func withDropIndex() Opt {
+	return func(c *Core) {
+		c.broker = &mockBroker{
+			DropCollectionIndexFunc: func(ctx context.Context, collID UniqueID, partIDs []UniqueID) error {
+				return nil
+			},
+		}
 	}
 }
 
@@ -647,18 +663,27 @@ func withAbnormalCode() Opt {
 
 type mockScheduler struct {
 	IScheduler
-	AddTaskFunc func(t taskV2) error
+	AddTaskFunc     func(t task) error
+	GetMinDdlTsFunc func() Timestamp
+	minDdlTs        Timestamp
 }
 
 func newMockScheduler() *mockScheduler {
 	return &mockScheduler{}
 }
 
-func (m mockScheduler) AddTask(t taskV2) error {
+func (m mockScheduler) AddTask(t task) error {
 	if m.AddTaskFunc != nil {
 		return m.AddTaskFunc(t)
 	}
 	return nil
+}
+
+func (m mockScheduler) GetMinDdlTs() Timestamp {
+	if m.GetMinDdlTsFunc != nil {
+		return m.GetMinDdlTsFunc()
+	}
+	return m.minDdlTs
 }
 
 func withScheduler(sched IScheduler) Opt {
@@ -669,7 +694,7 @@ func withScheduler(sched IScheduler) Opt {
 
 func withValidScheduler() Opt {
 	sched := newMockScheduler()
-	sched.AddTaskFunc = func(t taskV2) error {
+	sched.AddTaskFunc = func(t task) error {
 		t.NotifyDone(nil)
 		return nil
 	}
@@ -678,7 +703,7 @@ func withValidScheduler() Opt {
 
 func withInvalidScheduler() Opt {
 	sched := newMockScheduler()
-	sched.AddTaskFunc = func(t taskV2) error {
+	sched.AddTaskFunc = func(t task) error {
 		return errors.New("error mock AddTask")
 	}
 	return withScheduler(sched)
@@ -686,7 +711,7 @@ func withInvalidScheduler() Opt {
 
 func withTaskFailScheduler() Opt {
 	sched := newMockScheduler()
-	sched.AddTaskFunc = func(t taskV2) error {
+	sched.AddTaskFunc = func(t task) error {
 		err := errors.New("error mock task fail")
 		t.NotifyDone(err)
 		return nil
@@ -728,7 +753,7 @@ type mockBroker struct {
 	FlushFunc             func(ctx context.Context, cID int64, segIDs []int64) error
 	ImportFunc            func(ctx context.Context, req *datapb.ImportTaskRequest) (*datapb.ImportTaskResponse, error)
 
-	DropCollectionIndexFunc func(ctx context.Context, collID UniqueID) error
+	DropCollectionIndexFunc func(ctx context.Context, collID UniqueID, partIDs []UniqueID) error
 }
 
 func newMockBroker() *mockBroker {
@@ -747,8 +772,8 @@ func (b mockBroker) ReleaseCollection(ctx context.Context, collectionID UniqueID
 	return b.ReleaseCollectionFunc(ctx, collectionID)
 }
 
-func (b mockBroker) DropCollectionIndex(ctx context.Context, collID UniqueID) error {
-	return b.DropCollectionIndexFunc(ctx, collID)
+func (b mockBroker) DropCollectionIndex(ctx context.Context, collID UniqueID, partIDs []UniqueID) error {
+	return b.DropCollectionIndexFunc(ctx, collID, partIDs)
 }
 
 func withBroker(b Broker) Opt {
@@ -759,16 +784,16 @@ func withBroker(b Broker) Opt {
 
 type mockGarbageCollector struct {
 	GarbageCollector
-	GcCollectionDataFunc func(ctx context.Context, coll *model.Collection, ts typeutil.Timestamp) error
-	GcPartitionDataFunc  func(ctx context.Context, pChannels []string, partition *model.Partition, ts typeutil.Timestamp) error
+	GcCollectionDataFunc func(ctx context.Context, coll *model.Collection) (Timestamp, error)
+	GcPartitionDataFunc  func(ctx context.Context, pChannels []string, partition *model.Partition) (Timestamp, error)
 }
 
-func (m mockGarbageCollector) GcCollectionData(ctx context.Context, coll *model.Collection, ts typeutil.Timestamp) error {
-	return m.GcCollectionDataFunc(ctx, coll, ts)
+func (m mockGarbageCollector) GcCollectionData(ctx context.Context, coll *model.Collection) (Timestamp, error) {
+	return m.GcCollectionDataFunc(ctx, coll)
 }
 
-func (m mockGarbageCollector) GcPartitionData(ctx context.Context, pChannels []string, partition *model.Partition, ts typeutil.Timestamp) error {
-	return m.GcPartitionDataFunc(ctx, pChannels, partition, ts)
+func (m mockGarbageCollector) GcPartitionData(ctx context.Context, pChannels []string, partition *model.Partition) (Timestamp, error) {
+	return m.GcPartitionDataFunc(ctx, pChannels, partition)
 }
 
 func newMockGarbageCollector() *mockGarbageCollector {
@@ -809,6 +834,9 @@ func newTickerWithMockFailStream() *timetickSync {
 
 func newMockNormalStream() *msgstream.MockMsgStream {
 	stream := msgstream.NewMockMsgStream()
+	stream.BroadcastFunc = func(pack *msgstream.MsgPack) error {
+		return nil
+	}
 	stream.BroadcastMarkFunc = func(pack *msgstream.MsgPack) (map[string][]msgstream.MessageID, error) {
 		return map[string][]msgstream.MessageID{}, nil
 	}
@@ -837,4 +865,64 @@ func newTickerWithFactory(factory msgstream.Factory) *timetickSync {
 	chans := map[UniqueID][]string{}
 	ticker := newTimeTickSync(ctx, TestRootCoordID, factory, chans)
 	return ticker
+}
+
+type mockDdlTsLockManager struct {
+	DdlTsLockManager
+	GetMinDdlTsFunc func() Timestamp
+}
+
+func (m mockDdlTsLockManager) GetMinDdlTs() Timestamp {
+	if m.GetMinDdlTsFunc != nil {
+		return m.GetMinDdlTsFunc()
+	}
+	return 100
+}
+
+func newMockDdlTsLockManager() *mockDdlTsLockManager {
+	return &mockDdlTsLockManager{}
+}
+
+func withDdlTsLockManager(m DdlTsLockManager) Opt {
+	return func(c *Core) {
+		c.ddlTsLockManager = m
+	}
+}
+
+type mockStepExecutor struct {
+	StepExecutor
+	StartFunc    func()
+	StopFunc     func()
+	AddStepsFunc func(s *stepStack)
+}
+
+func newMockStepExecutor() *mockStepExecutor {
+	return &mockStepExecutor{}
+}
+
+func (m mockStepExecutor) Start() {
+	if m.StartFunc != nil {
+		m.StartFunc()
+	} else {
+	}
+}
+
+func (m mockStepExecutor) Stop() {
+	if m.StopFunc != nil {
+		m.StopFunc()
+	} else {
+	}
+}
+
+func (m mockStepExecutor) AddSteps(s *stepStack) {
+	if m.AddStepsFunc != nil {
+		m.AddStepsFunc(s)
+	} else {
+	}
+}
+
+func withStepExecutor(executor StepExecutor) Opt {
+	return func(c *Core) {
+		c.stepExecutor = executor
+	}
 }

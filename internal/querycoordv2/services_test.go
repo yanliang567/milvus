@@ -271,7 +271,7 @@ func (suite *ServiceSuite) TestLoadCollectionFailed() {
 		}
 		resp, err := server.LoadCollection(ctx, req)
 		suite.NoError(err)
-		suite.Equal(commonpb.ErrorCode_UnexpectedError, resp.ErrorCode)
+		suite.Equal(commonpb.ErrorCode_IllegalArgument, resp.ErrorCode)
 		suite.Contains(resp.Reason, job.ErrLoadParameterMismatched.Error())
 	}
 
@@ -286,7 +286,7 @@ func (suite *ServiceSuite) TestLoadCollectionFailed() {
 		}
 		resp, err := server.LoadCollection(ctx, req)
 		suite.NoError(err)
-		suite.Equal(commonpb.ErrorCode_UnexpectedError, resp.ErrorCode)
+		suite.Equal(commonpb.ErrorCode_IllegalArgument, resp.ErrorCode)
 		suite.Contains(resp.Reason, job.ErrLoadParameterMismatched.Error())
 	}
 }
@@ -345,7 +345,7 @@ func (suite *ServiceSuite) TestLoadPartitionFailed() {
 		}
 		resp, err := server.LoadPartitions(ctx, req)
 		suite.NoError(err)
-		suite.Equal(commonpb.ErrorCode_UnexpectedError, resp.ErrorCode)
+		suite.Equal(commonpb.ErrorCode_IllegalArgument, resp.ErrorCode)
 		suite.Contains(resp.Reason, job.ErrLoadParameterMismatched.Error())
 	}
 
@@ -360,7 +360,7 @@ func (suite *ServiceSuite) TestLoadPartitionFailed() {
 		}
 		resp, err := server.LoadPartitions(ctx, req)
 		suite.NoError(err)
-		suite.Equal(commonpb.ErrorCode_UnexpectedError, resp.ErrorCode)
+		suite.Equal(commonpb.ErrorCode_IllegalArgument, resp.ErrorCode)
 		suite.Contains(resp.Reason, job.ErrLoadParameterMismatched.Error())
 	}
 
@@ -375,7 +375,7 @@ func (suite *ServiceSuite) TestLoadPartitionFailed() {
 		}
 		resp, err := server.LoadPartitions(ctx, req)
 		suite.NoError(err)
-		suite.Equal(commonpb.ErrorCode_UnexpectedError, resp.ErrorCode)
+		suite.Equal(commonpb.ErrorCode_IllegalArgument, resp.ErrorCode)
 		suite.Contains(resp.Reason, job.ErrLoadParameterMismatched.Error())
 	}
 }
@@ -549,12 +549,19 @@ func (suite *ServiceSuite) TestLoadBalance() {
 			DstNodeIDs:       []int64{dstNode},
 			SealedSegmentIDs: segments,
 		}
+		suite.taskScheduler.ExpectedCalls = make([]*mock.Call, 0)
 		suite.taskScheduler.EXPECT().Add(mock.Anything).Run(func(task task.Task) {
+			actions := task.Actions()
+			suite.Len(actions, 2)
+			growAction, reduceAction := actions[0], actions[1]
+			suite.Equal(dstNode, growAction.Node())
+			suite.Equal(srcNode, reduceAction.Node())
 			task.Cancel()
 		}).Return(nil)
 		resp, err := server.LoadBalance(ctx, req)
 		suite.NoError(err)
 		suite.Equal(commonpb.ErrorCode_Success, resp.ErrorCode)
+		suite.taskScheduler.AssertExpectations(suite.T())
 	}
 
 	// Test when server is not healthy

@@ -70,7 +70,7 @@ class SegmentGrowingImpl : public SegmentGrowing {
     }
 
  public:
-    const InsertRecord&
+    const InsertRecord<>&
     get_insert_record() const {
         return insert_record_;
     }
@@ -109,7 +109,7 @@ class SegmentGrowingImpl : public SegmentGrowing {
     }
 
     // deprecated
-    const knowhere::Index*
+    const index::IndexBase*
     chunk_index_impl(FieldId field_id, int64_t chunk_id) const final {
         return indexing_record_.get_field_indexing(field_id).get_chunk_indexing(chunk_id);
     }
@@ -174,7 +174,7 @@ class SegmentGrowingImpl : public SegmentGrowing {
     mask_with_timestamps(BitsetType& bitset_chunk, Timestamp timestamp) const override;
 
     void
-    vector_search(query::SearchInfo& search_info,
+    vector_search(SearchInfo& search_info,
                   const void* query_data,
                   int64_t query_count,
                   Timestamp timestamp,
@@ -225,7 +225,7 @@ class SegmentGrowingImpl : public SegmentGrowing {
     SealedIndexingRecord sealed_indexing_record_;  // not used
 
     // inserted fields data and row_ids, timestamps
-    InsertRecord insert_record_;
+    InsertRecord<false> insert_record_;
 
     // deleted pks
     mutable DeletedRecord deleted_record_;

@@ -13,7 +13,6 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
-	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
 
 	"go.uber.org/zap"
@@ -37,20 +36,16 @@ type CoordinatorBroker struct {
 	dataCoord  types.DataCoord
 	rootCoord  types.RootCoord
 	indexCoord types.IndexCoord
-
-	cm storage.ChunkManager
 }
 
 func NewCoordinatorBroker(
 	dataCoord types.DataCoord,
 	rootCoord types.RootCoord,
-	indexCoord types.IndexCoord,
-	cm storage.ChunkManager) *CoordinatorBroker {
+	indexCoord types.IndexCoord) *CoordinatorBroker {
 	return &CoordinatorBroker{
 		dataCoord,
 		rootCoord,
 		indexCoord,
-		cm,
 	}
 }
 
@@ -148,7 +143,8 @@ func (broker *CoordinatorBroker) GetIndexInfo(ctx context.Context, collectionID 
 	defer cancel()
 
 	resp, err := broker.indexCoord.GetIndexInfos(ctx, &indexpb.GetIndexInfoRequest{
-		SegmentIDs: []int64{segmentID},
+		CollectionID: collectionID,
+		SegmentIDs:   []int64{segmentID},
 	})
 	if err != nil || resp.GetStatus().GetErrorCode() != commonpb.ErrorCode_Success {
 		log.Error("failed to get segment index info",
@@ -178,10 +174,7 @@ func (broker *CoordinatorBroker) GetIndexInfo(ctx context.Context, collectionID 
 			IndexParams:    info.GetIndexParams(),
 			IndexFilePaths: info.GetIndexFilePaths(),
 			IndexSize:      int64(info.GetSerializedSize()),
-		}
-
-		if len(info.GetIndexFilePaths()) == 0 {
-			return nil, fmt.Errorf("index not ready")
+			IndexVersion:   info.GetIndexVersion(),
 		}
 
 		indexes = append(indexes, indexInfo)

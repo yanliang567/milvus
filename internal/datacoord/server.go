@@ -274,7 +274,12 @@ func (s *Server) Start() error {
 		return err
 	}
 
-	if err = s.initMeta(); err != nil {
+	storageCli, err := s.newChunkManagerFactory()
+	if err != nil {
+		return err
+	}
+
+	if err = s.initMeta(storageCli.RootPath()); err != nil {
 		return err
 	}
 
@@ -296,9 +301,7 @@ func (s *Server) Start() error {
 	}
 	s.startSegmentManager()
 
-	if err = s.initGarbageCollection(); err != nil {
-		return err
-	}
+	s.initGarbageCollection(storageCli)
 
 	s.startServerLoop()
 	Params.DataCoordCfg.CreatedTime = time.Now()
@@ -358,47 +361,24 @@ func (s *Server) stopCompactionTrigger() {
 	s.compactionTrigger.stop()
 }
 
-func (s *Server) initGarbageCollection() error {
-	var cli storage.ChunkManager
-	var err error
-	if Params.CommonCfg.StorageType == "minio" {
-		chunkManagerFactory := storage.NewChunkManagerFactory("local", "minio",
-			storage.RootPath(Params.LocalStorageCfg.Path),
-			storage.Address(Params.MinioCfg.Address),
-			storage.AccessKeyID(Params.MinioCfg.AccessKeyID),
-			storage.SecretAccessKeyID(Params.MinioCfg.SecretAccessKey),
-			storage.UseSSL(Params.MinioCfg.UseSSL),
-			storage.BucketName(Params.MinioCfg.BucketName),
-			storage.UseIAM(Params.MinioCfg.UseIAM),
-			storage.IAMEndpoint(Params.MinioCfg.IAMEndpoint),
-			storage.CreateBucket(true))
-		cli, err = chunkManagerFactory.NewVectorStorageChunkManager(s.ctx)
-		if err != nil {
-			log.Error("minio chunk manager init failed", zap.String("error", err.Error()))
-			return err
-		}
-		log.Info("minio chunk manager init success", zap.String("bucketname", Params.MinioCfg.BucketName))
-	} else if Params.CommonCfg.StorageType == "local" {
-		chunkManagerFactory := storage.NewChunkManagerFactory("local", "local",
-			storage.RootPath(Params.LocalStorageCfg.Path))
-		cli, err = chunkManagerFactory.NewVectorStorageChunkManager(s.ctx)
-		if err != nil {
-			log.Error("local chunk manager init failed", zap.String("error", err.Error()))
-			return err
-		}
-		log.Info("local chunk manager init success")
+func (s *Server) newChunkManagerFactory() (storage.ChunkManager, error) {
+	chunkManagerFactory := storage.NewChunkManagerFactoryWithParam(&Params)
+	cli, err := chunkManagerFactory.NewPersistentStorageChunkManager(s.ctx)
+	if err != nil {
+		log.Error("chunk manager init failed", zap.Error(err))
+		return nil, err
 	}
+	return cli, err
+}
 
+func (s *Server) initGarbageCollection(cli storage.ChunkManager) {
 	s.garbageCollector = newGarbageCollector(s.meta, s.segReferManager, s.indexCoord, GcOption{
-		cli:      cli,
-		enabled:  Params.DataCoordCfg.EnableGarbageCollection,
-		rootPath: Params.MinioCfg.RootPath,
-
+		cli:              cli,
+		enabled:          Params.DataCoordCfg.EnableGarbageCollection,
 		checkInterval:    Params.DataCoordCfg.GCInterval,
 		missingTolerance: Params.DataCoordCfg.GCMissingTolerance,
 		dropTolerance:    Params.DataCoordCfg.GCDropTolerance,
 	})
-	return nil
 }
 
 // here we use variable for test convenience
@@ -483,12 +463,12 @@ func (s *Server) startSegmentManager() {
 	}
 }
 
-func (s *Server) initMeta() error {
+func (s *Server) initMeta(chunkManagerRootPath string) error {
 	etcdKV := etcdkv.NewEtcdKV(s.etcdCli, Params.EtcdCfg.MetaRootPath)
 	s.kvClient = etcdKV
 	reloadEtcdFn := func() error {
 		var err error
-		s.meta, err = newMeta(s.ctx, s.kvClient)
+		s.meta, err = newMeta(s.ctx, s.kvClient, chunkManagerRootPath)
 		if err != nil {
 			return err
 		}

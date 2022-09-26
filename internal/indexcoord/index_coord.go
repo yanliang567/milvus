@@ -87,6 +87,7 @@ type IndexCoord struct {
 	indexBuilder          *indexBuilder
 	garbageCollector      *garbageCollector
 	flushedSegmentWatcher *flushedSegmentWatcher
+	handoff               *handoff
 
 	metricsCacheManager *metricsinfo.MetricsCacheManager
 
@@ -208,7 +209,7 @@ func (i *IndexCoord) Init() error {
 		// TODO silverxia add Rewatch logic
 		i.eventChan = i.session.WatchServices(typeutil.IndexNodeRole, revision+1, nil)
 
-		chunkManager, err := i.factory.NewVectorStorageChunkManager(i.loopCtx)
+		chunkManager, err := i.factory.NewPersistentStorageChunkManager(i.loopCtx)
 		if err != nil {
 			log.Error("IndexCoord new minio chunkManager failed", zap.Error(err))
 			initErr = err
@@ -218,7 +219,8 @@ func (i *IndexCoord) Init() error {
 		i.chunkManager = chunkManager
 
 		i.garbageCollector = newGarbageCollector(i.loopCtx, i.metaTable, i.chunkManager, i)
-		i.flushedSegmentWatcher, err = newFlushSegmentWatcher(i.loopCtx, i.etcdKV, i.metaTable, i.indexBuilder, i)
+		i.handoff = newHandoff(i.loopCtx, i.metaTable, i.etcdKV, i)
+		i.flushedSegmentWatcher, err = newFlushSegmentWatcher(i.loopCtx, i.etcdKV, i.metaTable, i.indexBuilder, i.handoff, i)
 		if err != nil {
 			initErr = err
 			return
@@ -254,6 +256,7 @@ func (i *IndexCoord) Start() error {
 
 		i.indexBuilder.Start()
 		i.garbageCollector.Start()
+		i.handoff.Start()
 		i.flushedSegmentWatcher.Start()
 
 		i.UpdateStateCode(internalpb.StateCode_Healthy)
@@ -611,7 +614,7 @@ func (i *IndexCoord) GetIndexBuildProgress(ctx context.Context, req *indexpb.Get
 // index tasks.
 func (i *IndexCoord) DropIndex(ctx context.Context, req *indexpb.DropIndexRequest) (*commonpb.Status, error) {
 	log.Info("IndexCoord DropIndex", zap.Int64("collectionID", req.CollectionID),
-		zap.Int64("fieldID", req.FieldID), zap.String("indexName", req.IndexName))
+		zap.Int64s("partitionIDs", req.PartitionIDs), zap.String("indexName", req.IndexName))
 	if !i.isHealthy() {
 		log.Warn(msgIndexCoordIsUnhealthy(i.serverID))
 		return &commonpb.Status{
@@ -633,15 +636,37 @@ func (i *IndexCoord) DropIndex(ctx context.Context, req *indexpb.DropIndexReques
 	for indexID := range indexID2CreateTs {
 		indexIDs = append(indexIDs, indexID)
 	}
-	err := i.metaTable.MarkIndexAsDeleted(req.CollectionID, indexIDs)
-	if err != nil {
-		ret.ErrorCode = commonpb.ErrorCode_UnexpectedError
-		ret.Reason = err.Error()
-		return ret, nil
+	if len(req.GetPartitionIDs()) == 0 {
+		// drop collection index
+		err := i.metaTable.MarkIndexAsDeleted(req.CollectionID, indexIDs)
+		if err != nil {
+			log.Error("IndexCoord drop index fail", zap.Int64("collectionID", req.CollectionID),
+				zap.String("indexName", req.IndexName), zap.Error(err))
+			ret.ErrorCode = commonpb.ErrorCode_UnexpectedError
+			ret.Reason = err.Error()
+			return ret, nil
+		}
+	} else {
+		err := i.metaTable.MarkSegmentsIndexAsDeleted(func(segIndex *model.SegmentIndex) bool {
+			for _, partitionID := range req.PartitionIDs {
+				if segIndex.CollectionID == req.CollectionID && segIndex.PartitionID == partitionID {
+					return true
+				}
+			}
+			return false
+		})
+		if err != nil {
+			log.Error("IndexCoord drop index fail", zap.Int64("collectionID", req.CollectionID),
+				zap.Int64s("partitionIDs", req.PartitionIDs), zap.String("indexName", req.IndexName), zap.Error(err))
+			ret.ErrorCode = commonpb.ErrorCode_UnexpectedError
+			ret.Reason = err.Error()
+			return ret, nil
+		}
 	}
 
 	log.Info("IndexCoord DropIndex success", zap.Int64("collID", req.CollectionID),
-		zap.String("indexName", req.IndexName), zap.Int64s("indexIDs", indexIDs))
+		zap.Int64s("partitionIDs", req.PartitionIDs), zap.String("indexName", req.IndexName),
+		zap.Int64s("indexIDs", indexIDs))
 	return ret, nil
 }
 
@@ -688,6 +713,7 @@ func (i *IndexCoord) GetIndexInfos(ctx context.Context, req *indexpb.GetIndexInf
 						IndexParams:    i.metaTable.GetIndexParams(segIdx.CollectionID, segIdx.IndexID),
 						IndexFilePaths: segIdx.IndexFilePaths,
 						SerializedSize: segIdx.IndexSize,
+						IndexVersion:   segIdx.IndexVersion,
 					})
 			}
 		}
@@ -1050,4 +1076,31 @@ func (i *IndexCoord) watchFlushedSegmentLoop() {
 			}
 		}
 	}
+}
+
+func (i *IndexCoord) pullSegmentInfo(ctx context.Context, segmentID UniqueID) (*datapb.SegmentInfo, error) {
+	resp, err := i.dataCoordClient.GetSegmentInfo(ctx, &datapb.GetSegmentInfoRequest{
+		SegmentIDs:       []int64{segmentID},
+		IncludeUnHealthy: false,
+	})
+	if err != nil {
+		log.Error("IndexCoord get segment info fail", zap.Int64("segID", segmentID), zap.Error(err))
+		return nil, err
+	}
+	if resp.Status.GetErrorCode() != commonpb.ErrorCode_Success {
+		log.Error("IndexCoord get segment info fail", zap.Int64("segID", segmentID),
+			zap.String("fail reason", resp.Status.GetReason()))
+		if resp.Status.GetReason() == msgSegmentNotFound(segmentID) {
+			return nil, errSegmentNotFound(segmentID)
+		}
+		return nil, errors.New(resp.Status.GetReason())
+	}
+	for _, info := range resp.Infos {
+		if info.ID == segmentID {
+			return info, nil
+		}
+	}
+	errMsg := msgSegmentNotFound(segmentID)
+	log.Error(errMsg)
+	return nil, errSegmentNotFound(segmentID)
 }

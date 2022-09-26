@@ -962,7 +962,7 @@ func (node *QueryNode) queryWithDmlChannel(ctx context.Context, req *querypb.Que
 		msgID, req.GetFromShardLeader(), dmlChannel, req.GetSegmentIDs()))
 
 	results = append(results, streamingResult)
-	ret, err2 := mergeInternalRetrieveResults(ctx, results)
+	ret, err2 := mergeInternalRetrieveResult(ctx, results, req.Req.GetLimit())
 	if err2 != nil {
 		failRet.Status.Reason = err2.Error()
 		return failRet, nil
@@ -1026,7 +1026,7 @@ func (node *QueryNode) Query(ctx context.Context, req *querypb.QueryRequest) (*i
 	if err := runningGp.Wait(); err != nil {
 		return failRet, nil
 	}
-	ret, err := mergeInternalRetrieveResults(ctx, toMergeResults)
+	ret, err := mergeInternalRetrieveResult(ctx, toMergeResults, req.GetReq().GetLimit())
 	if err != nil {
 		failRet.Status.ErrorCode = commonpb.ErrorCode_UnexpectedError
 		failRet.Status.Reason = err.Error()
@@ -1233,12 +1233,10 @@ func (node *QueryNode) SyncDistribution(ctx context.Context, req *querypb.SyncDi
 		case querypb.SyncType_Remove:
 			shardCluster.forceRemoveSegment(action.GetSegmentID())
 		case querypb.SyncType_Set:
-			shardCluster.updateSegment(shardSegmentInfo{
-				segmentID:   action.GetSegmentID(),
-				partitionID: action.GetPartitionID(),
-				nodeID:      action.GetNodeID(),
-				state:       segmentStateLoaded,
-			})
+			shardCluster.SyncSegments([]*querypb.ReplicaSegmentsInfo{
+				{NodeId: action.GetNodeID(), PartitionId: action.GetPartitionID(), SegmentIds: []int64{action.GetSegmentID()}},
+			}, segmentStateLoaded)
+
 		default:
 			return &commonpb.Status{
 				ErrorCode: commonpb.ErrorCode_UnexpectedError,

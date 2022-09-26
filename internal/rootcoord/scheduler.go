@@ -12,7 +12,7 @@ import (
 type IScheduler interface {
 	Start()
 	Stop()
-	AddTask(t taskV2) error
+	AddTask(t task) error
 }
 
 type scheduler struct {
@@ -23,7 +23,9 @@ type scheduler struct {
 	idAllocator  allocator.GIDAllocator
 	tsoAllocator tso.Allocator
 
-	taskChan chan taskV2
+	taskChan chan task
+
+	lock sync.Mutex
 }
 
 func newScheduler(ctx context.Context, idAllocator allocator.GIDAllocator, tsoAllocator tso.Allocator) *scheduler {
@@ -35,7 +37,7 @@ func newScheduler(ctx context.Context, idAllocator allocator.GIDAllocator, tsoAl
 		cancel:       cancel,
 		idAllocator:  idAllocator,
 		tsoAllocator: tsoAllocator,
-		taskChan:     make(chan taskV2, n),
+		taskChan:     make(chan task, n),
 	}
 }
 
@@ -49,6 +51,15 @@ func (s *scheduler) Stop() {
 	s.wg.Wait()
 }
 
+func (s *scheduler) execute(task task) {
+	if err := task.Prepare(task.GetCtx()); err != nil {
+		task.NotifyDone(err)
+		return
+	}
+	err := task.Execute(task.GetCtx())
+	task.NotifyDone(err)
+}
+
 func (s *scheduler) taskLoop() {
 	defer s.wg.Done()
 	for {
@@ -56,17 +67,12 @@ func (s *scheduler) taskLoop() {
 		case <-s.ctx.Done():
 			return
 		case task := <-s.taskChan:
-			if err := task.Prepare(task.GetCtx()); err != nil {
-				task.NotifyDone(err)
-				continue
-			}
-			err := task.Execute(task.GetCtx())
-			task.NotifyDone(err)
+			s.execute(task)
 		}
 	}
 }
 
-func (s *scheduler) setID(task taskV2) error {
+func (s *scheduler) setID(task task) error {
 	id, err := s.idAllocator.AllocOne()
 	if err != nil {
 		return err
@@ -75,7 +81,7 @@ func (s *scheduler) setID(task taskV2) error {
 	return nil
 }
 
-func (s *scheduler) setTs(task taskV2) error {
+func (s *scheduler) setTs(task task) error {
 	ts, err := s.tsoAllocator.GenerateTSO(1)
 	if err != nil {
 		return err
@@ -84,11 +90,15 @@ func (s *scheduler) setTs(task taskV2) error {
 	return nil
 }
 
-func (s *scheduler) enqueue(task taskV2) {
+func (s *scheduler) enqueue(task task) {
 	s.taskChan <- task
 }
 
-func (s *scheduler) AddTask(task taskV2) error {
+func (s *scheduler) AddTask(task task) error {
+	// make sure that setting ts and enqueue is atomic.
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
 	if err := s.setID(task); err != nil {
 		return err
 	}

@@ -34,6 +34,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/util/metautil"
+
 	"github.com/golang/protobuf/proto"
 	v3rpc "go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -494,7 +496,7 @@ func (node *DataNode) Start() error {
 		return errors.New("DataNode fail to connect etcd")
 	}
 
-	chunkManager, err := node.factory.NewVectorStorageChunkManager(node.ctx)
+	chunkManager, err := node.factory.NewPersistentStorageChunkManager(node.ctx)
 
 	if err != nil {
 		return err
@@ -877,6 +879,65 @@ func (node *DataNode) GetCompactionState(ctx context.Context, req *datapb.Compac
 	}, nil
 }
 
+// SyncSegments called by DataCoord, sync the compacted segments' meta between DC and DN
+func (node *DataNode) SyncSegments(ctx context.Context, req *datapb.SyncSegmentsRequest) (*commonpb.Status, error) {
+	log.Ctx(ctx).Info("DataNode receives SyncSegments",
+		zap.Int64("planID", req.GetPlanID()),
+		zap.Int64("target segmentID", req.GetCompactedTo()),
+		zap.Int64s("compacted from", req.GetCompactedFrom()),
+		zap.Int64("numOfRows", req.GetNumOfRows()),
+	)
+	status := &commonpb.Status{ErrorCode: commonpb.ErrorCode_UnexpectedError}
+
+	if !node.isHealthy() {
+		status.Reason = "DataNode is unhealthy"
+		return status, nil
+	}
+
+	if len(req.GetCompactedFrom()) <= 0 {
+		status.Reason = "invalid request, compacted from segments shouldn't be empty"
+		return status, nil
+	}
+
+	oneSegment := req.GetCompactedFrom()[0]
+	replica, err := node.flowgraphManager.getReplica(oneSegment)
+	if err != nil {
+		status.Reason = fmt.Sprintf("invalid request, err=%s", err.Error())
+		return status, nil
+	}
+
+	// check if all compactedFrom segments are valid
+	var invalidSegIDs []UniqueID
+	for _, segID := range req.GetCompactedFrom() {
+		if !replica.hasSegment(segID, true) {
+			invalidSegIDs = append(invalidSegIDs, segID)
+		}
+	}
+	if len(invalidSegIDs) > 0 {
+		status.Reason = fmt.Sprintf("invalid request, some segments are not in the same replica: %v", invalidSegIDs)
+		return status, nil
+	}
+
+	// oneSegment is definitely in the replica, guaranteed by the check before.
+	collID, partID, _ := replica.getCollectionAndPartitionID(oneSegment)
+	chanName, _ := replica.getChannelName(oneSegment)
+	targetSeg := &Segment{
+		collectionID: collID,
+		partitionID:  partID,
+		channelName:  chanName,
+		segmentID:    req.GetCompactedTo(),
+		numRows:      req.GetNumOfRows(),
+	}
+
+	if err := replica.mergeFlushedSegments(targetSeg, req.GetPlanID(), req.GetCompactedFrom()); err != nil {
+		status.Reason = err.Error()
+		return status, nil
+	}
+
+	status.ErrorCode = commonpb.ErrorCode_Success
+	return status, nil
+}
+
 // Import data files(json, numpy, etc.) on MinIO/S3 storage, read and parse them into sealed segments
 func (node *DataNode) Import(ctx context.Context, req *datapb.ImportTaskRequest) (*commonpb.Status, error) {
 	log.Info("DataNode receive import request",
@@ -1134,7 +1195,7 @@ func importFlushReqFunc(node *DataNode, req *datapb.ImportTaskRequest, res *root
 			logidx := start + int64(idx)
 
 			// no error raise if alloc=false
-			k := JoinIDPath(req.GetImportTask().GetCollectionId(), req.GetImportTask().GetPartitionId(), segmentID, fieldID, logidx)
+			k := metautil.JoinIDPath(req.GetImportTask().GetCollectionId(), req.GetImportTask().GetPartitionId(), segmentID, fieldID, logidx)
 
 			key := path.Join(node.chunkManager.RootPath(), common.SegmentInsertLogPath, k)
 			kvs[key] = blob.Value[:]
@@ -1160,7 +1221,7 @@ func importFlushReqFunc(node *DataNode, req *datapb.ImportTaskRequest, res *root
 			logidx := field2Logidx[fieldID]
 
 			// no error raise if alloc=false
-			k := JoinIDPath(req.GetImportTask().GetCollectionId(), req.GetImportTask().GetPartitionId(), segmentID, fieldID, logidx)
+			k := metautil.JoinIDPath(req.GetImportTask().GetCollectionId(), req.GetImportTask().GetPartitionId(), segmentID, fieldID, logidx)
 
 			key := path.Join(node.chunkManager.RootPath(), common.SegmentStatslogPath, k)
 			kvs[key] = blob.Value
