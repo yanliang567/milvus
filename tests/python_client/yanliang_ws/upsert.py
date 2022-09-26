@@ -11,128 +11,133 @@ LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 DATE_FORMAT = "%m/%d/%Y %H:%M:%S %p"
 
 
-def search(collection, field_name, search_params, nq, topk, threads_num, timeout):
-    threads_num = int(threads_num)
-    interval_count = 1000
+def get_dim(collection):
+    fields = collection.schema.fields
+    for field in fields:
+        if field.dtype == DataType.FLOAT_VECTOR:
+            dim = field.params.get("dim")
+    return dim
 
-    def search_th(col, thread_no):
-        search_latency = []
-        count = 0
-        start_time = time.time()
-        while time.time() < start_time + timeout:
-            count += 1
-            search_vectors = [[random.random() for _ in range(dim)] for _ in range(nq)]
-            t1 = time.time()
-            try:
-                col.search(data=search_vectors, anns_field=field_name,
-                           param=search_params, limit=topk)
-            except Exception as e:
-                logging.error(e)
-            t2 = round(time.time() - t1, 4)
-            search_latency.append(t2)
-            if count == interval_count:
-                total = round(np.sum(search_latency), 4)
-                p99 = round(np.percentile(search_latency, 99), 4)
-                avg = round(np.mean(search_latency), 4)
-                qps = round(interval_count / total, 4)
-                logging.info(f"search {interval_count} times in thread{thread_no}: cost {total}, qps {qps}, avg {avg}, p99 {p99} ")
-                count = 0
-                search_latency = []
 
-    threads = []
-    if threads_num > 1:
-        for i in range(threads_num):
-            t = threading.Thread(target=search_th, args=(collection, i))
-            threads.append(t)
-            t.start()
-        for t in threads:
-            t.join()
+def delete_entities(collection, nb, search_params, upsert_rounds):
+    dim = get_dim(collection=collection)
+    auto_id = collection.schema.auto_id
+    primary_field_name = collection.primary_field.name
+    vector_field_name = collection._get_vector_field()
+    if auto_id:
+        for r in range(upsert_rounds):
+            search_vector = [[random.random() for _ in range(dim)] for _ in range(1)]
+            results = c.search(data=search_vector, anns_field=vector_field_name,
+                               param=search_params, limit=nb)
+            for hits in results:
+                ids = hits.ids
+                c.delete(expr=f"{primary_field_name} in {ids}")
+                logging.info(f"deleted {len(ids)} entities")
     else:
-        search_latency = []
-        count = 0
-        start_time = time.time()
-        while time.time() < start_time + timeout:
-            count += 1
-            search_vectors = [[random.random() for _ in range(dim)] for _ in range(nq)]
-            t1 = time.time()
-            try:
-                collection.search(data=search_vectors, anns_field=field_name,
-                                  param=search_params, limit=topk)
-            except Exception as e:
-                logging.error(e)
-            t2 = round(time.time() - t1, 4)
-            search_latency.append(t2)
-            if count == interval_count:
-                total = round(np.sum(search_latency), 4)
-                p99 = round(np.percentile(search_latency, 99), 4)
-                avg = round(np.mean(search_latency), 4)
-                qps = round(interval_count / total, 4)
-                logging.info(f"search {interval_count} times single thread: cost {total}, qps {qps}, avg {avg}, p99 {p99} ")
-                count = 0
-                search_latency = []
+        for r in range(upsert_rounds):
+            start_uid = r * nb
+            end_uid = start_uid + nb
+            c.delete(expr=f"{primary_field_name} in [{start_uid}, {end_uid}]")
+            logging.info(f"deleted entities {start_uid}-{end_uid}")
+
+
+def gen_data_by_collection(collection, nb, r):
+    data = []
+    start_uid = r * nb
+    fields = collection.schema.fields
+    auto_id = collection.schema.auto_id
+    for field in fields:
+        field_values = []
+        if field.dtype == DataType.FLOAT_VECTOR:
+            dim = field.params.get("dim")
+            field_values = [[random.random() for _ in range(dim)] for _ in range(nb)]
+        if field.dtype == DataType.INT64:
+            if field.is_primary:
+                if not auto_id:
+                    field_values = [_ for _ in range(start_uid, start_uid + nb)]
+                else:
+                    continue
+            else:
+                field_values = [_ for _ in range(nb)]
+        if field.dtype == DataType.VARCHAR:
+            field_values = [str(random.random()) for _ in range(nb)]
+        if field.dtype == DataType.FLOAT:
+            field_values = [random.random() for _ in range(nb)]
+        data.append(field_values)
+    return data
+
+
+def insert_entities(collection, nb, upsert_rounds):
+    for r in range(upsert_rounds):
+        data = gen_data_by_collection(collection=collection, nb=nb, r=r)
+        t1 = time.time()
+        collection.insert(data)
+        t2 = round(time.time() - t1, 3)
+        logging.info(f"{collection.name} {r} upsert in {t2}")
 
 
 if __name__ == '__main__':
-    host = sys.argv[1]
-    collection_name = sys.argv[2]       # collection mame
-    th = int(sys.argv[3])               # search thread num
-    timeout = int(sys.argv[4])          # search timeout, permanently if 0
+    # host = sys.argv[1]
+    # collection_name = sys.argv[2]              # collection mame
+    # upsert_percent = float(sys.argv[3])          # percent of entities to be upsert
+    host = "10.100.31.105"
+    collection_name = "hnsw_ip_m8_ef96"            # collection mame
+    upsert_percent = 1          # percent of entities to be upsert
     port = 19530
     conn = connections.connect('default', host=host, port=port)
 
-    logging.basicConfig(filename=f"/tmp/{collection_name}.log",
+    logging.basicConfig(filename=f"/tmp/{collection_name}_upsert.log",
                         level=logging.INFO, format=LOG_FORMAT, datefmt=DATE_FORMAT)
-
-    nq = 1
-    topk = 1
-    ef = 32
-    nprobe = 16
+    if upsert_percent < 1 or upsert_percent > 100:
+        logging.error(f"upsert percent shall be 1-100")
+        exit(0)
 
     # check and get the collection info
     if not utility.has_collection(collection_name=collection_name):
         logging.error(f"collection: {collection_name} does not exit")
         exit(0)
 
-    collection = Collection(name=collection_name)
-    fields = collection.schema.fields
-    for field in fields:
-        if field.dtype == 101:
-            vector_field_name = field.name
-            dim = field.params.get("dim")
-            break
+    c = Collection(name=collection_name)
+    nb = 10000
+    num_entities = c.num_entities
+    if num_entities <= 0:
+        logging.error(f"collection: {collection_name} num_entities is empty")
+        exit(0)
+    logging.info(f"{collection_name} num_entities {num_entities}")
 
-    if not collection.has_index():
+    if not c.has_index():
         logging.error(f"collection: {collection_name} has no index")
         exit(0)
-    idx = collection.index()
+    idx = c.index()
     metric_type = idx.params.get("metric_type")
     index_type = idx.params.get("index_type")
     if index_type == "HNSW":
-        search_params = {"metric_type": metric_type, "params": {"ef": ef}}
+        search_params = {"metric_type": metric_type, "params": {"ef": nb}}
     elif index_type in ["IVF_SQ8", "IVF_FLAT"]:
-        search_params = {"metric_type": metric_type, "params": {"nprobe": nprobe}}
+        search_params = {"metric_type": metric_type, "params": {"nprobe": 32}}
     else:
         logging.error(f"index: {index_type} does not support yet")
         exit(0)
 
-    logging.info(f"index param: {idx.params}")
-    logging.info(f"search_param: {search_params}")
-
-    # flush before indexing
-    t1 = time.time()
-    num = collection.num_entities
-    t2 = round(time.time() - t1, 3)
-    logging.info(f"assert {collection_name} flushed num_entities {num}: {t2}")
-
-    logging.info(utility.index_building_progress(collection_name))
-
     # load collection
     t1 = time.time()
-    collection.load()
+    c.load()
     t2 = round(time.time() - t1, 3)
-    logging.info(f"assert load {collection_name}: {t2}")
+    logging.info(f"load {collection_name}: {t2}")
 
-    logging.info(f"search start: nq{nq}_top{topk}_threads{th}")
-    search(collection, vector_field_name, search_params, nq, topk, th, timeout)
-    logging.info(f"search completed ")
+    upsert_num = num_entities * upsert_percent // 100
+    # insert nb if less than nb
+    upsert_rounds = int(upsert_num // nb + 1)
+    logging.info(f"{upsert_rounds * nb} entities to be upsert in {upsert_rounds} rounds")
+
+    # delete xx% entities
+    delete_entities(collection=c, nb=nb,
+                    search_params=search_params,
+                    upsert_rounds=upsert_rounds)
+
+    # insert xx% entities
+    insert_entities(collection=c, nb=nb, upsert_rounds=upsert_rounds)
+
+    logging.info(f"{collection_name} upsert completed")
+
 

@@ -1,7 +1,7 @@
 import time
 import sys
 import random
-
+import numpy as np
 import threading
 import logging
 from pymilvus import utility, connections, DataType, \
@@ -13,16 +13,31 @@ DATE_FORMAT = "%m/%d/%Y %H:%M:%S %p"
 
 def search(collection, field_name, search_params, nq, topk, threads_num, timeout):
     threads_num = int(threads_num)
+    interval_count = 1000
 
     def search_th(col, thread_no):
+        search_latency = []
+        count = 0
         start_time = time.time()
         while time.time() < start_time + timeout:
+            count += 1
             search_vectors = [[random.random() for _ in range(dim)] for _ in range(nq)]
             t1 = time.time()
-            col.search(data=search_vectors, anns_field=field_name,
-                       param=search_params, limit=topk)
-            t2 = round(time.time() - t1, 3)
-            logging.info(f"assert search thread{thread_no}: {t2}")
+            try:
+                col.search(data=search_vectors, anns_field=field_name,
+                           param=search_params, limit=topk)
+            except Exception as e:
+                logging.error(e)
+            t2 = round(time.time() - t1, 4)
+            search_latency.append(t2)
+            if count == interval_count:
+                total = round(np.sum(search_latency), 4)
+                p99 = round(np.percentile(search_latency, 99), 4)
+                avg = round(np.mean(search_latency), 4)
+                qps = round(interval_count / total, 4)
+                logging.info(f"search {interval_count} times in thread{thread_no}: cost {total}, qps {qps}, avg {avg}, p99 {p99} ")
+                count = 0
+                search_latency = []
 
     threads = []
     if threads_num > 1:
@@ -33,14 +48,28 @@ def search(collection, field_name, search_params, nq, topk, threads_num, timeout
         for t in threads:
             t.join()
     else:
+        search_latency = []
+        count = 0
         start_time = time.time()
         while time.time() < start_time + timeout:
+            count += 1
             search_vectors = [[random.random() for _ in range(dim)] for _ in range(nq)]
             t1 = time.time()
-            collection.search(data=search_vectors, anns_field=field_name,
-                              param=search_params, limit=topk)
-            t2 = round(time.time() - t1, 3)
-            logging.info(f"assert single thread search: {t2}")
+            try:
+                collection.search(data=search_vectors, anns_field=field_name,
+                                  param=search_params, limit=topk)
+            except Exception as e:
+                logging.error(e)
+            t2 = round(time.time() - t1, 4)
+            search_latency.append(t2)
+            if count == interval_count:
+                total = round(np.sum(search_latency), 4)
+                p99 = round(np.percentile(search_latency, 99), 4)
+                avg = round(np.mean(search_latency), 4)
+                qps = round(interval_count / total, 4)
+                logging.info(f"search {interval_count} times single thread: cost {total}, qps {qps}, avg {avg}, p99 {p99} ")
+                count = 0
+                search_latency = []
 
 
 if __name__ == '__main__':
