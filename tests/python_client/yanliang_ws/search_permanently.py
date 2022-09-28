@@ -96,7 +96,7 @@ if __name__ == '__main__':
     collection = Collection(name=collection_name)
     fields = collection.schema.fields
     for field in fields:
-        if field.dtype == 101:
+        if field.dtype == DataType.FLOAT_VECTOR:
             vector_field_name = field.name
             dim = field.params.get("dim")
             break
