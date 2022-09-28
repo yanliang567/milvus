@@ -96,8 +96,8 @@ type DataNode interface {
 	// It returns a list of segments to be sent.
 	ResendSegmentStats(ctx context.Context, req *datapb.ResendSegmentStatsRequest) (*datapb.ResendSegmentStatsResponse, error)
 
-	// AddSegment puts the given segment to current DataNode's flow graph.
-	AddSegment(ctx context.Context, req *datapb.AddSegmentRequest) (*commonpb.Status, error)
+	// AddImportSegment puts the given import segment to current DataNode's flow graph.
+	AddImportSegment(ctx context.Context, req *datapb.AddImportSegmentRequest) (*datapb.AddImportSegmentResponse, error)
 }
 
 // DataNodeComponent is used by grpc server of DataNode
@@ -306,9 +306,15 @@ type DataCoord interface {
 	AcquireSegmentLock(ctx context.Context, req *datapb.AcquireSegmentLockRequest) (*commonpb.Status, error)
 	ReleaseSegmentLock(ctx context.Context, req *datapb.ReleaseSegmentLockRequest) (*commonpb.Status, error)
 
-	// AddSegment looks for the right DataNode given channel name, and triggers AddSegment call on that DataNode to
-	// add the segment into this DataNode.
-	AddSegment(ctx context.Context, req *datapb.AddSegmentRequest) (*commonpb.Status, error)
+	// SaveImportSegment saves the import segment binlog paths data and then looks for the right DataNode to add the
+	// segment to that DataNode.
+	SaveImportSegment(ctx context.Context, req *datapb.SaveImportSegmentRequest) (*commonpb.Status, error)
+
+	// UnsetIsImportingState unsets the `isImport` state of the given segments so that they can get compacted normally.
+	UnsetIsImportingState(ctx context.Context, req *datapb.UnsetIsImportingStateRequest) (*commonpb.Status, error)
+
+	// MarkSegmentsDropped marks the given segments as `dropped` state.
+	MarkSegmentsDropped(ctx context.Context, req *datapb.MarkSegmentsDroppedRequest) (*commonpb.Status, error)
 }
 
 // DataCoordComponent defines the interface of DataCoord component.
@@ -375,6 +381,7 @@ type IndexCoord interface {
 	CreateIndex(ctx context.Context, req *indexpb.CreateIndexRequest) (*commonpb.Status, error)
 
 	// GetIndexState gets the index state of the index name in the request from Proxy.
+	// Deprecated: use DescribeIndex instead
 	GetIndexState(ctx context.Context, req *indexpb.GetIndexStateRequest) (*indexpb.GetIndexStateResponse, error)
 
 	// GetSegmentIndexState gets the index state of the segments in the request from RootCoord.
@@ -387,6 +394,7 @@ type IndexCoord interface {
 	DescribeIndex(ctx context.Context, req *indexpb.DescribeIndexRequest) (*indexpb.DescribeIndexResponse, error)
 
 	// GetIndexBuildProgress get the index building progress by num rows.
+	// Deprecated: use DescribeIndex instead
 	GetIndexBuildProgress(ctx context.Context, req *indexpb.GetIndexBuildProgressRequest) (*indexpb.GetIndexBuildProgressResponse, error)
 
 	// DropIndex deletes indexes based on IndexID. One IndexID corresponds to the index of an entire column. A column is
@@ -1042,6 +1050,7 @@ type ProxyComponent interface {
 	// the `IndexdRows` in `GetIndexBuildProgressResponse` return the num of indexed rows.
 	// the `TotalRows` in `GetIndexBuildProgressResponse` return the total number of segment rows.
 	// error is always nil
+	// Deprecated: use DescribeIndex instead
 	GetIndexBuildProgress(ctx context.Context, request *milvuspb.GetIndexBuildProgressRequest) (*milvuspb.GetIndexBuildProgressResponse, error)
 
 	// GetIndexState notifies Proxy to return index state
@@ -1052,6 +1061,7 @@ type ProxyComponent interface {
 	// The `Status` in response struct `GetIndexStateResponse` indicates if this operation is processed successfully or fail cause;
 	// the `State` in `GetIndexStateResponse` return the state of index: Unissued/InProgress/Finished/Failed.
 	// error is always nil
+	// Deprecated: use DescribeIndex instead
 	GetIndexState(ctx context.Context, request *milvuspb.GetIndexStateRequest) (*milvuspb.GetIndexStateResponse, error)
 
 	// Insert notifies Proxy to insert rows

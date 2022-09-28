@@ -23,31 +23,27 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/milvus-io/milvus/internal/util/errorutil"
-
-	"github.com/milvus-io/milvus/internal/util"
-
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
-
+	"github.com/golang/protobuf/proto"
+	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus/api/milvuspb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
-
-	"github.com/golang/protobuf/proto"
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/proxypb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
+	"github.com/milvus-io/milvus/internal/util"
 	"github.com/milvus-io/milvus/internal/util/crypto"
+	"github.com/milvus-io/milvus/internal/util/errorutil"
 	"github.com/milvus-io/milvus/internal/util/logutil"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
 	"github.com/milvus-io/milvus/internal/util/trace"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 const moduleName = "Proxy"
@@ -116,6 +112,10 @@ func (node *Proxy) InvalidateCollectionMetaCache(ctx context.Context, request *p
 		if request.CollectionID != UniqueID(0) {
 			globalMetaCache.RemoveCollectionsByID(ctx, collectionID)
 		}
+	}
+	if request.GetBase().GetMsgType() == commonpb.MsgType_DropCollection {
+		// no need to handle error, since this Proxy may not create dml stream for the collection.
+		_ = node.chMgr.removeDMLStream(request.GetCollectionID())
 	}
 	logutil.Logger(ctx).Info("complete to invalidate collection meta cache",
 		zap.String("role", typeutil.ProxyRole),
@@ -2033,6 +2033,7 @@ func (node *Proxy) DropIndex(ctx context.Context, request *milvuspb.DropIndexReq
 
 // GetIndexBuildProgress gets index build progress with filed_name and index_name.
 // IndexRows is the num of indexed rows. And TotalRows is the total number of segment rows.
+// Deprecated: use DescribeIndex instead
 func (node *Proxy) GetIndexBuildProgress(ctx context.Context, request *milvuspb.GetIndexBuildProgressRequest) (*milvuspb.GetIndexBuildProgressResponse, error) {
 	if !node.checkHealthy() {
 		return &milvuspb.GetIndexBuildProgressResponse{
@@ -2146,6 +2147,7 @@ func (node *Proxy) GetIndexBuildProgress(ctx context.Context, request *milvuspb.
 }
 
 // GetIndexState get the build-state of index.
+// Deprecated: use DescribeIndex instead
 func (node *Proxy) GetIndexState(ctx context.Context, request *milvuspb.GetIndexStateRequest) (*milvuspb.GetIndexStateResponse, error) {
 	if !node.checkHealthy() {
 		return &milvuspb.GetIndexStateResponse{
@@ -3802,30 +3804,6 @@ func (node *Proxy) Import(ctx context.Context, req *milvuspb.ImportRequest) (*mi
 		resp.Status = unhealthyStatus()
 		return resp, nil
 	}
-	// Get collection ID and then channel names.
-	collID, err := globalMetaCache.GetCollectionID(ctx, req.GetCollectionName())
-	if err != nil {
-		log.Error("collection ID not found",
-			zap.String("collection name", req.GetCollectionName()),
-			zap.Error(err))
-		resp.Status.ErrorCode = commonpb.ErrorCode_UnexpectedError
-		resp.Status.Reason = err.Error()
-		return resp, nil
-	}
-	chNames, err := node.chMgr.getVChannels(collID)
-	if err != nil {
-		log.Error("failed to get virtual channels",
-			zap.Error(err),
-			zap.String("collection", req.GetCollectionName()),
-			zap.Int64("collection_id", collID))
-		resp.Status.ErrorCode = commonpb.ErrorCode_UnexpectedError
-		resp.Status.Reason = err.Error()
-		return resp, nil
-	}
-	req.ChannelNames = chNames
-	if req.GetPartitionName() == "" {
-		req.PartitionName = Params.CommonCfg.DefaultPartitionName
-	}
 	// Call rootCoord to finish import.
 	respFromRC, err := node.rootCoord.Import(ctx, req)
 	if err != nil {
@@ -3837,7 +3815,7 @@ func (node *Proxy) Import(ctx context.Context, req *milvuspb.ImportRequest) (*mi
 	return respFromRC, nil
 }
 
-// GetImportState checks import task state from datanode
+// GetImportState checks import task state from RootCoord.
 func (node *Proxy) GetImportState(ctx context.Context, req *milvuspb.GetImportStateRequest) (*milvuspb.GetImportStateResponse, error) {
 	log.Info("received get import state request", zap.Int64("taskID", req.GetTask()))
 	resp := &milvuspb.GetImportStateResponse{}

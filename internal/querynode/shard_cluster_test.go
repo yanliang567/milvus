@@ -113,6 +113,7 @@ func segmentEventsToSyncInfo(events []segmentEvent) []*querypb.ReplicaSegmentsIn
 				NodeId:      nodeID,
 				SegmentIds:  []int64{event.segmentID},
 				PartitionId: event.partitionID,
+				Versions:    []int64{0},
 			})
 		}
 	}
@@ -895,14 +896,17 @@ func TestShardCluster_SyncSegments(t *testing.T) {
 			{
 				NodeId:     1,
 				SegmentIds: []int64{1},
+				Versions:   []int64{1},
 			},
 			{
 				NodeId:     2,
 				SegmentIds: []int64{2},
+				Versions:   []int64{1},
 			},
 			{
 				NodeId:     3,
 				SegmentIds: []int64{3},
+				Versions:   []int64{1},
 			},
 		}, segmentStateLoaded)
 		assert.Eventually(t, func() bool {
@@ -966,14 +970,17 @@ func TestShardCluster_SyncSegments(t *testing.T) {
 			{
 				NodeId:     1,
 				SegmentIds: []int64{1},
+				Versions:   []int64{1},
 			},
 			{
 				NodeId:     2,
 				SegmentIds: []int64{2},
+				Versions:   []int64{1},
 			},
 			{
 				NodeId:     3,
 				SegmentIds: []int64{3},
+				Versions:   []int64{1},
 			},
 		}, segmentStateLoaded)
 		assert.Eventually(t, func() bool {
@@ -1007,14 +1014,17 @@ func TestShardCluster_SyncSegments(t *testing.T) {
 			{
 				NodeId:     1,
 				SegmentIds: []int64{1},
+				Versions:   []int64{1},
 			},
 			{
 				NodeId:     2,
 				SegmentIds: []int64{2},
+				Versions:   []int64{1},
 			},
 			{
 				NodeId:     3,
 				SegmentIds: []int64{3},
+				Versions:   []int64{1},
 			},
 		}, segmentStateLoaded)
 		assert.Eventually(t, func() bool {
@@ -2462,6 +2472,7 @@ func (suite *ShardClusterSuite) TestReleaseSegments() {
 		scope      querypb.DataScope
 
 		expectError bool
+		force       bool
 	}
 
 	cases := []TestCase{
@@ -2471,6 +2482,7 @@ func (suite *ShardClusterSuite) TestReleaseSegments() {
 			nodeID:      2,
 			scope:       querypb.DataScope_All,
 			expectError: false,
+			force:       false,
 		},
 	}
 
@@ -2479,11 +2491,11 @@ func (suite *ShardClusterSuite) TestReleaseSegments() {
 			suite.TearDownTest()
 			suite.SetupTest()
 
-			err := suite.sc.releaseSegments(context.Background(), &querypb.ReleaseSegmentsRequest{
+			err := suite.sc.ReleaseSegments(context.Background(), &querypb.ReleaseSegmentsRequest{
 				NodeID:     test.nodeID,
 				SegmentIDs: test.segmentIDs,
 				Scope:      test.scope,
-			})
+			}, test.force)
 			if test.expectError {
 				suite.Error(err)
 			} else {

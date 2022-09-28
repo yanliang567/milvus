@@ -465,7 +465,7 @@ func (s *Server) LoadBalance(ctx context.Context, req *querypb.LoadBalanceReques
 	srcNode := req.GetSourceNodeIDs()[0]
 	replica := s.meta.ReplicaManager.GetByCollectionAndNode(req.GetCollectionID(), srcNode)
 	if replica == nil {
-		msg := "source node not in any replica"
+		msg := "source node not found in any replica"
 		log.Warn(msg)
 		return utils.WrapStatus(commonpb.ErrorCode_UnexpectedError, msg), nil
 	}
@@ -663,8 +663,8 @@ func (s *Server) GetShardLeaders(ctx context.Context, req *querypb.GetShardLeade
 				continue
 			}
 			isAllNodeAvailable := true
-			for _, node := range leader.Segments {
-				if s.nodeMgr.Get(node) == nil {
+			for _, version := range leader.Segments {
+				if s.nodeMgr.Get(version.NodeID) == nil {
 					isAllNodeAvailable = false
 					break
 				}

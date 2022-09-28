@@ -193,15 +193,27 @@ func (i *IndexCoord) Init() error {
 			return
 		}
 		aliveNodeID := make([]UniqueID, 0)
-		for _, session := range sessions {
-			session := session
-			aliveNodeID = append(aliveNodeID, session.ServerID)
-			//go func() {
-			if err := i.nodeManager.AddNode(session.ServerID, session.Address); err != nil {
-				log.Error("IndexCoord", zap.Int64("ServerID", session.ServerID),
-					zap.Error(err))
+		if Params.IndexCoordCfg.BindIndexNodeMode {
+			if err = i.nodeManager.AddNode(Params.IndexCoordCfg.IndexNodeID, Params.IndexCoordCfg.IndexNodeAddress); err != nil {
+				log.Error("IndexCoord add node fail", zap.Int64("ServerID", Params.IndexCoordCfg.IndexNodeID),
+					zap.String("address", Params.IndexCoordCfg.IndexNodeAddress), zap.Error(err))
+				initErr = err
+				return
 			}
-			//}()
+			log.Debug("IndexCoord add node success", zap.String("IndexNode address", Params.IndexCoordCfg.IndexNodeAddress),
+				zap.Int64("nodeID", Params.IndexCoordCfg.IndexNodeID))
+			aliveNodeID = append(aliveNodeID, Params.IndexCoordCfg.IndexNodeID)
+			metrics.IndexCoordIndexNodeNum.WithLabelValues().Inc()
+		} else {
+			for _, session := range sessions {
+				session := session
+				if err := i.nodeManager.AddNode(session.ServerID, session.Address); err != nil {
+					log.Error("IndexCoord", zap.Int64("ServerID", session.ServerID),
+						zap.Error(err))
+					continue
+				}
+				aliveNodeID = append(aliveNodeID, session.ServerID)
+			}
 		}
 		log.Debug("IndexCoord", zap.Int("IndexNode number", len(i.nodeManager.GetAllClients())))
 		i.indexBuilder = newIndexBuilder(i.loopCtx, i, i.metaTable, aliveNodeID)
@@ -538,6 +550,66 @@ func (i *IndexCoord) GetSegmentIndexState(ctx context.Context, req *indexpb.GetS
 	return ret, nil
 }
 
+// CompleteIndexInfo get the building index progress and index state
+func (i *IndexCoord) completeIndexInfo(ctx context.Context, indexInfo *indexpb.IndexInfo) error {
+	collectionID := indexInfo.CollectionID
+	indexName := indexInfo.IndexName
+	log.Info("IndexCoord completeIndexInfo", zap.Int64("collID", collectionID),
+		zap.String("indexName", indexName))
+	flushSegments, err := i.dataCoordClient.GetFlushedSegments(ctx, &datapb.GetFlushedSegmentsRequest{
+		CollectionID: collectionID,
+		PartitionID:  -1,
+	})
+	if err != nil {
+		return err
+	}
+
+	resp, err := i.dataCoordClient.GetSegmentInfo(ctx, &datapb.GetSegmentInfoRequest{
+		SegmentIDs: flushSegments.Segments,
+	})
+	if err != nil {
+		return err
+	}
+	totalRows, indexRows := int64(0), int64(0)
+
+	for _, seg := range resp.Infos {
+		totalRows += seg.NumOfRows
+	}
+
+	indexID2CreateTs := i.metaTable.GetIndexIDByName(collectionID, indexName)
+	if len(indexID2CreateTs) < 1 {
+		log.Error("there is no index on collection", zap.Int64("collectionID", collectionID), zap.String("indexName", indexName))
+		return nil
+	}
+
+	for indexID, createTs := range indexID2CreateTs {
+		indexRows = i.metaTable.GetIndexBuildProgress(indexID, createTs)
+		break
+	}
+	indexInfo.IndexedRows = indexRows
+	indexInfo.TotalRows = totalRows
+
+	stateRes := commonpb.IndexState_Finished
+	failReasonRes := ""
+	for indexID, createTs := range indexID2CreateTs {
+		indexStates := i.metaTable.GetIndexStates(indexID, createTs)
+		for _, state := range indexStates {
+			if state.state != commonpb.IndexState_Finished {
+				stateRes = state.state
+				failReasonRes = state.failReason
+				break
+			}
+		}
+	}
+	indexInfo.State = stateRes
+	indexInfo.IndexStateFailReason = failReasonRes
+
+	log.Debug("IndexCoord completeIndexInfo success", zap.Int64("collID", collectionID),
+		zap.Int64("totalRows", totalRows), zap.Int64("indexRows", indexRows), zap.Int("seg num", len(resp.Infos)),
+		zap.Any("state", stateRes), zap.String("failReason", failReasonRes))
+	return nil
+}
+
 // GetIndexBuildProgress get the index building progress by num rows.
 func (i *IndexCoord) GetIndexBuildProgress(ctx context.Context, req *indexpb.GetIndexBuildProgressRequest) (*indexpb.GetIndexBuildProgressResponse, error) {
 	log.Info("IndexCoord receive GetIndexBuildProgress request", zap.Int64("collID", req.CollectionID),
@@ -674,7 +746,6 @@ func (i *IndexCoord) DropIndex(ctx context.Context, req *indexpb.DropIndexReques
 
 // GetIndexInfos gets the index file paths from IndexCoord.
 func (i *IndexCoord) GetIndexInfos(ctx context.Context, req *indexpb.GetIndexInfoRequest) (*indexpb.GetIndexInfoResponse, error) {
-	log.Debug("IndexCoord GetIndexFilePaths", zap.String("indexName", req.IndexName), zap.Int64s("segmentIDs", req.SegmentIDs))
 	if !i.isHealthy() {
 		log.Warn(msgIndexCoordIsUnhealthy(i.serverID))
 		return &indexpb.GetIndexInfoResponse{
@@ -719,15 +790,11 @@ func (i *IndexCoord) GetIndexInfos(ctx context.Context, req *indexpb.GetIndexInf
 		}
 	}
 
-	log.Info("IndexCoord GetIndexFilePaths ", zap.Int("segIDs num", len(req.SegmentIDs)),
-		zap.Int("file path num", len(ret.SegmentInfo)))
-
 	return ret, nil
 }
 
 // DescribeIndex describe the index info of the collection.
 func (i *IndexCoord) DescribeIndex(ctx context.Context, req *indexpb.DescribeIndexRequest) (*indexpb.DescribeIndexResponse, error) {
-	log.Info("IndexCoord receive DescribeIndex", zap.Int64("collID", req.CollectionID))
 	if !i.isHealthy() {
 		log.Warn(msgIndexCoordIsUnhealthy(i.serverID))
 		return &indexpb.DescribeIndexResponse{
@@ -750,13 +817,24 @@ func (i *IndexCoord) DescribeIndex(ctx context.Context, req *indexpb.DescribeInd
 	}
 	indexInfos := make([]*indexpb.IndexInfo, 0)
 	for _, index := range indexes {
-		indexInfos = append(indexInfos, &indexpb.IndexInfo{
+		indexInfo := &indexpb.IndexInfo{
 			CollectionID: index.CollectionID,
 			FieldID:      index.FieldID,
 			IndexName:    index.IndexName,
 			TypeParams:   index.TypeParams,
 			IndexParams:  index.IndexParams,
-		})
+		}
+		if err := i.completeIndexInfo(ctx, indexInfo); err != nil {
+			log.Error("IndexCoord describe index fail", zap.Int64("collectionID", req.CollectionID),
+				zap.String("indexName", req.IndexName), zap.Error(err))
+			return &indexpb.DescribeIndexResponse{
+				Status: &commonpb.Status{
+					ErrorCode: commonpb.ErrorCode_UnexpectedError,
+					Reason:    err.Error(),
+				},
+			}, nil
+		}
+		indexInfos = append(indexInfos, indexInfo)
 	}
 
 	return &indexpb.DescribeIndexResponse{
@@ -887,6 +965,9 @@ func (i *IndexCoord) watchNodeLoop() {
 					}
 				}
 				return
+			}
+			if Params.IndexCoordCfg.BindIndexNodeMode {
+				continue
 			}
 			log.Debug("IndexCoord watchNodeLoop event updated")
 			switch event.EventType {

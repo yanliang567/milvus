@@ -312,25 +312,17 @@ func (dct *dropCollectionTask) PreExecute(ctx context.Context) error {
 }
 
 func (dct *dropCollectionTask) Execute(ctx context.Context) error {
-	collID, err := globalMetaCache.GetCollectionID(ctx, dct.CollectionName)
-	if err != nil {
+	var err error
+	dct.result, err = dct.rootCoord.DropCollection(ctx, dct.DropCollectionRequest)
+	if common.IsCollectionNotExistError(err) {
 		// make dropping collection idempotent.
 		dct.result = &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success}
 		return nil
 	}
-
-	dct.result, err = dct.rootCoord.DropCollection(ctx, dct.DropCollectionRequest)
-	if err != nil {
-		return err
-	}
-
-	_ = dct.chMgr.removeDMLStream(collID)
-	globalMetaCache.RemoveCollection(ctx, dct.CollectionName)
-	return nil
+	return err
 }
 
 func (dct *dropCollectionTask) PostExecute(ctx context.Context) error {
-	globalMetaCache.RemoveCollection(ctx, dct.CollectionName)
 	return nil
 }
 
@@ -1425,7 +1417,7 @@ func (dit *describeIndexTask) Execute(ctx context.Context) error {
 		return fmt.Errorf("failed to parse collection schema: %s", err)
 	}
 
-	resp, err := dit.indexCoord.DescribeIndex(ctx, &indexpb.DescribeIndexRequest{CollectionID: dit.collectionID})
+	resp, err := dit.indexCoord.DescribeIndex(ctx, &indexpb.DescribeIndexRequest{CollectionID: dit.collectionID, IndexName: dit.IndexName})
 	if err != nil || resp == nil {
 		return err
 	}
@@ -1442,10 +1434,14 @@ func (dit *describeIndexTask) Execute(ctx context.Context) error {
 		}
 
 		dit.result.IndexDescriptions = append(dit.result.IndexDescriptions, &milvuspb.IndexDescription{
-			IndexName: indexInfo.GetIndexName(),
-			IndexID:   indexInfo.GetIndexID(),
-			FieldName: field.Name,
-			Params:    indexInfo.GetIndexParams(),
+			IndexName:            indexInfo.GetIndexName(),
+			IndexID:              indexInfo.GetIndexID(),
+			FieldName:            field.Name,
+			Params:               indexInfo.GetIndexParams(),
+			IndexedRows:          indexInfo.GetIndexedRows(),
+			TotalRows:            indexInfo.GetTotalRows(),
+			State:                indexInfo.GetState(),
+			IndexStateFailReason: indexInfo.GetIndexStateFailReason(),
 		})
 	}
 	return err
@@ -1546,6 +1542,7 @@ func (dit *dropIndexTask) PostExecute(ctx context.Context) error {
 	return nil
 }
 
+// Deprecated: use describeIndexTask instead
 type getIndexBuildProgressTask struct {
 	Condition
 	*milvuspb.GetIndexBuildProgressRequest
@@ -1639,6 +1636,7 @@ func (gibpt *getIndexBuildProgressTask) PostExecute(ctx context.Context) error {
 	return nil
 }
 
+// Deprecated: use describeIndexTask instead
 type getIndexStateTask struct {
 	Condition
 	*milvuspb.GetIndexStateRequest

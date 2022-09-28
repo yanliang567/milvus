@@ -721,6 +721,7 @@ func TestImpl_SyncReplicaSegments(t *testing.T) {
 					NodeId:      1,
 					PartitionId: defaultPartitionID,
 					SegmentIds:  []int64{1},
+					Versions:    []int64{1},
 				},
 			},
 		})
@@ -745,6 +746,7 @@ func TestImpl_SyncReplicaSegments(t *testing.T) {
 					NodeId:      1,
 					PartitionId: defaultPartitionID,
 					SegmentIds:  []int64{1},
+					Versions:    []int64{1},
 				},
 			},
 		})
@@ -821,6 +823,7 @@ func TestSyncDistribution(t *testing.T) {
 					PartitionID: defaultPartitionID,
 					SegmentID:   defaultSegmentID,
 					NodeID:      99,
+					Version:     1,
 				},
 			},
 		})
@@ -834,7 +837,26 @@ func TestSyncDistribution(t *testing.T) {
 		assert.Equal(t, common.InvalidNodeID, segment.nodeID)
 		assert.Equal(t, defaultPartitionID, segment.partitionID)
 		assert.Equal(t, segmentStateLoaded, segment.state)
+		assert.EqualValues(t, 1, segment.version)
+		resp, err = node.SyncDistribution(ctx, &querypb.SyncDistributionRequest{
+			CollectionID: defaultCollectionID,
+			Channel:      defaultDMLChannel,
+			Actions: []*querypb.SyncAction{
+				{
+					Type:        querypb.SyncType_Remove,
+					PartitionID: defaultPartitionID,
+					SegmentID:   defaultSegmentID,
+					NodeID:      99,
+					Version:     1,
+				},
+			},
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetErrorCode())
 
+		cs, ok = node.ShardClusterService.getShardCluster(defaultDMLChannel)
+		require.True(t, ok)
+		_, ok = cs.getSegment(defaultSegmentID)
+		require.False(t, ok)
 	})
-
 }

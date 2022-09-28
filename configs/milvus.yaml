@@ -132,22 +132,6 @@ rootCoord:
   # seconds (24 hours).
   # Note: If default value is to be changed, change also the default in: internal/util/paramtable/component_param.go
   importTaskRetention: 86400
-  # (in seconds) Check an import task's segment loading state in queryNodes every `importSegmentStateCheckInterval`
-  # seconds. Default 10 seconds.
-  # Note: If default value is to be changed, change also the default in: internal/util/paramtable/component_param.go
-  importSegmentStateCheckInterval: 10
-  # (in seconds) Maximum time to wait for segments in a single import task to be loaded in queryNodes.
-  # Default 60 seconds (1 minute).
-  # Note: If default value is to be changed, change also the default in: internal/util/paramtable/component_param.go
-  importSegmentStateWaitLimit: 60
-  # (in seconds) Check the building status of a task's segments' indices every `importIndexCheckInterval` seconds.
-  # Default 10 seconds.
-  # Note: If default value is to be changed, change also the default in: internal/util/paramtable/component_param.go
-  importIndexCheckInterval: 10
-  # (in seconds) Maximum time to wait for indices to be built on a single import task's segments.
-  # Default 600 seconds (10 minutes).
-  # Note: If default value is to be changed, change also the default in: internal/util/paramtable/component_param.go
-  importIndexWaitLimit: 600
 
 # Related configuration of proxy, used to validate client requests and reduce the returned results.
 proxy:
@@ -235,6 +219,12 @@ indexCoord:
   port: 31000
 
   minSegmentNumRowsToEnableIndex: 1024 # It's a threshold. When the segment num rows is less than this value, the segment will not be indexed
+
+  bindIndexNodeMode:
+    enable: false
+    address: "localhost:22930"
+    withCred: false
+    nodeID: 0
 
   gc:
     interval: 600 # gc interval in seconds
@@ -378,61 +368,68 @@ common:
 #   3. DQL Queue length/latency protection;
 # If necessary, you can also manually force to deny RW requests.
 quotaAndLimits:
-  enable: false # `true` to enable quota and limits, `false` to disable.
+  enabled: false # `true` to enable quota and limits, `false` to disable.
 
   # quotaCenterCollectInterval is the time interval that quotaCenter
   # collects metrics from Query cluster and Data cluster.
   quotaCenterCollectInterval: 3 # seconds, (0 ~ 65536)
 
   ddl: # ddl limit rates, default no limit.
-    #collectionRate: # requests per minute, default no limit, rate for CreateCollection, DropCollection, HasCollection, DescribeCollection, LoadCollection, ReleaseCollection
-    #partitionRate: # requests per minute, default no limit, rate for CreatePartition, DropPartition, HasPartition, LoadPartition, ReleasePartition
-    #indexRate: # requests per minute, default no limit, rate for CreateIndex, DropIndex, DescribeIndex
-    #flushRate: # requests per minute, default no limit, rate for flush
-    #compactionRate: # requests per minute, default no limit, rate for manualCompaction
+    enabled: false
+    collectionRate: # requests per minute, default no limit, rate for CreateCollection, DropCollection, HasCollection, DescribeCollection, LoadCollection, ReleaseCollection
+    partitionRate: # requests per minute, default no limit, rate for CreatePartition, DropPartition, HasPartition, LoadPartition, ReleasePartition
+    indexRate: # requests per minute, default no limit, rate for CreateIndex, DropIndex, DescribeIndex
+    flushRate: # requests per minute, default no limit, rate for flush
+    compactionRate: # requests per minute, default no limit, rate for manualCompaction
 
   # dml limit rates, default no limit.
   # The maximum rate will not be greater than `max`,
   # and the rate after handling back pressure will not be less than `min`.
   dml:
+    enabled: false
     insertRate:
-      #max: # MB/s, default no limit
-      #min: # MB/s, default 0
+      max: # MB/s, default no limit
+      min: # MB/s, default 0
     deleteRate:
-      #max: # MB/s, default no limit
-      #min: # MB/s, default 0
+      max: # MB/s, default no limit
+      min: # MB/s, default 0
     bulkLoadRate: # not support yet. TODO: limit bulkLoad rate
-      #max: # MB/s, default no limit
-      #min: # MB/s, default 0
+      max: # MB/s, default no limit
+      min: # MB/s, default 0
 
   # dql limit rates, default no limit.
   # The maximum rate will not be greater than `max`,
   # and the rate after handling back pressure will not be less than `min`.
   dql:
+    enabled: false
     searchRate:
-      #max: # vps, default no limit
-      #min: # vps, default 0
+      max: # vps, default no limit
+      min: # vps, default 0
     queryRate:
-      #max: # qps, default no limit
-      #min: # qps, default 0
+      max: # qps, default no limit
+      min: # qps, default 0
 
   # limitWriting decides whether dml requests are allowed.
   limitWriting:
     # forceDeny `false` means dml requests are allowed (except for some
     # specific conditions, such as memory of nodes to water marker), `true` means always reject all dml requests.
     forceDeny: false
-    # maxTimeTickDelay indicates the backpressure for DML Operations.
-    # DML rates would be reduced according to the ratio of time tick delay to maxTimeTickDelay,
-    # if time tick delay is greater than maxTimeTickDelay, all DML requests would be rejected.
-    maxTimeTickDelay: 30 # in seconds
-    # When memory usage > memoryHighWaterLevel, all dml requests would be rejected;
-    # When memoryLowWaterLevel < memory usage < memoryHighWaterLevel, reduce the dml rate;
-    # When memory usage < memoryLowWaterLevel, no action.
-    # memoryLowWaterLevel should be less than memoryHighWaterLevel.
-    dataNodeMemoryLowWaterLevel: 0.8 # (0, 1], memoryLowWaterLevel in DataNodes
-    dataNodeMemoryHighWaterLevel: 0.9 # (0, 1], memoryHighWaterLevel in DataNodes
-    queryNodeMemoryLowWaterLevel: 0.8 # (0, 1], memoryLowWaterLevel in QueryNodes
-    queryNodeMemoryHighWaterLevel: 0.9 # (0, 1], memoryHighWaterLevel in QueryNodes
+    ttProtection:
+      enabled: true
+      # maxTimeTickDelay indicates the backpressure for DML Operations.
+      # DML rates would be reduced according to the ratio of time tick delay to maxTimeTickDelay,
+      # if time tick delay is greater than maxTimeTickDelay, all DML requests would be rejected.
+      maxTimeTickDelay: 30 # in seconds
+    memProtection:
+      enabled: true
+      # When memory usage > memoryHighWaterLevel, all dml requests would be rejected;
+      # When memoryLowWaterLevel < memory usage < memoryHighWaterLevel, reduce the dml rate;
+      # When memory usage < memoryLowWaterLevel, no action.
+      # memoryLowWaterLevel should be less than memoryHighWaterLevel.
+      dataNodeMemoryLowWaterLevel: 0.8 # (0, 1], memoryLowWaterLevel in DataNodes
+      dataNodeMemoryHighWaterLevel: 0.9 # (0, 1], memoryHighWaterLevel in DataNodes
+      queryNodeMemoryLowWaterLevel: 0.8 # (0, 1], memoryLowWaterLevel in QueryNodes
+      queryNodeMemoryHighWaterLevel: 0.9 # (0, 1], memoryHighWaterLevel in QueryNodes
 
   # limitReading decides whether dql requests are allowed.
   limitReading:
@@ -440,16 +437,18 @@ quotaAndLimits:
     # specific conditions, such as collection has been dropped), `true` means always reject all dql requests.
     forceDeny: false
 
-    # NQInQueueThreshold indicated that the system was under backpressure for Search/Query path.
-    # If NQ in any QueryNode's queue is greater than NQInQueueThreshold, search&query rates would gradually cool off
-    # until the NQ in queue no longer exceeds NQInQueueThreshold. We think of the NQ of query request as 1.
-    #NQInQueueThreshold: # int, default no limit
+    queueProtection:
+      enabled: false
+      # nqInQueueThreshold indicated that the system was under backpressure for Search/Query path.
+      # If NQ in any QueryNode's queue is greater than nqInQueueThreshold, search&query rates would gradually cool off
+      # until the NQ in queue no longer exceeds nqInQueueThreshold. We think of the NQ of query request as 1.
+      nqInQueueThreshold: # int, default no limit
 
-    # queueLatencyThreshold indicated that the system was under backpressure for Search/Query path.
-    # If dql latency of queuing is greater than queueLatencyThreshold, search&query rates would gradually cool off
-    # until the latency of queuing no longer exceeds queueLatencyThreshold.
-    # The latency here refers to the averaged latency over a period of time.
-    #queueLatencyThreshold: # milliseconds, default no limit
+      # queueLatencyThreshold indicated that the system was under backpressure for Search/Query path.
+      # If dql latency of queuing is greater than queueLatencyThreshold, search&query rates would gradually cool off
+      # until the latency of queuing no longer exceeds queueLatencyThreshold.
+      # The latency here refers to the averaged latency over a period of time.
+      queueLatencyThreshold: # milliseconds, default no limit
 
-    # coolOffSpeed is the speed of search&query rates cool off.
-    #coolOffSpeed: 0.9 # (0, 1]
+      # coolOffSpeed is the speed of search&query rates cool off.
+      coolOffSpeed: 0.9 # (0, 1]

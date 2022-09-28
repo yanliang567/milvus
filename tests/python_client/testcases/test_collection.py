@@ -370,6 +370,7 @@ class TestCollectionParams(TestcaseBase):
                                                  check_task=CheckTasks.err_res, check_items=error)
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.xfail(reason="issue #19334")
     def test_collection_field_dtype_float_value(self):
         """
         target: test collection with float type
@@ -2247,6 +2248,8 @@ class TestLoadCollection(TestcaseBase):
                 2.load with a new replica number
                 3.release collection
                 4.load with a new replica
+                5.create index is a must because get_query_segment_info could
+                  only return indexed and loaded segment
         expected: The second time successfully loaded with a new replica number
         """
         # create, insert
@@ -2254,7 +2257,7 @@ class TestLoadCollection(TestcaseBase):
         df = cf.gen_default_dataframe_data()
         insert_res, _ = collection_w.insert(df)
         assert collection_w.num_entities == ct.default_nb
-
+        collection_w.create_index(ct.default_float_vec_field_name, ct.default_index)
         collection_w.load(replica_number=1)
         for seg in self.utility_wrap.get_query_segment_info(collection_w.name)[0]:
             assert len(seg.nodeIds) == 1

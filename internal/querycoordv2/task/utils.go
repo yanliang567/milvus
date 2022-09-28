@@ -77,7 +77,7 @@ func packLoadSegmentRequest(
 	}
 }
 
-func packReleaseSegmentRequest(task *SegmentTask, action *SegmentAction, shard string) *querypb.ReleaseSegmentsRequest {
+func packReleaseSegmentRequest(task *SegmentTask, action *SegmentAction) *querypb.ReleaseSegmentsRequest {
 	return &querypb.ReleaseSegmentsRequest{
 		Base: &commonpb.MsgBase{
 			MsgType: commonpb.MsgType_ReleaseSegments,
@@ -87,8 +87,8 @@ func packReleaseSegmentRequest(task *SegmentTask, action *SegmentAction, shard s
 		NodeID:       action.Node(),
 		CollectionID: task.CollectionID(),
 		SegmentIDs:   []int64{task.SegmentID()},
-		Shard:        shard,
 		Scope:        action.Scope(),
+		Shard:        action.Shard(),
 		NeedTransfer: false,
 	}
 }

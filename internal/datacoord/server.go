@@ -133,7 +133,6 @@ type Server struct {
 	dnEventCh <-chan *sessionutil.SessionEvent
 	//icEventCh <-chan *sessionutil.SessionEvent
 	qcEventCh <-chan *sessionutil.SessionEvent
-	rcEventCh <-chan *sessionutil.SessionEvent
 
 	dataNodeCreator        dataNodeCreatorFunc
 	rootCoordClientCreator rootCoordCreatorFunc
@@ -256,20 +255,10 @@ func (s *Server) initSession() error {
 
 // Init change server state to Initializing
 func (s *Server) Init() error {
+	var err error
 	atomic.StoreInt64(&s.isServing, ServerStateInitializing)
 	s.factory.Init(&Params)
-	return s.initSession()
-}
 
-// Start initialize `Server` members and start loops, follow steps are taken:
-// 1. initialize message factory parameters
-// 2. initialize root coord client, meta, datanode cluster, segment info channel,
-//		allocator, segment manager
-// 3. start service discovery and server loops, which includes message stream handler (segment statistics,datanode tt)
-//		datanodes etcd watch, etcd alive check and flush completed status check
-// 4. set server state to Healthy
-func (s *Server) Start() error {
-	var err error
 	if err = s.initRootCoordClient(); err != nil {
 		return err
 	}
@@ -291,6 +280,10 @@ func (s *Server) Start() error {
 
 	s.allocator = newRootCoordAllocator(s.rootCoordClient)
 
+	if err = s.initSession(); err != nil {
+		return err
+	}
+
 	if err = s.initServiceDiscovery(); err != nil {
 		return err
 	}
@@ -299,9 +292,23 @@ func (s *Server) Start() error {
 		s.createCompactionHandler()
 		s.createCompactionTrigger()
 	}
-	s.startSegmentManager()
+	s.initSegmentManager()
 
 	s.initGarbageCollection(storageCli)
+
+	return nil
+}
+
+// Start initialize `Server` members and start loops, follow steps are taken:
+// 1. initialize message factory parameters
+// 2. initialize root coord client, meta, datanode cluster, segment info channel,
+//		allocator, segment manager
+// 3. start service discovery and server loops, which includes message stream handler (segment statistics,datanode tt)
+//		datanodes etcd watch, etcd alive check and flush completed status check
+// 4. set server state to Healthy
+func (s *Server) Start() error {
+	s.compactionHandler.start()
+	s.compactionTrigger.start()
 
 	s.startServerLoop()
 	Params.DataCoordCfg.CreatedTime = time.Now()
@@ -345,7 +352,6 @@ func (s *Server) SetIndexCoord(indexCoord types.IndexCoord) {
 
 func (s *Server) createCompactionHandler() {
 	s.compactionHandler = newCompactionPlanHandler(s.sessionManager, s.channelManager, s.meta, s.allocator, s.flushCh, s.segReferManager)
-	s.compactionHandler.start()
 }
 
 func (s *Server) stopCompactionHandler() {
@@ -354,7 +360,6 @@ func (s *Server) stopCompactionHandler() {
 
 func (s *Server) createCompactionTrigger() {
 	s.compactionTrigger = newCompactionTrigger(s.meta, s.compactionHandler, s.allocator, s.segReferManager, s.indexCoord)
-	s.compactionTrigger.start()
 }
 
 func (s *Server) stopCompactionTrigger() {
@@ -443,21 +448,11 @@ func (s *Server) initServiceDiscovery() error {
 	}
 	s.qcEventCh = s.session.WatchServices(typeutil.QueryCoordRole, qcRevision+1, nil)
 
-	rcSessions, rcRevision, err := s.session.GetSessions(typeutil.RootCoordRole)
-	if err != nil {
-		log.Error("DataCoord get RootCoord session failed", zap.Error(err))
-		return err
-	}
-	for _, session := range rcSessions {
-		serverIDs = append(serverIDs, session.ServerID)
-	}
-	s.rcEventCh = s.session.WatchServices(typeutil.RootCoordRole, rcRevision+1, nil)
-
 	s.segReferManager, err = NewSegmentReferenceManager(s.kvClient, serverIDs)
 	return err
 }
 
-func (s *Server) startSegmentManager() {
+func (s *Server) initSegmentManager() {
 	if s.segmentManager == nil {
 		s.segmentManager = newSegmentManager(s.meta, s.allocator, s.rootCoordClient)
 	}
@@ -736,12 +731,6 @@ func (s *Server) watchService(ctx context.Context) {
 				return
 			}
 			s.processSessionEvent(ctx, "QueryCoord", event)
-		case event, ok := <-s.rcEventCh:
-			if !ok {
-				s.stopServiceWatch()
-				return
-			}
-			s.processSessionEvent(ctx, "RootCoord", event)
 		}
 	}
 }

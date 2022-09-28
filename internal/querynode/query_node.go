@@ -30,6 +30,7 @@ import "C"
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -255,7 +256,8 @@ func (node *QueryNode) Init() error {
 		log.Info("queryNode try to connect etcd success", zap.Any("MetaRootPath", Params.EtcdCfg.MetaRootPath))
 
 		cpuNum := runtime.GOMAXPROCS(0)
-		node.cgoPool, err = concurrency.NewPool(cpuNum, ants.WithPreAlloc(true))
+		node.cgoPool, err = concurrency.NewPool(cpuNum, ants.WithPreAlloc(true),
+			ants.WithExpiryDuration(math.MaxInt64))
 		if err != nil {
 			log.Error("QueryNode init cgo pool failed", zap.Error(err))
 			initError = err
@@ -387,7 +389,7 @@ func (node *QueryNode) watchChangeInfo() {
 					return
 				}
 				// if watch loop return due to event canceled, the datanode is not functional anymore
-				log.Panic("querynoe3 is not functional for event canceled", zap.Error(err))
+				log.Panic("querynode is not functional for event canceled", zap.Error(err))
 				return
 			}
 			for _, event := range resp.Events {

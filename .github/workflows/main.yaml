@@ -69,8 +69,6 @@ jobs:
         run: |
           docker-compose up -d pulsar etcd minio
       - name: Build and UnitTest
-        env:
-          CHECK_BUILDER: "1"
         run: |
           ./build/builder.sh /bin/bash -c "make check-proto-product && make codecov"
       - name: Get the status & restart count for containers when ut failed
@@ -83,7 +81,7 @@ jobs:
           done
       - name: Upload coverage to Codecov
         if: "github.repository == 'milvus-io/milvus'"
-        uses: codecov/codecov-action@v3.1.0
+        uses: codecov/codecov-action@v3.1.1
         id: upload_cov
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -92,7 +90,7 @@ jobs:
           fail_ci_if_error: true
       - name: Retry Upload coverage to Codecov
         if: "steps.upload_cov.outcome=='failure' && github.repository == 'milvus-io/milvus'"
-        uses: codecov/codecov-action@v3.1.0
+        uses: codecov/codecov-action@v3.1.1
         id: retry_upload_cov
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
