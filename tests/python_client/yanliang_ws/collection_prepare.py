@@ -12,11 +12,12 @@ DATE_FORMAT = "%m/%d/%Y %H:%M:%S %p"
 nb = 50000
 dim = 128
 auto_id = True
-index_params = {"index_type": "HNSW", "params": {"M": 8, "efConstruction": 200}, "metric_type": "L2"}
+index_params = {"index_type": "HNSW", "params": {"M": 8, "efConstruction": 96}, "metric_type": "L2"}
 
 if __name__ == '__main__':
     host = sys.argv[1]  # host address
-    shards = 1          # shards number
+    collection_name = str(sys.argv[2])  # collection name
+    shards = 2          # shards number
     insert_times = 20   # insert times
 
     port = 19530
@@ -28,13 +29,12 @@ if __name__ == '__main__':
                         level=logging.INFO, format=LOG_FORMAT, datefmt=DATE_FORMAT)
     logging.info("start")
 
-    collection_name = f"random_1m"
     id = FieldSchema(name="id", dtype=DataType.INT64, description="auto primary id")
     age_field = FieldSchema(name="age", dtype=DataType.INT64, description="age")
     embedding_field = FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim)
     schema = CollectionSchema(fields=[id, age_field, embedding_field],
                               auto_id=auto_id, primary_field=id.name,
-                              description="my collection")
+                              description=f"{collection_name}")
     collection = Collection(name=collection_name, schema=schema, shards_num=shards)
     logging.info(f"create {collection_name} successfully")
 
