@@ -30,13 +30,13 @@ if __name__ == '__main__':
     embedding_field = FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim)
     schema = CollectionSchema(fields=[id, age_field, embedding_field],
                               auto_id=auto_id, primary_field=id.name,
-                              description="my collection aaa")
+                              description=f"{collection_nameA}")
     collection = Collection(name=collection_nameA, schema=schema, shards_num=shards)
     logging.info(f"create {collection_nameA} successfully")
     collection_nameB = f"collection_b"
     schema = CollectionSchema(fields=[id, age_field, embedding_field],
                               auto_id=auto_id, primary_field=id.name,
-                              description="my collection bbb")
+                              description=f"{collection_nameB}")
     collection = Collection(name=collection_nameB, schema=schema, shards_num=shards)
     logging.info(f"create {collection_nameB} successfully")
 
