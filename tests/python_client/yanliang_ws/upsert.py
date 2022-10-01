@@ -1,8 +1,6 @@
 import time
 import sys
 import random
-import numpy as np
-import threading
 import logging
 from pymilvus import utility, connections, DataType, \
     Collection, FieldSchema, CollectionSchema
