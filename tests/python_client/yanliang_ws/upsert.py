@@ -17,13 +17,13 @@ def get_dim(collection):
     return dim
 
 
-def delete_entities(collection, nb, search_params, upsert_rounds):
+def delete_entities(collection, nb, search_params, rounds):
     dim = get_dim(collection=collection)
     auto_id = collection.schema.auto_id
     primary_field_name = collection.primary_field.name
     vector_field_name = collection._get_vector_field()
     if auto_id:
-        for r in range(upsert_rounds):
+        for r in range(rounds):
             search_vector = [[random.random() for _ in range(dim)] for _ in range(1)]
             results = c.search(data=search_vector, anns_field=vector_field_name,
                                param=search_params, limit=nb)
@@ -32,7 +32,7 @@ def delete_entities(collection, nb, search_params, upsert_rounds):
                 c.delete(expr=f"{primary_field_name} in {ids}")
                 logging.info(f"deleted {len(ids)} entities")
     else:
-        for r in range(upsert_rounds):
+        for r in range(rounds):
             start_uid = r * nb
             end_uid = start_uid + nb
             c.delete(expr=f"{primary_field_name} in [{start_uid}, {end_uid}]")
@@ -79,15 +79,15 @@ if __name__ == '__main__':
     collection_name = sys.argv[2]              # collection mame
     # host = "10.100.31.105"
     # collection_name = "hnsw_ip_m8_ef96"            # collection mame
-    delete_percent = 10          # percent of entities to be deleted
-    insert_percent = 30
+    delete_percent = int(sys.argv[3])        # percent of entities to be deleted
+    insert_percent = int(sys.argv[4])        # percent of entities to be inserted
     port = 19530
     conn = connections.connect('default', host=host, port=port)
 
     logging.basicConfig(filename=f"/tmp/{collection_name}_upsert.log",
                         level=logging.INFO, format=LOG_FORMAT, datefmt=DATE_FORMAT)
-    if delete_percent < 1 or delete_percent > 100:
-        logging.error(f"delete percent shall be 1-100")
+    if delete_percent < 0 or delete_percent > 100:
+        logging.error(f"delete percent shall be 0-100")
         exit(0)
     if insert_percent < 1 or insert_percent > 100:
         logging.error(f"insert percent shall be 1-100")
@@ -134,7 +134,7 @@ if __name__ == '__main__':
     # delete xx% entities
     delete_entities(collection=c, nb=nb,
                     search_params=search_params,
-                    upsert_rounds=delete_rounds)
+                    rounds=delete_rounds)
 
     insert_num = num_entities * insert_percent // 100
     # insert nb if less than nb
