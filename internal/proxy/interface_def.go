@@ -28,17 +28,7 @@ type tsoAllocator interface {
 	AllocOne() (Timestamp, error)
 }
 
-// use interface idAllocatorInterface to keep other components testable
-// include: baseTaskQueue, taskScheduler
-type idAllocatorInterface interface {
-	AllocOne() (UniqueID, error)
-}
-
 // use timestampAllocatorInterface to keep other components testable
 type timestampAllocatorInterface interface {
 	AllocTimestamp(ctx context.Context, req *rootcoordpb.AllocTimestampRequest) (*rootcoordpb.AllocTimestampResponse, error)
-}
-
-type getChannelsService interface {
-	GetChannels(collectionID UniqueID) (map[vChan]pChan, error)
 }

@@ -29,7 +29,7 @@ require (
 	github.com/klauspost/compress v1.14.2
 	github.com/lingdor/stackerror v0.0.0-20191119040541-976d8885ed76
 	github.com/milvus-io/milvus/api v0.0.0-20220915082433-b1f4c60117bb
-	github.com/minio/minio-go/v7 v7.0.10
+	github.com/minio/minio-go/v7 v7.0.17
 	github.com/opentracing/opentracing-go v1.2.0
 	github.com/panjf2000/ants/v2 v2.4.8
 	github.com/pkg/errors v0.9.1
@@ -62,6 +62,8 @@ require (
 )
 
 require github.com/apache/thrift v0.15.0
+
+require github.com/sandertv/go-formula/v2 v2.0.0-alpha.7 // indirect
 
 require (
 	github.com/99designs/go-keychain v0.0.0-20191008050251-8e49817e8af4 // indirect
@@ -198,6 +200,9 @@ replace (
 	github.com/go-kit/kit => github.com/go-kit/kit v0.1.0
 	github.com/streamnative/pulsarctl => github.com/xiaofan-luan/pulsarctl v0.5.1
 	github.com/tecbot/gorocksdb => github.com/milvus-io/gorocksdb v0.0.0-20220624081344-8c5f4212846b // indirect
+)
+
+replace (
 	// If you want to use the hook interceptor, the following code should be commented out
 	// and you should modify the api version to be the same as the `so` project.
 	github.com/milvus-io/milvus/api => ./api

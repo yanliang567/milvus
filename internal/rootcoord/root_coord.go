@@ -32,6 +32,7 @@ import (
 	"github.com/milvus-io/milvus/api/schemapb"
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/common"
+	pnc "github.com/milvus-io/milvus/internal/distributed/proxy/client"
 	"github.com/milvus-io/milvus/internal/kv"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
@@ -109,7 +110,7 @@ type Core struct {
 
 	chanTimeTick *timetickSync
 
-	idAllocator  allocator.GIDAllocator
+	idAllocator  allocator.Interface
 	tsoAllocator tso.Allocator
 
 	dataCoord  types.DataCoord
@@ -144,6 +145,20 @@ func NewCore(c context.Context, factory dependency.Factory) (*Core, error) {
 		enableActiveStandBy: Params.RootCoordCfg.EnableActiveStandby,
 	}
 	core.UpdateStateCode(internalpb.StateCode_Abnormal)
+	core.proxyCreator = func(se *sessionutil.Session) (types.Proxy, error) {
+		cli, err := pnc.NewClient(c, se.Address)
+		if err != nil {
+			return nil, err
+		}
+		if err := cli.Init(); err != nil {
+			return nil, err
+		}
+		if err := cli.Start(); err != nil {
+			return nil, err
+		}
+		return cli, nil
+	}
+
 	return core, nil
 }
 
@@ -178,9 +193,23 @@ func (c *Core) sendTimeTick(t Timestamp, reason string) error {
 }
 
 func (c *Core) sendMinDdlTsAsTt() {
-	minDdlTs := c.ddlTsLockManager.GetMinDdlTs()
-	err := c.sendTimeTick(minDdlTs, "timetick loop")
-	if err != nil {
+	minBgDdlTs := c.ddlTsLockManager.GetMinDdlTs()
+	minNormalDdlTs := c.scheduler.GetMinDdlTs()
+	minDdlTs := funcutil.Min(minBgDdlTs, minNormalDdlTs)
+
+	// zero	-> ddlTsLockManager and scheduler not started.
+	if minDdlTs == typeutil.ZeroTimestamp {
+		log.Warn("zero ts was met, this should be only occurred in starting state", zap.Uint64("minBgDdlTs", minBgDdlTs), zap.Uint64("minNormalDdlTs", minNormalDdlTs))
+		return
+	}
+
+	// max	-> abnormal case, impossible.
+	if minDdlTs == typeutil.MaxTimestamp {
+		log.Warn("ddl ts is abnormal, max ts was met", zap.Uint64("minBgDdlTs", minBgDdlTs), zap.Uint64("minNormalDdlTs", minNormalDdlTs))
+		return
+	}
+
+	if err := c.sendTimeTick(minDdlTs, "timetick loop"); err != nil {
 		log.Warn("failed to send timetick", zap.Error(err))
 	}
 }
@@ -221,10 +250,6 @@ func (c *Core) tsLoop() {
 			return
 		}
 	}
-}
-
-func (c *Core) SetNewProxyClient(f func(sess *sessionutil.Session) (types.Proxy, error)) {
-	c.proxyCreator = f
 }
 
 func (c *Core) SetDataCoord(ctx context.Context, s types.DataCoord) error {

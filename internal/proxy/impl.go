@@ -1701,22 +1701,6 @@ func (node *Proxy) ShowPartitions(ctx context.Context, request *milvuspb.ShowPar
 	return spt.result, nil
 }
 
-func (node *Proxy) getMsgBase() (*commonpb.MsgBase, error) {
-	msgID, err := node.idAllocator.AllocOne()
-	if err != nil {
-		return nil, err
-	}
-	timestamp, err := node.tsoAllocator.AllocOne()
-	if err != nil {
-		return nil, err
-	}
-	return &commonpb.MsgBase{
-		MsgID:     msgID,
-		Timestamp: timestamp,
-		SourceID:  Params.ProxyCfg.GetNodeID(),
-	}, nil
-}
-
 func (node *Proxy) getCollectionProgress(ctx context.Context, request *milvuspb.GetLoadingProgressRequest, collectionID int64) (int64, error) {
 	resp, err := node.queryCoord.ShowCollections(ctx, &querypb.ShowCollectionsRequest{
 		Base: &commonpb.MsgBase{
@@ -1803,9 +1787,11 @@ func (node *Proxy) GetLoadingProgress(ctx context.Context, request *milvuspb.Get
 	if err != nil {
 		return getErrResponse(err), nil
 	}
-	msgBase, err := node.getMsgBase()
-	if err != nil {
-		return getErrResponse(err), nil
+	msgBase := &commonpb.MsgBase{
+		MsgType:   commonpb.MsgType_SystemInfo,
+		MsgID:     0,
+		Timestamp: 0,
+		SourceID:  Params.ProxyCfg.GetNodeID(),
 	}
 	if request.Base == nil {
 		request.Base = msgBase
@@ -1852,11 +1838,11 @@ func (node *Proxy) CreateIndex(ctx context.Context, request *milvuspb.CreateInde
 	traceID, _, _ := trace.InfoFromSpan(sp)
 
 	cit := &createIndexTask{
-		ctx:                ctx,
-		Condition:          NewTaskCondition(ctx),
-		CreateIndexRequest: request,
-		rootCoord:          node.rootCoord,
-		indexCoord:         node.indexCoord,
+		ctx:        ctx,
+		Condition:  NewTaskCondition(ctx),
+		req:        request,
+		rootCoord:  node.rootCoord,
+		indexCoord: node.indexCoord,
 	}
 
 	method := "CreateIndex"
@@ -1877,10 +1863,10 @@ func (node *Proxy) CreateIndex(ctx context.Context, request *milvuspb.CreateInde
 			zap.Error(err),
 			zap.String("traceID", traceID),
 			zap.String("role", typeutil.ProxyRole),
-			zap.String("db", request.DbName),
-			zap.String("collection", request.CollectionName),
-			zap.String("field", request.FieldName),
-			zap.Any("extra_params", request.ExtraParams))
+			zap.String("db", request.GetDbName()),
+			zap.String("collection", request.GetCollectionName()),
+			zap.String("field", request.GetFieldName()),
+			zap.Any("extra_params", request.GetExtraParams()))
 
 		metrics.ProxyDMLFunctionCall.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), method,
 			metrics.AbandonLabel).Inc()
@@ -2446,7 +2432,7 @@ func (node *Proxy) Insert(ctx context.Context, request *milvuspb.InsertRequest) 
 				// RowData: transfer column based request to this
 			},
 		},
-		idAllocator:   node.idAllocator,
+		idAllocator:   node.rowIDAllocator,
 		segIDAssigner: node.segAssigner,
 		chMgr:         node.chMgr,
 		chTicker:      node.chTicker,
@@ -3531,23 +3517,18 @@ func (node *Proxy) getSegmentsOfCollection(ctx context.Context, dbName string, c
 
 	ret := make([]UniqueID, 0)
 	for _, partitionID := range showPartitionsResp.PartitionIDs {
-		showSegmentResponse, err := node.rootCoord.ShowSegments(ctx, &milvuspb.ShowSegmentsRequest{
-			Base: &commonpb.MsgBase{
-				MsgType:   commonpb.MsgType_ShowSegments,
-				MsgID:     0,
-				Timestamp: 0,
-				SourceID:  Params.ProxyCfg.GetNodeID(),
-			},
+		getSegmentsByStatesResponse, err := node.dataCoord.GetSegmentsByStates(ctx, &datapb.GetSegmentsByStatesRequest{
 			CollectionID: collectionID,
 			PartitionID:  partitionID,
+			States:       []commonpb.SegmentState{commonpb.SegmentState_Flushing, commonpb.SegmentState_Flushed, commonpb.SegmentState_Sealed},
 		})
 		if err != nil {
 			return nil, err
 		}
-		if showSegmentResponse.Status.ErrorCode != commonpb.ErrorCode_Success {
-			return nil, errors.New(showSegmentResponse.Status.Reason)
+		if getSegmentsByStatesResponse.Status.ErrorCode != commonpb.ErrorCode_Success {
+			return nil, errors.New(getSegmentsByStatesResponse.Status.Reason)
 		}
-		ret = append(ret, showSegmentResponse.SegmentIDs...)
+		ret = append(ret, getSegmentsByStatesResponse.GetSegments()...)
 	}
 	return ret, nil
 }
@@ -3661,15 +3642,9 @@ func (node *Proxy) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsReque
 	log.Debug("Proxy.GetMetrics",
 		zap.String("metric_type", metricType))
 
-	msgID := UniqueID(0)
-	msgID, err = node.idAllocator.AllocOne()
-	if err != nil {
-		log.Warn("Proxy.GetMetrics failed to allocate id",
-			zap.Error(err))
-	}
 	req.Base = &commonpb.MsgBase{
 		MsgType:   commonpb.MsgType_SystemInfo,
-		MsgID:     msgID,
+		MsgID:     0,
 		Timestamp: 0,
 		SourceID:  Params.ProxyCfg.GetNodeID(),
 	}
@@ -3749,16 +3724,11 @@ func (node *Proxy) GetProxyMetrics(ctx context.Context, req *milvuspb.GetMetrics
 	log.Debug("Proxy.GetProxyMetrics",
 		zap.String("metric_type", metricType))
 
-	msgID := UniqueID(0)
-	msgID, err = node.idAllocator.AllocOne()
-	if err != nil {
-		log.Warn("Proxy.GetProxyMetrics failed to allocate id",
-			zap.Error(err))
-	}
 	req.Base = &commonpb.MsgBase{
-		MsgType:  commonpb.MsgType_SystemInfo,
-		MsgID:    msgID,
-		SourceID: Params.ProxyCfg.GetNodeID(),
+		MsgType:   commonpb.MsgType_SystemInfo,
+		MsgID:     0,
+		Timestamp: 0,
+		SourceID:  Params.ProxyCfg.GetNodeID(),
 	}
 
 	if metricType == metricsinfo.SystemInfoMetrics {
