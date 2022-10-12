@@ -43,12 +43,6 @@ const (
 	// TimestampPrefix prefix for timestamp
 	TimestampPrefix = rootcoord.ComponentPrefix + "/timestamp"
 
-	// DDOperationPrefix prefix for DD operation
-	DDOperationPrefix = rootcoord.ComponentPrefix + "/dd-operation"
-
-	// DDMsgSendPrefix prefix to indicate whether DD msg has been send
-	DDMsgSendPrefix = rootcoord.ComponentPrefix + "/dd-msg-send"
-
 	// CreateCollectionDDType name of DD type for create collection
 	CreateCollectionDDType = "CreateCollection"
 
@@ -85,6 +79,7 @@ type IMetaTable interface {
 	CreateAlias(ctx context.Context, alias string, collectionName string, ts Timestamp) error
 	DropAlias(ctx context.Context, alias string, ts Timestamp) error
 	AlterAlias(ctx context.Context, alias string, collectionName string, ts Timestamp) error
+	AlterCollection(ctx context.Context, oldColl *model.Collection, newColl *model.Collection, ts Timestamp) error
 
 	// TODO: it'll be a big cost if we handle the time travel logic, since we should always list all aliases in catalog.
 	IsAlias(name string) bool
@@ -363,6 +358,19 @@ func (mt *MetaTable) ListCollectionPhysicalChannels() map[typeutil.UniqueID][]st
 	}
 
 	return chanMap
+}
+
+func (mt *MetaTable) AlterCollection(ctx context.Context, oldColl *model.Collection, newColl *model.Collection, ts Timestamp) error {
+	mt.ddLock.Lock()
+	defer mt.ddLock.Unlock()
+
+	ctx1 := contextutil.WithTenantID(ctx, Params.CommonCfg.ClusterName)
+	if err := mt.catalog.AlterCollection(ctx1, oldColl, newColl, metastore.MODIFY, ts); err != nil {
+		return err
+	}
+	mt.collID2Meta[oldColl.CollectionID] = newColl
+	log.Info("alter collection finished", zap.Int64("collectionID", oldColl.CollectionID), zap.Uint64("ts", ts))
+	return nil
 }
 
 // GetCollectionVirtualChannels returns virtual channels of a given collection.

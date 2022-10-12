@@ -19,7 +19,6 @@ package flowgraph
 import (
 	"context"
 	"math"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -57,7 +56,7 @@ func generateMsgPack() msgstream.MsgPack {
 }
 
 func TestNodeCtx_Start(t *testing.T) {
-	os.Setenv("ROCKSMQ_PATH", "/tmp/MilvusTest/FlowGraph/TestNodeStart")
+	t.Setenv("ROCKSMQ_PATH", "/tmp/MilvusTest/FlowGraph/TestNodeStart")
 	factory := dependency.NewDefaultFactory(true)
 
 	msgStream, _ := factory.NewMsgStream(context.TODO())
@@ -77,16 +76,12 @@ func TestNodeCtx_Start(t *testing.T) {
 	inputNode := NewInputNode(msgStream, nodeName, 100, 100)
 
 	node := &nodeCtx{
-		node:                   inputNode,
-		inputChannels:          make([]chan Msg, 2),
-		downstreamInputChanIdx: make(map[string]int),
-		closeCh:                make(chan struct{}),
-		closeWg:                &sync.WaitGroup{},
+		node:    inputNode,
+		closeCh: make(chan struct{}),
+		closeWg: &sync.WaitGroup{},
 	}
 
-	for i := 0; i < len(node.inputChannels); i++ {
-		node.inputChannels[i] = make(chan Msg)
-	}
+	node.inputChannel = make(chan []Msg)
 
 	assert.NotPanics(t, func() {
 		node.Start()

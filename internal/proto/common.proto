@@ -146,6 +146,7 @@ enum MsgType {
     CreateAlias = 108;
     DropAlias = 109;
     AlterAlias = 110;
+    AlterCollection = 111;
 
 
     /* DEFINITION REQUESTS: PARTITION */
@@ -327,4 +328,11 @@ message PrivilegeExt {
 
 extend google.protobuf.MessageOptions {
     PrivilegeExt privilege_ext_obj = 1001;
+}
+
+enum StateCode {
+    Initializing = 0;
+    Healthy = 1;
+    Abnormal = 2;
+    StandBy = 3;
 }

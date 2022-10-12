@@ -21,8 +21,8 @@ type Collection struct {
 	StartPositions       []*commonpb.KeyDataPair
 	CreateTime           uint64
 	ConsistencyLevel     commonpb.ConsistencyLevel
-	Aliases              []string          // TODO: deprecate this.
-	Extra                map[string]string // deprecated.
+	Aliases              []string // TODO: deprecate this.
+	Properties           []*commonpb.KeyValuePair
 	State                pb.CollectionState
 }
 
@@ -46,7 +46,7 @@ func (c Collection) Clone() *Collection {
 		CreateTime:           c.CreateTime,
 		StartPositions:       common.CloneKeyDataPairs(c.StartPositions),
 		Aliases:              common.CloneStringList(c.Aliases),
-		Extra:                common.CloneStr2Str(c.Extra),
+		Properties:           common.CloneKeyValuePairs(c.Properties),
 		State:                c.State,
 	}
 }
@@ -77,14 +77,6 @@ func UnmarshalCollectionModel(coll *pb.CollectionInfo) *Collection {
 		}
 	}
 
-	filedIDToIndexIDs := make([]common.Int64Tuple, len(coll.FieldIndexes))
-	for idx, fieldIndexInfo := range coll.FieldIndexes {
-		filedIDToIndexIDs[idx] = common.Int64Tuple{
-			Key:   fieldIndexInfo.FiledID,
-			Value: fieldIndexInfo.IndexID,
-		}
-	}
-
 	return &Collection{
 		CollectionID:         coll.ID,
 		Name:                 coll.Schema.Name,
@@ -99,12 +91,40 @@ func UnmarshalCollectionModel(coll *pb.CollectionInfo) *Collection {
 		CreateTime:           coll.CreateTime,
 		StartPositions:       coll.StartPositions,
 		State:                coll.State,
+		Properties:           coll.Properties,
 	}
 }
 
 // MarshalCollectionModel marshal only collection-related information.
 // partitions, aliases and fields won't be marshaled. They should be written to newly path.
 func MarshalCollectionModel(coll *Collection) *pb.CollectionInfo {
+	return marshalCollectionModelWithConfig(coll, newDefaultConfig())
+}
+
+type config struct {
+	withFields     bool
+	withPartitions bool
+}
+
+type Option func(c *config)
+
+func newDefaultConfig() *config {
+	return &config{withFields: false, withPartitions: false}
+}
+
+func WithFields() Option {
+	return func(c *config) {
+		c.withFields = true
+	}
+}
+
+func WithPartitions() Option {
+	return func(c *config) {
+		c.withPartitions = true
+	}
+}
+
+func marshalCollectionModelWithConfig(coll *Collection, c *config) *pb.CollectionInfo {
 	if coll == nil {
 		return nil
 	}
@@ -115,16 +135,12 @@ func MarshalCollectionModel(coll *Collection) *pb.CollectionInfo {
 		AutoID:      coll.AutoID,
 	}
 
-	partitions := make([]*pb.PartitionInfo, len(coll.Partitions))
-	for idx, partition := range coll.Partitions {
-		partitions[idx] = &pb.PartitionInfo{
-			PartitionID:               partition.PartitionID,
-			PartitionName:             partition.PartitionName,
-			PartitionCreatedTimestamp: partition.PartitionCreatedTimestamp,
-		}
+	if c.withFields {
+		fields := MarshalFieldModels(coll.Fields)
+		collSchema.Fields = fields
 	}
 
-	return &pb.CollectionInfo{
+	collectionPb := &pb.CollectionInfo{
 		ID:                   coll.CollectionID,
 		Schema:               collSchema,
 		CreateTime:           coll.CreateTime,
@@ -134,5 +150,24 @@ func MarshalCollectionModel(coll *Collection) *pb.CollectionInfo {
 		ConsistencyLevel:     coll.ConsistencyLevel,
 		StartPositions:       coll.StartPositions,
 		State:                coll.State,
+		Properties:           coll.Properties,
 	}
+
+	if c.withPartitions {
+		for _, partition := range coll.Partitions {
+			collectionPb.PartitionNames = append(collectionPb.PartitionNames, partition.PartitionName)
+			collectionPb.PartitionIDs = append(collectionPb.PartitionIDs, partition.PartitionID)
+			collectionPb.PartitionCreatedTimestamps = append(collectionPb.PartitionCreatedTimestamps, partition.PartitionCreatedTimestamp)
+		}
+	}
+
+	return collectionPb
+}
+
+func MarshalCollectionModelWithOption(coll *Collection, opts ...Option) *pb.CollectionInfo {
+	c := newDefaultConfig()
+	for _, opt := range opts {
+		opt(c)
+	}
+	return marshalCollectionModelWithConfig(coll, c)
 }

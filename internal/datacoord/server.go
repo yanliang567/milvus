@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/blang/semver/v4"
-	"github.com/minio/minio-go/v7"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 
@@ -77,20 +76,6 @@ type (
 	Timestamp = typeutil.Timestamp
 )
 
-// ServerState type alias, presents datacoord Server State
-type ServerState = int64
-
-const (
-	// ServerStateStopped state stands for just created or stopped `Server` instance
-	ServerStateStopped ServerState = 0
-	// ServerStateInitializing state stands initializing `Server` instance
-	ServerStateInitializing ServerState = 1
-	// ServerStateHealthy state stands for healthy `Server` instance
-	ServerStateHealthy ServerState = 2
-	// ServerStateStandby state stands for standby `Server` instance
-	ServerStateStandby ServerState = 3
-)
-
 type dataNodeCreatorFunc func(ctx context.Context, addr string) (types.DataNode, error)
 type rootCoordCreatorFunc func(ctx context.Context, metaRootPath string, etcdClient *clientv3.Client) (types.RootCoord, error)
 
@@ -107,7 +92,7 @@ type Server struct {
 	serverLoopCancel context.CancelFunc
 	serverLoopWg     sync.WaitGroup
 	quitCh           chan struct{}
-	isServing        ServerState
+	stateCode        atomic.Value
 	helper           ServerHelper
 
 	etcdCli          *clientv3.Client
@@ -265,7 +250,7 @@ func (s *Server) initSession() error {
 // Init change server state to Initializing
 func (s *Server) Init() error {
 	var err error
-	atomic.StoreInt64(&s.isServing, ServerStateInitializing)
+	s.stateCode.Store(commonpb.StateCode_Initializing)
 	s.factory.Init(&Params)
 
 	if err = s.initRootCoordClient(); err != nil {
@@ -324,14 +309,14 @@ func (s *Server) Start() error {
 			// todo complete the activateFunc
 			log.Info("datacoord switch from standby to active, activating")
 			s.startServerLoop()
-			atomic.StoreInt64(&s.isServing, ServerStateHealthy)
+			s.stateCode.Store(commonpb.StateCode_Healthy)
 			logutil.Logger(s.ctx).Debug("startup success")
 		}
-		atomic.StoreInt64(&s.isServing, ServerStateStandby)
+		s.stateCode.Store(commonpb.StateCode_StandBy)
 		logutil.Logger(s.ctx).Debug("DataCoord enter standby mode successfully")
 	} else {
 		s.startServerLoop()
-		atomic.StoreInt64(&s.isServing, ServerStateHealthy)
+		s.stateCode.Store(commonpb.StateCode_Healthy)
 		logutil.Logger(s.ctx).Debug("DataCoord startup successfully")
 	}
 
@@ -381,7 +366,7 @@ func (s *Server) stopCompactionHandler() {
 }
 
 func (s *Server) createCompactionTrigger() {
-	s.compactionTrigger = newCompactionTrigger(s.meta, s.compactionHandler, s.allocator, s.segReferManager, s.indexCoord)
+	s.compactionTrigger = newCompactionTrigger(s.meta, s.compactionHandler, s.allocator, s.segReferManager, s.indexCoord, s.handler)
 }
 
 func (s *Server) stopCompactionTrigger() {
@@ -399,30 +384,13 @@ func (s *Server) newChunkManagerFactory() (storage.ChunkManager, error) {
 }
 
 func (s *Server) initGarbageCollection(cli storage.ChunkManager) {
-	s.garbageCollector = newGarbageCollector(s.meta, s.segReferManager, s.indexCoord, GcOption{
+	s.garbageCollector = newGarbageCollector(s.meta, s.handler, s.segReferManager, s.indexCoord, GcOption{
 		cli:              cli,
 		enabled:          Params.DataCoordCfg.EnableGarbageCollection,
 		checkInterval:    Params.DataCoordCfg.GCInterval,
 		missingTolerance: Params.DataCoordCfg.GCMissingTolerance,
 		dropTolerance:    Params.DataCoordCfg.GCDropTolerance,
 	})
-}
-
-// here we use variable for test convenience
-var getCheckBucketFn = func(cli *minio.Client) func() error {
-	return func() error {
-		has, err := cli.BucketExists(context.TODO(), Params.MinioCfg.BucketName)
-		if err != nil {
-			return err
-		}
-		if !has {
-			err = cli.MakeBucket(context.TODO(), Params.MinioCfg.BucketName, minio.MakeBucketOptions{})
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	}
 }
 
 func (s *Server) initServiceDiscovery() error {
@@ -867,7 +835,7 @@ func (s *Server) initRootCoordClient() error {
 // if Server is healthy, set server state to stopped, release etcd session,
 //	stop message stream client and stop server loops
 func (s *Server) Stop() error {
-	if !atomic.CompareAndSwapInt64(&s.isServing, ServerStateHealthy, ServerStateStopped) {
+	if !s.stateCode.CompareAndSwap(commonpb.StateCode_Healthy, commonpb.StateCode_Abnormal) {
 		return nil
 	}
 	logutil.Logger(s.ctx).Debug("server shutdown")
@@ -939,11 +907,18 @@ func (s *Server) loadCollectionFromRootCoord(ctx context.Context, collectionID i
 			zap.Int64("collectionID", resp.CollectionID), zap.Error(err))
 		return err
 	}
-	collInfo := &datapb.CollectionInfo{
+
+	properties := make(map[string]string)
+	for _, pair := range resp.Properties {
+		properties[pair.GetKey()] = pair.GetValue()
+	}
+
+	collInfo := &collectionInfo{
 		ID:             resp.CollectionID,
 		Schema:         resp.Schema,
 		Partitions:     presp.PartitionIDs,
 		StartPositions: resp.GetStartPositions(),
+		Properties:     properties,
 	}
 	s.meta.AddCollection(collInfo)
 	return nil

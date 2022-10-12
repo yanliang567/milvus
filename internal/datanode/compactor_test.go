@@ -50,7 +50,7 @@ func TestCompactionTaskInnerMethods(t *testing.T) {
 		rc := &RootCoordFactory{
 			pkType: schemapb.DataType_Int64,
 		}
-		replica, err := newReplica(context.TODO(), rc, cm, 1)
+		replica, err := newReplica(context.TODO(), rc, cm, 1, nil)
 		require.NoError(t, err)
 
 		task := &compactionTask{
@@ -270,7 +270,7 @@ func TestCompactionTaskInnerMethods(t *testing.T) {
 			Return(&milvuspb.DescribeCollectionResponse{
 				Schema: meta.GetSchema(),
 			}, nil)
-		replica, err := newReplica(context.Background(), rc, nil, collectionID)
+		replica, err := newReplica(context.Background(), rc, nil, collectionID, meta.GetSchema())
 		require.NoError(t, err)
 		t.Run("Merge without expiration", func(t *testing.T) {
 			alloc := NewAllocatorFactory(1)
@@ -345,7 +345,7 @@ func TestCompactionTaskInnerMethods(t *testing.T) {
 		t.Run("Merge with expiration", func(t *testing.T) {
 			alloc := NewAllocatorFactory(1)
 			mockbIO := &binlogIO{cm, alloc}
-			Params.CommonCfg.EntityExpirationTTL = 864000 // 10 days in seconds
+
 			iData := genInsertDataWithExpiredTS()
 			meta := NewMetaFactory().GetCollectionMeta(1, "test", schemapb.DataType_Int64)
 
@@ -368,7 +368,15 @@ func TestCompactionTaskInnerMethods(t *testing.T) {
 				1: 10000,
 			}
 
-			ct := &compactionTask{Replica: replica, downloader: mockbIO, uploader: mockbIO}
+			// 10 days in seconds
+			ct := &compactionTask{
+				Replica:    replica,
+				downloader: mockbIO,
+				uploader:   mockbIO,
+				plan: &datapb.CompactionPlan{
+					CollectionTtl: 864000,
+				},
+			}
 			inPaths, statsPaths, _, numOfRow, err := ct.merge(context.Background(), allPaths, 2, 0, meta, dm)
 			assert.NoError(t, err)
 			assert.Equal(t, int64(0), numOfRow)
@@ -453,9 +461,12 @@ func TestCompactionTaskInnerMethods(t *testing.T) {
 
 	t.Run("Test isExpiredEntity", func(t *testing.T) {
 		t.Run("When CompactionEntityExpiration is set math.MaxInt64", func(t *testing.T) {
-			Params.CommonCfg.EntityExpirationTTL = math.MaxInt64
+			ct := &compactionTask{
+				plan: &datapb.CompactionPlan{
+					CollectionTtl: math.MaxInt64,
+				},
+			}
 
-			ct := &compactionTask{}
 			res := ct.isExpiredEntity(0, genTimestamp())
 			assert.Equal(t, false, res)
 
@@ -472,9 +483,12 @@ func TestCompactionTaskInnerMethods(t *testing.T) {
 			assert.Equal(t, false, res)
 		})
 		t.Run("When CompactionEntityExpiration is set MAX_ENTITY_EXPIRATION = 0", func(t *testing.T) {
-			Params.CommonCfg.EntityExpirationTTL = 0 // 0 means expiration is not enabled
-
-			ct := &compactionTask{}
+			// 0 means expiration is not enabled
+			ct := &compactionTask{
+				plan: &datapb.CompactionPlan{
+					CollectionTtl: 0,
+				},
+			}
 			res := ct.isExpiredEntity(0, genTimestamp())
 			assert.Equal(t, false, res)
 
@@ -491,9 +505,12 @@ func TestCompactionTaskInnerMethods(t *testing.T) {
 			assert.Equal(t, false, res)
 		})
 		t.Run("When CompactionEntityExpiration is set 10 days", func(t *testing.T) {
-			Params.CommonCfg.EntityExpirationTTL = 864000 // 10 days in seconds
-
-			ct := &compactionTask{}
+			// 10 days in seconds
+			ct := &compactionTask{
+				plan: &datapb.CompactionPlan{
+					CollectionTtl: 864000,
+				},
+			}
 			res := ct.isExpiredEntity(0, genTimestamp())
 			assert.Equal(t, true, res)
 
@@ -623,7 +640,7 @@ func TestCompactorInterfaceMethods(t *testing.T) {
 			mockfm := &mockFlushManager{}
 			mockKv := memkv.NewMemoryKV()
 			mockbIO := &binlogIO{cm, alloc}
-			replica, err := newReplica(context.TODO(), rc, cm, c.colID)
+			replica, err := newReplica(context.TODO(), rc, cm, c.colID, nil)
 			require.NoError(t, err)
 
 			replica.addFlushedSegmentWithPKs(c.segID1, c.colID, c.parID, "channelname", 2, c.iData1)
@@ -750,7 +767,7 @@ func TestCompactorInterfaceMethods(t *testing.T) {
 		}
 		mockfm := &mockFlushManager{}
 		mockbIO := &binlogIO{cm, alloc}
-		replica, err := newReplica(context.TODO(), rc, cm, collID)
+		replica, err := newReplica(context.TODO(), rc, cm, collID, nil)
 		require.NoError(t, err)
 
 		replica.addFlushedSegmentWithPKs(segID1, collID, partID, "channelname", 2, &storage.Int64FieldData{Data: []UniqueID{1}})

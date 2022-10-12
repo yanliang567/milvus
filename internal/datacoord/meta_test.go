@@ -24,6 +24,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/milvus-io/milvus/internal/common"
+
 	"github.com/golang/protobuf/proto"
 	"github.com/milvus-io/milvus/api/commonpb"
 	"github.com/milvus-io/milvus/internal/kv"
@@ -245,12 +247,16 @@ func TestMeta_Basic(t *testing.T) {
 	assert.Nil(t, err)
 
 	testSchema := newTestSchema()
-	collInfo := &datapb.CollectionInfo{
-		ID:         collID,
-		Schema:     testSchema,
-		Partitions: []UniqueID{partID0, partID1},
+
+	Params.Init()
+
+	collInfo := &collectionInfo{
+		ID:             collID,
+		Schema:         testSchema,
+		Partitions:     []UniqueID{partID0, partID1},
+		StartPositions: []*commonpb.KeyDataPair{},
 	}
-	collInfoWoPartition := &datapb.CollectionInfo{
+	collInfoWoPartition := &collectionInfo{
 		ID:         collID,
 		Schema:     testSchema,
 		Partitions: []UniqueID{},
@@ -423,6 +429,58 @@ func TestMeta_Basic(t *testing.T) {
 		}
 		result = meta.GetSegmentsChanPart(func(seg *SegmentInfo) bool { return seg.GetCollectionID() == 10 })
 		assert.Equal(t, 0, len(result))
+	})
+
+	t.Run("GetClonedCollectionInfo", func(t *testing.T) {
+		// collection does not exist
+		ret := meta.GetClonedCollectionInfo(-1)
+		assert.Nil(t, ret)
+
+		collInfo.Properties = map[string]string{
+			common.CollectionTTLConfigKey: "3600",
+		}
+		meta.AddCollection(collInfo)
+		ret = meta.GetClonedCollectionInfo(collInfo.ID)
+		equalCollectionInfo(t, collInfo, ret)
+
+		collInfo.StartPositions = []*commonpb.KeyDataPair{
+			{
+				Key:  "k",
+				Data: []byte("v"),
+			},
+		}
+		meta.AddCollection(collInfo)
+		ret = meta.GetClonedCollectionInfo(collInfo.ID)
+		equalCollectionInfo(t, collInfo, ret)
+	})
+
+	t.Run("Test GetTotalBinlogSize", func(t *testing.T) {
+		const size0 = 1024
+		const size1 = 2048
+
+		// no binlog
+		size := meta.GetTotalBinlogSize()
+		assert.EqualValues(t, 0, size)
+
+		// add seg0 with size0
+		segID0, err := mockAllocator.allocID(ctx)
+		assert.Nil(t, err)
+		segInfo0 := buildSegment(collID, partID0, segID0, channelName, false)
+		segInfo0.size = size0
+		err = meta.AddSegment(segInfo0)
+		assert.Nil(t, err)
+
+		// add seg1 with size1
+		segID1, err := mockAllocator.allocID(ctx)
+		assert.Nil(t, err)
+		segInfo1 := buildSegment(collID, partID0, segID1, channelName, false)
+		segInfo1.size = size1
+		err = meta.AddSegment(segInfo1)
+		assert.Nil(t, err)
+
+		// check TotalBinlogSize
+		size = meta.GetTotalBinlogSize()
+		assert.Equal(t, int64(size0+size1), size)
 	})
 }
 
@@ -952,4 +1010,12 @@ func TestMeta_isSegmentHealthy_issue17823_panic(t *testing.T) {
 	var seg *SegmentInfo
 
 	assert.False(t, isSegmentHealthy(seg))
+}
+
+func equalCollectionInfo(t *testing.T, a *collectionInfo, b *collectionInfo) {
+	assert.Equal(t, a.ID, b.ID)
+	assert.Equal(t, a.Partitions, b.Partitions)
+	assert.Equal(t, a.Schema, b.Schema)
+	assert.Equal(t, a.Properties, b.Properties)
+	assert.Equal(t, a.StartPositions, b.StartPositions)
 }

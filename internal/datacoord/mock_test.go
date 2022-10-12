@@ -59,6 +59,17 @@ func (m *MockAllocator) allocID(ctx context.Context) (UniqueID, error) {
 	return val, nil
 }
 
+type MockAllocator0 struct {
+}
+
+func (m *MockAllocator0) allocTimestamp(ctx context.Context) (Timestamp, error) {
+	return Timestamp(0), nil
+}
+
+func (m *MockAllocator0) allocID(ctx context.Context) (UniqueID, error) {
+	return 0, nil
+}
+
 var _ allocator = (*FailsAllocator)(nil)
 
 // FailsAllocator allocator that fails
@@ -119,7 +130,7 @@ func newTestSchema() *schemapb.CollectionSchema {
 
 type mockDataNodeClient struct {
 	id                   int64
-	state                internalpb.StateCode
+	state                commonpb.StateCode
 	ch                   chan interface{}
 	compactionStateResp  *datapb.CompactionStateResponse
 	addImportSegmentResp *datapb.AddImportSegmentResponse
@@ -129,7 +140,7 @@ type mockDataNodeClient struct {
 func newMockDataNodeClient(id int64, ch chan interface{}) (*mockDataNodeClient, error) {
 	return &mockDataNodeClient{
 		id:    id,
-		state: internalpb.StateCode_Initializing,
+		state: commonpb.StateCode_Initializing,
 		ch:    ch,
 		addImportSegmentResp: &datapb.AddImportSegmentResponse{
 			Status: &commonpb.Status{
@@ -144,7 +155,7 @@ func (c *mockDataNodeClient) Init() error {
 }
 
 func (c *mockDataNodeClient) Start() error {
-	c.state = internalpb.StateCode_Healthy
+	c.state = commonpb.StateCode_Healthy
 	return nil
 }
 
@@ -152,9 +163,9 @@ func (c *mockDataNodeClient) Register() error {
 	return nil
 }
 
-func (c *mockDataNodeClient) GetComponentStates(ctx context.Context) (*internalpb.ComponentStates, error) {
-	return &internalpb.ComponentStates{
-		State: &internalpb.ComponentInfo{
+func (c *mockDataNodeClient) GetComponentStates(ctx context.Context) (*milvuspb.ComponentStates, error) {
+	return &milvuspb.ComponentStates{
+		State: &milvuspb.ComponentInfo{
 			NodeID:    c.id,
 			StateCode: c.state,
 		},
@@ -257,12 +268,12 @@ func (c *mockDataNodeClient) SyncSegments(ctx context.Context, req *datapb.SyncS
 }
 
 func (c *mockDataNodeClient) Stop() error {
-	c.state = internalpb.StateCode_Abnormal
+	c.state = commonpb.StateCode_Abnormal
 	return nil
 }
 
 type mockRootCoordService struct {
-	state internalpb.StateCode
+	state commonpb.StateCode
 	cnt   int64
 }
 
@@ -279,7 +290,7 @@ func (m *mockRootCoordService) AlterAlias(ctx context.Context, req *milvuspb.Alt
 }
 
 func newMockRootCoordService() *mockRootCoordService {
-	return &mockRootCoordService{state: internalpb.StateCode_Healthy}
+	return &mockRootCoordService{state: commonpb.StateCode_Healthy}
 }
 
 func (m *mockRootCoordService) GetTimeTickChannel(ctx context.Context) (*milvuspb.StringResponse, error) {
@@ -295,7 +306,7 @@ func (m *mockRootCoordService) Start() error {
 }
 
 func (m *mockRootCoordService) Stop() error {
-	m.state = internalpb.StateCode_Abnormal
+	m.state = commonpb.StateCode_Abnormal
 	return nil
 }
 
@@ -303,15 +314,15 @@ func (m *mockRootCoordService) Register() error {
 	return nil
 }
 
-func (m *mockRootCoordService) GetComponentStates(ctx context.Context) (*internalpb.ComponentStates, error) {
-	return &internalpb.ComponentStates{
-		State: &internalpb.ComponentInfo{
+func (m *mockRootCoordService) GetComponentStates(ctx context.Context) (*milvuspb.ComponentStates, error) {
+	return &milvuspb.ComponentStates{
+		State: &milvuspb.ComponentInfo{
 			NodeID:    0,
 			Role:      "",
 			StateCode: m.state,
 			ExtraInfo: []*commonpb.KeyValuePair{},
 		},
-		SubcomponentStates: []*internalpb.ComponentInfo{},
+		SubcomponentStates: []*milvuspb.ComponentInfo{},
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_Success,
 			Reason:    "",
@@ -360,6 +371,10 @@ func (m *mockRootCoordService) ShowCollections(ctx context.Context, req *milvusp
 	}, nil
 }
 
+func (m *mockRootCoordService) AlterCollection(ctx context.Context, request *milvuspb.AlterCollectionRequest) (*commonpb.Status, error) {
+	panic("not implemented") // TODO: Implement
+}
+
 func (m *mockRootCoordService) CreatePartition(ctx context.Context, req *milvuspb.CreatePartitionRequest) (*commonpb.Status, error) {
 	panic("not implemented") // TODO: Implement
 }
@@ -385,7 +400,7 @@ func (m *mockRootCoordService) ShowPartitions(ctx context.Context, req *milvuspb
 
 //global timestamp allocator
 func (m *mockRootCoordService) AllocTimestamp(ctx context.Context, req *rootcoordpb.AllocTimestampRequest) (*rootcoordpb.AllocTimestampResponse, error) {
-	if m.state != internalpb.StateCode_Healthy {
+	if m.state != commonpb.StateCode_Healthy {
 		return &rootcoordpb.AllocTimestampResponse{Status: &commonpb.Status{ErrorCode: commonpb.ErrorCode_UnexpectedError}}, nil
 	}
 
@@ -403,7 +418,7 @@ func (m *mockRootCoordService) AllocTimestamp(ctx context.Context, req *rootcoor
 }
 
 func (m *mockRootCoordService) AllocID(ctx context.Context, req *rootcoordpb.AllocIDRequest) (*rootcoordpb.AllocIDResponse, error) {
-	if m.state != internalpb.StateCode_Healthy {
+	if m.state != commonpb.StateCode_Healthy {
 		return &rootcoordpb.AllocIDResponse{Status: &commonpb.Status{ErrorCode: commonpb.ErrorCode_UnexpectedError}}, nil
 	}
 	val := atomic.AddInt64(&m.cnt, int64(req.Count))
@@ -613,30 +628,30 @@ type mockCompactionTrigger struct {
 }
 
 // triggerCompaction trigger a compaction if any compaction condition satisfy.
-func (t *mockCompactionTrigger) triggerCompaction(ct *compactTime) error {
+func (t *mockCompactionTrigger) triggerCompaction() error {
 	if f, ok := t.methods["triggerCompaction"]; ok {
-		if ff, ok := f.(func(ct *compactTime) error); ok {
-			return ff(ct)
+		if ff, ok := f.(func() error); ok {
+			return ff()
 		}
 	}
 	panic("not implemented")
 }
 
 // triggerSingleCompaction trigerr a compaction bundled with collection-partiiton-channel-segment
-func (t *mockCompactionTrigger) triggerSingleCompaction(collectionID int64, partitionID int64, segmentID int64, channel string, ct *compactTime) error {
+func (t *mockCompactionTrigger) triggerSingleCompaction(collectionID, partitionID, segmentID int64, channel string) error {
 	if f, ok := t.methods["triggerSingleCompaction"]; ok {
-		if ff, ok := f.(func(collectionID int64, partitionID int64, segmentID int64, channel string, ct *compactTime) error); ok {
-			return ff(collectionID, partitionID, segmentID, channel, ct)
+		if ff, ok := f.(func(collectionID int64, partitionID int64, segmentID int64, channel string) error); ok {
+			return ff(collectionID, partitionID, segmentID, channel)
 		}
 	}
 	panic("not implemented")
 }
 
 // forceTriggerCompaction force to start a compaction
-func (t *mockCompactionTrigger) forceTriggerCompaction(collectionID int64, ct *compactTime) (UniqueID, error) {
+func (t *mockCompactionTrigger) forceTriggerCompaction(collectionID int64) (UniqueID, error) {
 	if f, ok := t.methods["forceTriggerCompaction"]; ok {
-		if ff, ok := f.(func(collectionID int64, ct *compactTime) (UniqueID, error)); ok {
-			return ff(collectionID, ct)
+		if ff, ok := f.(func(collectionID int64) (UniqueID, error)); ok {
+			return ff(collectionID)
 		}
 	}
 	panic("not implemented")
@@ -715,13 +730,21 @@ func (m *mockRootCoordService) ListPolicy(ctx context.Context, in *internalpb.Li
 }
 
 type mockHandler struct {
+	meta *meta
 }
 
 func newMockHandler() *mockHandler {
 	return &mockHandler{}
 }
 
-func (h *mockHandler) GetVChanPositions(channel *channel, partitionID UniqueID) *datapb.VchannelInfo {
+func (h *mockHandler) GetQueryVChanPositions(channel *channel, partitionID UniqueID) *datapb.VchannelInfo {
+	return &datapb.VchannelInfo{
+		CollectionID: channel.CollectionID,
+		ChannelName:  channel.Name,
+	}
+}
+
+func (h *mockHandler) GetDataVChanPositions(channel *channel, partitionID UniqueID) *datapb.VchannelInfo {
 	return &datapb.VchannelInfo{
 		CollectionID: channel.CollectionID,
 		ChannelName:  channel.Name,
@@ -733,6 +756,20 @@ func (h *mockHandler) CheckShouldDropChannel(channel string) bool {
 }
 
 func (h *mockHandler) FinishDropChannel(channel string) {}
+
+func (h *mockHandler) GetCollection(_ context.Context, collectionID UniqueID) (*collectionInfo, error) {
+	// empty schema
+	if h.meta != nil {
+		return h.meta.GetCollection(collectionID), nil
+	}
+	return &collectionInfo{ID: collectionID}, nil
+}
+
+func newMockHandlerWithMeta(meta *meta) *mockHandler {
+	return &mockHandler{
+		meta: meta,
+	}
+}
 
 type mockIndexCoord struct {
 	types.IndexCoord

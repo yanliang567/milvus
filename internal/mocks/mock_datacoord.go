@@ -123,6 +123,52 @@ func (_c *DataCoord_AssignSegmentID_Call) Return(_a0 *datapb.AssignSegmentIDResp
 	return _c
 }
 
+func (_m *DataCoord) BroadcastAlteredCollection(ctx context.Context, req *milvuspb.AlterCollectionRequest) (*commonpb.Status, error) {
+	ret := _m.Called(ctx, req)
+
+	var r0 *commonpb.Status
+	if rf, ok := ret.Get(0).(func(context.Context, *milvuspb.AlterCollectionRequest) *commonpb.Status); ok {
+		r0 = rf(ctx, req)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*commonpb.Status)
+		}
+	}
+
+	var r1 error
+	if rf, ok := ret.Get(1).(func(context.Context, *milvuspb.AlterCollectionRequest) error); ok {
+		r1 = rf(ctx, req)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// DataCoord_BroadcastAlteredCollection_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'DataCoord_BroadcastAlteredCollection_Call'
+type DataCoord_BroadcastAlteredCollection_Call struct {
+	*mock.Call
+}
+
+// AddSegment is a helper method to define mock.On call
+//  - ctx context.Context
+//  - req *datapb.AddSegmentRequest
+func (_e *DataCoord_Expecter) BroadcastAlteredCollection(ctx interface{}, req interface{}) *DataCoord_BroadcastAlteredCollection_Call {
+	return &DataCoord_BroadcastAlteredCollection_Call{Call: _e.mock.On("BroadcastAlteredCollection", ctx, req)}
+}
+
+func (_c *DataCoord_BroadcastAlteredCollection_Call) Run(run func(ctx context.Context, req *milvuspb.AlterCollectionRequest)) *DataCoord_BroadcastAlteredCollection_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(*milvuspb.AlterCollectionRequest))
+	})
+	return _c
+}
+
+func (_c *DataCoord_BroadcastAlteredCollection_Call) Return(_a0 *commonpb.Status, _a1 error) *DataCoord_BroadcastAlteredCollection_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
 // DropVirtualChannel provides a mock function with given fields: ctx, req
 func (_m *DataCoord) DropVirtualChannel(ctx context.Context, req *datapb.DropVirtualChannelRequest) (*datapb.DropVirtualChannelResponse, error) {
 	ret := _m.Called(ctx, req)
@@ -359,15 +405,15 @@ func (_c *DataCoord_GetCompactionStateWithPlans_Call) Return(_a0 *milvuspb.GetCo
 }
 
 // GetComponentStates provides a mock function with given fields: ctx
-func (_m *DataCoord) GetComponentStates(ctx context.Context) (*internalpb.ComponentStates, error) {
+func (_m *DataCoord) GetComponentStates(ctx context.Context) (*milvuspb.ComponentStates, error) {
 	ret := _m.Called(ctx)
 
-	var r0 *internalpb.ComponentStates
-	if rf, ok := ret.Get(0).(func(context.Context) *internalpb.ComponentStates); ok {
+	var r0 *milvuspb.ComponentStates
+	if rf, ok := ret.Get(0).(func(context.Context) *milvuspb.ComponentStates); ok {
 		r0 = rf(ctx)
 	} else {
 		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*internalpb.ComponentStates)
+			r0 = ret.Get(0).(*milvuspb.ComponentStates)
 		}
 	}
 
@@ -399,7 +445,7 @@ func (_c *DataCoord_GetComponentStates_Call) Run(run func(ctx context.Context)) 
 	return _c
 }
 
-func (_c *DataCoord_GetComponentStates_Call) Return(_a0 *internalpb.ComponentStates, _a1 error) *DataCoord_GetComponentStates_Call {
+func (_c *DataCoord_GetComponentStates_Call) Return(_a0 *milvuspb.ComponentStates, _a1 error) *DataCoord_GetComponentStates_Call {
 	_c.Call.Return(_a0, _a1)
 	return _c
 }

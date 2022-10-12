@@ -173,8 +173,8 @@ func (s *Server) init() error {
 	}
 	log.Debug("grpc init done ...")
 
-	s.rootCoord.UpdateStateCode(internalpb.StateCode_Initializing)
-	log.Debug("RootCoord", zap.Any("State", internalpb.StateCode_Initializing))
+	s.rootCoord.UpdateStateCode(commonpb.StateCode_Initializing)
+	log.Debug("RootCoord", zap.Any("State", commonpb.StateCode_Initializing))
 
 	if s.newDataCoordClient != nil {
 		log.Debug("RootCoord start to create DataCoord client")
@@ -309,7 +309,7 @@ func (s *Server) Stop() error {
 }
 
 // GetComponentStates gets the component states of RootCoord.
-func (s *Server) GetComponentStates(ctx context.Context, req *internalpb.GetComponentStatesRequest) (*internalpb.ComponentStates, error) {
+func (s *Server) GetComponentStates(ctx context.Context, req *milvuspb.GetComponentStatesRequest) (*milvuspb.ComponentStates, error) {
 	return s.rootCoord.GetComponentStates(ctx)
 }
 
@@ -473,4 +473,8 @@ func (s *Server) SelectGrant(ctx context.Context, request *milvuspb.SelectGrantR
 
 func (s *Server) ListPolicy(ctx context.Context, request *internalpb.ListPolicyRequest) (*internalpb.ListPolicyResponse, error) {
 	return s.rootCoord.ListPolicy(ctx, request)
+}
+
+func (s *Server) AlterCollection(ctx context.Context, request *milvuspb.AlterCollectionRequest) (*commonpb.Status, error) {
+	return s.rootCoord.AlterCollection(ctx, request)
 }

@@ -48,7 +48,7 @@ type Component interface {
 	Init() error
 	Start() error
 	Stop() error
-	GetComponentStates(ctx context.Context) (*internalpb.ComponentStates, error)
+	GetComponentStates(ctx context.Context) (*milvuspb.ComponentStates, error)
 	GetStatisticsChannel(ctx context.Context) (*milvuspb.StringResponse, error)
 	Register() error
 }
@@ -105,10 +105,10 @@ type DataNodeComponent interface {
 
 	// UpdateStateCode updates state code for DataNode
 	//  `stateCode` is current statement of this data node, indicating whether it's healthy.
-	UpdateStateCode(stateCode internalpb.StateCode)
+	UpdateStateCode(stateCode commonpb.StateCode)
 
 	// GetStateCode return state code of this data node
-	GetStateCode() internalpb.StateCode
+	GetStateCode() commonpb.StateCode
 
 	// SetEtcdClient set etcd client for DataNode
 	SetEtcdClient(etcdClient *clientv3.Client)
@@ -324,6 +324,8 @@ type DataCoord interface {
 
 	// MarkSegmentsDropped marks the given segments as `dropped` state.
 	MarkSegmentsDropped(ctx context.Context, req *datapb.MarkSegmentsDroppedRequest) (*commonpb.Status, error)
+
+	BroadcastAlteredCollection(ctx context.Context, req *milvuspb.AlterCollectionRequest) (*commonpb.Status, error)
 }
 
 // DataCoordComponent defines the interface of DataCoord component.
@@ -375,7 +377,7 @@ type IndexNodeComponent interface {
 
 	// UpdateStateCode updates state code for IndexNodeComponent
 	//  `stateCode` is current statement of this QueryCoord, indicating whether it's healthy.
-	UpdateStateCode(stateCode internalpb.StateCode)
+	UpdateStateCode(stateCode commonpb.StateCode)
 }
 
 // IndexCoord is the interface `indexcoord` package implements
@@ -436,7 +438,7 @@ type IndexCoordComponent interface {
 
 	// UpdateStateCode updates state code for IndexCoordComponent
 	//  `stateCode` is current statement of this IndexCoordComponent, indicating whether it's healthy.
-	UpdateStateCode(stateCode internalpb.StateCode)
+	UpdateStateCode(stateCode commonpb.StateCode)
 }
 
 // RootCoord is the interface `rootcoord` package implements
@@ -501,6 +503,16 @@ type RootCoord interface {
 	// created times, created UTC times, and so on.
 	// error is always nil
 	ShowCollections(ctx context.Context, req *milvuspb.ShowCollectionsRequest) (*milvuspb.ShowCollectionsResponse, error)
+
+	// AlterCollection notifies Proxy to create a collection
+	//
+	// ctx is the context to control request deadline and cancellation
+	// req contains the request params, including database name(reserved), collection name and collection properties
+	//
+	// The `ErrorCode` of `Status` is `Success` if create collection successfully;
+	// otherwise, the `ErrorCode` of `Status` will be `Error`, and the `Reason` of `Status` will record the fail cause.
+	// error is always nil
+	AlterCollection(ctx context.Context, request *milvuspb.AlterCollectionRequest) (*commonpb.Status, error)
 
 	// CreatePartition notifies RootCoord to create a partition
 	//
@@ -763,7 +775,7 @@ type RootCoordComponent interface {
 
 	// UpdateStateCode updates state code for RootCoord
 	// State includes: Initializing, Healthy and Abnormal
-	UpdateStateCode(internalpb.StateCode)
+	UpdateStateCode(commonpb.StateCode)
 
 	// SetDataCoord set DataCoord for RootCoord
 	// `dataCoord` is a client of data coordinator.
@@ -860,7 +872,7 @@ type ProxyComponent interface {
 
 	// UpdateStateCode updates state code for Proxy
 	//  `stateCode` is current statement of this proxy node, indicating whether it's healthy.
-	UpdateStateCode(stateCode internalpb.StateCode)
+	UpdateStateCode(stateCode commonpb.StateCode)
 
 	// CreateCollection notifies Proxy to create a collection
 	//
@@ -871,7 +883,6 @@ type ProxyComponent interface {
 	// otherwise, the `ErrorCode` of `Status` will be `Error`, and the `Reason` of `Status` will record the fail cause.
 	// error is always nil
 	CreateCollection(ctx context.Context, request *milvuspb.CreateCollectionRequest) (*commonpb.Status, error)
-
 	// DropCollection notifies Proxy to drop a collection
 	//
 	// ctx is the context to control request deadline and cancellation
@@ -943,6 +954,16 @@ type ProxyComponent interface {
 	// the `CollectionIds` in `ShowCollectionsResponse` return collection ids list.
 	// error is always nil
 	ShowCollections(ctx context.Context, request *milvuspb.ShowCollectionsRequest) (*milvuspb.ShowCollectionsResponse, error)
+
+	// AlterCollection notifies Proxy to create a collection
+	//
+	// ctx is the context to control request deadline and cancellation
+	// req contains the request params, including database name(reserved), collection name and collection properties
+	//
+	// The `ErrorCode` of `Status` is `Success` if create collection successfully;
+	// otherwise, the `ErrorCode` of `Status` will be `Error`, and the `Reason` of `Status` will record the fail cause.
+	// error is always nil
+	AlterCollection(ctx context.Context, request *milvuspb.AlterCollectionRequest) (*commonpb.Status, error)
 
 	// CreatePartition notifies Proxy to create a partition
 	//
@@ -1307,7 +1328,7 @@ type QueryNodeComponent interface {
 
 	// UpdateStateCode updates state code for QueryNode
 	//  `stateCode` is current statement of this query node, indicating whether it's healthy.
-	UpdateStateCode(stateCode internalpb.StateCode)
+	UpdateStateCode(stateCode commonpb.StateCode)
 
 	// SetEtcdClient set etcd client for QueryNode
 	SetEtcdClient(etcdClient *clientv3.Client)
@@ -1344,7 +1365,7 @@ type QueryCoordComponent interface {
 
 	// UpdateStateCode updates state code for QueryCoord
 	//  `stateCode` is current statement of this QueryCoord, indicating whether it's healthy.
-	UpdateStateCode(stateCode internalpb.StateCode)
+	UpdateStateCode(stateCode commonpb.StateCode)
 
 	// SetDataCoord set DataCoord for QueryCoord
 	// `dataCoord` is a client of data coordinator.
