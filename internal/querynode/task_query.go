@@ -24,7 +24,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
@@ -47,6 +47,8 @@ func (q *queryTask) PreExecute(ctx context.Context) error {
 	if !funcutil.CheckCtxValid(q.Ctx()) {
 		return errors.New("search context timeout1$")
 	}
+	q.SetStep(TaskStepPreExecute)
+	rateCol.rtCounter.increaseQueueTime(q)
 	return nil
 }
 

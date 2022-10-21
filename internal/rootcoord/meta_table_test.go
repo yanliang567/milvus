@@ -35,8 +35,8 @@ import (
 
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/kv"
 	"github.com/milvus-io/milvus/internal/metastore/kv/rootcoord"
@@ -740,6 +740,28 @@ func TestMetaTable_getCollectionByIDInternal(t *testing.T) {
 		assert.Equal(t, UniqueID(11), coll.Partitions[0].PartitionID)
 		assert.Equal(t, Params.CommonCfg.DefaultPartitionName, coll.Partitions[0].PartitionName)
 	})
+
+	t.Run("get latest version", func(t *testing.T) {
+		Params.InitOnce()
+		meta := &MetaTable{
+			collID2Meta: map[typeutil.UniqueID]*model.Collection{
+				100: {
+					State:      pb.CollectionState_CollectionCreated,
+					CreateTime: 99,
+					Partitions: []*model.Partition{
+						{PartitionID: 11, PartitionName: Params.CommonCfg.DefaultPartitionName, State: pb.PartitionState_PartitionCreated},
+						{PartitionID: 22, PartitionName: "dropped", State: pb.PartitionState_PartitionDropped},
+					},
+				},
+			},
+		}
+		ctx := context.Background()
+		coll, err := meta.getCollectionByIDInternal(ctx, 100, typeutil.MaxTimestamp)
+		assert.NoError(t, err)
+		assert.Equal(t, 1, len(coll.Partitions))
+		assert.Equal(t, UniqueID(11), coll.Partitions[0].PartitionID)
+		assert.Equal(t, Params.CommonCfg.DefaultPartitionName, coll.Partitions[0].PartitionName)
+	})
 }
 
 func TestMetaTable_GetCollectionByName(t *testing.T) {
@@ -839,5 +861,122 @@ func TestMetaTable_GetCollectionByName(t *testing.T) {
 		assert.Equal(t, 1, len(coll.Partitions))
 		assert.Equal(t, UniqueID(11), coll.Partitions[0].PartitionID)
 		assert.Equal(t, Params.CommonCfg.DefaultPartitionName, coll.Partitions[0].PartitionName)
+	})
+
+	t.Run("get latest version", func(t *testing.T) {
+		ctx := context.Background()
+		meta := &MetaTable{collName2ID: nil}
+		_, err := meta.GetCollectionByName(ctx, "not_exist", typeutil.MaxTimestamp)
+		assert.Error(t, err)
+		assert.True(t, common.IsCollectionNotExistError(err))
+	})
+}
+
+func TestMetaTable_AlterCollection(t *testing.T) {
+	t.Run("alter metastore fail", func(t *testing.T) {
+		catalog := mocks.NewRootCoordCatalog(t)
+		catalog.On("AlterCollection",
+			mock.Anything, // context.Context
+			mock.Anything,
+			mock.Anything,
+			mock.Anything,
+			mock.Anything,
+		).Return(errors.New("error"))
+		meta := &MetaTable{
+			catalog:     catalog,
+			collID2Meta: map[typeutil.UniqueID]*model.Collection{},
+		}
+		ctx := context.Background()
+		err := meta.AlterCollection(ctx, nil, nil, 0)
+		assert.Error(t, err)
+	})
+
+	t.Run("alter collection ok", func(t *testing.T) {
+		catalog := mocks.NewRootCoordCatalog(t)
+		catalog.On("AlterCollection",
+			mock.Anything,
+			mock.Anything,
+			mock.Anything,
+			mock.Anything,
+			mock.Anything,
+		).Return(nil)
+		meta := &MetaTable{
+			catalog:     catalog,
+			collID2Meta: map[typeutil.UniqueID]*model.Collection{},
+		}
+		ctx := context.Background()
+
+		oldColl := &model.Collection{CollectionID: 1}
+		newColl := &model.Collection{CollectionID: 1}
+		err := meta.AlterCollection(ctx, oldColl, newColl, 0)
+		assert.NoError(t, err)
+		assert.Equal(t, meta.collID2Meta[1], newColl)
+	})
+}
+
+func Test_filterUnavailable(t *testing.T) {
+	coll := &model.Collection{}
+	nPartition := 10
+	nAvailablePartition := 0
+	for i := 0; i < nPartition; i++ {
+		partition := &model.Partition{
+			State: pb.PartitionState_PartitionDropping,
+		}
+		if rand.Int()%2 == 0 {
+			partition.State = pb.PartitionState_PartitionCreated
+			nAvailablePartition++
+		}
+		coll.Partitions = append(coll.Partitions, partition)
+	}
+	clone := filterUnavailable(coll)
+	assert.Equal(t, nAvailablePartition, len(clone.Partitions))
+	for _, p := range clone.Partitions {
+		assert.True(t, p.Available())
+	}
+}
+
+func TestMetaTable_getLatestCollectionByIDInternal(t *testing.T) {
+	t.Run("not exist", func(t *testing.T) {
+		ctx := context.Background()
+		mt := &MetaTable{collID2Meta: nil}
+		_, err := mt.getLatestCollectionByIDInternal(ctx, 100)
+		assert.Error(t, err)
+		assert.True(t, common.IsCollectionNotExistError(err))
+	})
+
+	t.Run("nil case", func(t *testing.T) {
+		ctx := context.Background()
+		mt := &MetaTable{collID2Meta: map[typeutil.UniqueID]*model.Collection{
+			100: nil,
+		}}
+		_, err := mt.getLatestCollectionByIDInternal(ctx, 100)
+		assert.Error(t, err)
+		assert.True(t, common.IsCollectionNotExistError(err))
+	})
+
+	t.Run("unavailable", func(t *testing.T) {
+		ctx := context.Background()
+		mt := &MetaTable{collID2Meta: map[typeutil.UniqueID]*model.Collection{
+			100: {State: pb.CollectionState_CollectionDropping},
+		}}
+		_, err := mt.getLatestCollectionByIDInternal(ctx, 100)
+		assert.Error(t, err)
+		assert.True(t, common.IsCollectionNotExistError(err))
+	})
+
+	t.Run("normal case", func(t *testing.T) {
+		ctx := context.Background()
+		mt := &MetaTable{collID2Meta: map[typeutil.UniqueID]*model.Collection{
+			100: {
+				State: pb.CollectionState_CollectionCreated,
+				Partitions: []*model.Partition{
+					{State: pb.PartitionState_PartitionCreated},
+					{State: pb.PartitionState_PartitionDropping},
+				},
+			},
+		}}
+		coll, err := mt.getLatestCollectionByIDInternal(ctx, 100)
+		assert.NoError(t, err)
+		assert.Equal(t, 1, len(coll.Partitions))
 	})
 }

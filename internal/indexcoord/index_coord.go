@@ -28,13 +28,19 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/util/metautil"
+
+	"github.com/milvus-io/milvus/internal/util/errorutil"
+
+	"golang.org/x/sync/errgroup"
+
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	v3rpc "go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/kv"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
@@ -123,7 +129,7 @@ func NewIndexCoord(ctx context.Context, factory dependency.Factory) (*IndexCoord
 		factory:             factory,
 		enableActiveStandBy: Params.IndexCoordCfg.EnableActiveStandby,
 	}
-	i.UpdateStateCode(internalpb.StateCode_Abnormal)
+	i.UpdateStateCode(commonpb.StateCode_Abnormal)
 	return i, nil
 }
 
@@ -165,8 +171,8 @@ func (i *IndexCoord) Init() error {
 	var initErr error
 	Params.InitOnce()
 	i.initOnce.Do(func() {
-		i.UpdateStateCode(internalpb.StateCode_Initializing)
-		log.Debug("IndexCoord init", zap.Any("stateCode", i.stateCode.Load().(internalpb.StateCode)))
+		i.UpdateStateCode(commonpb.StateCode_Initializing)
+		log.Debug("IndexCoord init", zap.Any("stateCode", i.stateCode.Load().(commonpb.StateCode)))
 
 		i.factory.Init(&Params)
 
@@ -279,7 +285,7 @@ func (i *IndexCoord) Start() error {
 		i.handoff.Start()
 		i.flushedSegmentWatcher.Start()
 
-		i.UpdateStateCode(internalpb.StateCode_Healthy)
+		i.UpdateStateCode(commonpb.StateCode_Healthy)
 	})
 	// Start callbacks
 	for _, cb := range i.startCallbacks {
@@ -293,12 +299,12 @@ func (i *IndexCoord) Start() error {
 		i.activateFunc = func() {
 			log.Info("IndexCoord switch from standby to active, reload the KV")
 			i.metaTable.reloadFromKV()
-			i.UpdateStateCode(internalpb.StateCode_Healthy)
+			i.UpdateStateCode(commonpb.StateCode_Healthy)
 		}
-		i.UpdateStateCode(internalpb.StateCode_StandBy)
+		i.UpdateStateCode(commonpb.StateCode_StandBy)
 		log.Info("IndexCoord start successfully", zap.Any("state", i.stateCode.Load()))
 	} else {
-		i.UpdateStateCode(internalpb.StateCode_Healthy)
+		i.UpdateStateCode(commonpb.StateCode_Healthy)
 		log.Info("IndexCoord start successfully", zap.Any("state", i.stateCode.Load()))
 	}
 
@@ -308,7 +314,7 @@ func (i *IndexCoord) Start() error {
 // Stop stops the IndexCoord component.
 func (i *IndexCoord) Stop() error {
 	// https://github.com/milvus-io/milvus/issues/12282
-	i.UpdateStateCode(internalpb.StateCode_Abnormal)
+	i.UpdateStateCode(commonpb.StateCode_Abnormal)
 
 	if i.loopCancel != nil {
 		i.loopCancel()
@@ -367,17 +373,17 @@ func (i *IndexCoord) SetRootCoord(rootCoord types.RootCoord) error {
 }
 
 // UpdateStateCode updates the component state of IndexCoord.
-func (i *IndexCoord) UpdateStateCode(code internalpb.StateCode) {
+func (i *IndexCoord) UpdateStateCode(code commonpb.StateCode) {
 	i.stateCode.Store(code)
 }
 
 func (i *IndexCoord) isHealthy() bool {
-	code := i.stateCode.Load().(internalpb.StateCode)
-	return code == internalpb.StateCode_Healthy
+	code := i.stateCode.Load().(commonpb.StateCode)
+	return code == commonpb.StateCode_Healthy
 }
 
 // GetComponentStates gets the component states of IndexCoord.
-func (i *IndexCoord) GetComponentStates(ctx context.Context) (*internalpb.ComponentStates, error) {
+func (i *IndexCoord) GetComponentStates(ctx context.Context) (*milvuspb.ComponentStates, error) {
 	log.Debug("get IndexCoord component states ...")
 
 	nodeID := common.NotRegisteredID
@@ -385,13 +391,13 @@ func (i *IndexCoord) GetComponentStates(ctx context.Context) (*internalpb.Compon
 		nodeID = i.session.ServerID
 	}
 
-	stateInfo := &internalpb.ComponentInfo{
+	stateInfo := &milvuspb.ComponentInfo{
 		NodeID:    nodeID,
 		Role:      "IndexCoord",
-		StateCode: i.stateCode.Load().(internalpb.StateCode),
+		StateCode: i.stateCode.Load().(commonpb.StateCode),
 	}
 
-	ret := &internalpb.ComponentStates{
+	ret := &milvuspb.ComponentStates{
 		State:              stateInfo,
 		SubcomponentStates: nil, // todo add subcomponents states
 		Status: &commonpb.Status{
@@ -616,6 +622,12 @@ func (i *IndexCoord) completeIndexInfo(ctx context.Context, indexInfo *indexpb.I
 		break
 	}
 
+	totalRow, err := calculateTotalRow()
+	if err != nil {
+		return err
+	}
+	indexInfo.TotalRows = totalRow
+
 	indexStates, indexStateCnt := i.metaTable.GetIndexStates(indexID, createTs)
 	allCnt := len(indexStates)
 	switch {
@@ -624,14 +636,11 @@ func (i *IndexCoord) completeIndexInfo(ctx context.Context, indexInfo *indexpb.I
 		indexInfo.IndexStateFailReason = indexStateCnt.FailReason
 	case indexStateCnt.Finished == allCnt:
 		indexInfo.State = commonpb.IndexState_Finished
+		indexInfo.IndexedRows = totalRow
 	default:
 		indexInfo.State = commonpb.IndexState_InProgress
 		indexInfo.IndexedRows = i.metaTable.GetIndexBuildProgress(indexID, createTs)
-		totalRow, err := calculateTotalRow()
-		if err != nil {
-			return err
-		}
-		indexInfo.TotalRows = totalRow
+
 	}
 
 	log.Debug("IndexCoord completeIndexInfo success", zap.Int64("collID", collectionID),
@@ -804,6 +813,9 @@ func (i *IndexCoord) GetIndexInfos(ctx context.Context, req *indexpb.GetIndexInf
 		if len(segIdxes) != 0 {
 			ret.SegmentInfo[segID].EnableIndex = true
 			for _, segIdx := range segIdxes {
+				indexFilePaths := metautil.BuildSegmentIndexFilePaths(i.chunkManager.RootPath(), segIdx.BuildID, segIdx.IndexVersion,
+					segIdx.PartitionID, segIdx.SegmentID, segIdx.IndexFileKeys)
+
 				ret.SegmentInfo[segID].IndexInfos = append(ret.SegmentInfo[segID].IndexInfos,
 					&indexpb.IndexFilePathInfo{
 						SegmentID:      segID,
@@ -812,9 +824,10 @@ func (i *IndexCoord) GetIndexInfos(ctx context.Context, req *indexpb.GetIndexInf
 						BuildID:        segIdx.BuildID,
 						IndexName:      i.metaTable.GetIndexNameByID(segIdx.CollectionID, segIdx.IndexID),
 						IndexParams:    i.metaTable.GetIndexParams(segIdx.CollectionID, segIdx.IndexID),
-						IndexFilePaths: segIdx.IndexFilePaths,
+						IndexFilePaths: indexFilePaths,
 						SerializedSize: segIdx.IndexSize,
 						IndexVersion:   segIdx.IndexVersion,
+						NumRows:        segIdx.NumRows,
 					})
 			}
 		}
@@ -855,6 +868,7 @@ func (i *IndexCoord) DescribeIndex(ctx context.Context, req *indexpb.DescribeInd
 			IndexParams:     index.IndexParams,
 			IsAutoIndex:     index.IsAutoIndex,
 			UserIndexParams: index.UserIndexParams,
+			IndexID:         index.IndexID,
 		}
 		if err := i.completeIndexInfo(ctx, indexInfo); err != nil {
 			log.Error("IndexCoord describe index fail", zap.Int64("collectionID", req.CollectionID),
@@ -967,6 +981,39 @@ func (i *IndexCoord) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsReq
 		},
 		Response: "",
 	}, nil
+}
+
+func (i *IndexCoord) CheckHealth(ctx context.Context, req *milvuspb.CheckHealthRequest) (*milvuspb.CheckHealthResponse, error) {
+	if !i.isHealthy() {
+		reason := errorutil.UnHealthReason("indexcoord", i.session.ServerID, "indexcoord is unhealthy")
+		return &milvuspb.CheckHealthResponse{IsHealthy: false, Reasons: []string{reason}}, nil
+	}
+
+	mu := &sync.Mutex{}
+	group, ctx := errgroup.WithContext(ctx)
+	errReasons := make([]string, 0, len(i.nodeManager.GetAllClients()))
+
+	for nodeID, indexClient := range i.nodeManager.GetAllClients() {
+		nodeID := nodeID
+		indexClient := indexClient
+		group.Go(func() error {
+			sta, err := indexClient.GetComponentStates(ctx)
+			isHealthy, reason := errorutil.UnHealthReasonWithComponentStatesOrErr("indexnode", nodeID, sta, err)
+			if !isHealthy {
+				mu.Lock()
+				defer mu.Unlock()
+				errReasons = append(errReasons, reason)
+			}
+			return err
+		})
+	}
+
+	err := group.Wait()
+	if err != nil || len(errReasons) != 0 {
+		return &milvuspb.CheckHealthResponse{IsHealthy: false, Reasons: errReasons}, nil
+	}
+
+	return &milvuspb.CheckHealthResponse{IsHealthy: true, Reasons: errReasons}, nil
 }
 
 // watchNodeLoop is used to monitor IndexNode going online and offline.

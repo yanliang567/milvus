@@ -21,8 +21,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -159,7 +158,7 @@ import (
 //			err = proto.Unmarshal([]byte(strValue), &indexMetaTmp)
 //			assert.Nil(t, err)
 //		}
-//		defer in.chunkManager.MultiRemove(indexMetaTmp.IndexFilePaths)
+//		defer in.chunkManager.MultiRemove(indexMetaTmp.IndexFileKeys)
 //		defer func() {
 //			for k := range kvs {
 //				err = in.chunkManager.Remove(k)
@@ -270,7 +269,7 @@ import (
 //			err = proto.Unmarshal([]byte(strValue), &indexMetaTmp)
 //			assert.Nil(t, err)
 //		}
-//		defer in.chunkManager.MultiRemove(indexMetaTmp.IndexFilePaths)
+//		defer in.chunkManager.MultiRemove(indexMetaTmp.IndexFileKeys)
 //		defer func() {
 //			for k := range kvs {
 //				err = in.chunkManager.Remove(k)
@@ -389,7 +388,7 @@ import (
 //		//	err = proto.Unmarshal([]byte(strValue), &indexMetaTmp)
 //		//	assert.Nil(t, err)
 //		//}
-//		defer in.chunkManager.MultiRemove(indexMetaTmp.IndexFilePaths)
+//		defer in.chunkManager.MultiRemove(indexMetaTmp.IndexFileKeys)
 //		defer func() {
 //			for k := range kvs {
 //				err = in.chunkManager.Remove(k)
@@ -404,7 +403,7 @@ import (
 //		resp, err := in.GetComponentStates(ctx)
 //		assert.Nil(t, err)
 //		assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
-//		assert.Equal(t, internalpb.StateCode_Healthy, resp.State.StateCode)
+//		assert.Equal(t, commonpb.StateCode_Healthy, resp.State.StateCode)
 //	})
 //
 //	t.Run("GetTimeTickChannel", func(t *testing.T) {
@@ -467,25 +466,25 @@ func TestComponentState(t *testing.T) {
 	state, err := in.GetComponentStates(ctx)
 	assert.Nil(t, err)
 	assert.Equal(t, state.Status.ErrorCode, commonpb.ErrorCode_Success)
-	assert.Equal(t, state.State.StateCode, internalpb.StateCode_Abnormal)
+	assert.Equal(t, state.State.StateCode, commonpb.StateCode_Abnormal)
 
 	assert.Nil(t, in.Init())
 	state, err = in.GetComponentStates(ctx)
 	assert.Nil(t, err)
 	assert.Equal(t, state.Status.ErrorCode, commonpb.ErrorCode_Success)
-	assert.Equal(t, state.State.StateCode, internalpb.StateCode_Initializing)
+	assert.Equal(t, state.State.StateCode, commonpb.StateCode_Initializing)
 
 	assert.Nil(t, in.Start())
 	state, err = in.GetComponentStates(ctx)
 	assert.Nil(t, err)
 	assert.Equal(t, state.Status.ErrorCode, commonpb.ErrorCode_Success)
-	assert.Equal(t, state.State.StateCode, internalpb.StateCode_Healthy)
+	assert.Equal(t, state.State.StateCode, commonpb.StateCode_Healthy)
 
 	assert.Nil(t, in.Stop())
 	state, err = in.GetComponentStates(ctx)
 	assert.Nil(t, err)
 	assert.Equal(t, state.Status.ErrorCode, commonpb.ErrorCode_Success)
-	assert.Equal(t, state.State.StateCode, internalpb.StateCode_Abnormal)
+	assert.Equal(t, state.State.StateCode, commonpb.StateCode_Abnormal)
 }
 
 func TestGetTimeTickChannel(t *testing.T) {

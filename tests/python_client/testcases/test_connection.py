@@ -48,7 +48,7 @@ class TestConnectionParams(TestcaseBase):
 
         # check param of **kwargs
         self.connection_wrap.add_connection(_kwargs=data, check_task=ct.CheckTasks.err_res,
-                                            check_items={ct.err_code: -1, ct.err_msg: cem.NoHostPort})
+                                            check_items={ct.err_code: 1, ct.err_msg: cem.NoHostPort})
 
         # get addr of default alias
         self.connection_wrap.get_connection_addr(alias=DefaultConfig.DEFAULT_USING, check_task=ct.CheckTasks.ccr,
@@ -73,7 +73,7 @@ class TestConnectionParams(TestcaseBase):
         # No check for **kwargs
         self.connection_wrap.connect(alias=DefaultConfig.DEFAULT_USING, host=1,
                                      check_task=ct.CheckTasks.err_res,
-                                     check_items={ct.err_code: -1, ct.err_msg: cem.NoHostPort})
+                                     check_items={ct.err_code: 1, ct.err_msg: cem.NoHostPort})
 
     @pytest.mark.tags(ct.CaseLabel.L2)
     @pytest.mark.parametrize("alias", ct.get_not_string)
@@ -871,9 +871,10 @@ class TestConnectIPInvalid(TestcaseBase):
         method: set host in get_not_string
         expected: connected is False
         """
-        err_msg = cem.FailConnect % (host, port)
-        self.connection_wrap.connect(alias=DefaultConfig.DEFAULT_USING, host=host, port=port, check_task=ct.CheckTasks.ccr,
-                                     check_items={ct.err_code: -1, ct.err_msg: err_msg})
+        err_msg = "Type of 'host' must be str."
+        self.connection_wrap.connect(alias=DefaultConfig.DEFAULT_USING, host=host, port=port,
+                                     check_task=ct.CheckTasks.check_value_equal,
+                                     check_items={ct.err_code: 1, ct.err_msg: err_msg})
 
 
 class TestConnectPortInvalid(TestcaseBase):
@@ -889,9 +890,10 @@ class TestConnectPortInvalid(TestcaseBase):
         method: set port in get_not_string
         expected: connected is False
         """
-        err_msg = cem.FailConnect % (host, str(port))
-        self.connection_wrap.connect(alias=DefaultConfig.DEFAULT_USING, host=host, port=port, check_task=ct.CheckTasks.ccr,
-                                     check_items={ct.err_code: -1, ct.err_msg: err_msg})
+        err_msg = "Type of 'host' must be str."
+        self.connection_wrap.connect(alias=DefaultConfig.DEFAULT_USING, host=host, port=port,
+                                     check_task=ct.CheckTasks.check_value_equal,
+                                     check_items={ct.err_code: 1, ct.err_msg: err_msg})
 
 
 class TestConnectUriInvalid(TestcaseBase):
@@ -910,7 +912,7 @@ class TestConnectUriInvalid(TestcaseBase):
 
         uri = "{}://{}:{}".format(protocol, host, port)
         self.connection_wrap.connect(alias=connect_name, uri=uri, check_task=ct.CheckTasks.err_res,
-                                     check_items={ct.err_code: -1})
+                                     check_items={ct.err_code: 1})
 
     @pytest.mark.tags(ct.CaseLabel.L2)
     @pytest.mark.parametrize("host", ["256.256.256.256", "10.1.0"])

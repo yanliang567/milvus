@@ -20,20 +20,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
-
-	"github.com/milvus-io/milvus/internal/proto/indexpb"
+	"strconv"
 
 	"go.uber.org/zap"
 
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/types"
-
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
-	"github.com/milvus-io/milvus/api/schemapb"
+	"github.com/milvus-io/milvus/internal/util/commonpbutil"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/indexparamcheck"
+	"github.com/milvus-io/milvus/internal/util/indexparams"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
@@ -96,7 +97,7 @@ func (cit *createIndexTask) SetTs(ts Timestamp) {
 }
 
 func (cit *createIndexTask) OnEnqueue() error {
-	cit.req.Base = &commonpb.MsgBase{}
+	cit.req.Base = commonpbutil.NewMsgBase()
 	return nil
 }
 
@@ -144,6 +145,18 @@ func (cit *createIndexTask) parseIndexParams() error {
 				return fmt.Errorf("IndexType not specified")
 			}
 		}
+
+		indexType, exist := indexParamsMap[common.IndexTypeKey]
+		if !exist {
+			return fmt.Errorf("IndexType not specified")
+		}
+		if indexType == indexparamcheck.IndexDISKANN {
+			err := indexparams.FillDiskIndexParams(&Params, indexParamsMap)
+			if err != nil {
+				return err
+			}
+		}
+
 		err := checkTrain(cit.fieldSchema, indexParamsMap)
 		if err != nil {
 			return err
@@ -260,6 +273,10 @@ func (cit *createIndexTask) PreExecute(ctx context.Context) error {
 	}
 	cit.collectionID = collID
 
+	if err = validateIndexName(cit.req.GetIndexName()); err != nil {
+		return err
+	}
+
 	field, err := cit.getIndexedField(ctx)
 	if err != nil {
 		return err
@@ -275,7 +292,7 @@ func (cit *createIndexTask) Execute(ctx context.Context) error {
 		zap.Any("indexParams", cit.req.GetExtraParams()))
 
 	if cit.req.GetIndexName() == "" {
-		cit.req.IndexName = Params.CommonCfg.DefaultIndexName
+		cit.req.IndexName = Params.CommonCfg.DefaultIndexName + "_" + strconv.FormatInt(cit.fieldSchema.GetFieldID(), 10)
 	}
 	var err error
 	req := &indexpb.CreateIndexRequest{
@@ -345,7 +362,7 @@ func (dit *describeIndexTask) SetTs(ts Timestamp) {
 }
 
 func (dit *describeIndexTask) OnEnqueue() error {
-	dit.Base = &commonpb.MsgBase{}
+	dit.Base = commonpbutil.NewMsgBase()
 	return nil
 }
 
@@ -417,6 +434,7 @@ type dropIndexTask struct {
 	ctx context.Context
 	*milvuspb.DropIndexRequest
 	indexCoord types.IndexCoord
+	queryCoord types.QueryCoord
 	result     *commonpb.Status
 
 	collectionID UniqueID
@@ -455,7 +473,7 @@ func (dit *dropIndexTask) SetTs(ts Timestamp) {
 }
 
 func (dit *dropIndexTask) OnEnqueue() error {
-	dit.Base = &commonpb.MsgBase{}
+	dit.Base = commonpbutil.NewMsgBase()
 	return nil
 }
 
@@ -479,6 +497,15 @@ func (dit *dropIndexTask) PreExecute(ctx context.Context) error {
 
 	collID, _ := globalMetaCache.GetCollectionID(ctx, dit.CollectionName)
 	dit.collectionID = collID
+
+	loaded, err := isCollectionLoaded(ctx, dit.queryCoord, []int64{collID})
+	if err != nil {
+		return err
+	}
+
+	if loaded {
+		return errors.New("index cannot be dropped, collection is loaded, please release it first")
+	}
 
 	return nil
 }
@@ -549,7 +576,7 @@ func (gibpt *getIndexBuildProgressTask) SetTs(ts Timestamp) {
 }
 
 func (gibpt *getIndexBuildProgressTask) OnEnqueue() error {
-	gibpt.Base = &commonpb.MsgBase{}
+	gibpt.Base = commonpbutil.NewMsgBase()
 	return nil
 }
 
@@ -642,7 +669,7 @@ func (gist *getIndexStateTask) SetTs(ts Timestamp) {
 }
 
 func (gist *getIndexStateTask) OnEnqueue() error {
-	gist.Base = &commonpb.MsgBase{}
+	gist.Base = commonpbutil.NewMsgBase()
 	return nil
 }
 

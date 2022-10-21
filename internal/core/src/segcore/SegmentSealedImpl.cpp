@@ -39,7 +39,7 @@ SegmentSealedImpl::PreDelete(int64_t size) {
 }
 
 void
-SegmentSealedImpl::LoadIndex(const index::LoadIndexInfo& info) {
+SegmentSealedImpl::LoadIndex(const LoadIndexInfo& info) {
     // print(info);
     // NOTE: lock only when data is ready to avoid starvation
     auto field_id = FieldId(info.field_id);
@@ -53,7 +53,7 @@ SegmentSealedImpl::LoadIndex(const index::LoadIndexInfo& info) {
 }
 
 void
-SegmentSealedImpl::LoadVecIndex(const index::LoadIndexInfo& info) {
+SegmentSealedImpl::LoadVecIndex(const LoadIndexInfo& info) {
     // NOTE: lock only when data is ready to avoid starvation
     auto field_id = FieldId(info.field_id);
     auto& field_meta = schema_->operator[](field_id);
@@ -76,8 +76,7 @@ SegmentSealedImpl::LoadVecIndex(const index::LoadIndexInfo& info) {
                        std::to_string(row_count_opt_.value()) + ")");
     }
     AssertInfo(!vector_indexings_.is_ready(field_id), "vec index is not ready");
-    vector_indexings_.append_field_indexing(field_id, metric_type,
-                                            std::move(const_cast<index::LoadIndexInfo&>(info).index));
+    vector_indexings_.append_field_indexing(field_id, metric_type, std::move(const_cast<LoadIndexInfo&>(info).index));
 
     set_bit(index_ready_bitset_, field_id, true);
     update_row_count(row_count);
@@ -85,7 +84,7 @@ SegmentSealedImpl::LoadVecIndex(const index::LoadIndexInfo& info) {
 }
 
 void
-SegmentSealedImpl::LoadScalarIndex(const index::LoadIndexInfo& info) {
+SegmentSealedImpl::LoadScalarIndex(const LoadIndexInfo& info) {
     // NOTE: lock only when data is ready to avoid starvation
     auto field_id = FieldId(info.field_id);
     auto& field_meta = schema_->operator[](field_id);
@@ -106,7 +105,7 @@ SegmentSealedImpl::LoadScalarIndex(const index::LoadIndexInfo& info) {
                        std::to_string(row_count_opt_.value()) + ")");
     }
 
-    scalar_indexings_[field_id] = std::move(const_cast<index::LoadIndexInfo&>(info).index);
+    scalar_indexings_[field_id] = std::move(const_cast<LoadIndexInfo&>(info).index);
     // reverse pk from scalar index and set pks to offset
     if (schema_->get_primary_field_id() == field_id) {
         AssertInfo(field_id.get() != -1, "Primary key is -1");
@@ -393,7 +392,7 @@ SegmentSealedImpl::check_search(const query::Plan* plan) const {
     AssertInfo(plan->extra_info_opt_.has_value(), "Extra info of search plan doesn't have value");
 
     if (!is_system_field_ready()) {
-        PanicInfo("System Field RowID or Timestamp is not loaded");
+        PanicInfo("Segment " + std::to_string(this->id_) + " System Field RowID or Timestamp is not loaded");
     }
 
     auto& request_fields = plan->extra_info_opt_.value().involved_fields_;
@@ -727,7 +726,7 @@ void
 SegmentSealedImpl::mask_with_timestamps(BitsetType& bitset_chunk, Timestamp timestamp) const {
     // TODO change the
     AssertInfo(insert_record_.timestamps_.num_chunk() == 1, "num chunk not equal to 1 for sealed segment");
-    auto timestamps_data = insert_record_.timestamps_.get_chunk(0);
+    const auto& timestamps_data = insert_record_.timestamps_.get_chunk(0);
     AssertInfo(timestamps_data.size() == get_row_count(), "Timestamp size not equal to row count");
     auto range = insert_record_.timestamp_index_.get_active_range(timestamp);
 

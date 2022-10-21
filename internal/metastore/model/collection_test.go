@@ -5,8 +5,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	pb "github.com/milvus-io/milvus/internal/proto/etcdpb"
 )
 
@@ -51,6 +51,12 @@ var (
 				PartitionCreatedTimestamp: 1,
 			},
 		},
+		Properties: []*commonpb.KeyValuePair{
+			{
+				Key:   "k",
+				Value: "v",
+			},
+		},
 	}
 
 	deprecatedColPb = &pb.CollectionInfo{
@@ -76,6 +82,12 @@ var (
 		ShardsNum:            1,
 		StartPositions:       startPositions,
 		ConsistencyLevel:     commonpb.ConsistencyLevel_Strong,
+		Properties: []*commonpb.KeyValuePair{
+			{
+				Key:   "k",
+				Value: "v",
+			},
+		},
 	}
 )
 

@@ -9,12 +9,12 @@ import (
 
 	"github.com/milvus-io/milvus/internal/metastore"
 
-	"github.com/milvus-io/milvus/api/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	pb "github.com/milvus-io/milvus/internal/proto/etcdpb"
 	"github.com/stretchr/testify/assert"
 
@@ -770,7 +770,7 @@ func TestCatalog_AlterCollection(t *testing.T) {
 		newC := &model.Collection{CollectionID: collectionID, State: pb.CollectionState_CollectionCreated}
 		err := kc.AlterCollection(ctx, oldC, newC, metastore.MODIFY, 0)
 		assert.NoError(t, err)
-		key := buildCollectionKey(collectionID)
+		key := BuildCollectionKey(collectionID)
 		value, ok := kvs[key]
 		assert.True(t, ok)
 		var collPb pb.CollectionInfo
@@ -821,7 +821,7 @@ func TestCatalog_AlterPartition(t *testing.T) {
 		newP := &model.Partition{PartitionID: partitionID, CollectionID: collectionID, State: pb.PartitionState_PartitionCreated}
 		err := kc.AlterPartition(ctx, oldP, newP, metastore.MODIFY, 0)
 		assert.NoError(t, err)
-		key := buildPartitionKey(collectionID, partitionID)
+		key := BuildPartitionKey(collectionID, partitionID)
 		value, ok := kvs[key]
 		assert.True(t, ok)
 		var partPb pb.PartitionInfo

@@ -30,7 +30,7 @@ import (
 	"github.com/opentracing/opentracing-go"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/api/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
@@ -72,6 +72,11 @@ func (iNode *insertNode) Name() string {
 
 // Operate handles input messages, to execute insert operations
 func (iNode *insertNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
+	if in == nil {
+		log.Debug("type assertion failed for insertMsg because it's nil", zap.String("name", iNode.Name()))
+		return []Msg{}
+	}
+
 	if len(in) != 1 {
 		log.Warn("Invalid operate message input in insertNode", zap.Int("input length", len(in)), zap.String("name", iNode.Name()))
 		return []Msg{}
@@ -79,11 +84,7 @@ func (iNode *insertNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 
 	iMsg, ok := in[0].(*insertMsg)
 	if !ok {
-		if in[0] == nil {
-			log.Debug("type assertion failed for insertMsg because it's nil", zap.String("name", iNode.Name()))
-		} else {
-			log.Warn("type assertion failed for insertMsg", zap.String("msgType", reflect.TypeOf(in[0]).Name()), zap.String("name", iNode.Name()))
-		}
+		log.Warn("type assertion failed for insertMsg", zap.String("msgType", reflect.TypeOf(in[0]).Name()), zap.String("name", iNode.Name()))
 		return []Msg{}
 	}
 
@@ -93,10 +94,6 @@ func (iNode *insertNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 		insertRecords:    make(map[UniqueID][]*schemapb.FieldData),
 		insertOffset:     make(map[UniqueID]int64),
 		insertPKs:        make(map[UniqueID][]primaryKey),
-	}
-
-	if iMsg == nil {
-		return []Msg{}
 	}
 
 	var spans []opentracing.Span
@@ -189,7 +186,7 @@ func (iNode *insertNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 		if targetSegment != nil {
 			offset, err := targetSegment.segmentPreInsert(numOfRecords)
 			if err != nil {
-				if errors.Is(err, errSegmentUnhealthy) {
+				if errors.Is(err, ErrSegmentUnhealthy) {
 					log.Debug("segment removed before preInsert")
 					continue
 				}
@@ -390,7 +387,7 @@ func (iNode *insertNode) insert(iData *insertData, segmentID UniqueID) error {
 
 	err = targetSegment.segmentInsert(offsets, ids, timestamps, insertRecord)
 	if err != nil {
-		if errors.Is(err, errSegmentUnhealthy) {
+		if errors.Is(err, ErrSegmentUnhealthy) {
 			log.Debug("segment removed before insert")
 			return nil
 		}
@@ -428,7 +425,7 @@ func (iNode *insertNode) delete(deleteData *deleteData, segmentID UniqueID) erro
 
 	err = targetSegment.segmentDelete(offset, ids, timestamps)
 	if err != nil {
-		if errors.Is(err, errSegmentUnhealthy) {
+		if errors.Is(err, ErrSegmentUnhealthy) {
 			log.Debug("segment removed before delete")
 			return nil
 		}

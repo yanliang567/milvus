@@ -31,12 +31,13 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/commonpbutil"
 	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/logutil"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
@@ -121,7 +122,7 @@ func NewProxy(ctx context.Context, factory dependency.Factory) (*Proxy, error) {
 		shardMgr:         newShardClientMgr(),
 		multiRateLimiter: NewMultiRateLimiter(),
 	}
-	node.UpdateStateCode(internalpb.StateCode_Abnormal)
+	node.UpdateStateCode(commonpb.StateCode_Abnormal)
 	logutil.Logger(ctx).Debug("create a new Proxy instance", zap.Any("state", node.stateCode.Load()))
 	return node, nil
 }
@@ -169,6 +170,7 @@ func (node *Proxy) initRateCollector() error {
 	// TODO: add bulkLoad rate
 	rateCol.Register(internalpb.RateType_DQLSearch.String())
 	rateCol.Register(internalpb.RateType_DQLQuery.String())
+	rateCol.Register(metricsinfo.ReadResultThroughput)
 	return nil
 }
 
@@ -298,12 +300,12 @@ func (node *Proxy) sendChannelsTimeTickLoop() {
 				}
 
 				req := &internalpb.ChannelTimeTickMsg{
-					Base: &commonpb.MsgBase{
-						MsgType:   commonpb.MsgType_TimeTick, // todo
-						MsgID:     0,                         // todo
-						Timestamp: 0,                         // todo
-						SourceID:  node.session.ServerID,
-					},
+					Base: commonpbutil.NewMsgBase(
+						commonpbutil.WithMsgType(commonpb.MsgType_TimeTick), // todo
+						commonpbutil.WithMsgID(0),                           // todo
+						commonpbutil.WithTimeStamp(0),                       // todo
+						commonpbutil.WithSourceID(node.session.ServerID),
+					),
 					ChannelNames:     channels,
 					Timestamps:       tss,
 					DefaultTimestamp: maxTs,
@@ -367,8 +369,8 @@ func (node *Proxy) Start() error {
 	Params.ProxyCfg.CreatedTime = now
 	Params.ProxyCfg.UpdatedTime = now
 
-	log.Debug("update state code", zap.String("role", typeutil.ProxyRole), zap.String("State", internalpb.StateCode_Healthy.String()))
-	node.UpdateStateCode(internalpb.StateCode_Healthy)
+	log.Debug("update state code", zap.String("role", typeutil.ProxyRole), zap.String("State", commonpb.StateCode_Healthy.String()))
+	node.UpdateStateCode(commonpb.StateCode_Healthy)
 
 	return nil
 }
@@ -413,11 +415,11 @@ func (node *Proxy) Stop() error {
 	}
 
 	if node.chMgr != nil {
-		_ = node.chMgr.removeAllDMLStream()
+		node.chMgr.removeAllDMLStream()
 	}
 
 	// https://github.com/milvus-io/milvus/issues/12282
-	node.UpdateStateCode(internalpb.StateCode_Abnormal)
+	node.UpdateStateCode(commonpb.StateCode_Abnormal)
 
 	return nil
 }

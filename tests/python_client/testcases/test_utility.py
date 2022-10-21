@@ -213,6 +213,7 @@ class TestUtilityParams(TestcaseBase):
         c_name = cf.gen_unique_str(prefix)
         df = cf.gen_default_dataframe_data()
         self.collection_wrap.construct_from_dataframe(c_name, df, primary_field=ct.default_int64_field_name)
+        self.collection_wrap.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         self.collection_wrap.load()
         error = {ct.err_code: 1, ct.err_msg: "Invalid collection name: {}".format(invalid_c_name)}
         self.utility_wrap.loading_progress(invalid_c_name, check_task=CheckTasks.err_res, check_items=error)
@@ -228,6 +229,7 @@ class TestUtilityParams(TestcaseBase):
         c_name = cf.gen_unique_str(prefix)
         df = cf.gen_default_dataframe_data()
         self.collection_wrap.construct_from_dataframe(c_name, df, primary_field=ct.default_int64_field_name)
+        self.collection_wrap.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         self.collection_wrap.load()
         error = {ct.err_code: 1, ct.err_msg: "describe collection failed: can't find collection"}
         self.utility_wrap.loading_progress("not_existed_name", check_task=CheckTasks.err_res, check_items=error)
@@ -257,7 +259,7 @@ class TestUtilityParams(TestcaseBase):
         collection_w = self.init_collection_general(prefix)[0]
         log.debug(collection_w.num_entities)
         collection_w.load()
-        err_msg = {ct.err_code: -1, ct.err_msg: f"Partitions not exist: [{ct.default_tag}]"}
+        err_msg = {ct.err_code: 1, ct.err_msg: f"partitionID of partitionName:{ct.default_tag} can not be find"}
         self.utility_wrap.loading_progress(collection_w.name, partition_names,
                                            check_task=CheckTasks.err_res, check_items=err_msg)
 
@@ -306,6 +308,7 @@ class TestUtilityParams(TestcaseBase):
         self.utility_wrap.drop_collection(c_name)
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.skip(reason="calc_distance interface is no longer supported")
     def test_calc_distance_left_vector_invalid_type(self, get_invalid_vector_dict):
         """
         target: test calculated distance with invalid vectors
@@ -322,6 +325,7 @@ class TestUtilityParams(TestcaseBase):
                                                                     "is illegal".format(invalid_vector)})
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.skip(reason="calc_distance interface is no longer supported")
     def test_calc_distance_left_vector_invalid_value(self, get_invalid_vector_dict):
         """
         target: test calculated distance with invalid vectors
@@ -338,6 +342,7 @@ class TestUtilityParams(TestcaseBase):
                                                                     "is illegal".format(invalid_vector)})
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.skip(reason="calc_distance interface is no longer supported")
     def test_calc_distance_right_vector_invalid_type(self, get_invalid_vector_dict):
         """
         target: test calculated distance with invalid vectors
@@ -356,6 +361,7 @@ class TestUtilityParams(TestcaseBase):
                                                                     "is illegal".format(invalid_vector)})
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.skip(reason="calc_distance interface is no longer supported")
     def test_calc_distance_right_vector_invalid_value(self, get_invalid_vector_dict):
         """
         target: test calculated distance with invalid vectors
@@ -374,6 +380,7 @@ class TestUtilityParams(TestcaseBase):
                                                                     "is illegal".format(invalid_vector)})
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.skip(reason="calc_distance interface is no longer supported")
     def test_calc_distance_invalid_metric_type(self, get_support_metric_field, get_invalid_metric_type):
         """
         target: test calculated distance with invalid metric
@@ -395,6 +402,7 @@ class TestUtilityParams(TestcaseBase):
                                                                 "is illegal".format(metric)})
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.skip(reason="calc_distance interface is no longer supported")
     def test_calc_distance_invalid_metric_value(self, get_support_metric_field, get_invalid_metric_value):
         """
         target: test calculated distance with invalid metric
@@ -416,6 +424,7 @@ class TestUtilityParams(TestcaseBase):
                                                                 "float vector".format(metric)})
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.skip(reason="calc_distance interface is no longer supported")
     def test_calc_distance_not_support_metric(self, get_support_metric_field, get_not_support_metric):
         """
         target: test calculated distance with invalid metric
@@ -437,6 +446,7 @@ class TestUtilityParams(TestcaseBase):
                                                                 "float vector".format(metric)})
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.skip(reason="calc_distance interface is no longer supported")
     def test_calc_distance_invalid_using(self, get_support_metric_field):
         """
         target: test calculated distance with invalid using
@@ -457,6 +467,7 @@ class TestUtilityParams(TestcaseBase):
                                                      "err_msg": "should create connect"})
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.skip(reason="calc_distance interface is no longer supported")
     def test_calc_distance_not_match_dim(self):
         """
         target: test calculated distance with invalid vectors
@@ -476,6 +487,7 @@ class TestUtilityParams(TestcaseBase):
                                                                 "vectors with different dimension"})
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.skip(reason="calc_distance interface is no longer supported")
     def test_calc_distance_collection_before_load(self, get_support_metric_field):
         """
         target: test calculated distance when entities is not ready
@@ -677,7 +689,7 @@ class TestUtilityBase(TestcaseBase):
         cw = self.init_collection_wrap(name=c_name)
         data = cf.gen_default_list_data(nb)
         cw.insert(data=data)
-        error = {ct.err_code: 1, ct.err_msg: "no index is created"}
+        error = {ct.err_code: 25, ct.err_msg: "there is no index on collection"}
         self.utility_wrap.index_building_progress(c_name, check_task=CheckTasks.err_res, check_items=error)
 
     @pytest.mark.tags(CaseLabel.L1)
@@ -686,7 +698,7 @@ class TestUtilityBase(TestcaseBase):
         target: test building_process
         method: 1.insert 1024 (because minSegmentSizeToEnableIndex=1024)
                 2.build(server does create index) and call building_process
-        expected: indexed_rows=0
+        expected: indexed_rows=nb
         """
         nb = 1024
         c_name = cf.gen_unique_str(prefix)
@@ -694,8 +706,9 @@ class TestUtilityBase(TestcaseBase):
         data = cf.gen_default_list_data(nb)
         cw.insert(data=data)
         cw.create_index(default_field_name, default_index_params)
+        cw.flush()
         res, _ = self.utility_wrap.index_building_progress(c_name)
-        assert res['indexed_rows'] == 0
+        assert res['indexed_rows'] == nb
         assert res['total_rows'] == nb
 
     @pytest.mark.tags(CaseLabel.L1)
@@ -712,6 +725,7 @@ class TestUtilityBase(TestcaseBase):
         data = cf.gen_default_list_data(nb)
         cw.insert(data=data)
         cw.create_index(default_field_name, default_index_params)
+        cw.flush()
         start = time.time()
         while True:
             time.sleep(1)
@@ -764,6 +778,7 @@ class TestUtilityBase(TestcaseBase):
         data = cf.gen_default_list_data(nb)
         cw.insert(data=data)
         cw.create_index(default_field_name, default_index_params)
+        cw.flush()
         res, _ = self.utility_wrap.wait_for_index_building_complete(c_name)
         assert res is True
         res, _ = self.utility_wrap.index_building_progress(c_name)
@@ -774,16 +789,17 @@ class TestUtilityBase(TestcaseBase):
         """
         target: test loading progress without loading
         method: insert and flush data, call loading_progress without loading
-        expected: return successfully with 0%
+        expected: raise exception
         """
         collection_w = self.init_collection_wrap()
         df = cf.gen_default_dataframe_data()
         collection_w.insert(df)
         assert collection_w.num_entities == ct.default_nb
-        res = self.utility_wrap.loading_progress(collection_w.name)[0]
-        exp_res = {loading_progress: '0%', num_loaded_partitions: 0, not_loaded_partitions: ['_default']}
-
-        assert exp_res == res
+        self.utility_wrap.loading_progress(collection_w.name,
+                                           check_task=CheckTasks.err_res,
+                                           check_items={ct.err_code: 1,
+                                                        ct.err_msg: 'fail to show collections from '
+                                                                    'the querycoord, no data'})
 
     @pytest.mark.tags(CaseLabel.L1)
     @pytest.mark.parametrize("nb", [ct.default_nb, 5000])
@@ -809,6 +825,7 @@ class TestUtilityBase(TestcaseBase):
         df = cf.gen_default_dataframe_data()
         collection_w.insert(df)
         assert collection_w.num_entities == ct.default_nb
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load(_async=True)
         res, _ = self.utility_wrap.loading_progress(collection_w.name)
         loading_int = cf.percent_to_int(res[loading_progress])
@@ -825,13 +842,15 @@ class TestUtilityBase(TestcaseBase):
         expected: 0 entities is loaded
         """
         collection_w = self.init_collection_wrap()
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         res, _ = self.utility_wrap.loading_progress(collection_w.name)
-        exp_res = {loading_progress: '100%', num_loaded_partitions: 1, not_loaded_partitions: []}
+        exp_res = {loading_progress: '100%'}
 
         assert exp_res == res
 
     @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.xfail(reason="issue 19754")
     def test_loading_progress_after_release(self):
         """
         target: test loading progress after release
@@ -858,7 +877,7 @@ class TestUtilityBase(TestcaseBase):
         collection_w, partition_w, _, _ = self.insert_entities_into_two_partitions_in_half(half)
         partition_w.release()
         res = self.utility_wrap.loading_progress(collection_w.name)[0]
-        assert res[loading_progress] == '50%'
+        assert res[loading_progress] == '100%'
 
     @pytest.mark.tags(CaseLabel.L2)
     def test_loading_progress_with_load_partition(self):
@@ -873,7 +892,7 @@ class TestUtilityBase(TestcaseBase):
         collection_w.release()
         partition_w.load()
         res = self.utility_wrap.loading_progress(collection_w.name)[0]
-        assert res[loading_progress] == '50%'
+        assert res[loading_progress] == '100%'
 
     @pytest.mark.tags(CaseLabel.L1)
     def test_loading_progress_with_partition(self):
@@ -902,28 +921,26 @@ class TestUtilityBase(TestcaseBase):
         collection_w = self.init_collection_wrap()
         collection_w.insert(cf.gen_default_dataframe_data())
         assert collection_w.num_entities == ct.default_nb
+        default_index = {"index_type": "IVF_FLAT", "params": {"nlist": 128}, "metric_type": "L2"}
+        collection_w.create_index("float_vector", default_index)
         collection_w.load(partition_names=[ct.default_partition_name], replica_number=2)
         res_collection, _ = self.utility_wrap.loading_progress(collection_w.name)
-        assert res_collection == {loading_progress: '100%', num_loaded_partitions: 1, not_loaded_partitions: []}
+        assert res_collection == {loading_progress: '100%'}
 
         # create partition and insert
         partition_w = self.init_partition_wrap(collection_wrap=collection_w)
         partition_w.insert(cf.gen_default_dataframe_data(start=ct.default_nb))
         assert partition_w.num_entities == ct.default_nb
         res_part_partition, _ = self.utility_wrap.loading_progress(collection_w.name)
-        assert res_part_partition == {'loading_progress': '50%', 'num_loaded_partitions': 1,
-                                      'not_loaded_partitions': [partition_w.name]}
+        assert res_part_partition == {'loading_progress': '100%'}
 
-        res_part_partition, _ = self.utility_wrap.loading_progress(collection_w.name,
-                                                                   partition_names=[partition_w.name])
-        assert res_part_partition == {'loading_progress': '0%', 'num_loaded_partitions': 0,
-                                      'not_loaded_partitions': [partition_w.name]}
+        res_part_partition, _ = self.utility_wrap.loading_progress(collection_w.name)
+        assert res_part_partition == {'loading_progress': '100%'}
 
         collection_w.release()
         collection_w.load(replica_number=2)
         res_all_partitions, _ = self.utility_wrap.loading_progress(collection_w.name)
-        assert res_all_partitions == {'loading_progress': '100%', 'num_loaded_partitions': 2,
-                                      'not_loaded_partitions': []}
+        assert res_all_partitions == {'loading_progress': '100%'}
 
     @pytest.mark.tags(CaseLabel.L1)
     def test_wait_loading_collection_empty(self):
@@ -934,10 +951,11 @@ class TestUtilityBase(TestcaseBase):
         """
         self._connect()
         cw = self.init_collection_wrap(name=cf.gen_unique_str(prefix))
+        cw.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         cw.load()
         self.utility_wrap.wait_for_loading_complete(cw.name)
         res, _ = self.utility_wrap.loading_progress(cw.name)
-        exp_res = {loading_progress: "100%", not_loaded_partitions: [], num_loaded_partitions: 1}
+        exp_res = {loading_progress: "100%"}
         assert res == exp_res
 
     @pytest.mark.tags(CaseLabel.L1)
@@ -952,6 +970,7 @@ class TestUtilityBase(TestcaseBase):
         df = cf.gen_default_dataframe_data(nb)
         collection_w.insert(df, timeout=60)
         assert collection_w.num_entities == nb
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load(_async=True)
         self.utility_wrap.wait_for_loading_complete(collection_w.name)
         res, _ = self.utility_wrap.loading_progress(collection_w.name)
@@ -1006,6 +1025,7 @@ class TestUtilityBase(TestcaseBase):
             sleep(1)
 
     @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.skip(reason="calc_distance interface is no longer supported")
     def test_calc_distance_default(self):
         """
         target: test calculated distance with default params
@@ -1026,6 +1046,7 @@ class TestUtilityBase(TestcaseBase):
                                                      "vectors_r": vectors_r})
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.skip(reason="calc_distance interface is no longer supported")
     def test_calc_distance_default_sqrt(self, metric_field, metric):
         """
         target: test calculated distance with default param
@@ -1048,6 +1069,7 @@ class TestUtilityBase(TestcaseBase):
                                                      "metric": metric})
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.skip(reason="calc_distance interface is no longer supported")
     def test_calc_distance_default_metric(self, sqrt):
         """
         target: test calculated distance with default param
@@ -1070,6 +1092,7 @@ class TestUtilityBase(TestcaseBase):
                                                      "sqrt": sqrt})
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.skip(reason="calc_distance interface is no longer supported")
     def test_calc_distance_binary_metric(self, metric_field, metric_binary):
         """
         target: test calculate distance with binary vectors
@@ -1095,6 +1118,7 @@ class TestUtilityBase(TestcaseBase):
                                                      "metric": metric_binary})
 
     @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.skip(reason="calc_distance interface is no longer supported")
     def test_calc_distance_from_collection_ids(self, metric_field, metric, sqrt):
         """
         target: test calculated distance from collection entities
@@ -1126,6 +1150,7 @@ class TestUtilityBase(TestcaseBase):
                                                      "sqrt": sqrt})
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.skip(reason="calc_distance interface is no longer supported")
     def test_calc_distance_from_collections(self, metric_field, metric, sqrt):
         """
         target: test calculated distance between entities from collections
@@ -1156,6 +1181,7 @@ class TestUtilityBase(TestcaseBase):
                                                      "sqrt": sqrt})
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.skip(reason="calc_distance interface is no longer supported")
     def test_calc_distance_left_vector_and_collection_ids(self, metric_field, metric, sqrt):
         """
         target: test calculated distance from collection entities
@@ -1186,6 +1212,7 @@ class TestUtilityBase(TestcaseBase):
                                                      "sqrt": sqrt})
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.skip(reason="calc_distance interface is no longer supported")
     def test_calc_distance_right_vector_and_collection_ids(self, metric_field, metric, sqrt):
         """
         target: test calculated distance from collection entities
@@ -1214,6 +1241,7 @@ class TestUtilityBase(TestcaseBase):
                                                      "sqrt": sqrt})
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.skip(reason="calc_distance interface is no longer supported")
     def test_calc_distance_from_partition_ids(self, metric_field, metric, sqrt):
         """
         target: test calculated distance from one partition entities
@@ -1248,6 +1276,7 @@ class TestUtilityBase(TestcaseBase):
                                                          "sqrt": sqrt})
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.skip(reason="calc_distance interface is no longer supported")
     def test_calc_distance_from_partitions(self, metric_field, metric, sqrt):
         """
         target: test calculated distance between entities from partitions
@@ -1277,6 +1306,7 @@ class TestUtilityBase(TestcaseBase):
                                                      "sqrt": sqrt})
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.skip(reason="calc_distance interface is no longer supported")
     def test_calc_distance_left_vectors_and_partition_ids(self, metric_field, metric, sqrt):
         """
         target: test calculated distance between vectors and partition entities
@@ -1310,6 +1340,7 @@ class TestUtilityBase(TestcaseBase):
                                                          "sqrt": sqrt})
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.skip(reason="calc_distance interface is no longer supported")
     def test_calc_distance_right_vectors_and_partition_ids(self, metric_field, metric, sqrt):
         """
         target: test calculated distance between vectors and partition entities
@@ -1416,11 +1447,13 @@ class TestUtilityAdvanced(TestcaseBase):
         """
         c_name = cf.gen_unique_str(prefix)
         collection_w = self.init_collection_wrap(name=c_name)
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         res, _ = self.utility_wrap.get_query_segment_info(c_name)
         assert len(res) == 0
 
     @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.skip("index must created before load, but create_index will trigger flush")
     def test_get_sealed_query_segment_info(self):
         """
         target: test getting sealed query segment info of collection without index
@@ -1434,6 +1467,7 @@ class TestUtilityAdvanced(TestcaseBase):
         df = cf.gen_default_dataframe_data(nb)
         collection_w.insert(df)
         collection_w.num_entities
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         res, _ = self.utility_wrap.get_query_segment_info(c_name)
         assert len(res) == 0
@@ -1533,6 +1567,7 @@ class TestUtilityAdvanced(TestcaseBase):
         collection_w.num_entities
         # get growing segments
         collection_w.insert(df)
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         # prepare load balance params
         res, _ = self.utility_wrap.get_query_segment_info(c_name)
@@ -1570,6 +1605,7 @@ class TestUtilityAdvanced(TestcaseBase):
         collection_w.num_entities
         # get growing segments
         collection_w.insert(df)
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         # prepare load balance params
         res, _ = self.utility_wrap.get_query_segment_info(c_name)
@@ -1657,12 +1693,12 @@ class TestUtilityAdvanced(TestcaseBase):
         dst_node_ids = all_querynodes[1:]
         # add segment ids which are not exist
         sealed_segment_ids = [sealed_segment_id
-                              for sealed_segment_id in range(max(segment_distribution[src_node_id]["sealed"]) + 1,
-                                                             max(segment_distribution[src_node_id]["sealed"]) + 3)]
+                              for sealed_segment_id in range(max(segment_distribution[src_node_id]["sealed"]) + 100,
+                                                             max(segment_distribution[src_node_id]["sealed"]) + 103)]
         # load balance
         self.utility_wrap.load_balance(collection_w.name, src_node_id, dst_node_ids, sealed_segment_ids,
                                        check_task=CheckTasks.err_res,
-                                       check_items={ct.err_code: 1, ct.err_msg: "is not exist"})
+                                       check_items={ct.err_code: 1, ct.err_msg: "not found in source node"})
 
     @pytest.mark.tags(CaseLabel.L2)
     def test_load_balance_in_one_group(self):
@@ -1683,6 +1719,7 @@ class TestUtilityAdvanced(TestcaseBase):
         collection_w.insert(df)
         # get sealed segments
         collection_w.num_entities
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load(replica_number=2)
         # get growing segments
         collection_w.insert(df)
@@ -3330,7 +3367,7 @@ class TestUtilityRBAC(TestcaseBase):
         collection_w.flush(check_task=CheckTasks.check_permission_deny)
         default_term_expr = f'{ct.default_int64_field_name} in [0, 1]'
         collection_w.query(default_term_expr, check_task=CheckTasks.check_permission_deny)
-        # self.utility_wrap.bulk_load(c_name, check_task=CheckTasks.check_permission_deny)
+        # self.utility_wrap.bulk_insert(c_name, check_task=CheckTasks.check_permission_deny)
 
         # Global permission deny
         self.init_collection_wrap(name=c_name_2, check_task=CheckTasks.check_permission_deny)

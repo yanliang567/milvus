@@ -42,6 +42,11 @@ func (stNode *serviceTimeNode) Name() string {
 
 // Operate handles input messages, to execute insert operations
 func (stNode *serviceTimeNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
+	if in == nil {
+		log.Debug("type assertion failed for serviceTimeMsg because it's nil", zap.String("name", stNode.Name()))
+		return []Msg{}
+	}
+
 	if len(in) != 1 {
 		log.Warn("Invalid operate message input in serviceTimeNode, input length = ", zap.Int("input node", len(in)), zap.String("name", stNode.Name()))
 		return []Msg{}
@@ -49,15 +54,7 @@ func (stNode *serviceTimeNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 
 	serviceTimeMsg, ok := in[0].(*serviceTimeMsg)
 	if !ok {
-		if in[0] == nil {
-			log.Debug("type assertion failed for serviceTimeMsg because it's nil", zap.String("name", stNode.Name()))
-		} else {
-			log.Warn("type assertion failed for serviceTimeMsg", zap.String("msgType", reflect.TypeOf(in[0]).Name()), zap.String("name", stNode.Name()))
-		}
-		return []Msg{}
-	}
-
-	if serviceTimeMsg == nil {
+		log.Warn("type assertion failed for serviceTimeMsg", zap.String("msgType", reflect.TypeOf(in[0]).Name()), zap.String("name", stNode.Name()))
 		return []Msg{}
 	}
 
@@ -67,6 +64,7 @@ func (stNode *serviceTimeNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 		// should not happen, QueryNode should addTSafe before start flow graph
 		panic(fmt.Errorf("serviceTimeNode setTSafe timeout, collectionID = %d, err = %s", stNode.collectionID, err))
 	}
+	rateCol.updateTSafe(stNode.vChannel, serviceTimeMsg.timeRange.timestampMax)
 	p, _ := tsoutil.ParseTS(serviceTimeMsg.timeRange.timestampMax)
 	log.RatedDebug(10.0, "update tSafe:",
 		zap.Any("collectionID", stNode.collectionID),
@@ -75,7 +73,7 @@ func (stNode *serviceTimeNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 		zap.Any("channel", stNode.vChannel),
 	)
 
-	return []Msg{}
+	return in
 }
 
 // newServiceTimeNode returns a new serviceTimeNode

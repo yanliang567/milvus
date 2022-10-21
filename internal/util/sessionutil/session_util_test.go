@@ -651,9 +651,6 @@ func TestSessionProcessActiveStandBy(t *testing.T) {
 		flag = true
 		signal <- struct{}{}
 		s1.keepAliveCancel()
-		// directly delete the primary key to make this UT fast,
-		// or the session2 has to wait for session1 release after ttl(60s)
-		etcdCli.Delete(ctx1, s1.activeKey)
 	})
 	assert.False(t, s1.isStandby.Load().(bool))
 
@@ -670,8 +667,6 @@ func TestSessionProcessActiveStandBy(t *testing.T) {
 	})
 	assert.True(t, s2.isStandby.Load().(bool))
 
-	// sleep 20 seconds, the standby service will start watching primary key
-	time.Sleep(time.Second * 20)
 	//assert.True(t, s2.watchingPrimaryKeyLock)
 	// stop session 1, session 2 will take over primary service
 	log.Debug("Stop session 1, session 2 will take over primary service")
@@ -684,4 +679,30 @@ func TestSessionProcessActiveStandBy(t *testing.T) {
 
 	wg.Wait()
 	assert.False(t, s2.isStandby.Load().(bool))
+}
+
+func TestSessionEventType_String(t *testing.T) {
+	tests := []struct {
+		name string
+		t    SessionEventType
+		want string
+	}{
+		{t: SessionNoneEvent, want: ""},
+		{t: SessionAddEvent, want: "SessionAddEvent"},
+		{t: SessionDelEvent, want: "SessionDelEvent"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equalf(t, tt.want, tt.t.String(), "String()")
+		})
+	}
+}
+
+func TestSession_apply(t *testing.T) {
+	session := &Session{}
+	opts := []SessionOption{WithCustomConfigEnable(), WithSessionTTL(100), WithSessionRetryTimes(200)}
+	session.apply(opts...)
+	assert.True(t, session.useCustomConfig)
+	assert.Equal(t, int64(100), session.sessionTTL)
+	assert.Equal(t, int64(200), session.sessionRetryTimes)
 }

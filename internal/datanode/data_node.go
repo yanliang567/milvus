@@ -35,9 +35,9 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
-	"github.com/milvus-io/milvus/api/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	allocator2 "github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/kv"
@@ -50,6 +50,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/commonpbutil"
 	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/importutil"
 	"github.com/milvus-io/milvus/internal/util/logutil"
@@ -78,6 +79,9 @@ const (
 
 	// ConnectEtcdMaxRetryTime is used to limit the max retry time for connection etcd
 	ConnectEtcdMaxRetryTime = 100
+
+	// ImportCallTimeout is the timeout used in Import() method calls.
+	ImportCallTimeout = 30 * time.Second
 )
 
 var getFlowGraphServiceAttempts = uint(50)
@@ -95,20 +99,21 @@ var rateCol *rateCollector
 // services in datanode package.
 //
 // DataNode implements `types.Component`, `types.DataNode` interfaces.
-//  `etcdCli`   is a connection of etcd
-//  `rootCoord` is a grpc client of root coordinator.
-//  `dataCoord` is a grpc client of data service.
-//  `NodeID` is unique to each datanode.
-//  `State` is current statement of this data node, indicating whether it's healthy.
 //
-//  `clearSignal` is a signal channel for releasing the flowgraph resources.
-//  `segmentCache` stores all flushing and flushed segments.
+//	`etcdCli`   is a connection of etcd
+//	`rootCoord` is a grpc client of root coordinator.
+//	`dataCoord` is a grpc client of data service.
+//	`NodeID` is unique to each datanode.
+//	`State` is current statement of this data node, indicating whether it's healthy.
+//
+//	`clearSignal` is a signal channel for releasing the flowgraph resources.
+//	`segmentCache` stores all flushing and flushed segments.
 type DataNode struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	Role   string
-	State  atomic.Value // internalpb.StateCode_Initializing
-
+	ctx              context.Context
+	cancel           context.CancelFunc
+	Role             string
+	State            atomic.Value // commonpb.StateCode_Initializing
+	stateCode        atomic.Value // commonpb.StateCode_Initializing
 	flowgraphManager *flowgraphManager
 	eventManagerMap  sync.Map // vchannel name -> channelEventManager
 
@@ -148,7 +153,7 @@ func NewDataNode(ctx context.Context, factory dependency.Factory) *DataNode {
 		flowgraphManager: newFlowgraphManager(),
 		clearSignal:      make(chan string, 100),
 	}
-	node.UpdateStateCode(internalpb.StateCode_Abnormal)
+	node.UpdateStateCode(commonpb.StateCode_Abnormal)
 	return node
 }
 
@@ -161,7 +166,7 @@ func (node *DataNode) SetEtcdClient(etcdCli *clientv3.Client) {
 func (node *DataNode) SetRootCoord(rc types.RootCoord) error {
 	switch {
 	case rc == nil, node.rootCoord != nil:
-		return errors.New("Nil parameter or repeatly set")
+		return errors.New("nil parameter or repeatedly set")
 	default:
 		node.rootCoord = rc
 		return nil
@@ -172,7 +177,7 @@ func (node *DataNode) SetRootCoord(rc types.RootCoord) error {
 func (node *DataNode) SetDataCoord(ds types.DataCoord) error {
 	switch {
 	case ds == nil, node.dataCoord != nil:
-		return errors.New("Nil parameter or repeatly set")
+		return errors.New("nil parameter or repeatedly set")
 	default:
 		node.dataCoord = ds
 		return nil
@@ -225,32 +230,32 @@ func (node *DataNode) initRateCollector() error {
 
 // Init function does nothing now.
 func (node *DataNode) Init() error {
-	log.Info("DataNode Init",
+	log.Info("DataNode server initializing",
 		zap.String("TimeTickChannelName", Params.CommonCfg.DataCoordTimeTick),
 	)
 	if err := node.initSession(); err != nil {
-		log.Error("DataNode init session failed", zap.Error(err))
+		log.Error("DataNode server init session failed", zap.Error(err))
 		return err
 	}
 
 	err := node.initRateCollector()
 	if err != nil {
-		log.Error("DataNode init rateCollector failed", zap.Int64("nodeID", Params.QueryNodeCfg.GetNodeID()), zap.Error(err))
+		log.Error("DataNode server init rateCollector failed", zap.Int64("node ID", Params.QueryNodeCfg.GetNodeID()), zap.Error(err))
 		return err
 	}
-	log.Info("DataNode init rateCollector done", zap.Int64("nodeID", Params.QueryNodeCfg.GetNodeID()))
+	log.Info("DataNode server init rateCollector done", zap.Int64("node ID", Params.QueryNodeCfg.GetNodeID()))
 
 	idAllocator, err := allocator2.NewIDAllocator(node.ctx, node.rootCoord, Params.DataNodeCfg.GetNodeID())
 	if err != nil {
 		log.Error("failed to create id allocator",
 			zap.Error(err),
-			zap.String("role", typeutil.DataNodeRole), zap.Int64("DataNodeID", Params.DataNodeCfg.GetNodeID()))
+			zap.String("role", typeutil.DataNodeRole), zap.Int64("DataNode ID", Params.DataNodeCfg.GetNodeID()))
 		return err
 	}
 	node.rowIDAllocator = idAllocator
 
 	node.factory.Init(&Params)
-	log.Info("DataNode Init successfully",
+	log.Info("DataNode server init succeeded",
 		zap.String("MsgChannelSubName", Params.CommonCfg.DataNodeSubName))
 
 	return nil
@@ -396,7 +401,7 @@ func (node *DataNode) handlePutEvent(watchInfo *datapb.ChannelWatchInfo, version
 	vChanName := watchInfo.GetVchan().GetChannelName()
 	switch watchInfo.State {
 	case datapb.ChannelWatchState_Uncomplete, datapb.ChannelWatchState_ToWatch:
-		if err := node.flowgraphManager.addAndStart(node, watchInfo.GetVchan()); err != nil {
+		if err := node.flowgraphManager.addAndStart(node, watchInfo.GetVchan(), watchInfo.GetSchema()); err != nil {
 			return fmt.Errorf("fail to add and start flowgraph for vChanName: %s, err: %v", vChanName, err)
 		}
 		log.Info("handle put event: new data sync service success", zap.String("vChanName", vChanName))
@@ -472,12 +477,12 @@ func (node *DataNode) Start() error {
 	log.Debug("start id allocator done", zap.String("role", typeutil.DataNodeRole))
 
 	rep, err := node.rootCoord.AllocTimestamp(node.ctx, &rootcoordpb.AllocTimestampRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:   commonpb.MsgType_RequestTSO,
-			MsgID:     0,
-			Timestamp: 0,
-			SourceID:  Params.DataNodeCfg.GetNodeID(),
-		},
+		Base: commonpbutil.NewMsgBase(
+			commonpbutil.WithMsgType(commonpb.MsgType_RequestTSO),
+			commonpbutil.WithMsgID(0),
+			commonpbutil.WithTimeStamp(0),
+			commonpbutil.WithSourceID(Params.DataNodeCfg.GetNodeID()),
+		),
 		Count: 1,
 	})
 	if err != nil || rep.Status.ErrorCode != commonpb.ErrorCode_Success {
@@ -513,22 +518,22 @@ func (node *DataNode) Start() error {
 	Params.DataNodeCfg.CreatedTime = time.Now()
 	Params.DataNodeCfg.UpdatedTime = time.Now()
 
-	node.UpdateStateCode(internalpb.StateCode_Healthy)
+	node.UpdateStateCode(commonpb.StateCode_Healthy)
 	return nil
 }
 
 // UpdateStateCode updates datanode's state code
-func (node *DataNode) UpdateStateCode(code internalpb.StateCode) {
-	node.State.Store(code)
+func (node *DataNode) UpdateStateCode(code commonpb.StateCode) {
+	node.stateCode.Store(code)
 }
 
 // GetStateCode return datanode's state code
-func (node *DataNode) GetStateCode() internalpb.StateCode {
-	return node.State.Load().(internalpb.StateCode)
+func (node *DataNode) GetStateCode() commonpb.StateCode {
+	return node.stateCode.Load().(commonpb.StateCode)
 }
 
 func (node *DataNode) isHealthy() bool {
-	return node.GetStateCode() == internalpb.StateCode_Healthy
+	return node.GetStateCode() == commonpb.StateCode_Healthy
 }
 
 // WatchDmChannels is not in use
@@ -542,20 +547,20 @@ func (node *DataNode) WatchDmChannels(ctx context.Context, in *datapb.WatchDmCha
 }
 
 // GetComponentStates will return current state of DataNode
-func (node *DataNode) GetComponentStates(ctx context.Context) (*internalpb.ComponentStates, error) {
-	log.Debug("DataNode current state", zap.Any("State", node.State.Load()))
+func (node *DataNode) GetComponentStates(ctx context.Context) (*milvuspb.ComponentStates, error) {
+	log.Debug("DataNode current state", zap.Any("State", node.stateCode.Load()))
 	nodeID := common.NotRegisteredID
 	if node.session != nil && node.session.Registered() {
 		nodeID = node.session.ServerID
 	}
-	states := &internalpb.ComponentStates{
-		State: &internalpb.ComponentInfo{
+	states := &milvuspb.ComponentStates{
+		State: &milvuspb.ComponentInfo{
 			// NodeID:    Params.NodeID, // will race with DataNode.Register()
 			NodeID:    nodeID,
 			Role:      node.Role,
-			StateCode: node.State.Load().(internalpb.StateCode),
+			StateCode: node.stateCode.Load().(commonpb.StateCode),
 		},
-		SubcomponentStates: make([]*internalpb.ComponentInfo, 0),
+		SubcomponentStates: make([]*milvuspb.ComponentInfo, 0),
 		Status:             &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success},
 	}
 	return states, nil
@@ -570,10 +575,11 @@ func (node *DataNode) ReadyToFlush() error {
 }
 
 // FlushSegments packs flush messages into flowGraph through flushChan.
-//   If DataNode receives a valid segment to flush, new flush message for the segment should be ignored.
-//   So if receiving calls to flush segment A, DataNode should guarantee the segment to be flushed.
 //
-//   One precondition: The segmentID in req is in ascending order.
+//	If DataNode receives a valid segment to flush, new flush message for the segment should be ignored.
+//	So if receiving calls to flush segment A, DataNode should guarantee the segment to be flushed.
+//
+//	One precondition: The segmentID in req is in ascending order.
 func (node *DataNode) FlushSegments(ctx context.Context, req *datapb.FlushSegmentsRequest) (*commonpb.Status, error) {
 	metrics.DataNodeFlushReqCounter.WithLabelValues(
 		fmt.Sprint(Params.DataNodeCfg.GetNodeID()),
@@ -679,7 +685,7 @@ func (node *DataNode) ResendSegmentStats(ctx context.Context, req *datapb.Resend
 // Stop will release DataNode resources and shutdown datanode
 func (node *DataNode) Stop() error {
 	// https://github.com/milvus-io/milvus/issues/12282
-	node.UpdateStateCode(internalpb.StateCode_Abnormal)
+	node.UpdateStateCode(commonpb.StateCode_Abnormal)
 
 	node.cancel()
 	node.flowgraphManager.dropAll()
@@ -719,7 +725,7 @@ func (node *DataNode) GetStatisticsChannel(ctx context.Context) (*milvuspb.Strin
 	}, nil
 }
 
-//ShowConfigurations returns the configurations of DataNode matching req.Pattern
+// ShowConfigurations returns the configurations of DataNode matching req.Pattern
 func (node *DataNode) ShowConfigurations(ctx context.Context, req *internalpb.ShowConfigurationsRequest) (*internalpb.ShowConfigurationsResponse, error) {
 	log.Debug("DataNode.ShowConfigurations", zap.String("pattern", req.Pattern))
 	if !node.isHealthy() {
@@ -829,7 +835,7 @@ func (node *DataNode) Compaction(ctx context.Context, req *datapb.CompactionPlan
 	task := newCompactionTask(
 		node.ctx,
 		binlogIO, binlogIO,
-		ds.replica,
+		ds.channel,
 		ds.flushManager,
 		ds.idAllocator,
 		req,
@@ -899,7 +905,7 @@ func (node *DataNode) SyncSegments(ctx context.Context, req *datapb.SyncSegments
 	}
 
 	oneSegment := req.GetCompactedFrom()[0]
-	replica, err := node.flowgraphManager.getReplica(oneSegment)
+	channel, err := node.flowgraphManager.getChannel(oneSegment)
 	if err != nil {
 		status.Reason = fmt.Sprintf("invalid request, err=%s", err.Error())
 		return status, nil
@@ -908,29 +914,27 @@ func (node *DataNode) SyncSegments(ctx context.Context, req *datapb.SyncSegments
 	// check if all compactedFrom segments are valid
 	var invalidSegIDs []UniqueID
 	for _, segID := range req.GetCompactedFrom() {
-		if !replica.hasSegment(segID, true) {
+		if !channel.hasSegment(segID, true) {
 			invalidSegIDs = append(invalidSegIDs, segID)
 		}
 	}
 	if len(invalidSegIDs) > 0 {
-		status.Reason = fmt.Sprintf("invalid request, some segments are not in the same replica: %v", invalidSegIDs)
+		status.Reason = fmt.Sprintf("invalid request, some segments are not in the same channel: %v", invalidSegIDs)
 		return status, nil
 	}
 
-	// oneSegment is definitely in the replica, guaranteed by the check before.
-	collID, partID, _ := replica.getCollectionAndPartitionID(oneSegment)
-	chanName, _ := replica.getChannelName(oneSegment)
+	// oneSegment is definitely in the channel, guaranteed by the check before.
+	collID, partID, _ := channel.getCollectionAndPartitionID(oneSegment)
 	targetSeg := &Segment{
 		collectionID: collID,
 		partitionID:  partID,
-		channelName:  chanName,
 		segmentID:    req.GetCompactedTo(),
 		numRows:      req.GetNumOfRows(),
 	}
 
-	replica.(*SegmentReplica).initPKBloomFilter(ctx, targetSeg, req.GetStatsLogs(), tsoutil.GetCurrentTime())
+	channel.(*ChannelMeta).initPKBloomFilter(ctx, targetSeg, req.GetStatsLogs(), tsoutil.GetCurrentTime())
 
-	if err := replica.mergeFlushedSegments(targetSeg, req.GetPlanID(), req.GetCompactedFrom()); err != nil {
+	if err := channel.mergeFlushedSegments(targetSeg, req.GetPlanID(), req.GetCompactedFrom()); err != nil {
 		status.Reason = err.Error()
 		return status, nil
 	}
@@ -962,11 +966,15 @@ func (node *DataNode) Import(ctx context.Context, req *datapb.ImportTaskRequest)
 		AutoIds:    make([]int64, 0),
 		RowCount:   0,
 	}
-	// func to report import state to rootcoord
+
+	// Spawn a new context to ignore cancellation from parental context.
+	newCtx, cancel := context.WithTimeout(context.TODO(), ImportCallTimeout)
+	defer cancel()
+	// func to report import state to RootCoord.
 	reportFunc := func(res *rootcoordpb.ImportResult) error {
-		status, err := node.rootCoord.ReportImport(ctx, res)
+		status, err := node.rootCoord.ReportImport(newCtx, res)
 		if err != nil {
-			log.Error("fail to report import state to root coord", zap.Error(err))
+			log.Error("fail to report import state to RootCoord", zap.Error(err))
 			return err
 		}
 		if status != nil && status.ErrorCode != commonpb.ErrorCode_Success {
@@ -979,30 +987,24 @@ func (node *DataNode) Import(ctx context.Context, req *datapb.ImportTaskRequest)
 		log.Warn("DataNode import failed",
 			zap.Int64("collection ID", req.GetImportTask().GetCollectionId()),
 			zap.Int64("partition ID", req.GetImportTask().GetPartitionId()),
-			zap.Int64("taskID", req.GetImportTask().GetTaskId()),
+			zap.Int64("task ID", req.GetImportTask().GetTaskId()),
 			zap.Error(errDataNodeIsUnhealthy(Params.DataNodeCfg.GetNodeID())))
 
-		msg := msgDataNodeIsUnhealthy(Params.DataNodeCfg.GetNodeID())
-		importResult.State = commonpb.ImportState_ImportFailed
-		importResult.Infos = append(importResult.Infos, &commonpb.KeyValuePair{Key: "failed_reason", Value: msg})
-		reportErr := reportFunc(importResult)
-		if reportErr != nil {
-			log.Warn("fail to report import state to root coord", zap.Error(reportErr))
-		}
 		return &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
-			Reason:    msg,
+			Reason:    msgDataNodeIsUnhealthy(Params.DataNodeCfg.GetNodeID()),
 		}, nil
 	}
 
 	// get a timestamp for all the rows
-	rep, err := node.rootCoord.AllocTimestamp(ctx, &rootcoordpb.AllocTimestampRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:   commonpb.MsgType_RequestTSO,
-			MsgID:     0,
-			Timestamp: 0,
-			SourceID:  Params.DataNodeCfg.GetNodeID(),
-		},
+	// Ignore cancellation from parent context.
+	rep, err := node.rootCoord.AllocTimestamp(newCtx, &rootcoordpb.AllocTimestampRequest{
+		Base: commonpbutil.NewMsgBase(
+			commonpbutil.WithMsgType(commonpb.MsgType_RequestTSO),
+			commonpbutil.WithMsgID(0),
+			commonpbutil.WithTimeStamp(0),
+			commonpbutil.WithSourceID(Params.DataNodeCfg.GetNodeID()),
+		),
 		Count: 1,
 	})
 
@@ -1012,7 +1014,7 @@ func (node *DataNode) Import(ctx context.Context, req *datapb.ImportTaskRequest)
 		importResult.State = commonpb.ImportState_ImportFailed
 		importResult.Infos = append(importResult.Infos, &commonpb.KeyValuePair{Key: "failed_reason", Value: msg})
 		if reportErr := reportFunc(importResult); reportErr != nil {
-			log.Warn("fail to report import state to root coord", zap.Error(reportErr))
+			log.Warn("fail to report import state to RootCoord", zap.Error(reportErr))
 		}
 		if err != nil {
 			return &commonpb.Status{
@@ -1026,13 +1028,17 @@ func (node *DataNode) Import(ctx context.Context, req *datapb.ImportTaskRequest)
 
 	// get collection schema and shard number
 	metaService := newMetaService(node.rootCoord, req.GetImportTask().GetCollectionId())
-	colInfo, err := metaService.getCollectionInfo(ctx, req.GetImportTask().GetCollectionId(), 0)
+	colInfo, err := metaService.getCollectionInfo(newCtx, req.GetImportTask().GetCollectionId(), 0)
 	if err != nil {
+		log.Warn("failed to get collection info for collection ID",
+			zap.Int64("task ID", req.GetImportTask().GetTaskId()),
+			zap.Int64("collection ID", req.GetImportTask().GetCollectionId()),
+			zap.Error(err))
 		importResult.State = commonpb.ImportState_ImportFailed
 		importResult.Infos = append(importResult.Infos, &commonpb.KeyValuePair{Key: "failed_reason", Value: err.Error()})
 		reportErr := reportFunc(importResult)
 		if reportErr != nil {
-			log.Warn("fail to report import state to root coord", zap.Error(err))
+			log.Warn("fail to report import state to RootCoord", zap.Error(err))
 		}
 		return &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
@@ -1040,22 +1046,36 @@ func (node *DataNode) Import(ctx context.Context, req *datapb.ImportTaskRequest)
 		}, nil
 	}
 
-	// parse files and generate segments
-	segmentSize := int64(Params.DataCoordCfg.SegmentMaxSize) * 1024 * 1024
-	importWrapper := importutil.NewImportWrapper(ctx, colInfo.GetSchema(), colInfo.GetShardsNum(), segmentSize, node.rowIDAllocator, node.chunkManager,
-		importFlushReqFunc(node, req, importResult, colInfo.GetSchema(), ts), importResult, reportFunc)
-	err = importWrapper.Import(req.GetImportTask().GetFiles(), req.GetImportTask().GetRowBased(), false)
-	if err != nil {
+	returnFailFunc := func(inputErr error) (*commonpb.Status, error) {
+		log.Warn("import wrapper failed to parse import request",
+			zap.Int64("task ID", req.GetImportTask().GetTaskId()),
+			zap.Error(inputErr))
 		importResult.State = commonpb.ImportState_ImportFailed
-		importResult.Infos = append(importResult.Infos, &commonpb.KeyValuePair{Key: "failed_reason", Value: err.Error()})
+		importResult.Infos = append(importResult.Infos, &commonpb.KeyValuePair{Key: "failed_reason", Value: inputErr.Error()})
 		reportErr := reportFunc(importResult)
 		if reportErr != nil {
-			log.Warn("fail to report import state to root coord", zap.Error(err))
+			log.Warn("fail to report import state to RootCoord", zap.Error(inputErr))
 		}
 		return &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
-			Reason:    err.Error(),
+			Reason:    inputErr.Error(),
 		}, nil
+	}
+
+	// parse files and generate segments
+	segmentSize := int64(Params.DataCoordCfg.SegmentMaxSize) * 1024 * 1024
+	importWrapper := importutil.NewImportWrapper(newCtx, colInfo.GetSchema(), colInfo.GetShardsNum(), segmentSize, node.rowIDAllocator, node.chunkManager,
+		importFlushReqFunc(node, req, importResult, colInfo.GetSchema(), ts), importResult, reportFunc)
+	// todo: pass tsStart and tsStart after import_wrapper support
+	tsStart, tsEnd, err := importutil.ParseTSFromOptions(req.GetImportTask().GetInfos())
+	if err != nil {
+		return returnFailFunc(err)
+	}
+	log.Debug("import time range", zap.Uint64("start_ts", tsStart), zap.Uint64("end_ts", tsEnd))
+	err = importWrapper.Import(req.GetImportTask().GetFiles(), req.GetImportTask().GetRowBased(), false)
+	//err = importWrapper.Import(req.GetImportTask().GetFiles(), req.GetImportTask().GetRowBased(), false, tsStart, tsEnd)
+	if err != nil {
+		return returnFailFunc(err)
 	}
 
 	resp := &commonpb.Status{
@@ -1096,7 +1116,7 @@ func (node *DataNode) AddImportSegment(ctx context.Context, req *datapb.AddImpor
 		}, nil
 	}
 	// Get the current dml channel position ID, that will be used in segments start positions and end positions.
-	posID, err := ds.getChannelLatestMsgID(context.Background(), req.GetChannelName())
+	posID, err := ds.getChannelLatestMsgID(context.Background(), req.GetChannelName(), req.GetSegmentId())
 	if err != nil {
 		return &datapb.AddImportSegmentResponse{
 			Status: &commonpb.Status{
@@ -1106,19 +1126,18 @@ func (node *DataNode) AddImportSegment(ctx context.Context, req *datapb.AddImpor
 			},
 		}, nil
 	}
-	// Add the new segment to the replica.
-	if !ds.replica.hasSegment(req.GetSegmentId(), true) {
-		log.Info("adding a new segment to replica",
+	// Add the new segment to the channel.
+	if !ds.channel.hasSegment(req.GetSegmentId(), true) {
+		log.Info("adding a new segment to channel",
 			zap.Int64("segment ID", req.GetSegmentId()))
 		// Add segment as a flushed segment, but set `importing` to true to add extra information of the segment.
 		// By 'extra information' we mean segment info while adding a `SegmentType_Flushed` typed segment.
-		if err := ds.replica.addSegment(
+		if err := ds.channel.addSegment(
 			addSegmentReq{
 				segType:      datapb.SegmentType_Flushed,
 				segID:        req.GetSegmentId(),
 				collID:       req.GetCollectionId(),
 				partitionID:  req.GetPartitionId(),
-				channelName:  req.GetChannelName(),
 				numOfRows:    req.GetRowNum(),
 				statsBinLogs: req.GetStatsLog(),
 				startPos: &internalpb.MsgPosition{
@@ -1176,6 +1195,17 @@ func importFlushReqFunc(node *DataNode, req *datapb.ImportTaskRequest, res *root
 			rowNum = field.RowNum()
 			break
 		}
+
+		if rowNum <= 0 {
+			log.Info("fields data is empty, no need to generate segment",
+				zap.Int64("task ID", importTaskID),
+				zap.Int("shard ID", shardID),
+				zap.Int("# of channels", len(chNames)),
+				zap.Strings("channel names", chNames),
+			)
+			return nil
+		}
+
 		colID := req.GetImportTask().GetCollectionId()
 		partID := req.GetImportTask().GetPartitionId()
 		segmentIDReq := composeAssignSegmentIDRequest(rowNum, shardID, chNames, colID, partID)
@@ -1203,23 +1233,22 @@ func importFlushReqFunc(node *DataNode, req *datapb.ImportTaskRequest, res *root
 		err = retry.Do(context.Background(), func() error {
 			// Ask DataCoord to save binlog path and add segment to the corresponding DataNode flow graph.
 			resp, err := node.dataCoord.SaveImportSegment(context.Background(), &datapb.SaveImportSegmentRequest{
-				Base: &commonpb.MsgBase{
-					SourceID: Params.DataNodeCfg.GetNodeID(),
-					// Pass current timestamp downstream.
-					Timestamp: ts,
-				},
+				Base: commonpbutil.NewMsgBase(
+					commonpbutil.WithTimeStamp(ts), // Pass current timestamp downstream.
+					commonpbutil.WithSourceID(Params.DataNodeCfg.GetNodeID()),
+				),
 				SegmentId:    segmentID,
 				ChannelName:  targetChName,
 				CollectionId: req.GetImportTask().GetCollectionId(),
 				PartitionId:  req.GetImportTask().GetPartitionId(),
 				RowNum:       int64(rowNum),
 				SaveBinlogPathReq: &datapb.SaveBinlogPathsRequest{
-					Base: &commonpb.MsgBase{
-						MsgType:   0,
-						MsgID:     0,
-						Timestamp: ts,
-						SourceID:  Params.DataNodeCfg.GetNodeID(),
-					},
+					Base: commonpbutil.NewMsgBase(
+						commonpbutil.WithMsgType(0),
+						commonpbutil.WithMsgID(0),
+						commonpbutil.WithTimeStamp(ts),
+						commonpbutil.WithSourceID(Params.DataNodeCfg.GetNodeID()),
+					),
 					SegmentID:           segmentID,
 					CollectionID:        req.GetImportTask().GetCollectionId(),
 					Field2BinlogPaths:   fieldInsert,

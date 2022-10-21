@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/kv"
 	"github.com/milvus-io/milvus/internal/metastore/model"
@@ -1106,11 +1106,11 @@ func TestCore_ReportImport(t *testing.T) {
 	}
 
 	dc := newMockDataCoord()
-	dc.GetComponentStatesFunc = func(ctx context.Context) (*internalpb.ComponentStates, error) {
-		return &internalpb.ComponentStates{
-			State: &internalpb.ComponentInfo{
+	dc.GetComponentStatesFunc = func(ctx context.Context) (*milvuspb.ComponentStates, error) {
+		return &milvuspb.ComponentStates{
+			State: &milvuspb.ComponentInfo{
 				NodeID:    TestRootCoordID,
-				StateCode: internalpb.StateCode_Healthy,
+				StateCode: commonpb.StateCode_Healthy,
 			},
 			SubcomponentStates: nil,
 			Status:             succStatus(),
@@ -1228,7 +1228,7 @@ func TestCore_Rbac(t *testing.T) {
 	}
 
 	// not healthy.
-	c.stateCode.Store(internalpb.StateCode_Abnormal)
+	c.stateCode.Store(commonpb.StateCode_Abnormal)
 
 	{
 		resp, err := c.CreateRole(ctx, &milvuspb.CreateRoleRequest{})
@@ -1375,4 +1375,77 @@ func TestRootcoord_EnableActiveStandby(t *testing.T) {
 	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp.GetStatus().GetErrorCode())
 	err = core.Stop()
 	assert.NoError(t, err)
+}
+
+func TestRootCoord_AlterCollection(t *testing.T) {
+	t.Run("not healthy", func(t *testing.T) {
+		ctx := context.Background()
+		c := newTestCore(withAbnormalCode())
+		resp, err := c.AlterCollection(ctx, &milvuspb.AlterCollectionRequest{})
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetErrorCode())
+	})
+
+	t.Run("add task failed", func(t *testing.T) {
+		c := newTestCore(withHealthyCode(),
+			withInvalidScheduler())
+
+		ctx := context.Background()
+		resp, err := c.AlterCollection(ctx, &milvuspb.AlterCollectionRequest{})
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetErrorCode())
+	})
+
+	t.Run("execute task failed", func(t *testing.T) {
+		c := newTestCore(withHealthyCode(),
+			withTaskFailScheduler())
+
+		ctx := context.Background()
+		resp, err := c.AlterCollection(ctx, &milvuspb.AlterCollectionRequest{})
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetErrorCode())
+	})
+
+	t.Run("run ok", func(t *testing.T) {
+		c := newTestCore(withHealthyCode(),
+			withValidScheduler())
+
+		ctx := context.Background()
+		resp, err := c.AlterCollection(ctx, &milvuspb.AlterCollectionRequest{})
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetErrorCode())
+	})
+}
+
+func TestRootCoord_CheckHealth(t *testing.T) {
+	t.Run("not healthy", func(t *testing.T) {
+		ctx := context.Background()
+		c := newTestCore(withAbnormalCode())
+		resp, err := c.CheckHealth(ctx, &milvuspb.CheckHealthRequest{})
+		assert.NoError(t, err)
+		assert.Equal(t, false, resp.IsHealthy)
+		assert.NotEmpty(t, resp.Reasons)
+	})
+
+	t.Run("proxy health check is ok", func(t *testing.T) {
+		c := newTestCore(withHealthyCode(),
+			withValidProxyManager())
+
+		ctx := context.Background()
+		resp, err := c.CheckHealth(ctx, &milvuspb.CheckHealthRequest{})
+		assert.NoError(t, err)
+		assert.Equal(t, true, resp.IsHealthy)
+		assert.Empty(t, resp.Reasons)
+	})
+
+	t.Run("proxy health check is fail", func(t *testing.T) {
+		c := newTestCore(withHealthyCode(),
+			withInvalidProxyManager())
+
+		ctx := context.Background()
+		resp, err := c.CheckHealth(ctx, &milvuspb.CheckHealthRequest{})
+		assert.NoError(t, err)
+		assert.Equal(t, false, resp.IsHealthy)
+		assert.NotEmpty(t, resp.Reasons)
+	})
 }

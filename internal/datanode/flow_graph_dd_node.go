@@ -27,13 +27,14 @@ import (
 	"github.com/opentracing/opentracing-go"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
+	"github.com/milvus-io/milvus/internal/util/commonpbutil"
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
@@ -48,16 +49,19 @@ var _ flowgraph.Node = (*ddNode)(nil)
 // ddNode filters messages from message streams.
 //
 // ddNode recives all the messages from message stream dml channels, including insert messages,
-//  delete messages and ddl messages like CreateCollectionMsg and DropCollectionMsg.
+//
+//	delete messages and ddl messages like CreateCollectionMsg and DropCollectionMsg.
 //
 // ddNode filters insert messages according to the `sealedSegment`.
 // ddNode will filter out the insert message for those who belong to `sealedSegment`
 //
 // When receiving a `DropCollection` message, ddNode will send a signal to DataNode `BackgroundGC`
-//  goroutinue, telling DataNode to release the resources of this particular flow graph.
+//
+//	goroutinue, telling DataNode to release the resources of this particular flow graph.
 //
 // After the filtering process, ddNode passes all the valid insert messages and delete message
-//  to the following flow graph node, which in DataNode is `insertBufferNode`
+//
+//	to the following flow graph node, which in DataNode is `insertBufferNode`
 type ddNode struct {
 	BaseNode
 
@@ -82,6 +86,11 @@ func (ddn *ddNode) Name() string {
 
 // Operate handles input messages, implementing flowgrpah.Node
 func (ddn *ddNode) Operate(in []Msg) []Msg {
+	if in == nil {
+		log.Debug("type assertion failed for MsgStreamMsg because it's nil")
+		return []Msg{}
+	}
+
 	if len(in) != 1 {
 		log.Warn("Invalid operate message input in ddNode", zap.Int("input length", len(in)))
 		return []Msg{}
@@ -89,11 +98,7 @@ func (ddn *ddNode) Operate(in []Msg) []Msg {
 
 	msMsg, ok := in[0].(*MsgStreamMsg)
 	if !ok {
-		if in[0] == nil {
-			log.Debug("type assertion failed for MsgStreamMsg because it's nil")
-		} else {
-			log.Warn("type assertion failed for MsgStreamMsg", zap.String("name", reflect.TypeOf(in[0]).Name()))
-		}
+		log.Warn("type assertion failed for MsgStreamMsg", zap.String("name", reflect.TypeOf(in[0]).Name()))
 		return []Msg{}
 	}
 
@@ -280,12 +285,12 @@ func (ddn *ddNode) sendDeltaTimeTick(ts Timestamp) error {
 		HashValues:     []uint32{0},
 	}
 	timeTickResult := internalpb.TimeTickMsg{
-		Base: &commonpb.MsgBase{
-			MsgType:   commonpb.MsgType_TimeTick,
-			MsgID:     0,
-			Timestamp: ts,
-			SourceID:  Params.DataNodeCfg.GetNodeID(),
-		},
+		Base: commonpbutil.NewMsgBase(
+			commonpbutil.WithMsgType(commonpb.MsgType_TimeTick),
+			commonpbutil.WithMsgID(0),
+			commonpbutil.WithTimeStamp(ts),
+			commonpbutil.WithSourceID(Params.DataNodeCfg.GetNodeID()),
+		),
 	}
 	timeTickMsg := &msgstream.TimeTickMsg{
 		BaseMsg:     baseMsg,

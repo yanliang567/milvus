@@ -28,8 +28,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/proxypb"
 	"github.com/milvus-io/milvus/internal/rootcoord"
 	"github.com/milvus-io/milvus/internal/types"
@@ -52,7 +52,12 @@ type mockCore struct {
 	types.RootCoordComponent
 }
 
-func (m *mockCore) UpdateStateCode(internalpb.StateCode) {
+func (m *mockCore) CheckHealth(ctx context.Context, req *milvuspb.CheckHealthRequest) (*milvuspb.CheckHealthResponse, error) {
+	return &milvuspb.CheckHealthResponse{
+		IsHealthy: true,
+	}, nil
+}
+func (m *mockCore) UpdateStateCode(commonpb.StateCode) {
 }
 
 func (m *mockCore) SetEtcdClient(etcdClient *clientv3.Client) {
@@ -95,17 +100,17 @@ func (m *mockDataCoord) Init() error {
 func (m *mockDataCoord) Start() error {
 	return nil
 }
-func (m *mockDataCoord) GetComponentStates(ctx context.Context) (*internalpb.ComponentStates, error) {
-	return &internalpb.ComponentStates{
-		State: &internalpb.ComponentInfo{
-			StateCode: internalpb.StateCode_Healthy,
+func (m *mockDataCoord) GetComponentStates(ctx context.Context) (*milvuspb.ComponentStates, error) {
+	return &milvuspb.ComponentStates{
+		State: &milvuspb.ComponentInfo{
+			StateCode: commonpb.StateCode_Healthy,
 		},
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_Success,
 		},
-		SubcomponentStates: []*internalpb.ComponentInfo{
+		SubcomponentStates: []*milvuspb.ComponentInfo{
 			{
-				StateCode: internalpb.StateCode_Healthy,
+				StateCode: commonpb.StateCode_Healthy,
 			},
 		},
 	}, nil
@@ -180,6 +185,12 @@ func TestRun(t *testing.T) {
 	assert.Nil(t, err)
 	err = svr.Run()
 	assert.Nil(t, err)
+
+	t.Run("CheckHealth", func(t *testing.T) {
+		ret, err := svr.CheckHealth(ctx, nil)
+		assert.Nil(t, err)
+		assert.Equal(t, true, ret.IsHealthy)
+	})
 
 	err = svr.Stop()
 	assert.Nil(t, err)

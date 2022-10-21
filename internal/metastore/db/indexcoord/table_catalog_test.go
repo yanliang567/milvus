@@ -10,7 +10,7 @@ package indexcoord
 //	"github.com/milvus-io/milvus/internal/metastore"
 //	"github.com/milvus-io/milvus/internal/metastore/db/dbmodel/mocks"
 //	"github.com/milvus-io/milvus/internal/metastore/model"
-//	"github.com/milvus-io/milvus/api/commonpb"
+//	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 //	"github.com/milvus-io/milvus/internal/util/contextutil"
 //	"github.com/milvus-io/milvus/internal/util/typeutil"
 //	"github.com/stretchr/testify/mock"
@@ -166,7 +166,7 @@ package indexcoord
 //				},
 //				BuildID:        indexBuildID1,
 //				CreateTime:     0,
-//				IndexFilePaths: []string{"a\xc5z"},
+//				IndexFileKeys: []string{"a\xc5z"},
 //			},
 //		},
 //	}
@@ -339,7 +339,7 @@ package indexcoord
 ////			EnableIndex:    false,
 ////			IndexBuildID:   indexBuildID1,
 ////			IndexSize:      0,
-////			IndexFilePaths: "[\"test_index_file_path_1\"]",
+////			IndexFileKeys: "[\"test_index_file_path_1\"]",
 ////		},
 ////	}
 ////	out := []*model.Index{
@@ -365,7 +365,7 @@ package indexcoord
 ////					BuildID: indexBuildID1,
 ////					//EnableIndex:    false,
 ////					CreateTime:     0,
-////					IndexFilePaths: []string{"test_index_file_path_1"},
+////					IndexFileKeys: []string{"test_index_file_path_1"},
 ////				},
 ////			},
 ////			Extra: nil,

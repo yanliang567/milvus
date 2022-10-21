@@ -31,8 +31,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	dcc "github.com/milvus-io/milvus/internal/distributed/datacoord/client"
 	icc "github.com/milvus-io/milvus/internal/distributed/indexcoord/client"
 	rcc "github.com/milvus-io/milvus/internal/distributed/rootcoord/client"
@@ -224,8 +224,8 @@ func (s *Server) init() error {
 		panic(err)
 	}
 
-	s.queryCoord.UpdateStateCode(internalpb.StateCode_Initializing)
-	log.Debug("QueryCoord", zap.Any("State", internalpb.StateCode_Initializing))
+	s.queryCoord.UpdateStateCode(commonpb.StateCode_Initializing)
+	log.Debug("QueryCoord", zap.Any("State", commonpb.StateCode_Initializing))
 	if err := s.queryCoord.Init(); err != nil {
 		return err
 	}
@@ -328,7 +328,7 @@ func (s *Server) SetIndexCoord(d types.IndexCoord) error {
 }
 
 // GetComponentStates gets the component states of QueryCoord.
-func (s *Server) GetComponentStates(ctx context.Context, req *internalpb.GetComponentStatesRequest) (*internalpb.ComponentStates, error) {
+func (s *Server) GetComponentStates(ctx context.Context, req *milvuspb.GetComponentStatesRequest) (*milvuspb.ComponentStates, error) {
 	return s.queryCoord.GetComponentStates(ctx)
 }
 
@@ -405,4 +405,8 @@ func (s *Server) GetReplicas(ctx context.Context, req *milvuspb.GetReplicasReque
 // GetShardLeaders returns the shard leaders of a certain collection.
 func (s *Server) GetShardLeaders(ctx context.Context, req *querypb.GetShardLeadersRequest) (*querypb.GetShardLeadersResponse, error) {
 	return s.queryCoord.GetShardLeaders(ctx, req)
+}
+
+func (s *Server) CheckHealth(ctx context.Context, req *milvuspb.CheckHealthRequest) (*milvuspb.CheckHealthResponse, error) {
+	return s.queryCoord.CheckHealth(ctx, req)
 }

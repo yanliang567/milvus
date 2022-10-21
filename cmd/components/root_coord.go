@@ -20,10 +20,13 @@ import (
 	"context"
 	"io"
 
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	rc "github.com/milvus-io/milvus/internal/distributed/rootcoord"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/util/dependency"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
+
 	"github.com/opentracing/opentracing-go"
 	"go.uber.org/zap"
 )
@@ -68,6 +71,14 @@ func (rc *RootCoord) Stop() error {
 }
 
 // GetComponentStates returns RootCoord's states
-func (rc *RootCoord) GetComponentStates(ctx context.Context, request *internalpb.GetComponentStatesRequest) (*internalpb.ComponentStates, error) {
-	return rc.svr.GetComponentStates(ctx, request)
+func (rc *RootCoord) Health(ctx context.Context) commonpb.StateCode {
+	resp, err := rc.svr.GetComponentStates(ctx, &milvuspb.GetComponentStatesRequest{})
+	if err != nil {
+		return commonpb.StateCode_Abnormal
+	}
+	return resp.State.GetStateCode()
+}
+
+func (rc *RootCoord) GetName() string {
+	return typeutil.RootCoordRole
 }

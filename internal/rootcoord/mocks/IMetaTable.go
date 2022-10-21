@@ -8,7 +8,7 @@ import (
 	etcdpb "github.com/milvus-io/milvus/internal/proto/etcdpb"
 	internalpb "github.com/milvus-io/milvus/internal/proto/internalpb"
 
-	milvuspb "github.com/milvus-io/milvus/api/milvuspb"
+	milvuspb "github.com/milvus-io/milvus-proto/go-api/milvuspb"
 
 	mock "github.com/stretchr/testify/mock"
 
@@ -69,6 +69,20 @@ func (_m *IMetaTable) AlterAlias(ctx context.Context, alias string, collectionNa
 	var r0 error
 	if rf, ok := ret.Get(0).(func(context.Context, string, string, uint64) error); ok {
 		r0 = rf(ctx, alias, collectionName, ts)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// AlterCollection provides a mock function with given fields: ctx, oldColl, newColl, ts
+func (_m *IMetaTable) AlterCollection(ctx context.Context, oldColl *model.Collection, newColl *model.Collection, ts uint64) error {
+	ret := _m.Called(ctx, oldColl, newColl, ts)
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, *model.Collection, *model.Collection, uint64) error); ok {
+		r0 = rf(ctx, oldColl, newColl, ts)
 	} else {
 		r0 = ret.Error(0)
 	}

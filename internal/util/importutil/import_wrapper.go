@@ -29,8 +29,8 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
@@ -60,6 +60,9 @@ const (
 	// the total memory size might cause OOM.
 	MaxTotalSizeInMemory = 2 * 1024 * 1024 * 1024 // 2GB
 )
+
+// ReportImportAttempts is the maximum # of attempts to retry when import fails.
+var ReportImportAttempts uint = 10
 
 type ImportWrapper struct {
 	ctx              context.Context            // for canceling parse process
@@ -186,7 +189,7 @@ func (p *ImportWrapper) fileValidation(filePaths []string, rowBased bool) error 
 		size, err := p.chunkManager.Size(context.TODO(), filePath)
 		if err != nil {
 			log.Error("import wrapper: failed to get file size", zap.String("filePath", filePath), zap.Any("err", err))
-			return errors.New("failed to ")
+			return errors.New("failed to get file size of " + filePath)
 		}
 
 		if size == 0 {
@@ -342,9 +345,9 @@ func (p *ImportWrapper) reportPersisted() error {
 	// persist state task is valuable, retry more times in case fail this task only because of network error
 	reportErr := retry.Do(p.ctx, func() error {
 		return p.reportFunc(p.importResult)
-	}, retry.Attempts(10))
+	}, retry.Attempts(ReportImportAttempts))
 	if reportErr != nil {
-		log.Warn("import wrapper: fail to report import state to root coord", zap.Error(reportErr))
+		log.Warn("import wrapper: fail to report import state to RootCoord", zap.Error(reportErr))
 		return reportErr
 	}
 	return nil

@@ -31,8 +31,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/proxypb"
@@ -75,6 +75,10 @@ type Server struct {
 	newQueryCoordClient func(string, *clientv3.Client) types.QueryCoord
 
 	closer io.Closer
+}
+
+func (s *Server) CheckHealth(ctx context.Context, request *milvuspb.CheckHealthRequest) (*milvuspb.CheckHealthResponse, error) {
+	return s.rootCoord.CheckHealth(ctx, request)
 }
 
 // CreateAlias creates an alias for specified collection.
@@ -173,8 +177,8 @@ func (s *Server) init() error {
 	}
 	log.Debug("grpc init done ...")
 
-	s.rootCoord.UpdateStateCode(internalpb.StateCode_Initializing)
-	log.Debug("RootCoord", zap.Any("State", internalpb.StateCode_Initializing))
+	s.rootCoord.UpdateStateCode(commonpb.StateCode_Initializing)
+	log.Debug("RootCoord", zap.Any("State", commonpb.StateCode_Initializing))
 
 	if s.newDataCoordClient != nil {
 		log.Debug("RootCoord start to create DataCoord client")
@@ -309,7 +313,7 @@ func (s *Server) Stop() error {
 }
 
 // GetComponentStates gets the component states of RootCoord.
-func (s *Server) GetComponentStates(ctx context.Context, req *internalpb.GetComponentStatesRequest) (*internalpb.ComponentStates, error) {
+func (s *Server) GetComponentStates(ctx context.Context, req *milvuspb.GetComponentStatesRequest) (*milvuspb.ComponentStates, error) {
 	return s.rootCoord.GetComponentStates(ctx)
 }
 
@@ -473,4 +477,8 @@ func (s *Server) SelectGrant(ctx context.Context, request *milvuspb.SelectGrantR
 
 func (s *Server) ListPolicy(ctx context.Context, request *internalpb.ListPolicyRequest) (*internalpb.ListPolicyResponse, error) {
 	return s.rootCoord.ListPolicy(ctx, request)
+}
+
+func (s *Server) AlterCollection(ctx context.Context, request *milvuspb.AlterCollectionRequest) (*commonpb.Status, error) {
+	return s.rootCoord.AlterCollection(ctx, request)
 }

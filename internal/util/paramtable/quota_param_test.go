@@ -17,6 +17,7 @@
 package paramtable
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -28,7 +29,7 @@ func TestQuotaParam(t *testing.T) {
 	qc.init(&baseParams)
 
 	t.Run("test quota", func(t *testing.T) {
-		assert.False(t, qc.QuotaAndLimitsEnabled)
+		assert.True(t, qc.QuotaAndLimitsEnabled)
 		assert.Equal(t, float64(3), qc.QuotaCenterCollectInterval)
 	})
 
@@ -77,13 +78,17 @@ func TestQuotaParam(t *testing.T) {
 		assert.Equal(t, defaultHighWaterLevel, qc.DataNodeMemoryHighWaterLevel)
 		assert.Equal(t, defaultLowWaterLevel, qc.QueryNodeMemoryLowWaterLevel)
 		assert.Equal(t, defaultHighWaterLevel, qc.QueryNodeMemoryHighWaterLevel)
+		assert.Equal(t, true, qc.DiskProtectionEnabled)
+		assert.Equal(t, defaultMax, qc.DiskQuota)
 	})
 
 	t.Run("test limit reading", func(t *testing.T) {
 		assert.False(t, qc.ForceDenyReading)
 		assert.Equal(t, false, qc.QueueProtectionEnabled)
-		assert.Equal(t, int64(0), qc.NQInQueueThreshold)
-		assert.Equal(t, float64(0), qc.QueueLatencyThreshold)
+		assert.Equal(t, int64(math.MaxInt64), qc.NQInQueueThreshold)
+		assert.Equal(t, defaultMax, qc.QueueLatencyThreshold)
+		assert.Equal(t, false, qc.ResultProtectionEnabled)
+		assert.Equal(t, defaultMax, qc.MaxReadResultRate)
 		assert.Equal(t, 0.9, qc.CoolOffSpeed)
 	})
 }

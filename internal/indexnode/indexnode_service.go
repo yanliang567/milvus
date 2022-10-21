@@ -8,20 +8,20 @@ import (
 	"github.com/golang/protobuf/proto"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
+	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
 	"github.com/milvus-io/milvus/internal/util/trace"
 )
 
 func (i *IndexNode) CreateJob(ctx context.Context, req *indexpb.CreateJobRequest) (*commonpb.Status, error) {
-	stateCode := i.stateCode.Load().(internalpb.StateCode)
-	if stateCode != internalpb.StateCode_Healthy {
+	stateCode := i.stateCode.Load().(commonpb.StateCode)
+	if stateCode != commonpb.StateCode_Healthy {
 		log.Ctx(ctx).Warn("index node not ready", zap.Int32("state", int32(stateCode)), zap.String("ClusterID", req.ClusterID), zap.Int64("IndexBuildID", req.BuildID))
 		return &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
@@ -93,8 +93,8 @@ func (i *IndexNode) CreateJob(ctx context.Context, req *indexpb.CreateJobRequest
 }
 
 func (i *IndexNode) QueryJobs(ctx context.Context, req *indexpb.QueryJobsRequest) (*indexpb.QueryJobsResponse, error) {
-	stateCode := i.stateCode.Load().(internalpb.StateCode)
-	if stateCode != internalpb.StateCode_Healthy {
+	stateCode := i.stateCode.Load().(commonpb.StateCode)
+	if stateCode != commonpb.StateCode_Healthy {
 		log.Ctx(ctx).Warn("index node not ready", zap.Int32("state", int32(stateCode)), zap.String("ClusterID", req.ClusterID))
 		return &indexpb.QueryJobsResponse{
 			Status: &commonpb.Status{
@@ -108,7 +108,7 @@ func (i *IndexNode) QueryJobs(ctx context.Context, req *indexpb.QueryJobsRequest
 		if ClusterID == req.ClusterID {
 			infos[buildID] = &taskInfo{
 				state:          info.state,
-				indexFiles:     info.indexFiles[:],
+				fileKeys:       common.CloneStringList(info.fileKeys),
 				serializedSize: info.serializedSize,
 				failReason:     info.failReason,
 			}
@@ -126,12 +126,12 @@ func (i *IndexNode) QueryJobs(ctx context.Context, req *indexpb.QueryJobsRequest
 		ret.IndexInfos = append(ret.IndexInfos, &indexpb.IndexTaskInfo{
 			BuildID:        buildID,
 			State:          commonpb.IndexState_IndexStateNone,
-			IndexFiles:     nil,
+			IndexFileKeys:  nil,
 			SerializedSize: 0,
 		})
 		if info, ok := infos[buildID]; ok {
 			ret.IndexInfos[i].State = info.state
-			ret.IndexInfos[i].IndexFiles = info.indexFiles
+			ret.IndexInfos[i].IndexFileKeys = info.fileKeys
 			ret.IndexInfos[i].SerializedSize = info.serializedSize
 			ret.IndexInfos[i].FailReason = info.failReason
 			log.Ctx(ctx).Debug("querying index build task", zap.String("ClusterID", req.ClusterID),
@@ -144,8 +144,8 @@ func (i *IndexNode) QueryJobs(ctx context.Context, req *indexpb.QueryJobsRequest
 
 func (i *IndexNode) DropJobs(ctx context.Context, req *indexpb.DropJobsRequest) (*commonpb.Status, error) {
 	log.Ctx(ctx).Debug("drop index build jobs", zap.String("ClusterID", req.ClusterID), zap.Int64s("IndexBuildIDs", req.BuildIDs))
-	stateCode := i.stateCode.Load().(internalpb.StateCode)
-	if stateCode != internalpb.StateCode_Healthy {
+	stateCode := i.stateCode.Load().(commonpb.StateCode)
+	if stateCode != commonpb.StateCode_Healthy {
 		log.Ctx(ctx).Warn("index node not ready", zap.Int32("state", int32(stateCode)), zap.String("ClusterID", req.ClusterID))
 		return &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
@@ -171,8 +171,8 @@ func (i *IndexNode) DropJobs(ctx context.Context, req *indexpb.DropJobsRequest) 
 }
 
 func (i *IndexNode) GetJobStats(ctx context.Context, req *indexpb.GetJobStatsRequest) (*indexpb.GetJobStatsResponse, error) {
-	stateCode := i.stateCode.Load().(internalpb.StateCode)
-	if stateCode != internalpb.StateCode_Healthy {
+	stateCode := i.stateCode.Load().(commonpb.StateCode)
+	if stateCode != commonpb.StateCode_Healthy {
 		log.Ctx(ctx).Warn("index node not ready", zap.Int32("state", int32(stateCode)))
 		return &indexpb.GetJobStatsResponse{
 			Status: &commonpb.Status{

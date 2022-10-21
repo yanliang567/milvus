@@ -13,7 +13,6 @@
 #include <gtest/gtest.h>
 #include <map>
 #include <tuple>
-#include <yaml-cpp/yaml.h>
 
 #include "indexbuilder/IndexFactory.h"
 #include "indexbuilder/VecIndexCreator.h"
@@ -32,7 +31,7 @@ class IndexWrapperTest : public ::testing::TestWithParam<Param> {
     void
     SetUp() override {
         knowhere::KnowhereConfig::SetStatisticsLevel(3);
-        knowhere::KnowhereConfig::SetIndexFileSliceSize(16);
+        storage_config_ = get_default_storage_config();
 
         auto param = GetParam();
         index_type = param.first;
@@ -94,6 +93,7 @@ class IndexWrapperTest : public ::testing::TestWithParam<Param> {
     knowhere::DatasetPtr xq_dataset;
     int64_t query_offset = 100;
     int64_t NB = 10000;
+    StorageConfig storage_config_;
 };
 
 INSTANTIATE_TEST_CASE_P(
@@ -111,7 +111,7 @@ INSTANTIATE_TEST_CASE_P(
 
 TEST_P(IndexWrapperTest, BuildAndQuery) {
     auto index = milvus::indexbuilder::IndexFactory::GetInstance().CreateIndex(
-        vec_field_data_type, type_params_str.c_str(), index_params_str.c_str());
+        vec_field_data_type, type_params_str.c_str(), index_params_str.c_str(), storage_config_);
 
     auto dataset = GenDataset(NB, metric_type, is_binary);
     auto xb_data = dataset.get_col<float>(milvus::FieldId(100));
@@ -119,7 +119,7 @@ TEST_P(IndexWrapperTest, BuildAndQuery) {
     ASSERT_NO_THROW(index->Build(xb_dataset));
     auto binary_set = index->Serialize();
     auto copy_index = milvus::indexbuilder::IndexFactory::GetInstance().CreateIndex(
-        vec_field_data_type, type_params_str.c_str(), index_params_str.c_str());
+        vec_field_data_type, type_params_str.c_str(), index_params_str.c_str(), storage_config_);
     auto vec_index = static_cast<milvus::indexbuilder::VecIndexCreator*>(copy_index.get());
     ASSERT_EQ(vec_index->dim(), DIM);
     ASSERT_NO_THROW(vec_index->Load(binary_set));

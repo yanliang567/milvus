@@ -21,11 +21,11 @@ import (
 
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 
 	"github.com/milvus-io/milvus/internal/metastore/model"
 
-	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/stretchr/testify/assert"
 )
@@ -128,6 +128,25 @@ func Test_getTravelTs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equalf(t, tt.want, getTravelTs(tt.args.req), "getTravelTs(%v)", tt.args.req)
+		})
+	}
+}
+
+func Test_isMaxTs(t *testing.T) {
+	type args struct {
+		ts Timestamp
+	}
+	tests := []struct {
+		name string
+		args args
+		want bool
+	}{
+		{args: args{ts: typeutil.MaxTimestamp}, want: true},
+		{args: args{ts: typeutil.ZeroTimestamp}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equalf(t, tt.want, isMaxTs(tt.args.ts), "isMaxTs(%v)", tt.args.ts)
 		})
 	}
 }

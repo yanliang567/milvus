@@ -25,12 +25,13 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/kv"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
+	"github.com/milvus-io/milvus/internal/util/importutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 	"github.com/stretchr/testify/assert"
 )
@@ -594,7 +595,7 @@ func TestImportManager_ImportJob(t *testing.T) {
 		Files:          []string{"f1", "f2"},
 		Options: []*commonpb.KeyValuePair{
 			{
-				Key:   Bucket,
+				Key:   importutil.Bucket,
 				Value: "mybucket",
 			},
 		},
@@ -692,7 +693,7 @@ func TestImportManager_AllDataNodesBusy(t *testing.T) {
 		Files:          []string{"f1", "f2"},
 		Options: []*commonpb.KeyValuePair{
 			{
-				Key:   Bucket,
+				Key:   importutil.Bucket,
 				Value: "mybucket",
 			},
 		},

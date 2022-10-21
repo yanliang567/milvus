@@ -22,18 +22,19 @@ import (
 	"reflect"
 
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/commonpbutil"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
-	"github.com/milvus-io/milvus/api/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/proto/etcdpb"
 )
 
-// metaService initialize replica collections in data node from root coord.
-// Initializing replica collections happens on data node starting. It depends on
+// metaService initialize channel collection in data node from root coord.
+// Initializing channel collection happens on data node starting. It depends on
 // a healthy root coord and a valid root coord grpc client.
 type metaService struct {
-	replica      Replica
+	channel      Channel
 	collectionID UniqueID
 	rootCoord    types.RootCoord
 }
@@ -58,12 +59,12 @@ func (mService *metaService) getCollectionSchema(ctx context.Context, collID Uni
 // getCollectionInfo get collection info with provided collection id at specified timestamp.
 func (mService *metaService) getCollectionInfo(ctx context.Context, collID UniqueID, timestamp Timestamp) (*milvuspb.DescribeCollectionResponse, error) {
 	req := &milvuspb.DescribeCollectionRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:   commonpb.MsgType_DescribeCollection,
-			MsgID:     0, //GOOSE TODO
-			Timestamp: 0, // GOOSE TODO
-			SourceID:  Params.DataNodeCfg.GetNodeID(),
-		},
+		Base: commonpbutil.NewMsgBase(
+			commonpbutil.WithMsgType(commonpb.MsgType_DescribeCollection),
+			commonpbutil.WithMsgID(0),     //GOOSE TODO
+			commonpbutil.WithTimeStamp(0), //GOOSE TODO
+			commonpbutil.WithSourceID(Params.DataNodeCfg.GetNodeID()),
+		),
 		DbName:       "default", // GOOSE TODO
 		CollectionID: collID,
 		TimeStamp:    timestamp,

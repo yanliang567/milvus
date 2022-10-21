@@ -8,14 +8,28 @@ import (
 	"testing"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/util/metautil"
+
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 )
+
+func genStorageConfig() *indexpb.StorageConfig {
+	return &indexpb.StorageConfig{
+		Address:         Params.MinioCfg.Address,
+		AccessKeyID:     Params.MinioCfg.AccessKeyID,
+		SecretAccessKey: Params.MinioCfg.SecretAccessKey,
+		BucketName:      Params.MinioCfg.BucketName,
+		RootPath:        Params.MinioCfg.RootPath,
+		IAMEndpoint:     Params.MinioCfg.IAMEndpoint,
+		UseSSL:          Params.MinioCfg.UseSSL,
+		UseIAM:          Params.MinioCfg.UseIAM,
+	}
+}
 
 func TestIndexNodeSimple(t *testing.T) {
 	in, err := NewMockIndexNodeComponent(context.TODO())
@@ -24,7 +38,7 @@ func TestIndexNodeSimple(t *testing.T) {
 	state, err := in.GetComponentStates(ctx)
 	assert.Nil(t, err)
 	assert.Equal(t, state.Status.ErrorCode, commonpb.ErrorCode_Success)
-	assert.Equal(t, state.State.StateCode, internalpb.StateCode_Healthy)
+	assert.Equal(t, state.State.StateCode, commonpb.StateCode_Healthy)
 
 	assert.Nil(t, err, err)
 	var (
@@ -72,6 +86,7 @@ func TestIndexNodeSimple(t *testing.T) {
 			IndexName:       idxName,
 			IndexParams:     indexParams,
 			TypeParams:      typeParams,
+			StorageConfig:   genStorageConfig(),
 		}
 		status, err := in.CreateJob(ctx, createReq)
 		assert.Nil(t, err)
@@ -110,7 +125,9 @@ func TestIndexNodeSimple(t *testing.T) {
 		}
 
 		assert.NotNil(t, idxInfo)
-		for _, idxFile := range idxInfo.IndexFiles {
+		for _, idxFileID := range idxInfo.IndexFileKeys {
+			idxFile := metautil.BuildSegmentIndexFilePath(mockChunkMgr.RootPath(), buildID, 0,
+				partID, segID, idxFileID)
 			_, ok := mockChunkMgr.indexedData.Load(idxFile)
 			assert.True(t, ok)
 			t.Logf("indexed file: %s", idxFile)
@@ -199,7 +216,7 @@ func TestIndexNodeComplex(t *testing.T) {
 	state, err := in.GetComponentStates(ctx)
 	assert.Nil(t, err)
 	assert.Equal(t, state.Status.ErrorCode, commonpb.ErrorCode_Success)
-	assert.Equal(t, state.State.StateCode, internalpb.StateCode_Healthy)
+	assert.Equal(t, state.State.StateCode, commonpb.StateCode_Healthy)
 
 	mockChunkMgr := mockChunkMgrIns
 
@@ -243,6 +260,7 @@ func TestIndexNodeComplex(t *testing.T) {
 			IndexName:       fmt.Sprintf("idx%d", tasks[i].idxID),
 			IndexParams:     tasks[i].idxParams,
 			TypeParams:      tasks[i].typeParams,
+			StorageConfig:   genStorageConfig(),
 		}
 		testwg.Add(1)
 		go func() {
@@ -296,11 +314,13 @@ Loop:
 	for _, job := range jobresp.IndexInfos {
 		task := tasks[job.BuildID-buildID0]
 		if job.State == commonpb.IndexState_Finished {
-			for _, idxFile := range job.IndexFiles {
+			for _, idxFileID := range job.IndexFileKeys {
+				idxFile := metautil.BuildSegmentIndexFilePath(mockChunkMgr.RootPath(), task.buildID,
+					0, task.partID, task.segID, idxFileID)
 				_, ok := mockChunkMgr.indexedData.Load(idxFile)
 				assert.True(t, ok)
 			}
-			t.Logf("buildID: %d, indexFiles: %v", job.BuildID, job.IndexFiles)
+			t.Logf("buildID: %d, indexFiles: %v", job.BuildID, job.IndexFileKeys)
 		} else {
 			_, ok := mockChunkMgr.indexedData.Load(dataPath(task.collID, task.partID, task.segID))
 			assert.False(t, ok)
@@ -311,7 +331,7 @@ Loop:
 	assert.Nil(t, in.Stop())
 	node := in.(*mockIndexNodeComponent).IndexNode
 	assert.Equal(t, 0, len(node.tasks))
-	assert.Equal(t, internalpb.StateCode_Abnormal, node.stateCode.Load().(internalpb.StateCode))
+	assert.Equal(t, commonpb.StateCode_Abnormal, node.stateCode.Load().(commonpb.StateCode))
 }
 
 func TestAbnormalIndexNode(t *testing.T) {

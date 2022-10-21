@@ -26,7 +26,7 @@ import (
 	"github.com/golang/protobuf/proto"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus/internal/kv"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
@@ -207,7 +207,7 @@ func (hd *handoff) process(segID UniqueID, front bool) {
 					IndexID:     indexInfo.IndexID,
 					BuildID:     indexInfo.BuildID,
 					IndexParams: hd.meta.GetIndexParams(info.CollectionID, indexInfo.IndexID),
-					//IndexFilePaths: nil,
+					//IndexFileKeys: nil,
 					//IndexSize:      0,
 				})
 			}

@@ -25,10 +25,16 @@ package querynode
 import "C"
 
 import (
+	"encoding/json"
+	"fmt"
+	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/indexparams"
+	"go.uber.org/zap"
 	"path/filepath"
 	"unsafe"
 
-	"github.com/milvus-io/milvus/api/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 )
 
@@ -40,7 +46,36 @@ type LoadIndexInfo struct {
 // newLoadIndexInfo returns a new LoadIndexInfo and error
 func newLoadIndexInfo() (*LoadIndexInfo, error) {
 	var cLoadIndexInfo C.CLoadIndexInfo
-	status := C.NewLoadIndexInfo(&cLoadIndexInfo)
+
+	// TODO::xige-16 support embedded milvus
+	storageType := "minio"
+	cAddress := C.CString(Params.MinioCfg.Address)
+	cBucketName := C.CString(Params.MinioCfg.BucketName)
+	cAccessKey := C.CString(Params.MinioCfg.AccessKeyID)
+	cAccessValue := C.CString(Params.MinioCfg.SecretAccessKey)
+	cRootPath := C.CString(Params.MinioCfg.RootPath)
+	cStorageType := C.CString(storageType)
+	cIamEndPoint := C.CString(Params.MinioCfg.IAMEndpoint)
+	defer C.free(unsafe.Pointer(cAddress))
+	defer C.free(unsafe.Pointer(cBucketName))
+	defer C.free(unsafe.Pointer(cAccessKey))
+	defer C.free(unsafe.Pointer(cAccessValue))
+	defer C.free(unsafe.Pointer(cRootPath))
+	defer C.free(unsafe.Pointer(cStorageType))
+	defer C.free(unsafe.Pointer(cIamEndPoint))
+	storageConfig := C.CStorageConfig{
+		address:          cAddress,
+		bucket_name:      cBucketName,
+		access_key_id:    cAccessKey,
+		access_key_value: cAccessValue,
+		remote_root_path: cRootPath,
+		storage_type:     cStorageType,
+		iam_endpoint:     cIamEndPoint,
+		useSSL:           C.bool(Params.MinioCfg.UseSSL),
+		useIAM:           C.bool(Params.MinioCfg.UseIAM),
+	}
+
+	status := C.NewLoadIndexInfo(&cLoadIndexInfo, storageConfig)
 	if err := HandleCStatus(&status, "NewLoadIndexInfo failed"); err != nil {
 		return nil, err
 	}
@@ -66,8 +101,19 @@ func (li *LoadIndexInfo) appendLoadIndexInfo(bytesIndex [][]byte, indexInfo *que
 		return err
 	}
 
-	for _, param := range indexInfo.IndexParams {
-		err = li.appendIndexParam(param.Key, param.Value)
+	// some build params also exist in indexParams, which are useless during loading process
+	indexParams := funcutil.KeyValuePair2Map(indexInfo.IndexParams)
+	indexparams.SetDiskIndexLoadParams(indexParams, indexInfo.GetNumRows())
+
+	jsonIndexParams, err := json.Marshal(indexParams)
+	if err != nil {
+		err = fmt.Errorf("failed to json marshal index params %w", err)
+		return err
+	}
+	log.Info("start append index params", zap.String("index params", string(jsonIndexParams)))
+
+	for key, value := range indexParams {
+		err = li.appendIndexParam(key, value)
 		if err != nil {
 			return err
 		}

@@ -28,7 +28,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metastore"
 	"github.com/milvus-io/milvus/internal/metastore/kv/rootcoord"
@@ -42,12 +42,6 @@ import (
 const (
 	// TimestampPrefix prefix for timestamp
 	TimestampPrefix = rootcoord.ComponentPrefix + "/timestamp"
-
-	// DDOperationPrefix prefix for DD operation
-	DDOperationPrefix = rootcoord.ComponentPrefix + "/dd-operation"
-
-	// DDMsgSendPrefix prefix to indicate whether DD msg has been send
-	DDMsgSendPrefix = rootcoord.ComponentPrefix + "/dd-msg-send"
 
 	// CreateCollectionDDType name of DD type for create collection
 	CreateCollectionDDType = "CreateCollection"
@@ -85,6 +79,7 @@ type IMetaTable interface {
 	CreateAlias(ctx context.Context, alias string, collectionName string, ts Timestamp) error
 	DropAlias(ctx context.Context, alias string, ts Timestamp) error
 	AlterAlias(ctx context.Context, alias string, collectionName string, ts Timestamp) error
+	AlterCollection(ctx context.Context, oldColl *model.Collection, newColl *model.Collection, ts Timestamp) error
 
 	// TODO: it'll be a big cost if we handle the time travel logic, since we should always list all aliases in catalog.
 	IsAlias(name string) bool
@@ -240,8 +235,33 @@ func (mt *MetaTable) RemoveCollection(ctx context.Context, collectionID UniqueID
 	return nil
 }
 
+func filterUnavailable(coll *model.Collection) *model.Collection {
+	clone := coll.Clone()
+	// pick available partitions.
+	clone.Partitions = nil
+	for _, partition := range coll.Partitions {
+		if partition.Available() {
+			clone.Partitions = append(clone.Partitions, partition.Clone())
+		}
+	}
+	return clone
+}
+
+// getLatestCollectionByIDInternal should be called with ts = typeutil.MaxTimestamp
+func (mt *MetaTable) getLatestCollectionByIDInternal(ctx context.Context, collectionID UniqueID) (*model.Collection, error) {
+	coll, ok := mt.collID2Meta[collectionID]
+	if !ok || coll == nil || !coll.Available() {
+		return nil, common.NewCollectionNotExistError(fmt.Sprintf("can't find collection: %d", collectionID))
+	}
+	return filterUnavailable(coll), nil
+}
+
 // getCollectionByIDInternal get collection by collection id without lock.
 func (mt *MetaTable) getCollectionByIDInternal(ctx context.Context, collectionID UniqueID, ts Timestamp) (*model.Collection, error) {
+	if isMaxTs(ts) {
+		return mt.getLatestCollectionByIDInternal(ctx, collectionID)
+	}
+
 	var coll *model.Collection
 	var err error
 
@@ -260,15 +280,7 @@ func (mt *MetaTable) getCollectionByIDInternal(ctx context.Context, collectionID
 		return nil, common.NewCollectionNotExistError(fmt.Sprintf("can't find collection: %s", coll.Name))
 	}
 
-	clone := coll.Clone()
-	// pick available partitions.
-	clone.Partitions = nil
-	for _, partition := range coll.Partitions {
-		if partition.Available() {
-			clone.Partitions = append(clone.Partitions, partition.Clone())
-		}
-	}
-	return clone, nil
+	return filterUnavailable(coll), nil
 }
 
 func (mt *MetaTable) GetCollectionByName(ctx context.Context, collectionName string, ts Timestamp) (*model.Collection, error) {
@@ -287,23 +299,20 @@ func (mt *MetaTable) GetCollectionByName(ctx context.Context, collectionName str
 		return mt.getCollectionByIDInternal(ctx, collectionID, ts)
 	}
 
+	if isMaxTs(ts) {
+		return nil, common.NewCollectionNotExistError(fmt.Sprintf("can't find collection: %s", collectionName))
+	}
+
 	// travel meta information from catalog. No need to check time travel logic again, since catalog already did.
 	ctx1 := contextutil.WithTenantID(ctx, Params.CommonCfg.ClusterName)
 	coll, err := mt.catalog.GetCollectionByName(ctx1, collectionName, ts)
 	if err != nil {
 		return nil, err
 	}
-	if !coll.Available() {
+	if coll == nil || !coll.Available() {
 		return nil, common.NewCollectionNotExistError(fmt.Sprintf("can't find collection: %s", collectionName))
 	}
-	partitions := coll.Partitions
-	coll.Partitions = nil
-	for _, partition := range partitions {
-		if partition.Available() {
-			coll.Partitions = append(coll.Partitions, partition.Clone())
-		}
-	}
-	return coll, nil
+	return filterUnavailable(coll), nil
 }
 
 func (mt *MetaTable) GetCollectionByID(ctx context.Context, collectionID UniqueID, ts Timestamp) (*model.Collection, error) {
@@ -363,6 +372,19 @@ func (mt *MetaTable) ListCollectionPhysicalChannels() map[typeutil.UniqueID][]st
 	}
 
 	return chanMap
+}
+
+func (mt *MetaTable) AlterCollection(ctx context.Context, oldColl *model.Collection, newColl *model.Collection, ts Timestamp) error {
+	mt.ddLock.Lock()
+	defer mt.ddLock.Unlock()
+
+	ctx1 := contextutil.WithTenantID(ctx, Params.CommonCfg.ClusterName)
+	if err := mt.catalog.AlterCollection(ctx1, oldColl, newColl, metastore.MODIFY, ts); err != nil {
+		return err
+	}
+	mt.collID2Meta[oldColl.CollectionID] = newColl
+	log.Info("alter collection finished", zap.Int64("collectionID", oldColl.CollectionID), zap.Uint64("ts", ts))
+	return nil
 }
 
 // GetCollectionVirtualChannels returns virtual channels of a given collection.

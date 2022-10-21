@@ -25,7 +25,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/milvus-io/milvus/api/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
@@ -67,7 +67,7 @@ type compactionTask struct {
 	downloader
 	uploader
 	compactor
-	Replica
+	Channel
 	flushManager
 	allocatorInterface
 
@@ -87,7 +87,7 @@ func newCompactionTask(
 	ctx context.Context,
 	dl downloader,
 	ul uploader,
-	replica Replica,
+	channel Channel,
 	fm flushManager,
 	alloc allocatorInterface,
 	plan *datapb.CompactionPlan) *compactionTask {
@@ -99,7 +99,7 @@ func newCompactionTask(
 
 		downloader:         dl,
 		uploader:           ul,
-		Replica:            replica,
+		Channel:            channel,
 		flushManager:       fm,
 		allocatorInterface: alloc,
 		plan:               plan,
@@ -261,7 +261,7 @@ func (t *compactionTask) merge(
 		insertPaths      = make([]*datapb.FieldBinlog, 0)
 	)
 
-	t.Replica.initSegmentBloomFilter(segment)
+	t.Channel.initSegmentBloomFilter(segment)
 
 	isDeletedValue := func(v *storage.Value) bool {
 		ts, ok := delta[v.PK.GetValue()]
@@ -397,17 +397,20 @@ func (t *compactionTask) merge(
 
 	// marshal segment statslog
 	segStats, err := segment.getSegmentStatslog(pkID, pkType)
-	if err != nil {
+	if err != nil && !errors.Is(err, errSegmentStatsNotChanged) {
 		log.Warn("failed to generate segment statslog", zap.Int64("pkID", pkID), zap.Error(err))
 		return nil, nil, nil, 0, err
 	}
 
-	uploadStatsStart := time.Now()
-	statsPaths, err := t.uploadStatsLog(ctxTimeout, targetSegID, partID, segStats, meta)
-	if err != nil {
-		return nil, nil, nil, 0, err
+	var statsPaths []*datapb.FieldBinlog
+	if len(segStats) > 0 {
+		uploadStatsStart := time.Now()
+		statsPaths, err = t.uploadStatsLog(ctxTimeout, targetSegID, partID, segStats, meta)
+		if err != nil {
+			return nil, nil, nil, 0, err
+		}
+		uploadStatsTimeCost += time.Since(uploadStatsStart)
 	}
-	uploadStatsTimeCost += time.Since(uploadStatsStart)
 
 	log.Debug("merge end", zap.Int64("remaining insert numRows", numRows),
 		zap.Int64("expired entities", expired), zap.Int("binlog file number", numBinlogs),
@@ -576,6 +579,7 @@ func (t *compactionTask) compact() (*datapb.CompactionResult, error) {
 		Field2StatslogPaths: statsPaths,
 		Deltalogs:           deltaInfo,
 		NumOfRows:           numRows,
+		Channel:             t.plan.GetChannel(),
 	}
 
 	uninjectStart := time.Now()
@@ -588,6 +592,7 @@ func (t *compactionTask) compact() (*datapb.CompactionResult, error) {
 	log.Info("compaction done",
 		zap.Int64("planID", t.plan.GetPlanID()),
 		zap.Int64("targetSegmentID", targetSegID),
+		zap.Int64s("compactedFrom", segIDs),
 		zap.Int("num of binlog paths", len(inPaths)),
 		zap.Int("num of stats paths", len(statsPaths)),
 		zap.Int("num of delta paths", len(deltaInfo)),
@@ -795,12 +800,12 @@ func (t *compactionTask) GetCurrentTime() typeutil.Timestamp {
 
 func (t *compactionTask) isExpiredEntity(ts, now Timestamp) bool {
 	// entity expire is not enabled if duration <= 0
-	if Params.CommonCfg.EntityExpirationTTL <= 0 {
+	if t.plan.GetCollectionTtl() <= 0 {
 		return false
 	}
 
 	pts, _ := tsoutil.ParseTS(ts)
 	pnow, _ := tsoutil.ParseTS(now)
-	expireTime := pts.Add(Params.CommonCfg.EntityExpirationTTL)
+	expireTime := pts.Add(time.Duration(t.plan.GetCollectionTtl()))
 	return expireTime.Before(pnow)
 }

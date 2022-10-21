@@ -24,9 +24,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
-	"github.com/milvus-io/milvus/api/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/etcdpb"
@@ -37,6 +37,7 @@ import (
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
 	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
+	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -76,15 +77,13 @@ func TestFlowGraphInsertBufferNodeCreate(t *testing.T) {
 		pkType: schemapb.DataType_Int64,
 	}
 
-	replica, err := newReplica(ctx, mockRootCoord, cm, collMeta.ID)
-	assert.Nil(t, err)
-	err = replica.addSegment(
+	channel := newChannel(insertChannelName, collMeta.ID, collMeta.Schema, mockRootCoord, cm)
+	err = channel.addSegment(
 		addSegmentReq{
 			segType:     datapb.SegmentType_New,
 			segID:       1,
 			collID:      collMeta.ID,
 			partitionID: 0,
-			channelName: insertChannelName,
 			startPos:    &internalpb.MsgPosition{},
 			endPos:      &internalpb.MsgPosition{},
 		})
@@ -92,13 +91,13 @@ func TestFlowGraphInsertBufferNodeCreate(t *testing.T) {
 
 	factory := dependency.NewDefaultFactory(true)
 
-	fm := NewRendezvousFlushManager(&allocator{}, cm, replica, func(*segmentFlushPack) {}, emptyFlushAndDropFunc)
+	fm := NewRendezvousFlushManager(&allocator{}, cm, channel, func(*segmentFlushPack) {}, emptyFlushAndDropFunc)
 
 	flushChan := make(chan flushMsg, 100)
 	resendTTChan := make(chan resendTTMsg, 100)
 
 	c := &nodeConfig{
-		replica:      replica,
+		channel:      channel,
 		msFactory:    factory,
 		allocator:    NewAllocatorFactory(),
 		vChannelName: "string",
@@ -171,16 +170,14 @@ func TestFlowGraphInsertBufferNode_Operate(t *testing.T) {
 		pkType: schemapb.DataType_Int64,
 	}
 
-	replica, err := newReplica(ctx, mockRootCoord, cm, collMeta.ID)
-	assert.Nil(t, err)
+	channel := newChannel(insertChannelName, collMeta.ID, collMeta.Schema, mockRootCoord, cm)
 
-	err = replica.addSegment(
+	err = channel.addSegment(
 		addSegmentReq{
 			segType:     datapb.SegmentType_New,
 			segID:       1,
 			collID:      collMeta.ID,
 			partitionID: 0,
-			channelName: insertChannelName,
 			startPos:    &internalpb.MsgPosition{},
 			endPos:      &internalpb.MsgPosition{},
 		})
@@ -188,12 +185,12 @@ func TestFlowGraphInsertBufferNode_Operate(t *testing.T) {
 
 	factory := dependency.NewDefaultFactory(true)
 
-	fm := NewRendezvousFlushManager(NewAllocatorFactory(), cm, replica, func(*segmentFlushPack) {}, emptyFlushAndDropFunc)
+	fm := NewRendezvousFlushManager(NewAllocatorFactory(), cm, channel, func(*segmentFlushPack) {}, emptyFlushAndDropFunc)
 
 	flushChan := make(chan flushMsg, 100)
 	resendTTChan := make(chan resendTTMsg, 100)
 	c := &nodeConfig{
-		replica:      replica,
+		channel:      channel,
 		msFactory:    factory,
 		allocator:    NewAllocatorFactory(),
 		vChannelName: "string",
@@ -234,7 +231,7 @@ func TestFlowGraphInsertBufferNode_Operate(t *testing.T) {
 	assert.Panics(t, func() { iBNode.Operate([]flowgraph.Msg{&inMsg}) })
 	iBNode.lastTimestamp = timestampBak
 
-	// test updateSegStatesInReplica failed
+	// test updateSegmentStates failed
 	inMsg = genFlowGraphInsertMsg(insertChannelName)
 	inMsg.insertMessages[0].CollectionID = UniqueID(-1)
 	inMsg.insertMessages[0].SegmentID = UniqueID(-1)
@@ -255,95 +252,6 @@ func TestFlowGraphInsertBufferNode_Operate(t *testing.T) {
 	assert.Panics(t, func() { iBNode.Operate([]flowgraph.Msg{&inMsg}) })
 	iBNode.flushManager = fm
 }
-
-/*
-func TestFlushSegment(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	idAllocMock := NewAllocatorFactory(1)
-	mockMinIO := memkv.NewMemoryKV()
-	insertChannelName := "datanode-02-test-flushsegment"
-
-	segmentID, _ := idAllocMock.allocID()
-	partitionID, _ := idAllocMock.allocID()
-	collectionID, _ := idAllocMock.allocID()
-	fmt.Printf("generate segmentID, partitionID, collectionID: %v, %v, %v\n",
-		segmentID, partitionID, collectionID)
-
-	collMeta := genCollectionMeta(collectionID, "test_flush_segment_txn")
-	flushMap := sync.Map{}
-	mockRootCoord := &RootCoordFactory{}
-
-	replica, err := newReplica(ctx, mockRootCoord, collMeta.ID)
-	assert.Nil(t, err)
-
-	err = replica.addNewSegment(segmentID, collMeta.ID, 0, insertChannelName, &internalpb.MsgPosition{}, &internalpb.MsgPosition{})
-	require.NoError(t, err)
-	replica.updateSegmentEndPosition(segmentID, &internalpb.MsgPosition{ChannelName: "TestChannel"})
-
-	finishCh := make(chan segmentFlushUnit, 1)
-
-	insertData := &InsertData{
-		Data: make(map[storage.FieldID]storage.FieldData),
-	}
-	insertData.Data[0] = &storage.Int64FieldData{
-		NumRows: []int64{10},
-		Data:    []int64{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
-	}
-	insertData.Data[1] = &storage.Int64FieldData{
-		NumRows: []int64{10},
-		Data:    []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
-	}
-	insertData.Data[107] = &storage.FloatFieldData{
-		NumRows: []int64{10},
-		Data:    make([]float32, 10),
-	}
-	flushMap.Store(segmentID, insertData)
-
-	factory := msgstream.NewPmsFactory()
-	m := map[string]interface{}{
-		"receiveBufSize": 1024,
-		"pulsarAddress":  Params.PulsarAddress,
-		"pulsarBufSize":  1024}
-	err = factory.SetParams(m)
-	assert.Nil(t, err)
-	flushChan := make(chan flushMsg, 100)
-
-	memkv := memkv.NewMemoryKV()
-
-	fm := NewRendezvousFlushManager(&allocator{}, memkv, replica, func(*segmentFlushPack) error {
-		return nil
-	})
-
-	c := &nodeConfig{
-		replica:      replica,
-		factory:    factory,
-		allocator:    NewAllocatorFactory(),
-		vChannelName: "string",
-	}
-	ibNode, err := newInsertBufferNode(ctx, flushChan, fm, newCache(), c)
-	require.NoError(t, err)
-
-	flushSegment(collMeta,
-		segmentID,
-		partitionID,
-		collectionID,
-		&flushMap,
-		mockMinIO,
-		finishCh,
-		nil,
-		ibNode,
-		idAllocMock)
-
-	fu := <-finishCh
-	assert.NotNil(t, fu.field2Path)
-	assert.Equal(t, fu.segID, segmentID)
-
-    k := JoinIDPath(collectionID, partitionID, segmentID, 0)
-	key := path.Join(Params.StatsBinlogRootPath, k)
-	_, values, _ := mockMinIO.LoadWithPrefix(key)
-	assert.Equal(t, len(values), 1)
-}*/
 
 func genCollectionMeta(collectionID UniqueID, collectionName string) *etcdpb.CollectionMeta {
 	sch := schemapb.CollectionSchema{
@@ -413,14 +321,12 @@ func TestFlowGraphInsertBufferNode_AutoFlush(t *testing.T) {
 		pkType: schemapb.DataType_Int64,
 	}
 
-	colRep := &SegmentReplica{
-		collectionID:    collMeta.ID,
-		newSegments:     make(map[UniqueID]*Segment),
-		normalSegments:  make(map[UniqueID]*Segment),
-		flushedSegments: make(map[UniqueID]*Segment),
+	channel := &ChannelMeta{
+		collectionID: collMeta.ID,
+		segments:     make(map[UniqueID]*Segment),
 	}
 
-	colRep.metaService = newMetaService(mockRootCoord, collMeta.ID)
+	channel.metaService = newMetaService(mockRootCoord, collMeta.ID)
 
 	factory := dependency.NewDefaultFactory(true)
 
@@ -430,14 +336,16 @@ func TestFlowGraphInsertBufferNode_AutoFlush(t *testing.T) {
 
 	cm := storage.NewLocalChunkManager(storage.RootPath(insertNodeTestDir))
 	defer cm.RemoveWithPrefix(ctx, "")
-	fm := NewRendezvousFlushManager(NewAllocatorFactory(), cm, colRep, func(pack *segmentFlushPack) {
+	fm := NewRendezvousFlushManager(NewAllocatorFactory(), cm, channel, func(pack *segmentFlushPack) {
 		fpMut.Lock()
 		flushPacks = append(flushPacks, pack)
 		fpMut.Unlock()
-		colRep.listNewSegmentsStartPositions()
-		colRep.listSegmentsCheckPoints()
+		startPos := channel.listNewSegmentsStartPositions()
+		channel.transferNewSegments(lo.Map(startPos, func(pos *datapb.SegmentStartPosition, _ int) UniqueID {
+			return pos.GetSegmentID()
+		}))
 		if pack.flushed || pack.dropped {
-			colRep.segmentFlushed(pack.segmentID)
+			channel.segmentFlushed(pack.segmentID)
 		}
 		wg.Done()
 	}, emptyFlushAndDropFunc)
@@ -445,7 +353,7 @@ func TestFlowGraphInsertBufferNode_AutoFlush(t *testing.T) {
 	flushChan := make(chan flushMsg, 100)
 	resendTTChan := make(chan resendTTMsg, 100)
 	c := &nodeConfig{
-		replica:      colRep,
+		channel:      channel,
 		msFactory:    factory,
 		allocator:    NewAllocatorFactory(),
 		vChannelName: "string",
@@ -489,20 +397,17 @@ func TestFlowGraphInsertBufferNode_AutoFlush(t *testing.T) {
 		}
 		iBNode.Operate([]flowgraph.Msg{iMsg})
 
-		require.Equal(t, 2, len(colRep.newSegments))
-		require.Equal(t, 0, len(colRep.normalSegments))
 		assert.Equal(t, 0, len(flushPacks))
 
 		for i, test := range beforeAutoFlushTests {
-			colRep.segMu.Lock()
-			seg, ok := colRep.newSegments[UniqueID(i+1)]
-			colRep.segMu.Unlock()
+			channel.segMu.Lock()
+			seg, ok := channel.segments[UniqueID(i+1)]
+			channel.segMu.Unlock()
 			assert.True(t, ok)
+			assert.Equal(t, datapb.SegmentType_New, seg.getType())
 			assert.Equal(t, test.expectedSegID, seg.segmentID)
 			assert.Equal(t, test.expectedNumOfRows, seg.numRows)
 			assert.Equal(t, test.expectedStartPosTs, seg.startPos.GetTimestamp())
-			assert.Equal(t, test.expectedCpNumOfRows, seg.checkPoint.numRows)
-			assert.Equal(t, test.expectedCpPosTs, seg.checkPoint.pos.GetTimestamp())
 		}
 
 		for i := range inMsg.insertMessages {
@@ -524,11 +429,8 @@ func TestFlowGraphInsertBufferNode_AutoFlush(t *testing.T) {
 			assert.NoError(t, err)
 		}
 		wg.Wait()
-		require.Equal(t, 0, len(colRep.newSegments))
-		require.Equal(t, 3, len(colRep.normalSegments))
 
 		assert.Equal(t, 1, len(flushPacks))
-		//		assert.Equal(t, 3, len(flushUnit[0].checkPoint))
 		assert.Less(t, 0, len(flushPacks[0].insertLogs))
 		assert.False(t, flushPacks[0].flushed)
 
@@ -540,16 +442,12 @@ func TestFlowGraphInsertBufferNode_AutoFlush(t *testing.T) {
 		}
 
 		for i, test := range afterAutoFlushTests {
-			seg, ok := colRep.normalSegments[UniqueID(i+1)]
+			seg, ok := channel.segments[UniqueID(i+1)]
 			assert.True(t, ok)
+			assert.Equal(t, datapb.SegmentType_Normal, seg.getType())
 			assert.Equal(t, test.expectedSegID, seg.segmentID)
 			assert.Equal(t, test.expectedNumOfRows, seg.numRows)
 			assert.Equal(t, test.expectedStartPosTs, seg.startPos.GetTimestamp())
-			assert.Equal(t, test.expectedCpNumOfRows, seg.checkPoint.numRows)
-			assert.Equal(t, test.expectedCpPosTs, seg.checkPoint.pos.GetTimestamp())
-
-			//			assert.Equal(t, test.expectedCpNumOfRows, flushPacks[0].checkPoint[UniqueID(i+1)].numRows)
-			//		assert.Equal(t, test.expectedCpPosTs, flushPacks[0].checkPoint[UniqueID(i+1)].pos.Timestamp)
 
 			if i == 1 {
 				assert.Equal(t, test.expectedSegID, flushPacks[0].segmentID)
@@ -599,20 +497,17 @@ func TestFlowGraphInsertBufferNode_AutoFlush(t *testing.T) {
 		}
 		iBNode.Operate([]flowgraph.Msg{iMsg})
 
-		require.Equal(t, 2, len(colRep.newSegments))
-		require.Equal(t, 3, len(colRep.normalSegments))
 		assert.Equal(t, 0, len(flushPacks))
 
 		for _, test := range beforeAutoFlushTests {
-			colRep.segMu.Lock()
-			seg, ok := colRep.newSegments[test.expectedSegID]
-			colRep.segMu.Unlock()
+			channel.segMu.Lock()
+			seg, ok := channel.segments[test.expectedSegID]
+			channel.segMu.Unlock()
 			assert.True(t, ok)
+			assert.Equal(t, datapb.SegmentType_New, seg.getType())
 			assert.Equal(t, test.expectedSegID, seg.segmentID)
 			assert.Equal(t, test.expectedNumOfRows, seg.numRows)
 			assert.Equal(t, test.expectedStartPosTs, seg.startPos.GetTimestamp())
-			assert.Equal(t, test.expectedCpNumOfRows, seg.checkPoint.numRows)
-			assert.Equal(t, test.expectedCpPosTs, seg.checkPoint.pos.GetTimestamp())
 		}
 
 		inMsg.startPositions = []*internalpb.MsgPosition{{Timestamp: 400}}
@@ -634,9 +529,6 @@ func TestFlowGraphInsertBufferNode_AutoFlush(t *testing.T) {
 			assert.NoError(t, err)
 		}
 		wg.Wait()
-		require.Equal(t, 0, len(colRep.newSegments))
-		require.Equal(t, 4, len(colRep.normalSegments))
-		require.Equal(t, 1, len(colRep.flushedSegments))
 
 		assert.Equal(t, 2, len(flushPacks))
 		for _, pack := range flushPacks {
@@ -669,14 +561,12 @@ func TestFlowGraphInsertBufferNode_DropPartition(t *testing.T) {
 		pkType: schemapb.DataType_Int64,
 	}
 
-	colRep := &SegmentReplica{
-		collectionID:    collMeta.ID,
-		newSegments:     make(map[UniqueID]*Segment),
-		normalSegments:  make(map[UniqueID]*Segment),
-		flushedSegments: make(map[UniqueID]*Segment),
+	channel := &ChannelMeta{
+		collectionID: collMeta.ID,
+		segments:     make(map[UniqueID]*Segment),
 	}
 
-	colRep.metaService = newMetaService(mockRootCoord, collMeta.ID)
+	channel.metaService = newMetaService(mockRootCoord, collMeta.ID)
 
 	factory := dependency.NewDefaultFactory(true)
 
@@ -686,14 +576,13 @@ func TestFlowGraphInsertBufferNode_DropPartition(t *testing.T) {
 
 	cm := storage.NewLocalChunkManager(storage.RootPath(insertNodeTestDir))
 	defer cm.RemoveWithPrefix(ctx, "")
-	fm := NewRendezvousFlushManager(NewAllocatorFactory(), cm, colRep, func(pack *segmentFlushPack) {
+	fm := NewRendezvousFlushManager(NewAllocatorFactory(), cm, channel, func(pack *segmentFlushPack) {
 		fpMut.Lock()
 		flushPacks = append(flushPacks, pack)
 		fpMut.Unlock()
-		colRep.listNewSegmentsStartPositions()
-		colRep.listSegmentsCheckPoints()
+		channel.listNewSegmentsStartPositions()
 		if pack.flushed || pack.dropped {
-			colRep.segmentFlushed(pack.segmentID)
+			channel.segmentFlushed(pack.segmentID)
 		}
 		wg.Done()
 	}, emptyFlushAndDropFunc)
@@ -701,7 +590,7 @@ func TestFlowGraphInsertBufferNode_DropPartition(t *testing.T) {
 	flushChan := make(chan flushMsg, 100)
 	resendTTChan := make(chan resendTTMsg, 100)
 	c := &nodeConfig{
-		replica:      colRep,
+		channel:      channel,
 		msFactory:    factory,
 		allocator:    NewAllocatorFactory(),
 		vChannelName: "string",
@@ -746,21 +635,18 @@ func TestFlowGraphInsertBufferNode_DropPartition(t *testing.T) {
 		}
 		iBNode.Operate([]flowgraph.Msg{iMsg})
 
-		require.Equal(t, 2, len(colRep.newSegments))
-		require.Equal(t, 0, len(colRep.normalSegments))
 		assert.Equal(t, 0, len(flushPacks))
 
 		for i, test := range beforeAutoFlushTests {
-			colRep.segMu.Lock()
-			seg, ok := colRep.newSegments[UniqueID(i+1)]
-			colRep.segMu.Unlock()
+			channel.segMu.Lock()
+			seg, ok := channel.segments[UniqueID(i+1)]
+			channel.segMu.Unlock()
 			assert.True(t, ok)
+			assert.Equal(t, datapb.SegmentType_New, seg.getType())
 			assert.Equal(t, partitionID, seg.partitionID)
 			assert.Equal(t, test.expectedSegID, seg.segmentID)
 			assert.Equal(t, test.expectedNumOfRows, seg.numRows)
 			assert.Equal(t, test.expectedStartPosTs, seg.startPos.GetTimestamp())
-			assert.Equal(t, test.expectedCpNumOfRows, seg.checkPoint.numRows)
-			assert.Equal(t, test.expectedCpPosTs, seg.checkPoint.pos.GetTimestamp())
 		}
 
 		inMsg.insertMessages = nil
@@ -781,9 +667,6 @@ func TestFlowGraphInsertBufferNode_DropPartition(t *testing.T) {
 			assert.NoError(t, err)
 		}
 		wg.Wait()
-		require.Equal(t, 0, len(colRep.newSegments))
-		require.Equal(t, 0, len(colRep.normalSegments))
-		require.Equal(t, 2, len(colRep.flushedSegments))
 
 		assert.Equal(t, 2, len(flushPacks))
 		assert.Less(t, 0, len(flushPacks[0].insertLogs))
@@ -832,21 +715,18 @@ func TestFlowGraphInsertBufferNode_DropPartition(t *testing.T) {
 		}
 		iBNode.Operate([]flowgraph.Msg{iMsg})
 
-		require.Equal(t, 2, len(colRep.newSegments))
-		require.Equal(t, 0, len(colRep.normalSegments))
 		assert.Equal(t, 0, len(flushPacks))
 
 		for _, test := range beforeAutoFlushTests {
-			colRep.segMu.Lock()
-			seg, ok := colRep.newSegments[test.expectedSegID]
-			colRep.segMu.Unlock()
+			channel.segMu.Lock()
+			seg, ok := channel.segments[test.expectedSegID]
+			channel.segMu.Unlock()
 			assert.True(t, ok)
+			assert.Equal(t, datapb.SegmentType_New, seg.getType())
 			assert.Equal(t, partitionID, seg.partitionID)
 			assert.Equal(t, test.expectedSegID, seg.segmentID)
 			assert.Equal(t, test.expectedNumOfRows, seg.numRows)
 			assert.Equal(t, test.expectedStartPosTs, seg.startPos.GetTimestamp())
-			assert.Equal(t, test.expectedCpNumOfRows, seg.checkPoint.numRows)
-			assert.Equal(t, test.expectedCpPosTs, seg.checkPoint.pos.GetTimestamp())
 		}
 
 		inMsg.startPositions = []*internalpb.MsgPosition{{Timestamp: 400}}
@@ -869,9 +749,6 @@ func TestFlowGraphInsertBufferNode_DropPartition(t *testing.T) {
 			assert.NoError(t, err)
 		}
 		wg.Wait()
-		require.Equal(t, 0, len(colRep.newSegments))
-		require.Equal(t, 0, len(colRep.normalSegments))
-		require.Equal(t, 4, len(colRep.flushedSegments))
 
 		assert.Equal(t, 4, len(flushPacks))
 		for _, pack := range flushPacks {
@@ -933,15 +810,13 @@ func TestInsertBufferNode_bufferInsertMsg(t *testing.T) {
 			compactTs: 100,
 		}
 
-		replica, err := newReplica(ctx, mockRootCoord, cm, collMeta.ID)
-		assert.Nil(t, err)
-		err = replica.addSegment(
+		channel := newChannel(insertChannelName, collMeta.ID, collMeta.Schema, mockRootCoord, cm)
+		err = channel.addSegment(
 			addSegmentReq{
 				segType:     datapb.SegmentType_New,
 				segID:       1,
 				collID:      collMeta.ID,
 				partitionID: 0,
-				channelName: insertChannelName,
 				startPos:    &internalpb.MsgPosition{},
 				endPos:      &internalpb.MsgPosition{Timestamp: 101},
 			})
@@ -949,12 +824,12 @@ func TestInsertBufferNode_bufferInsertMsg(t *testing.T) {
 
 		factory := dependency.NewDefaultFactory(true)
 
-		fm := NewRendezvousFlushManager(&allocator{}, cm, replica, func(*segmentFlushPack) {}, emptyFlushAndDropFunc)
+		fm := NewRendezvousFlushManager(&allocator{}, cm, channel, func(*segmentFlushPack) {}, emptyFlushAndDropFunc)
 
 		flushChan := make(chan flushMsg, 100)
 		resendTTChan := make(chan resendTTMsg, 100)
 		c := &nodeConfig{
-			replica:      replica,
+			channel:      channel,
 			msFactory:    factory,
 			allocator:    NewAllocatorFactory(),
 			vChannelName: "string",
@@ -978,13 +853,13 @@ func TestInsertBufferNode_bufferInsertMsg(t *testing.T) {
 	}
 }
 
-func TestInsertBufferNode_updateSegStatesInReplica(te *testing.T) {
+func TestInsertBufferNode_updateSegmentStates(te *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cm := storage.NewLocalChunkManager(storage.RootPath(insertNodeTestDir))
 	defer cm.RemoveWithPrefix(ctx, "")
 	invalideTests := []struct {
-		replicaCollID UniqueID
+		channelCollID UniqueID
 
 		inCollID    UniqueID
 		segID       UniqueID
@@ -994,11 +869,10 @@ func TestInsertBufferNode_updateSegStatesInReplica(te *testing.T) {
 	}
 
 	for _, test := range invalideTests {
-		replica, err := newReplica(context.Background(), &RootCoordFactory{pkType: schemapb.DataType_Int64}, cm, test.replicaCollID)
-		assert.Nil(te, err)
+		channel := newChannel("channel", test.channelCollID, nil, &RootCoordFactory{pkType: schemapb.DataType_Int64}, cm)
 
 		ibNode := &insertBufferNode{
-			replica: replica,
+			channel: channel,
 		}
 
 		im := []*msgstream.InsertMsg{
@@ -1010,100 +884,53 @@ func TestInsertBufferNode_updateSegStatesInReplica(te *testing.T) {
 			},
 		}
 
-		seg, err := ibNode.updateSegStatesInReplica(im, &internalpb.MsgPosition{}, &internalpb.MsgPosition{})
+		seg, err := ibNode.updateSegmentStates(im, &internalpb.MsgPosition{}, &internalpb.MsgPosition{})
 
 		assert.Error(te, err)
 		assert.Empty(te, seg)
-
-	}
-
-}
-
-func TestInsertBufferNode_BufferData(te *testing.T) {
-	Params.DataNodeCfg.FlushInsertBufferSize = 16 * (1 << 20) // 16 MB
-
-	tests := []struct {
-		isValid bool
-
-		indim         int64
-		expectedLimit int64
-
-		description string
-	}{
-		{true, 1, 4194304, "Smallest of the DIM"},
-		{true, 128, 32768, "Normal DIM"},
-		{true, 32768, 128, "Largest DIM"},
-		{false, 0, 0, "Illegal DIM"},
-	}
-
-	for _, test := range tests {
-		te.Run(test.description, func(t *testing.T) {
-			idata, err := newBufferData(test.indim)
-
-			if test.isValid {
-				assert.NoError(t, err)
-				assert.NotNil(t, idata)
-
-				assert.Equal(t, test.expectedLimit, idata.limit)
-				assert.Zero(t, idata.size)
-
-				capacity := idata.effectiveCap()
-				assert.Equal(t, test.expectedLimit, capacity)
-			} else {
-				assert.Error(t, err)
-				assert.Nil(t, idata)
-			}
-		})
 	}
 }
 
-func TestInsertBufferNode_BufferData_updateTimeRange(t *testing.T) {
-	Params.DataNodeCfg.FlushInsertBufferSize = 16 * (1 << 20) // 16 MB
+func TestInsertBufferNode_getTimestampRange(t *testing.T) {
 
 	type testCase struct {
 		tag string
 
-		trs        []TimeRange
+		timestamps []int64
 		expectFrom Timestamp
 		expectTo   Timestamp
 	}
 
 	cases := []testCase{
 		{
-			tag:        "no input range",
-			expectTo:   0,
+			tag:        "no input",
+			timestamps: []int64{},
 			expectFrom: math.MaxUint64,
+			expectTo:   0,
 		},
 		{
-			tag: "single range",
-			trs: []TimeRange{
-				{timestampMin: 100, timestampMax: 200},
-			},
-			expectFrom: 100,
-			expectTo:   200,
+			tag:        "only one input",
+			timestamps: []int64{1234},
+			expectFrom: 1234,
+			expectTo:   1234,
 		},
 		{
-			tag: "multiple range",
-			trs: []TimeRange{
-				{timestampMin: 150, timestampMax: 250},
-				{timestampMin: 100, timestampMax: 200},
-				{timestampMin: 50, timestampMax: 180},
-			},
-			expectFrom: 50,
-			expectTo:   250,
+			tag:        "input reverse order",
+			timestamps: []int64{3, 2, 1},
+			expectFrom: 1,
+			expectTo:   3,
 		},
 	}
 
+	ibNode := &insertBufferNode{}
 	for _, tc := range cases {
 		t.Run(tc.tag, func(t *testing.T) {
-			bd, err := newBufferData(16)
-			require.NoError(t, err)
-			for _, tr := range tc.trs {
-				bd.updateTimeRange(tr)
-			}
+			tr := ibNode.getTimestampRange(&storage.Int64FieldData{
+				Data: tc.timestamps,
+			})
 
-			assert.Equal(t, tc.expectFrom, bd.tsFrom)
-			assert.Equal(t, tc.expectTo, bd.tsTo)
+			assert.Equal(t, tc.expectFrom, tr.timestampMin)
+			assert.Equal(t, tc.expectTo, tr.timestampMax)
 		})
 	}
 }

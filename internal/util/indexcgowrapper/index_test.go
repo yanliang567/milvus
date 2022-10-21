@@ -5,10 +5,13 @@ package indexcgowrapper
 
 import (
 	"strconv"
+	"sync"
 	"testing"
 
-	"github.com/milvus-io/milvus/api/schemapb"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 )
 
 const (
@@ -39,6 +42,9 @@ const (
 	efConstruction = 200
 	ef             = 200
 )
+
+var Params paramtable.ServiceParam
+var InitOnce sync.Once
 
 type vecTestCase struct {
 	indexType  string
@@ -85,7 +91,6 @@ func generateParams(indexType, metricType string) (map[string]string, map[string
 	indexParams["metric_type"] = metricType
 	if indexType == IndexFaissIDMap { // float vector
 		indexParams["dim"] = strconv.Itoa(dim)
-		indexParams["SLICE_SIZE"] = strconv.Itoa(sliceSize)
 	} else if indexType == IndexFaissIVFFlat {
 		indexParams["dim"] = strconv.Itoa(dim)
 		indexParams["nlist"] = strconv.Itoa(nlist)
@@ -94,12 +99,10 @@ func generateParams(indexType, metricType string) (map[string]string, map[string
 		indexParams["nlist"] = strconv.Itoa(nlist)
 		indexParams["m"] = strconv.Itoa(m)
 		indexParams["nbits"] = strconv.Itoa(nbits)
-		indexParams["SLICE_SIZE"] = strconv.Itoa(sliceSize)
 	} else if indexType == IndexFaissIVFSQ8 {
 		indexParams["dim"] = strconv.Itoa(dim)
 		indexParams["nlist"] = strconv.Itoa(nlist)
 		indexParams["nbits"] = strconv.Itoa(nbits)
-		indexParams["SLICE_SIZE"] = strconv.Itoa(sliceSize)
 	} else if indexType == IndexHNSW {
 		indexParams["dim"] = strconv.Itoa(dim)
 		indexParams["M"] = strconv.Itoa(16)
@@ -109,13 +112,11 @@ func generateParams(indexType, metricType string) (map[string]string, map[string
 		indexParams["dim"] = strconv.Itoa(dim)
 		indexParams["n_trees"] = strconv.Itoa(4)
 		indexParams["search_k"] = strconv.Itoa(100)
-		indexParams["SLICE_SIZE"] = strconv.Itoa(sliceSize)
 	} else if indexType == IndexFaissBinIVFFlat { // binary vector
 		indexParams["dim"] = strconv.Itoa(dim)
 		indexParams["nlist"] = strconv.Itoa(nlist)
 		indexParams["m"] = strconv.Itoa(m)
 		indexParams["nbits"] = strconv.Itoa(nbits)
-		indexParams["SLICE_SIZE"] = strconv.Itoa(sliceSize)
 	} else if indexType == IndexFaissBinIDMap {
 		indexParams["dim"] = strconv.Itoa(dim)
 	} else {
@@ -129,7 +130,7 @@ func TestCIndex_New(t *testing.T) {
 	for _, c := range generateTestCases() {
 		typeParams, indexParams := generateParams(c.indexType, c.metricType)
 
-		index, err := NewCgoIndex(c.dtype, typeParams, indexParams)
+		index, err := NewCgoIndex(c.dtype, typeParams, indexParams, genStorageConfig())
 		assert.Equal(t, err, nil)
 		assert.NotEqual(t, index, nil)
 
@@ -142,7 +143,7 @@ func TestCIndex_BuildFloatVecIndex(t *testing.T) {
 	for _, c := range generateFloatVectorTestCases() {
 		typeParams, indexParams := generateParams(c.indexType, c.metricType)
 
-		index, err := NewCgoIndex(c.dtype, typeParams, indexParams)
+		index, err := NewCgoIndex(c.dtype, typeParams, indexParams, genStorageConfig())
 		assert.Equal(t, err, nil)
 		assert.NotEqual(t, index, nil)
 
@@ -159,7 +160,7 @@ func TestCIndex_BuildBinaryVecIndex(t *testing.T) {
 	for _, c := range generateBinaryVectorTestCases() {
 		typeParams, indexParams := generateParams(c.indexType, c.metricType)
 
-		index, err := NewCgoIndex(c.dtype, typeParams, indexParams)
+		index, err := NewCgoIndex(c.dtype, typeParams, indexParams, genStorageConfig())
 		assert.Equal(t, err, nil)
 		assert.NotEqual(t, index, nil)
 
@@ -176,7 +177,7 @@ func TestCIndex_Codec(t *testing.T) {
 	for _, c := range generateTestCases() {
 		typeParams, indexParams := generateParams(c.indexType, c.metricType)
 
-		index, err := NewCgoIndex(c.dtype, typeParams, indexParams)
+		index, err := NewCgoIndex(c.dtype, typeParams, indexParams, genStorageConfig())
 		assert.Equal(t, err, nil)
 		assert.NotEqual(t, index, nil)
 
@@ -193,7 +194,7 @@ func TestCIndex_Codec(t *testing.T) {
 		blobs, err := index.Serialize()
 		assert.Equal(t, err, nil)
 
-		copyIndex, err := NewCgoIndex(c.dtype, typeParams, indexParams)
+		copyIndex, err := NewCgoIndex(c.dtype, typeParams, indexParams, genStorageConfig())
 		assert.NotEqual(t, copyIndex, nil)
 		assert.Equal(t, err, nil)
 		err = copyIndex.Load(blobs)
@@ -214,7 +215,7 @@ func TestCIndex_Delete(t *testing.T) {
 	for _, c := range generateTestCases() {
 		typeParams, indexParams := generateParams(c.indexType, c.metricType)
 
-		index, err := NewCgoIndex(c.dtype, typeParams, indexParams)
+		index, err := NewCgoIndex(c.dtype, typeParams, indexParams, genStorageConfig())
 		assert.Equal(t, err, nil)
 		assert.NotEqual(t, index, nil)
 
@@ -227,7 +228,7 @@ func TestCIndex_Error(t *testing.T) {
 	indexParams := make(map[string]string)
 	indexParams["index_type"] = "IVF_FLAT"
 	indexParams["metric_type"] = "L2"
-	indexPtr, err := NewCgoIndex(schemapb.DataType_FloatVector, nil, indexParams)
+	indexPtr, err := NewCgoIndex(schemapb.DataType_FloatVector, nil, indexParams, genStorageConfig())
 	assert.Nil(t, err)
 
 	t.Run("Serialize error", func(t *testing.T) {

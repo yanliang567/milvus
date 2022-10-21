@@ -1,3 +1,19 @@
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package querycoordv2
 
 import (
@@ -5,8 +21,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/kv"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
@@ -140,7 +156,7 @@ func (suite *ServiceSuite) SetupTest() {
 		balancer:            suite.balancer,
 		handoffObserver:     suite.handoffObserver,
 	}
-	suite.server.UpdateStateCode(internalpb.StateCode_Healthy)
+	suite.server.UpdateStateCode(commonpb.StateCode_Healthy)
 }
 
 func (suite *ServiceSuite) TestShowCollections() {
@@ -169,7 +185,7 @@ func (suite *ServiceSuite) TestShowCollections() {
 	suite.Equal(collection, resp.CollectionIDs[0])
 
 	// Test when server is not healthy
-	server.UpdateStateCode(internalpb.StateCode_Initializing)
+	server.UpdateStateCode(commonpb.StateCode_Initializing)
 	resp, err = server.ShowCollections(ctx, req)
 	suite.NoError(err)
 	suite.Contains(resp.Status.Reason, ErrNotHealthy.Error())
@@ -214,7 +230,7 @@ func (suite *ServiceSuite) TestShowPartitions() {
 	req := &querypb.ShowPartitionsRequest{
 		CollectionID: suite.collections[0],
 	}
-	server.UpdateStateCode(internalpb.StateCode_Initializing)
+	server.UpdateStateCode(commonpb.StateCode_Initializing)
 	resp, err := server.ShowPartitions(ctx, req)
 	suite.NoError(err)
 	suite.Contains(resp.Status.Reason, ErrNotHealthy.Error())
@@ -249,7 +265,7 @@ func (suite *ServiceSuite) TestLoadCollection() {
 	}
 
 	// Test when server is not healthy
-	server.UpdateStateCode(internalpb.StateCode_Initializing)
+	server.UpdateStateCode(commonpb.StateCode_Initializing)
 	req := &querypb.LoadCollectionRequest{
 		CollectionID: suite.collections[0],
 	}
@@ -321,7 +337,7 @@ func (suite *ServiceSuite) TestLoadPartition() {
 	}
 
 	// Test when server is not healthy
-	server.UpdateStateCode(internalpb.StateCode_Initializing)
+	server.UpdateStateCode(commonpb.StateCode_Initializing)
 	req := &querypb.LoadPartitionsRequest{
 		CollectionID: suite.collections[0],
 		PartitionIDs: suite.partitions[suite.collections[0]],
@@ -407,7 +423,7 @@ func (suite *ServiceSuite) TestReleaseCollection() {
 	}
 
 	// Test when server is not healthy
-	server.UpdateStateCode(internalpb.StateCode_Initializing)
+	server.UpdateStateCode(commonpb.StateCode_Initializing)
 	req := &querypb.ReleaseCollectionRequest{
 		CollectionID: suite.collections[0],
 	}
@@ -454,7 +470,7 @@ func (suite *ServiceSuite) TestReleasePartition() {
 	}
 
 	// Test when server is not healthy
-	server.UpdateStateCode(internalpb.StateCode_Initializing)
+	server.UpdateStateCode(commonpb.StateCode_Initializing)
 	req := &querypb.ReleasePartitionsRequest{
 		CollectionID: suite.collections[0],
 		PartitionIDs: suite.partitions[suite.collections[0]][0:1],
@@ -482,7 +498,7 @@ func (suite *ServiceSuite) TestGetPartitionStates() {
 	}
 
 	// Test when server is not healthy
-	server.UpdateStateCode(internalpb.StateCode_Initializing)
+	server.UpdateStateCode(commonpb.StateCode_Initializing)
 	req := &querypb.GetPartitionStatesRequest{
 		CollectionID: suite.collections[0],
 	}
@@ -521,7 +537,7 @@ func (suite *ServiceSuite) TestGetSegmentInfo() {
 	}
 
 	// Test when server is not healthy
-	server.UpdateStateCode(internalpb.StateCode_Initializing)
+	server.UpdateStateCode(commonpb.StateCode_Initializing)
 	req := &querypb.GetSegmentInfoRequest{
 		CollectionID: suite.collections[0],
 	}
@@ -565,7 +581,7 @@ func (suite *ServiceSuite) TestLoadBalance() {
 	}
 
 	// Test when server is not healthy
-	server.UpdateStateCode(internalpb.StateCode_Initializing)
+	server.UpdateStateCode(commonpb.StateCode_Initializing)
 	req := &querypb.LoadBalanceRequest{
 		CollectionID:  suite.collections[0],
 		SourceNodeIDs: []int64{1},
@@ -680,7 +696,7 @@ func (suite *ServiceSuite) TestShowConfigurations() {
 	suite.Equal("querycoord.port", resp.Configuations[0].Key)
 
 	// Test when server is not healthy
-	server.UpdateStateCode(internalpb.StateCode_Initializing)
+	server.UpdateStateCode(commonpb.StateCode_Initializing)
 	req = &internalpb.ShowConfigurationsRequest{
 		Pattern: "Port",
 	}
@@ -712,7 +728,7 @@ func (suite *ServiceSuite) TestGetMetrics() {
 	suite.Equal(commonpb.ErrorCode_Success, resp.Status.ErrorCode)
 
 	// Test when server is not healthy
-	server.UpdateStateCode(internalpb.StateCode_Initializing)
+	server.UpdateStateCode(commonpb.StateCode_Initializing)
 	resp, err = server.GetMetrics(ctx, &milvuspb.GetMetricsRequest{
 		Base:    &commonpb.MsgBase{},
 		Request: string(req),
@@ -755,13 +771,54 @@ func (suite *ServiceSuite) TestGetReplicas() {
 	}
 
 	// Test when server is not healthy
-	server.UpdateStateCode(internalpb.StateCode_Initializing)
+	server.UpdateStateCode(commonpb.StateCode_Initializing)
 	req := &milvuspb.GetReplicasRequest{
 		CollectionID: suite.collections[0],
 	}
 	resp, err := server.GetReplicas(ctx, req)
 	suite.NoError(err)
 	suite.Contains(resp.Status.Reason, ErrNotHealthy.Error())
+}
+
+func (suite *ServiceSuite) TestCheckHealth() {
+	ctx := context.Background()
+	server := suite.server
+
+	// Test for server is not healthy
+	server.UpdateStateCode(commonpb.StateCode_Initializing)
+	resp, err := server.CheckHealth(ctx, &milvuspb.CheckHealthRequest{})
+	suite.NoError(err)
+	suite.Equal(resp.IsHealthy, false)
+	suite.NotEmpty(resp.Reasons)
+
+	// Test for components state fail
+	for _, node := range suite.nodes {
+		suite.cluster.EXPECT().GetComponentStates(mock.Anything, node).Return(
+			&milvuspb.ComponentStates{
+				State:  &milvuspb.ComponentInfo{StateCode: commonpb.StateCode_Abnormal},
+				Status: &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success},
+			},
+			nil).Once()
+	}
+	server.UpdateStateCode(commonpb.StateCode_Healthy)
+	resp, err = server.CheckHealth(ctx, &milvuspb.CheckHealthRequest{})
+	suite.NoError(err)
+	suite.Equal(resp.IsHealthy, false)
+	suite.NotEmpty(resp.Reasons)
+
+	// Test for server is healthy
+	for _, node := range suite.nodes {
+		suite.cluster.EXPECT().GetComponentStates(mock.Anything, node).Return(
+			&milvuspb.ComponentStates{
+				State:  &milvuspb.ComponentInfo{StateCode: commonpb.StateCode_Healthy},
+				Status: &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success},
+			},
+			nil).Once()
+	}
+	resp, err = server.CheckHealth(ctx, &milvuspb.CheckHealthRequest{})
+	suite.NoError(err)
+	suite.Equal(resp.IsHealthy, true)
+	suite.Empty(resp.Reasons)
 }
 
 func (suite *ServiceSuite) TestGetShardLeaders() {
@@ -785,7 +842,7 @@ func (suite *ServiceSuite) TestGetShardLeaders() {
 	}
 
 	// Test when server is not healthy
-	server.UpdateStateCode(internalpb.StateCode_Initializing)
+	server.UpdateStateCode(commonpb.StateCode_Initializing)
 	req := &querypb.GetShardLeadersRequest{
 		CollectionID: suite.collections[0],
 	}

@@ -24,12 +24,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/proto/querypb"
+	"github.com/milvus-io/milvus/internal/types"
+
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/grpc/metadata"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/util"
 	"github.com/milvus-io/milvus/internal/util/crypto"
@@ -54,6 +57,12 @@ const (
 
 	// DefaultStringIndexType name of default index type for varChar/string field
 	DefaultStringIndexType = "Trie"
+
+	// Search limit, which applies on:
+	// maximum # of results to return (topK), and
+	// maximum # of search requests (nq).
+	// Check https://milvus.io/docs/limitations.md for more details.
+	searchCountLimit = 16384
 )
 
 var logger = log.L().WithOptions(zap.Fields(zap.String("role", typeutil.ProxyRole)))
@@ -76,8 +85,8 @@ func isNumber(c uint8) bool {
 
 func validateLimit(limit int64) error {
 	// TODO make this configurable
-	if limit <= 0 || limit >= 16385 {
-		return fmt.Errorf("should be in range [1, 16385], but got %d", limit)
+	if limit <= 0 || limit > searchCountLimit {
+		return fmt.Errorf("should be in range [1, %d], but got %d", searchCountLimit, limit)
 	}
 	return nil
 }
@@ -274,7 +283,7 @@ func validateFieldType(schema *schemapb.CollectionSchema) error {
 	return nil
 }
 
-//ValidateFieldAutoID call after validatePrimaryKey
+// ValidateFieldAutoID call after validatePrimaryKey
 func ValidateFieldAutoID(coll *schemapb.CollectionSchema) error {
 	var idx = -1
 	for i, field := range coll.Fields {
@@ -592,8 +601,10 @@ func ValidatePassword(password string) error {
 func validateTravelTimestamp(travelTs, tMax typeutil.Timestamp) error {
 	durationSeconds := tsoutil.CalculateDuration(tMax, travelTs) / 1000
 	if durationSeconds > Params.CommonCfg.RetentionDuration {
-		duration := time.Second * time.Duration(durationSeconds)
-		return fmt.Errorf("only support to travel back to %s so far", duration.String())
+
+		durationIn := time.Second * time.Duration(durationSeconds)
+		durationSupport := time.Second * time.Duration(Params.CommonCfg.RetentionDuration)
+		return fmt.Errorf("only support to travel back to %v so far, but got %v", durationSupport, durationIn)
 	}
 	return nil
 }
@@ -741,14 +752,17 @@ func passwordVerify(ctx context.Context, username, rawPwd string, globalMetaCach
 }
 
 // Support wildcard in output fields:
-//   "*" - all scalar fields
-//   "%" - all vector fields
+//
+//	"*" - all scalar fields
+//	"%" - all vector fields
+//
 // For example, A and B are scalar fields, C and D are vector fields, duplicated fields will automatically be removed.
-//   output_fields=["*"] 	 ==> [A,B]
-//   output_fields=["%"] 	 ==> [C,D]
-//   output_fields=["*","%"] ==> [A,B,C,D]
-//   output_fields=["*",A] 	 ==> [A,B]
-//   output_fields=["*",C]   ==> [A,B,C]
+//
+//	output_fields=["*"] 	 ==> [A,B]
+//	output_fields=["%"] 	 ==> [C,D]
+//	output_fields=["*","%"] ==> [A,B,C,D]
+//	output_fields=["*",A] 	 ==> [A,B]
+//	output_fields=["*",C]   ==> [A,B,C]
 func translateOutputFields(outputFields []string, schema *schemapb.CollectionSchema, addPrimary bool) ([]string, error) {
 	var primaryFieldName string
 	scalarFieldNameMap := make(map[string]bool)
@@ -790,4 +804,85 @@ func translateOutputFields(outputFields []string, schema *schemapb.CollectionSch
 		resultFieldNames = append(resultFieldNames, fieldName)
 	}
 	return resultFieldNames, nil
+}
+
+func validateIndexName(indexName string) error {
+	indexName = strings.TrimSpace(indexName)
+
+	if indexName == "" {
+		return nil
+	}
+	invalidMsg := "Invalid index name: " + indexName + ". "
+	if int64(len(indexName)) > Params.ProxyCfg.MaxNameLength {
+		msg := invalidMsg + "The length of a index name must be less than " +
+			strconv.FormatInt(Params.ProxyCfg.MaxNameLength, 10) + " characters."
+		return errors.New(msg)
+	}
+
+	firstChar := indexName[0]
+	if firstChar != '_' && !isAlpha(firstChar) {
+		msg := invalidMsg + "The first character of a index name must be an underscore or letter."
+		return errors.New(msg)
+	}
+
+	indexNameSize := len(indexName)
+	for i := 1; i < indexNameSize; i++ {
+		c := indexName[i]
+		if c != '_' && !isAlpha(c) && !isNumber(c) {
+			msg := invalidMsg + "Index name cannot only contain numbers, letters, and underscores."
+			return errors.New(msg)
+		}
+	}
+	return nil
+}
+
+func isCollectionLoaded(ctx context.Context, qc types.QueryCoord, collIDs []int64) (bool, error) {
+	// get all loading collections
+	resp, err := qc.ShowCollections(ctx, &querypb.ShowCollectionsRequest{
+		CollectionIDs: nil,
+	})
+	if err != nil {
+		return false, err
+	}
+	if resp.Status.ErrorCode != commonpb.ErrorCode_Success {
+		return false, errors.New(resp.Status.Reason)
+	}
+
+	loaded := false
+LOOP:
+	for _, loadedCollID := range resp.GetCollectionIDs() {
+		for _, collID := range collIDs {
+			if collID == loadedCollID {
+				loaded = true
+				break LOOP
+			}
+		}
+	}
+	return loaded, nil
+}
+
+func isPartitionLoaded(ctx context.Context, qc types.QueryCoord, collIDs int64, partIDs []int64) (bool, error) {
+	// get all loading collections
+	resp, err := qc.ShowPartitions(ctx, &querypb.ShowPartitionsRequest{
+		CollectionID: collIDs,
+		PartitionIDs: nil,
+	})
+	if err != nil {
+		return false, err
+	}
+	if resp.Status.ErrorCode != commonpb.ErrorCode_Success {
+		return false, errors.New(resp.Status.Reason)
+	}
+
+	loaded := false
+LOOP:
+	for _, loadedPartID := range resp.GetPartitionIDs() {
+		for _, partID := range partIDs {
+			if partID == loadedPartID {
+				loaded = true
+				break LOOP
+			}
+		}
+	}
+	return loaded, nil
 }

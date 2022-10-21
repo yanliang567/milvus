@@ -18,17 +18,18 @@ package indexnode
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"path"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
@@ -36,7 +37,9 @@ import (
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/indexcgowrapper"
 	"github.com/milvus-io/milvus/internal/util/indexparamcheck"
+	"github.com/milvus-io/milvus/internal/util/indexparams"
 	"github.com/milvus-io/milvus/internal/util/logutil"
+	"github.com/milvus-io/milvus/internal/util/metautil"
 	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
 )
@@ -50,7 +53,7 @@ type Blob = storage.Blob
 type taskInfo struct {
 	cancel         context.CancelFunc
 	state          commonpb.IndexState
-	indexFiles     []string
+	fileKeys       []string
 	serializedSize uint64
 	failReason     string
 
@@ -240,7 +243,7 @@ func (it *indexBuildTask) BuildIndex(ctx context.Context) error {
 	dType := dataset.DType
 	var err error
 	if dType != schemapb.DataType_None {
-		it.index, err = indexcgowrapper.NewCgoIndex(dType, it.newTypeParams, it.newIndexParams)
+		it.index, err = indexcgowrapper.NewCgoIndex(dType, it.newTypeParams, it.newIndexParams, it.req.GetStorageConfig())
 		if err != nil {
 			log.Ctx(ctx).Error("failed to create index", zap.Error(err))
 			return err
@@ -335,7 +338,21 @@ func (it *indexBuildTask) BuildDiskAnnIndex(ctx context.Context) error {
 		it.newIndexParams["index_id"] = strconv.FormatInt(it.req.IndexID, 10)
 		it.newIndexParams["index_version"] = strconv.FormatInt(it.req.GetIndexVersion(), 10)
 
-		it.index, err = indexcgowrapper.NewCgoIndex(dType, it.newTypeParams, it.newIndexParams)
+		err = indexparams.SetDiskIndexBuildParams(it.newIndexParams, it.statistic.NumRows)
+		if err != nil {
+			log.Ctx(ctx).Error("failed to fill disk index params", zap.Error(err))
+			return err
+		}
+		jsonIndexParams, err := json.Marshal(it.newIndexParams)
+		if err != nil {
+			log.Ctx(ctx).Error("failed to json marshal index params", zap.Error(err))
+			return err
+		}
+		log.Ctx(ctx).Info("disk index params are ready",
+			zap.Int64("buildID", it.BuildID),
+			zap.String("index params", string(jsonIndexParams)))
+
+		it.index, err = indexcgowrapper.NewCgoIndex(dType, it.newTypeParams, it.newIndexParams, it.req.GetStorageConfig())
 		if err != nil {
 			log.Ctx(ctx).Error("failed to create index", zap.Error(err))
 			return err
@@ -392,15 +409,13 @@ func (it *indexBuildTask) SaveIndexFiles(ctx context.Context) error {
 	}
 
 	blobCnt := len(it.indexBlobs)
-	getSavePathByKey := func(key string) string {
-		return path.Join(it.req.IndexFilePrefix, strconv.Itoa(int(it.req.BuildID)), strconv.Itoa(int(it.req.IndexVersion)),
-			strconv.Itoa(int(it.partitionID)), strconv.Itoa(int(it.segmentID)), key)
-	}
-
 	savePaths := make([]string, blobCnt)
+	saveFileKeys := make([]string, blobCnt)
+
 	saveIndexFile := func(idx int) error {
 		blob := it.indexBlobs[idx]
-		savePath := getSavePathByKey(blob.Key)
+		savePath := metautil.BuildSegmentIndexFilePath(it.cm.RootPath(), it.req.BuildID,
+			it.req.IndexVersion, it.partitionID, it.segmentID, blob.Key)
 		saveFn := func() error {
 			return it.cm.Write(ctx, savePath, blob.Value)
 		}
@@ -409,6 +424,7 @@ func (it *indexBuildTask) SaveIndexFiles(ctx context.Context) error {
 			return err
 		}
 		savePaths[idx] = savePath
+		saveFileKeys[idx] = blob.Key
 		return nil
 	}
 
@@ -419,7 +435,7 @@ func (it *indexBuildTask) SaveIndexFiles(ctx context.Context) error {
 	}
 	it.savePaths = savePaths
 	it.statistic.EndTime = time.Now().UnixMicro()
-	it.node.storeIndexFilesAndStatistic(it.ClusterID, it.BuildID, savePaths, it.serializedSize, &it.statistic)
+	it.node.storeIndexFilesAndStatistic(it.ClusterID, it.BuildID, saveFileKeys, it.serializedSize, &it.statistic)
 	log.Ctx(ctx).Debug("save index files done", zap.Strings("IndexFiles", savePaths))
 	saveIndexFileDur := it.tr.Record("index file save done")
 	metrics.IndexNodeSaveIndexFileLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.GetNodeID(), 10)).Observe(float64(saveIndexFileDur.Milliseconds()))
@@ -431,9 +447,19 @@ func (it *indexBuildTask) SaveIndexFiles(ctx context.Context) error {
 
 func (it *indexBuildTask) SaveDiskAnnIndexFiles(ctx context.Context) error {
 	savePaths := make([]string, len(it.indexBlobs))
+	saveFileKeys := make([]string, len(it.indexBlobs))
+
 	for i, blob := range it.indexBlobs {
 		savePath := blob.Key
 		savePaths[i] = savePath
+
+		// TODO: unify blob key to file key instead of full path
+		parts := strings.Split(blob.Key, "/")
+		if len(parts) == 0 {
+			return fmt.Errorf("invaild blob key: %s", blob.Key)
+		}
+		fileKey := parts[len(parts)-1]
+		saveFileKeys[i] = fileKey
 	}
 
 	// add indexparams file
@@ -453,12 +479,9 @@ func (it *indexBuildTask) SaveDiskAnnIndexFiles(ctx context.Context) error {
 		return err
 	}
 
-	getSavePathByKey := func(key string) string {
-		return path.Join("files/index_files", strconv.Itoa(int(it.req.BuildID)), strconv.Itoa(int(it.req.IndexVersion)),
-			strconv.Itoa(int(it.partitionID)), strconv.Itoa(int(it.segmentID)), key)
-	}
+	indexParamPath := metautil.BuildSegmentIndexFilePath(it.cm.RootPath(), it.req.BuildID, it.req.IndexVersion,
+		it.partitionID, it.segmentID, indexParamBlob.Key)
 
-	indexParamPath := getSavePathByKey(indexParamBlob.Key)
 	saveFn := func() error {
 		return it.cm.Write(ctx, indexParamPath, indexParamBlob.Value)
 	}
@@ -467,11 +490,12 @@ func (it *indexBuildTask) SaveDiskAnnIndexFiles(ctx context.Context) error {
 		return err
 	}
 
+	saveFileKeys = append(saveFileKeys, indexParamBlob.Key)
 	savePaths = append(savePaths, indexParamPath)
 	it.savePaths = savePaths
 
 	it.statistic.EndTime = time.Now().UnixMicro()
-	it.node.storeIndexFilesAndStatistic(it.ClusterID, it.BuildID, savePaths, it.serializedSize, &it.statistic)
+	it.node.storeIndexFilesAndStatistic(it.ClusterID, it.BuildID, saveFileKeys, it.serializedSize, &it.statistic)
 	log.Ctx(ctx).Debug("save index files done", zap.Strings("IndexFiles", savePaths))
 	saveIndexFileDur := it.tr.Record("index file save done")
 	metrics.IndexNodeSaveIndexFileLatency.WithLabelValues(strconv.FormatInt(Params.IndexNodeCfg.GetNodeID(), 10)).Observe(float64(saveIndexFileDur.Milliseconds()))

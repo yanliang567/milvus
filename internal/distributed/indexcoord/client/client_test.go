@@ -22,8 +22,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	grpcindexcoord "github.com/milvus-io/milvus/internal/distributed/indexcoord"
 	"github.com/milvus-io/milvus/internal/indexcoord"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
@@ -85,7 +85,7 @@ func TestIndexCoordClient(t *testing.T) {
 	t.Run("GetComponentStates", func(t *testing.T) {
 		states, err := icc.GetComponentStates(ctx)
 		assert.NoError(t, err)
-		assert.Equal(t, internalpb.StateCode_Healthy, states.State.StateCode)
+		assert.Equal(t, commonpb.StateCode_Healthy, states.State.StateCode)
 		assert.Equal(t, commonpb.ErrorCode_Success, states.Status.ErrorCode)
 	})
 
@@ -188,6 +188,12 @@ func TestIndexCoordClient(t *testing.T) {
 		assert.Equal(t, typeutil.IndexCoordRole, resp.ComponentName)
 	})
 
+	t.Run("CheckHealth", func(t *testing.T) {
+		req := &milvuspb.CheckHealthRequest{}
+		resp, err := icc.CheckHealth(ctx, req)
+		assert.NoError(t, err)
+		assert.Equal(t, true, resp.IsHealthy)
+	})
 	err = server.Stop()
 	assert.NoError(t, err)
 

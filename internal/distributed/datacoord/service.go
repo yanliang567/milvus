@@ -33,8 +33,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/datacoord"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
@@ -243,7 +243,7 @@ func (s *Server) Run() error {
 }
 
 // GetComponentStates gets states of datacoord and datanodes
-func (s *Server) GetComponentStates(ctx context.Context, req *internalpb.GetComponentStatesRequest) (*internalpb.ComponentStates, error) {
+func (s *Server) GetComponentStates(ctx context.Context, req *milvuspb.GetComponentStatesRequest) (*milvuspb.ComponentStates, error) {
 	return s.dataCoord.GetComponentStates(ctx)
 }
 
@@ -396,4 +396,12 @@ func (s *Server) UnsetIsImportingState(ctx context.Context, request *datapb.Unse
 // MarkSegmentsDropped is the distributed caller of MarkSegmentsDropped.
 func (s *Server) MarkSegmentsDropped(ctx context.Context, req *datapb.MarkSegmentsDroppedRequest) (*commonpb.Status, error) {
 	return s.dataCoord.MarkSegmentsDropped(ctx, req)
+}
+
+func (s *Server) BroadcastAlteredCollection(ctx context.Context, request *milvuspb.AlterCollectionRequest) (*commonpb.Status, error) {
+	return s.dataCoord.BroadcastAlteredCollection(ctx, request)
+}
+
+func (s *Server) CheckHealth(ctx context.Context, req *milvuspb.CheckHealthRequest) (*milvuspb.CheckHealthResponse, error) {
+	return s.dataCoord.CheckHealth(ctx, req)
 }

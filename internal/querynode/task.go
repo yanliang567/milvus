@@ -20,17 +20,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"runtime/debug"
 
 	"go.uber.org/zap"
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	queryPb "github.com/milvus-io/milvus/internal/proto/querypb"
+	"github.com/milvus-io/milvus/internal/util/commonpbutil"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 	"github.com/samber/lo"
@@ -213,10 +215,10 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) (err error) {
 		}
 	}
 	req := &queryPb.LoadSegmentsRequest{
-		Base: &commonpb.MsgBase{
-			MsgType: commonpb.MsgType_LoadSegments,
-			MsgID:   w.req.Base.MsgID, // use parent task's msgID
-		},
+		Base: commonpbutil.NewMsgBase(
+			commonpbutil.WithMsgType(commonpb.MsgType_LoadSegments),
+			commonpbutil.WithMsgID(w.req.Base.MsgID), // use parent task's msgID
+		),
 		Infos:        unFlushedSegments,
 		CollectionID: collectionID,
 		Schema:       w.req.GetSchema(),
@@ -319,18 +321,20 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) (err error) {
 	)
 
 	// add excluded segments for dropped segments,
-	// dropped segments with later check point than seekPosition should be filtered out.
-	droppedCheckPointInfos := make([]*datapb.SegmentInfo, 0)
+	// exclude all msgs with dropped segment id
+	// DO NOT refer to dropped segment info, see issue https://github.com/milvus-io/milvus/issues/19704
+	var droppedCheckPointInfos []*datapb.SegmentInfo
 	for _, info := range w.req.Infos {
 		for _, droppedSegmentID := range info.GetDroppedSegmentIds() {
-			droppedSegment := w.req.SegmentInfos[droppedSegmentID]
-			for _, position := range channel2SeekPosition {
-				if droppedSegment != nil &&
-					droppedSegment.DmlPosition.ChannelName == position.ChannelName &&
-					droppedSegment.DmlPosition.Timestamp > position.Timestamp {
-					droppedCheckPointInfos = append(droppedCheckPointInfos, droppedSegment)
-				}
-			}
+			droppedCheckPointInfos = append(droppedCheckPointInfos, &datapb.SegmentInfo{
+				ID:            droppedSegmentID,
+				CollectionID:  collectionID,
+				InsertChannel: info.GetChannelName(),
+				DmlPosition: &internalpb.MsgPosition{
+					ChannelName: info.GetChannelName(),
+					Timestamp:   math.MaxUint64,
+				},
+			})
 		}
 	}
 	w.node.metaReplica.addExcludedSegments(collectionID, droppedCheckPointInfos)

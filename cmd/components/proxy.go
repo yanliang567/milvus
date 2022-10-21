@@ -19,12 +19,15 @@ package components
 import (
 	"context"
 
-	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
-	"github.com/milvus-io/milvus/internal/util/dependency"
-	"go.uber.org/zap"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 
 	grpcproxy "github.com/milvus-io/milvus/internal/distributed/proxy"
+	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/util/dependency"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
+
+	"go.uber.org/zap"
 )
 
 // Proxy implements Proxy grpc server
@@ -64,6 +67,14 @@ func (n *Proxy) Stop() error {
 }
 
 // GetComponentStates returns Proxy's states
-func (n *Proxy) GetComponentStates(ctx context.Context, request *internalpb.GetComponentStatesRequest) (*internalpb.ComponentStates, error) {
-	return n.svr.GetComponentStates(ctx, request)
+func (n *Proxy) Health(ctx context.Context) commonpb.StateCode {
+	resp, err := n.svr.GetComponentStates(ctx, &milvuspb.GetComponentStatesRequest{})
+	if err != nil {
+		return commonpb.StateCode_Abnormal
+	}
+	return resp.State.GetStateCode()
+}
+
+func (n *Proxy) GetName() string {
+	return typeutil.ProxyRole
 }

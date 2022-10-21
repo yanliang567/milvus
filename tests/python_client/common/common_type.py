@@ -70,6 +70,9 @@ err_code = "err_code"
 err_msg = "err_msg"
 in_cluster_env = "IN_CLUSTER"
 
+default_flat_index = {"index_type": "FLAT", "params": {}, "metric_type": "L2"}
+default_bin_flat_index = {"index_type": "BIN_FLAT", "params": {}, "metric_type": "JACCARD"}
+
 """" List of parameters used to pass """
 get_invalid_strs = [
     [],
@@ -194,6 +197,7 @@ class CheckTasks:
     check_merge_compact = "check_merge_compact"
     check_role_property = "check_role_property"
     check_permission_deny = "check_permission_deny"
+    check_value_equal = "check_value_equal"
 
 
 class BulkLoadStates:

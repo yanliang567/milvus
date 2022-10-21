@@ -23,7 +23,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
@@ -255,9 +255,13 @@ func (c *compactionPlanHandler) handleMergeCompactionResult(plan *datapb.Compact
 	}
 
 	log.Debug("handleCompactionResult: altering metastore after compaction")
-	if err := c.meta.alterMetaStoreAfterCompaction(modInfos, newSegment.SegmentInfo); err != nil {
-		log.Warn("handleCompactionResult: fail to alter metastore after compaction", zap.Error(err))
-		return fmt.Errorf("fail to alter metastore after compaction, err=%w", err)
+	if newSegment.GetNumOfRows() > 0 {
+		if err := c.meta.alterMetaStoreAfterCompaction(modInfos, newSegment.SegmentInfo); err != nil {
+			log.Warn("handleCompactionResult: fail to alter metastore after compaction", zap.Error(err))
+			return fmt.Errorf("fail to alter metastore after compaction, err=%w", err)
+		}
+	} else {
+		log.Warn("compaction produced an empty segment")
 	}
 
 	var nodeID = c.plans[plan.GetPlanID()].dataNodeID

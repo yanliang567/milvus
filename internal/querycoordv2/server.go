@@ -1,3 +1,19 @@
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package querycoordv2
 
 import (
@@ -16,14 +32,13 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/kv"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/querycoordv2/balance"
 	"github.com/milvus-io/milvus/internal/querycoordv2/checkers"
@@ -92,6 +107,10 @@ type Server struct {
 	handoffObserver    *observers.HandoffObserver
 
 	balancer balance.Balance
+
+	// Active-standby
+	enableActiveStandBy bool
+	activateFunc        func()
 }
 
 func NewQueryCoord(ctx context.Context, factory dependency.Factory) (*Server, error) {
@@ -101,12 +120,15 @@ func NewQueryCoord(ctx context.Context, factory dependency.Factory) (*Server, er
 		cancel:  cancel,
 		factory: factory,
 	}
-	server.UpdateStateCode(internalpb.StateCode_Abnormal)
+	server.UpdateStateCode(commonpb.StateCode_Abnormal)
 	return server, nil
 }
 
 func (s *Server) Register() error {
 	s.session.Register()
+	if s.enableActiveStandBy {
+		s.session.ProcessActiveStandBy(s.activateFunc)
+	}
 	go s.session.LivenessCheck(s.ctx, func() {
 		log.Error("QueryCoord disconnected from etcd, process will exit", zap.Int64("serverID", s.session.ServerID))
 		if err := s.Stop(); err != nil {
@@ -133,6 +155,8 @@ func (s *Server) Init() error {
 		return fmt.Errorf("failed to create session")
 	}
 	s.session.Init(typeutil.QueryCoordRole, Params.QueryCoordCfg.Address, true, true)
+	s.enableActiveStandBy = Params.QueryCoordCfg.EnableActiveStandby
+	s.session.SetEnableActiveStandBy(s.enableActiveStandBy)
 	Params.QueryCoordCfg.SetNodeID(s.session.ServerID)
 	Params.SetLogger(s.session.ServerID)
 	s.factory.Init(Params)
@@ -310,7 +334,17 @@ func (s *Server) Start() error {
 		panic(err.Error())
 	}
 
-	s.status.Store(internalpb.StateCode_Healthy)
+	if s.enableActiveStandBy {
+		s.activateFunc = func() {
+			// todo to complete
+			log.Info("querycoord switch from standby to active, activating")
+			s.initMeta()
+			s.UpdateStateCode(commonpb.StateCode_Healthy)
+		}
+		s.UpdateStateCode(commonpb.StateCode_StandBy)
+	} else {
+		s.UpdateStateCode(commonpb.StateCode_Healthy)
+	}
 	log.Info("QueryCoord started")
 
 	return nil
@@ -345,22 +379,22 @@ func (s *Server) Stop() error {
 }
 
 // UpdateStateCode updates the status of the coord, including healthy, unhealthy
-func (s *Server) UpdateStateCode(code internalpb.StateCode) {
+func (s *Server) UpdateStateCode(code commonpb.StateCode) {
 	s.status.Store(code)
 }
 
-func (s *Server) GetComponentStates(ctx context.Context) (*internalpb.ComponentStates, error) {
+func (s *Server) GetComponentStates(ctx context.Context) (*milvuspb.ComponentStates, error) {
 	nodeID := common.NotRegisteredID
 	if s.session != nil && s.session.Registered() {
 		nodeID = s.session.ServerID
 	}
-	serviceComponentInfo := &internalpb.ComponentInfo{
+	serviceComponentInfo := &milvuspb.ComponentInfo{
 		// NodeID:    Params.QueryCoordID, // will race with QueryCoord.Register()
 		NodeID:    nodeID,
-		StateCode: s.status.Load().(internalpb.StateCode),
+		StateCode: s.status.Load().(commonpb.StateCode),
 	}
 
-	return &internalpb.ComponentStates{
+	return &milvuspb.ComponentStates{
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_Success,
 		},

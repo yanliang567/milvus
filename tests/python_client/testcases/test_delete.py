@@ -229,6 +229,7 @@ class TestDeleteParams(TestcaseBase):
         partition_w = self.init_partition_wrap(collection_wrap=collection_w)
 
         # load collection and insert data to partition
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         df = cf.gen_default_dataframe_data(tmp_nb)
         partition_w.insert(df)
@@ -320,7 +321,7 @@ class TestDeleteOperation(TestcaseBase):
         expected: assert index and deleted id not in search result
         """
         # create collection, insert tmp_nb, flush and load
-        collection_w, vectors = self.init_collection_general(prefix, insert_data=True)[0:2]
+        collection_w, vectors = self.init_collection_general(prefix, insert_data=True, is_index=True)[0:2]
 
         # create index
         index_params = {"index_type": "IVF_SQ8",
@@ -398,6 +399,7 @@ class TestDeleteOperation(TestcaseBase):
         assert collection_w.num_entities == tmp_nb
 
         # load and query id 0
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         collection_w.query(tmp_expr, check_task=CheckTasks.check_query_empty)
 
@@ -470,6 +472,7 @@ class TestDeleteOperation(TestcaseBase):
         collection_w.insert(df)
         assert collection_w.num_entities == tmp_nb
         del_res, _ = collection_w.delete(tmp_expr)
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
 
         # Just one query res and search res, because de-dup
@@ -554,6 +557,7 @@ class TestDeleteOperation(TestcaseBase):
         # delete same id 0 from default_partition, and query on it get empty result
         collection_w.delete(tmp_expr, partition_name=ct.default_partition_name)
         assert collection_w.num_entities == tmp_nb * 2
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         collection_w.query(tmp_expr, partition_names=[ct.default_partition_name],
                            check_task=CheckTasks.check_query_empty)
@@ -624,6 +628,7 @@ class TestDeleteOperation(TestcaseBase):
         assert del_res.delete_count == 1
 
         # load and query with id
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         collection_w.query(tmp_expr, check_task=CheckTasks.check_query_empty)
 
@@ -640,6 +645,7 @@ class TestDeleteOperation(TestcaseBase):
         # create collection
         collection_w = self.init_collection_wrap(name=cf.gen_unique_str(prefix))
         # load collection and the queryNode watch the insertChannel
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         # insert data
         df = cf.gen_default_dataframe_data(tmp_nb)
@@ -667,6 +673,7 @@ class TestDeleteOperation(TestcaseBase):
         assert collection_w.num_entities == tmp_nb
 
         # load collection and queryNode subscribe channel
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
 
         # delete ids and query
@@ -700,6 +707,7 @@ class TestDeleteOperation(TestcaseBase):
         log.info(f'Collection num entities: {collection_w.num_entities}')
 
         # load and query id 0
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         collection_w.query(tmp_expr, check_task=CheckTasks.check_query_empty)
 
@@ -726,6 +734,7 @@ class TestDeleteOperation(TestcaseBase):
         collection_w.insert(cf.gen_default_dataframe_data(nb=1, start=tmp_nb))
         log.info(collection_w.num_entities)
         # load and query id 0
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         collection_w.query(tmp_expr, check_task=CheckTasks.check_query_empty)
 
@@ -750,6 +759,7 @@ class TestDeleteOperation(TestcaseBase):
         assert collection_w.num_entities == tmp_nb
 
         # load and query id 0
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         collection_w.query(tmp_expr, check_task=CheckTasks.check_query_empty)
 
@@ -768,6 +778,7 @@ class TestDeleteOperation(TestcaseBase):
         """
         # init collection and insert data without flush
         collection_w = self.init_collection_wrap(name=cf.gen_unique_str(prefix))
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         df = cf.gen_default_dataframe_data(tmp_nb)
         collection_w.insert(df)
@@ -815,6 +826,7 @@ class TestDeleteOperation(TestcaseBase):
         log.debug(collection_w.num_entities)
 
         # load and query
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         res = df.iloc[:1, :1].to_dict('records')
         collection_w.search(data=[df[ct.default_float_vec_field_name][0]], anns_field=ct.default_float_vec_field_name,
@@ -905,6 +917,7 @@ class TestDeleteOperation(TestcaseBase):
         assert collection_w.num_entities == tmp_nb
 
         # load and query id 0
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         collection_w.query(tmp_expr, check_task=CheckTasks.check_query_empty)
 
@@ -944,6 +957,7 @@ class TestDeleteOperation(TestcaseBase):
         assert collection_w.num_entities == tmp_nb
 
         # load and query id 0
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         collection_w.query(tmp_expr, check_task=CheckTasks.check_query_empty)
 
@@ -997,6 +1011,7 @@ class TestDeleteOperation(TestcaseBase):
         pass
 
     @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.skip(reason="Time travel disabled")
     def test_delete_time_travel(self):
         """
         target: test search with time travel after delete
@@ -1009,6 +1024,7 @@ class TestDeleteOperation(TestcaseBase):
         collection_w = self.init_collection_wrap(cf.gen_unique_str(prefix))
         df = cf.gen_default_dataframe_data(tmp_nb)
         insert_res, _ = collection_w.insert(df)
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
 
         tt = self.utility_wrap.mkts_from_hybridts(insert_res.timestamp, milliseconds=0.)
@@ -1050,6 +1066,7 @@ class TestDeleteOperation(TestcaseBase):
         expr = f'{ct.default_int64_field_name} in {ids}'
         collection_w.delete(expr)
 
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         collection_w.query(expr, check_task=CheckTasks.check_query_empty)
         search_res, _ = collection_w.search(cf.gen_vectors(ct.default_nq, ct.default_dim),
@@ -1081,6 +1098,7 @@ class TestDeleteOperation(TestcaseBase):
             assert collection_w.num_entities == (i + 1) * segment_per_count
             ids.extend(res.primary_keys)
 
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
 
         expr = f'{ct.default_int64_field_name} in {ids}'
@@ -1122,7 +1140,7 @@ class TestDeleteString(TestcaseBase):
         expected: assert index and deleted id not in search result
         """
         # create collection, insert tmp_nb, flush and load
-        collection_w, vectors = self.init_collection_general(prefix, insert_data=True,
+        collection_w, vectors = self.init_collection_general(prefix, insert_data=True, is_index=True,
                                                              primary_field=ct.default_string_field_name)[0:2]
 
         # create index
@@ -1208,6 +1226,7 @@ class TestDeleteString(TestcaseBase):
         assert collection_w.num_entities == tmp_nb
 
         # load and query id 0
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         collection_w.query(default_string_expr,
                            check_task=CheckTasks.check_query_empty)
@@ -1285,6 +1304,7 @@ class TestDeleteString(TestcaseBase):
         collection_w.insert(df)
         assert collection_w.num_entities == tmp_nb
         del_res, _ = collection_w.delete(default_string_expr)
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
 
         # Just one query res and search res, because de-dup
@@ -1320,6 +1340,7 @@ class TestDeleteString(TestcaseBase):
         collection_w.delete(default_string_expr,
                             partition_name=ct.default_partition_name)
         assert collection_w.num_entities == tmp_nb * 2
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         collection_w.query(default_string_expr, partition_names=[ct.default_partition_name],
                            check_task=CheckTasks.check_query_empty)
@@ -1349,6 +1370,7 @@ class TestDeleteString(TestcaseBase):
         assert del_res.delete_count == 1
 
         # load and query with id
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         collection_w.query(default_string_expr,
                            check_task=CheckTasks.check_query_empty)
@@ -1367,6 +1389,7 @@ class TestDeleteString(TestcaseBase):
         schema = cf.gen_string_pk_default_collection_schema()
         collection_w = self.init_collection_wrap(name=cf.gen_unique_str(prefix), schema=schema)
         # load collection and the queryNode watch the insertChannel
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         # insert data
         df = cf.gen_default_dataframe_data(tmp_nb)
@@ -1396,6 +1419,7 @@ class TestDeleteString(TestcaseBase):
         assert collection_w.num_entities == tmp_nb
 
         # load collection and queryNode subscribe channel
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
 
         # delete ids and query
@@ -1427,6 +1451,7 @@ class TestDeleteString(TestcaseBase):
         collection_w.insert(cf.gen_default_dataframe_data(nb=1, start=tmp_nb))
         log.info(collection_w.num_entities)
         # load and query id 0
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         collection_w.query(default_string_expr,
                            check_task=CheckTasks.check_query_empty)
@@ -1453,6 +1478,7 @@ class TestDeleteString(TestcaseBase):
         assert collection_w.num_entities == tmp_nb
 
         # load and query id 0
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         collection_w.query(default_string_expr,
                            check_task=CheckTasks.check_query_empty)
@@ -1529,6 +1555,7 @@ class TestDeleteString(TestcaseBase):
         assert collection_w.num_entities == tmp_nb
 
         # load and query id 0
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         collection_w.query(default_string_expr,
                            check_task=CheckTasks.check_query_empty)
@@ -1572,6 +1599,7 @@ class TestDeleteString(TestcaseBase):
         assert collection_w.num_entities == tmp_nb
 
         # load and query id 0
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         collection_w.query(default_string_expr,
                            check_task=CheckTasks.check_query_empty)
@@ -1618,6 +1646,7 @@ class TestDeleteString(TestcaseBase):
                            check_task=CheckTasks.check_query_empty)
 
     @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.skip(reason="Time travel disabled")
     def test_delete_time_travel_string(self):
         """
         target: test search with time travel after delete
@@ -1630,6 +1659,7 @@ class TestDeleteString(TestcaseBase):
         collection_w = self.init_collection_wrap(cf.gen_unique_str(prefix), schema=schema)
         df = cf.gen_default_dataframe_data(tmp_nb)
         insert_res, _ = collection_w.insert(df)
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
 
         tt = self.utility_wrap.mkts_from_hybridts(insert_res.timestamp, milliseconds=0.)
@@ -1674,6 +1704,7 @@ class TestDeleteString(TestcaseBase):
         expr = expr.replace("'", "\"")
         collection_w.delete(expr)
 
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         collection_w.query(expr, check_task=CheckTasks.check_query_empty)
         search_res, _ = collection_w.search(cf.gen_vectors(ct.default_nq, ct.default_dim),
@@ -1721,6 +1752,7 @@ class TestDeleteString(TestcaseBase):
         log.debug(collection_w.num_entities)
 
         # load and query
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         res = df.iloc[:1, 2:3].to_dict('records')
         default_search_params = {"metric_type": "L2", "params": {"nprobe": 16}}
@@ -1764,6 +1796,7 @@ class TestDeleteString(TestcaseBase):
         df[2] = [""for _ in range(nb)] 
 
         collection_w.insert(df)
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         collection_w.load()
         assert collection_w.num_entities == nb
 

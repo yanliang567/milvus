@@ -17,6 +17,7 @@
 package querynode
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"sync"
@@ -52,6 +53,11 @@ func (dNode *deleteNode) Name() string {
 
 // Operate handles input messages, do delete operations
 func (dNode *deleteNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
+	if in == nil {
+		log.Debug("type assertion failed for deleteMsg because it's nil", zap.String("name", dNode.Name()))
+		return []Msg{}
+	}
+
 	if len(in) != 1 {
 		log.Warn("Invalid operate message input in deleteNode", zap.Int("input length", len(in)), zap.String("name", dNode.Name()))
 		return []Msg{}
@@ -59,11 +65,7 @@ func (dNode *deleteNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 
 	dMsg, ok := in[0].(*deleteMsg)
 	if !ok {
-		if in[0] == nil {
-			log.Debug("type assertion failed for deleteMsg because it's nil", zap.String("name", dNode.Name()))
-		} else {
-			log.Warn("type assertion failed for deleteMsg", zap.String("msgType", reflect.TypeOf(in[0]).Name()), zap.String("name", dNode.Name()))
-		}
+		log.Warn("type assertion failed for deleteMsg", zap.String("msgType", reflect.TypeOf(in[0]).Name()), zap.String("name", dNode.Name()))
 		return []Msg{}
 	}
 
@@ -71,10 +73,6 @@ func (dNode *deleteNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 		deleteIDs:        map[UniqueID][]primaryKey{},
 		deleteTimestamps: map[UniqueID][]Timestamp{},
 		deleteOffset:     map[UniqueID]int64{},
-	}
-
-	if dMsg == nil {
-		return []Msg{}
 	}
 
 	var spans []opentracing.Span
@@ -86,8 +84,11 @@ func (dNode *deleteNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 
 	collection, err := dNode.metaReplica.getCollectionByID(dNode.collectionID)
 	if err != nil {
-		// QueryNode should add collection before start flow graph
-		panic(fmt.Errorf("%s getCollectionByID failed, collectionID = %d, channel = %s", dNode.Name(), dNode.collectionID, dNode.channel))
+		log.Warn("failed to get collection",
+			zap.Int64("collectionID", dNode.collectionID),
+			zap.String("channel", dNode.channel),
+		)
+		return []Msg{}
 	}
 	collection.RLock()
 	defer collection.RUnlock()
@@ -123,9 +124,12 @@ func (dNode *deleteNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 		segment, err := dNode.metaReplica.getSegmentByID(segmentID, segmentTypeSealed)
 		if err != nil {
 			// should not happen, segment should be created before
-			err = fmt.Errorf("deleteNode getSegmentByID failed, err = %s", err)
-			log.Error(err.Error())
-			panic(err)
+			log.Warn("failed to get segment",
+				zap.Int64("collectionID", dNode.collectionID),
+				zap.Int64("segmentID", segmentID),
+				zap.String("channel", dNode.channel),
+			)
+			continue
 		}
 		offset := segment.segmentPreDelete(len(pks))
 		delData.deleteOffset[segmentID] = offset
@@ -140,9 +144,17 @@ func (dNode *deleteNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 			err := dNode.delete(delData, segmentID, &wg)
 			if err != nil {
 				// error occurs when segment cannot be found, calling cgo function delete failed and etc...
-				err = fmt.Errorf("segment delete failed, segmentID = %d, err = %s", segmentID, err)
-				log.Error(err.Error())
-				panic(err)
+				log.Error("failed to apply deletions to segment",
+					zap.Int64("segmentID", segmentID),
+					zap.Error(err),
+				)
+
+				// For cases: segment compacted, not loaded yet, or just released,
+				// to ignore the error,
+				// panic otherwise.
+				if !errors.Is(err, ErrSegmentNotFound) && !errors.Is(err, ErrSegmentUnhealthy) {
+					panic(err)
+				}
 			}
 		}()
 	}
@@ -163,7 +175,7 @@ func (dNode *deleteNode) delete(deleteData *deleteData, segmentID UniqueID, wg *
 	defer wg.Done()
 	targetSegment, err := dNode.metaReplica.getSegmentByID(segmentID, segmentTypeSealed)
 	if err != nil {
-		return fmt.Errorf("getSegmentByID failed, err = %s", err)
+		return WrapSegmentNotFound(segmentID)
 	}
 
 	if targetSegment.getType() != segmentTypeSealed {
@@ -176,7 +188,7 @@ func (dNode *deleteNode) delete(deleteData *deleteData, segmentID UniqueID, wg *
 
 	err = targetSegment.segmentDelete(offset, ids, timestamps)
 	if err != nil {
-		return fmt.Errorf("segmentDelete failed, segmentID = %d", segmentID)
+		return fmt.Errorf("segmentDelete failed, segmentID = %d, err=%w", segmentID, err)
 	}
 
 	log.Debug("Do delete done", zap.Int("len", len(deleteData.deleteIDs[segmentID])), zap.Int64("segmentID", segmentID), zap.Any("SegmentType", targetSegment.segmentType), zap.String("channel", dNode.channel))

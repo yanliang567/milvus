@@ -20,7 +20,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/milvus-io/milvus/api/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/util/etcd"
@@ -56,7 +56,7 @@ func TestFlowGraphManager(t *testing.T) {
 		}
 		require.False(t, fm.exist(vchanName))
 
-		err := fm.addAndStart(node, vchan)
+		err := fm.addAndStart(node, vchan, nil)
 		assert.NoError(t, err)
 		assert.True(t, fm.exist(vchanName))
 
@@ -71,7 +71,7 @@ func TestFlowGraphManager(t *testing.T) {
 		}
 		require.False(t, fm.exist(vchanName))
 
-		err := fm.addAndStart(node, vchan)
+		err := fm.addAndStart(node, vchan, nil)
 		assert.NoError(t, err)
 		assert.True(t, fm.exist(vchanName))
 
@@ -81,25 +81,24 @@ func TestFlowGraphManager(t *testing.T) {
 		fm.dropAll()
 	})
 
-	t.Run("Test getReplica", func(t *testing.T) {
-		vchanName := "by-dev-rootcoord-dml-test-flowgraphmanager-getReplica"
+	t.Run("Test getChannel", func(t *testing.T) {
+		vchanName := "by-dev-rootcoord-dml-test-flowgraphmanager-getChannel"
 		vchan := &datapb.VchannelInfo{
 			CollectionID: 1,
 			ChannelName:  vchanName,
 		}
 		require.False(t, fm.exist(vchanName))
 
-		err := fm.addAndStart(node, vchan)
+		err := fm.addAndStart(node, vchan, nil)
 		assert.NoError(t, err)
 		assert.True(t, fm.exist(vchanName))
 		fg, ok := fm.getFlowgraphService(vchanName)
 		require.True(t, ok)
-		err = fg.replica.addSegment(addSegmentReq{
+		err = fg.channel.addSegment(addSegmentReq{
 			segType:     datapb.SegmentType_New,
 			segID:       100,
 			collID:      1,
 			partitionID: 10,
-			channelName: vchanName,
 			startPos:    &internalpb.MsgPosition{},
 			endPos:      &internalpb.MsgPosition{},
 		})
@@ -117,7 +116,7 @@ func TestFlowGraphManager(t *testing.T) {
 
 		for _, test := range tests {
 			t.Run(test.description, func(t *testing.T) {
-				rep, err := fm.getReplica(test.inSegID)
+				rep, err := fm.getChannel(test.inSegID)
 
 				if test.isvalid {
 					assert.NoError(t, err)
@@ -138,18 +137,17 @@ func TestFlowGraphManager(t *testing.T) {
 		}
 		require.False(t, fm.exist(vchanName))
 
-		err := fm.addAndStart(node, vchan)
+		err := fm.addAndStart(node, vchan, nil)
 		assert.NoError(t, err)
 		assert.True(t, fm.exist(vchanName))
 
 		fg, ok := fm.getFlowgraphService(vchanName)
 		require.True(t, ok)
-		err = fg.replica.addSegment(addSegmentReq{
+		err = fg.channel.addSegment(addSegmentReq{
 			segType:     datapb.SegmentType_New,
 			segID:       100,
 			collID:      1,
 			partitionID: 10,
-			channelName: vchanName,
 			startPos:    &internalpb.MsgPosition{},
 			endPos:      &internalpb.MsgPosition{},
 		})

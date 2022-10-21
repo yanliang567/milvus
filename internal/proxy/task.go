@@ -21,33 +21,28 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strconv"
 
-	"github.com/golang/protobuf/proto"
 	"go.uber.org/zap"
 
+	"github.com/golang/protobuf/proto"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
-	"github.com/milvus-io/milvus/internal/types"
-
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
-	"github.com/milvus-io/milvus/api/schemapb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
-	"github.com/milvus-io/milvus/internal/proto/planpb"
+	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
-
-	"github.com/milvus-io/milvus/internal/util/timerecord"
-	"github.com/milvus-io/milvus/internal/util/trace"
+	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/commonpbutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
 const (
 	AnnsFieldKey    = "anns_field"
 	TopKKey         = "topk"
+	NQKey           = "nq"
 	MetricTypeKey   = "metric_type"
 	SearchParamsKey = "params"
 	RoundDecimalKey = "round_decimal"
@@ -73,6 +68,7 @@ const (
 	CreateAliasTaskName        = "CreateAliasTask"
 	DropAliasTaskName          = "DropAliasTask"
 	AlterAliasTaskName         = "AlterAliasTask"
+	AlterCollectionTaskName    = "AlterCollectionTask"
 
 	// minFloat32 minimum float.
 	minFloat32 = -1 * float32(math.MaxFloat32)
@@ -145,7 +141,7 @@ func (cct *createCollectionTask) SetTs(ts Timestamp) {
 }
 
 func (cct *createCollectionTask) OnEnqueue() error {
-	cct.Base = &commonpb.MsgBase{}
+	cct.Base = commonpbutil.NewMsgBase()
 	cct.Base.MsgType = commonpb.MsgType_CreateCollection
 	cct.Base.SourceID = Params.ProxyCfg.GetNodeID()
 	return nil
@@ -282,7 +278,7 @@ func (dct *dropCollectionTask) SetTs(ts Timestamp) {
 }
 
 func (dct *dropCollectionTask) OnEnqueue() error {
-	dct.Base = &commonpb.MsgBase{}
+	dct.Base = commonpbutil.NewMsgBase()
 	return nil
 }
 
@@ -352,7 +348,7 @@ func (hct *hasCollectionTask) SetTs(ts Timestamp) {
 }
 
 func (hct *hasCollectionTask) OnEnqueue() error {
-	hct.Base = &commonpb.MsgBase{}
+	hct.Base = commonpbutil.NewMsgBase()
 	return nil
 }
 
@@ -426,7 +422,7 @@ func (dct *describeCollectionTask) SetTs(ts Timestamp) {
 }
 
 func (dct *describeCollectionTask) OnEnqueue() error {
-	dct.Base = &commonpb.MsgBase{}
+	dct.Base = commonpbutil.NewMsgBase()
 	return nil
 }
 
@@ -479,6 +475,7 @@ func (dct *describeCollectionTask) Execute(ctx context.Context) error {
 		dct.result.ShardsNum = result.ShardsNum
 		dct.result.ConsistencyLevel = result.ConsistencyLevel
 		dct.result.Aliases = result.Aliases
+		dct.result.Properties = result.Properties
 		for _, field := range result.Schema.Fields {
 			if field.FieldID >= common.StartOfUserFieldID {
 				dct.result.Schema.Fields = append(dct.result.Schema.Fields, &schemapb.FieldSchema{
@@ -543,7 +540,7 @@ func (sct *showCollectionsTask) SetTs(ts Timestamp) {
 }
 
 func (sct *showCollectionsTask) OnEnqueue() error {
-	sct.Base = &commonpb.MsgBase{}
+	sct.Base = commonpbutil.NewMsgBase()
 	return nil
 }
 
@@ -595,12 +592,10 @@ func (sct *showCollectionsTask) Execute(ctx context.Context) error {
 		}
 
 		resp, err := sct.queryCoord.ShowCollections(ctx, &querypb.ShowCollectionsRequest{
-			Base: &commonpb.MsgBase{
-				MsgType:   commonpb.MsgType_ShowCollections,
-				MsgID:     sct.Base.MsgID,
-				Timestamp: sct.Base.Timestamp,
-				SourceID:  sct.Base.SourceID,
-			},
+			Base: commonpbutil.UpdateMsgBase(
+				sct.Base,
+				commonpbutil.WithMsgType(commonpb.MsgType_ShowCollections),
+			),
 			//DbID: sct.ShowCollectionsRequest.DbName,
 			CollectionIDs: collectionIDs,
 		})
@@ -663,6 +658,68 @@ func (sct *showCollectionsTask) PostExecute(ctx context.Context) error {
 	return nil
 }
 
+type alterCollectionTask struct {
+	Condition
+	*milvuspb.AlterCollectionRequest
+	ctx       context.Context
+	rootCoord types.RootCoord
+	result    *commonpb.Status
+}
+
+func (act *alterCollectionTask) TraceCtx() context.Context {
+	return act.ctx
+}
+
+func (act *alterCollectionTask) ID() UniqueID {
+	return act.Base.MsgID
+}
+
+func (act *alterCollectionTask) SetID(uid UniqueID) {
+	act.Base.MsgID = uid
+}
+
+func (act *alterCollectionTask) Name() string {
+	return AlterCollectionTaskName
+}
+
+func (act *alterCollectionTask) Type() commonpb.MsgType {
+	return act.Base.MsgType
+}
+
+func (act *alterCollectionTask) BeginTs() Timestamp {
+	return act.Base.Timestamp
+}
+
+func (act *alterCollectionTask) EndTs() Timestamp {
+	return act.Base.Timestamp
+}
+
+func (act *alterCollectionTask) SetTs(ts Timestamp) {
+	act.Base.Timestamp = ts
+}
+
+func (act *alterCollectionTask) OnEnqueue() error {
+	act.Base = commonpbutil.NewMsgBase()
+	return nil
+}
+
+func (act *alterCollectionTask) PreExecute(ctx context.Context) error {
+	act.Base.MsgType = commonpb.MsgType_AlterCollection
+	act.Base.SourceID = Params.ProxyCfg.GetNodeID()
+
+	return nil
+}
+
+func (act *alterCollectionTask) Execute(ctx context.Context) error {
+	var err error
+	act.result, err = act.rootCoord.AlterCollection(ctx, act.AlterCollectionRequest)
+	return err
+}
+
+func (act *alterCollectionTask) PostExecute(ctx context.Context) error {
+	return nil
+}
+
 type createPartitionTask struct {
 	Condition
 	*milvuspb.CreatePartitionRequest
@@ -704,7 +761,7 @@ func (cpt *createPartitionTask) SetTs(ts Timestamp) {
 }
 
 func (cpt *createPartitionTask) OnEnqueue() error {
-	cpt.Base = &commonpb.MsgBase{}
+	cpt.Base = commonpbutil.NewMsgBase()
 	return nil
 }
 
@@ -743,9 +800,10 @@ func (cpt *createPartitionTask) PostExecute(ctx context.Context) error {
 type dropPartitionTask struct {
 	Condition
 	*milvuspb.DropPartitionRequest
-	ctx       context.Context
-	rootCoord types.RootCoord
-	result    *commonpb.Status
+	ctx        context.Context
+	rootCoord  types.RootCoord
+	queryCoord types.QueryCoord
+	result     *commonpb.Status
 }
 
 func (dpt *dropPartitionTask) TraceCtx() context.Context {
@@ -781,7 +839,7 @@ func (dpt *dropPartitionTask) SetTs(ts Timestamp) {
 }
 
 func (dpt *dropPartitionTask) OnEnqueue() error {
-	dpt.Base = &commonpb.MsgBase{}
+	dpt.Base = commonpbutil.NewMsgBase()
 	return nil
 }
 
@@ -797,6 +855,23 @@ func (dpt *dropPartitionTask) PreExecute(ctx context.Context) error {
 
 	if err := validatePartitionTag(partitionTag, true); err != nil {
 		return err
+	}
+
+	collID, _ := globalMetaCache.GetCollectionID(ctx, dpt.GetCollectionName())
+	partID, _ := globalMetaCache.GetPartitionID(ctx, dpt.GetCollectionName(), dpt.GetPartitionName())
+
+	collLoaded, err := isCollectionLoaded(ctx, dpt.queryCoord, []int64{collID})
+	if err != nil {
+		return err
+	}
+	if collLoaded {
+		loaded, err := isPartitionLoaded(ctx, dpt.queryCoord, collID, []int64{partID})
+		if err != nil {
+			return err
+		}
+		if loaded {
+			return errors.New("partition cannot be dropped, partition is loaded, please release it first")
+		}
 	}
 
 	return nil
@@ -858,7 +933,7 @@ func (hpt *hasPartitionTask) SetTs(ts Timestamp) {
 }
 
 func (hpt *hasPartitionTask) OnEnqueue() error {
-	hpt.Base = &commonpb.MsgBase{}
+	hpt.Base = commonpbutil.NewMsgBase()
 	return nil
 }
 
@@ -935,7 +1010,7 @@ func (spt *showPartitionsTask) SetTs(ts Timestamp) {
 }
 
 func (spt *showPartitionsTask) OnEnqueue() error {
-	spt.Base = &commonpb.MsgBase{}
+	spt.Base = commonpbutil.NewMsgBase()
 	return nil
 }
 
@@ -997,12 +1072,10 @@ func (spt *showPartitionsTask) Execute(ctx context.Context) error {
 			IDs2Names[partitionID] = partitionName
 		}
 		resp, err := spt.queryCoord.ShowPartitions(ctx, &querypb.ShowPartitionsRequest{
-			Base: &commonpb.MsgBase{
-				MsgType:   commonpb.MsgType_ShowCollections,
-				MsgID:     spt.Base.MsgID,
-				Timestamp: spt.Base.Timestamp,
-				SourceID:  spt.Base.SourceID,
-			},
+			Base: commonpbutil.UpdateMsgBase(
+				spt.Base,
+				commonpbutil.WithMsgType(commonpb.MsgType_ShowCollections),
+			),
 			CollectionID: collectionID,
 			PartitionIDs: partitionIDs,
 		})
@@ -1099,7 +1172,7 @@ func (ft *flushTask) SetTs(ts Timestamp) {
 }
 
 func (ft *flushTask) OnEnqueue() error {
-	ft.Base = &commonpb.MsgBase{}
+	ft.Base = commonpbutil.NewMsgBase()
 	return nil
 }
 
@@ -1119,12 +1192,10 @@ func (ft *flushTask) Execute(ctx context.Context) error {
 			return err
 		}
 		flushReq := &datapb.FlushRequest{
-			Base: &commonpb.MsgBase{
-				MsgType:   commonpb.MsgType_Flush,
-				MsgID:     ft.Base.MsgID,
-				Timestamp: ft.Base.Timestamp,
-				SourceID:  ft.Base.SourceID,
-			},
+			Base: commonpbutil.UpdateMsgBase(
+				ft.Base,
+				commonpbutil.WithMsgType(commonpb.MsgType_Flush),
+			),
 			DbID:         0,
 			CollectionID: collID,
 		}
@@ -1161,6 +1232,7 @@ type loadCollectionTask struct {
 	*milvuspb.LoadCollectionRequest
 	ctx        context.Context
 	queryCoord types.QueryCoord
+	indexCoord types.IndexCoord
 	result     *commonpb.Status
 
 	collectionID UniqueID
@@ -1199,7 +1271,7 @@ func (lct *loadCollectionTask) SetTs(ts Timestamp) {
 }
 
 func (lct *loadCollectionTask) OnEnqueue() error {
-	lct.Base = &commonpb.MsgBase{}
+	lct.Base = commonpbutil.NewMsgBase()
 	return nil
 }
 
@@ -1234,17 +1306,43 @@ func (lct *loadCollectionTask) Execute(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
+	// check index
+	indexResponse, err := lct.indexCoord.DescribeIndex(ctx, &indexpb.DescribeIndexRequest{
+		CollectionID: collID,
+		IndexName:    "",
+	})
+	if err != nil {
+		return err
+	}
+	if indexResponse.Status.ErrorCode != commonpb.ErrorCode_Success {
+		return errors.New(indexResponse.Status.Reason)
+	}
+
+	hasVecIndex := false
+	fieldIndexIDs := make(map[int64]int64)
+	for _, index := range indexResponse.IndexInfos {
+		fieldIndexIDs[index.FieldID] = index.IndexID
+		for _, field := range collSchema.Fields {
+			if index.FieldID == field.FieldID && (field.DataType == schemapb.DataType_FloatVector || field.DataType == schemapb.DataType_BinaryVector) {
+				hasVecIndex = true
+			}
+		}
+	}
+	if !hasVecIndex {
+		errMsg := fmt.Sprintf("there is no vector index on collection: %s, please create index firstly", lct.LoadCollectionRequest.CollectionName)
+		log.Ctx(ctx).Error(errMsg)
+		return errors.New(errMsg)
+	}
 	request := &querypb.LoadCollectionRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:   commonpb.MsgType_LoadCollection,
-			MsgID:     lct.Base.MsgID,
-			Timestamp: lct.Base.Timestamp,
-			SourceID:  lct.Base.SourceID,
-		},
+		Base: commonpbutil.UpdateMsgBase(
+			lct.Base,
+			commonpbutil.WithMsgType(commonpb.MsgType_LoadCollection),
+		),
 		DbID:          0,
 		CollectionID:  collID,
 		Schema:        collSchema,
 		ReplicaNumber: lct.ReplicaNumber,
+		FieldIndexID:  fieldIndexIDs,
 	}
 	log.Debug("send LoadCollectionRequest to query coordinator", zap.String("role", typeutil.ProxyRole),
 		zap.Int64("msgID", request.Base.MsgID), zap.Int64("collectionID", request.CollectionID),
@@ -1306,7 +1404,7 @@ func (rct *releaseCollectionTask) SetTs(ts Timestamp) {
 }
 
 func (rct *releaseCollectionTask) OnEnqueue() error {
-	rct.Base = &commonpb.MsgBase{}
+	rct.Base = commonpbutil.NewMsgBase()
 	return nil
 }
 
@@ -1330,12 +1428,10 @@ func (rct *releaseCollectionTask) Execute(ctx context.Context) (err error) {
 	}
 	rct.collectionID = collID
 	request := &querypb.ReleaseCollectionRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:   commonpb.MsgType_ReleaseCollection,
-			MsgID:     rct.Base.MsgID,
-			Timestamp: rct.Base.Timestamp,
-			SourceID:  rct.Base.SourceID,
-		},
+		Base: commonpbutil.UpdateMsgBase(
+			rct.Base,
+			commonpbutil.WithMsgType(commonpb.MsgType_ReleaseCollection),
+		),
 		DbID:         0,
 		CollectionID: collID,
 	}
@@ -1357,6 +1453,7 @@ type loadPartitionsTask struct {
 	*milvuspb.LoadPartitionsRequest
 	ctx        context.Context
 	queryCoord types.QueryCoord
+	indexCoord types.IndexCoord
 	result     *commonpb.Status
 
 	collectionID UniqueID
@@ -1395,7 +1492,7 @@ func (lpt *loadPartitionsTask) SetTs(ts Timestamp) {
 }
 
 func (lpt *loadPartitionsTask) OnEnqueue() error {
-	lpt.Base = &commonpb.MsgBase{}
+	lpt.Base = commonpbutil.NewMsgBase()
 	return nil
 }
 
@@ -1423,6 +1520,33 @@ func (lpt *loadPartitionsTask) Execute(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// check index
+	indexResponse, err := lpt.indexCoord.DescribeIndex(ctx, &indexpb.DescribeIndexRequest{
+		CollectionID: collID,
+		IndexName:    "",
+	})
+	if err != nil {
+		return err
+	}
+	if indexResponse.Status.ErrorCode != commonpb.ErrorCode_Success {
+		return errors.New(indexResponse.Status.Reason)
+	}
+
+	hasVecIndex := false
+	fieldIndexIDs := make(map[int64]int64)
+	for _, index := range indexResponse.IndexInfos {
+		fieldIndexIDs[index.FieldID] = index.IndexID
+		for _, field := range collSchema.Fields {
+			if index.FieldID == field.FieldID && (field.DataType == schemapb.DataType_FloatVector || field.DataType == schemapb.DataType_BinaryVector) {
+				hasVecIndex = true
+			}
+		}
+	}
+	if !hasVecIndex {
+		errMsg := fmt.Sprintf("there is no vector index on collection: %s, please create index firstly", lpt.LoadPartitionsRequest.CollectionName)
+		log.Ctx(ctx).Error(errMsg)
+		return errors.New(errMsg)
+	}
 	for _, partitionName := range lpt.PartitionNames {
 		partitionID, err := globalMetaCache.GetPartitionID(ctx, lpt.CollectionName, partitionName)
 		if err != nil {
@@ -1431,17 +1555,16 @@ func (lpt *loadPartitionsTask) Execute(ctx context.Context) error {
 		partitionIDs = append(partitionIDs, partitionID)
 	}
 	request := &querypb.LoadPartitionsRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:   commonpb.MsgType_LoadPartitions,
-			MsgID:     lpt.Base.MsgID,
-			Timestamp: lpt.Base.Timestamp,
-			SourceID:  lpt.Base.SourceID,
-		},
+		Base: commonpbutil.UpdateMsgBase(
+			lpt.Base,
+			commonpbutil.WithMsgType(commonpb.MsgType_LoadPartitions),
+		),
 		DbID:          0,
 		CollectionID:  collID,
 		PartitionIDs:  partitionIDs,
 		Schema:        collSchema,
 		ReplicaNumber: lpt.ReplicaNumber,
+		FieldIndexID:  fieldIndexIDs,
 	}
 	lpt.result, err = lpt.queryCoord.LoadPartitions(ctx, request)
 	return err
@@ -1494,7 +1617,7 @@ func (rpt *releasePartitionsTask) SetTs(ts Timestamp) {
 }
 
 func (rpt *releasePartitionsTask) OnEnqueue() error {
-	rpt.Base = &commonpb.MsgBase{}
+	rpt.Base = commonpbutil.NewMsgBase()
 	return nil
 }
 
@@ -1526,12 +1649,10 @@ func (rpt *releasePartitionsTask) Execute(ctx context.Context) (err error) {
 		partitionIDs = append(partitionIDs, partitionID)
 	}
 	request := &querypb.ReleasePartitionsRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:   commonpb.MsgType_ReleasePartitions,
-			MsgID:     rpt.Base.MsgID,
-			Timestamp: rpt.Base.Timestamp,
-			SourceID:  rpt.Base.SourceID,
-		},
+		Base: commonpbutil.UpdateMsgBase(
+			rpt.Base,
+			commonpbutil.WithMsgType(commonpb.MsgType_ReleasePartitions),
+		),
 		DbID:         0,
 		CollectionID: collID,
 		PartitionIDs: partitionIDs,
@@ -1542,306 +1663,6 @@ func (rpt *releasePartitionsTask) Execute(ctx context.Context) (err error) {
 
 func (rpt *releasePartitionsTask) PostExecute(ctx context.Context) error {
 	globalMetaCache.ClearShards(rpt.CollectionName)
-	return nil
-}
-
-type BaseDeleteTask = msgstream.DeleteMsg
-
-type deleteTask struct {
-	Condition
-	BaseDeleteTask
-	ctx        context.Context
-	deleteExpr string
-	//req       *milvuspb.DeleteRequest
-	result    *milvuspb.MutationResult
-	chMgr     channelsMgr
-	chTicker  channelsTimeTicker
-	vChannels []vChan
-	pChannels []pChan
-
-	collectionID UniqueID
-	schema       *schemapb.CollectionSchema
-}
-
-func (dt *deleteTask) TraceCtx() context.Context {
-	return dt.ctx
-}
-
-func (dt *deleteTask) ID() UniqueID {
-	return dt.Base.MsgID
-}
-
-func (dt *deleteTask) SetID(uid UniqueID) {
-	dt.Base.MsgID = uid
-}
-
-func (dt *deleteTask) Type() commonpb.MsgType {
-	return dt.Base.MsgType
-}
-
-func (dt *deleteTask) Name() string {
-	return deleteTaskName
-}
-
-func (dt *deleteTask) BeginTs() Timestamp {
-	return dt.Base.Timestamp
-}
-
-func (dt *deleteTask) EndTs() Timestamp {
-	return dt.Base.Timestamp
-}
-
-func (dt *deleteTask) SetTs(ts Timestamp) {
-	dt.Base.Timestamp = ts
-}
-
-func (dt *deleteTask) OnEnqueue() error {
-	dt.DeleteRequest.Base = &commonpb.MsgBase{}
-	return nil
-}
-
-func (dt *deleteTask) getPChanStats() (map[pChan]pChanStatistics, error) {
-	ret := make(map[pChan]pChanStatistics)
-
-	channels, err := dt.getChannels()
-	if err != nil {
-		return ret, err
-	}
-
-	beginTs := dt.BeginTs()
-	endTs := dt.EndTs()
-
-	for _, channel := range channels {
-		ret[channel] = pChanStatistics{
-			minTs: beginTs,
-			maxTs: endTs,
-		}
-	}
-	return ret, nil
-}
-
-func (dt *deleteTask) getChannels() ([]pChan, error) {
-	collID, err := globalMetaCache.GetCollectionID(dt.ctx, dt.CollectionName)
-	if err != nil {
-		return nil, err
-	}
-	return dt.chMgr.getChannels(collID)
-}
-
-func getPrimaryKeysFromExpr(schema *schemapb.CollectionSchema, expr string) (res *schemapb.IDs, rowNum int64, err error) {
-	if len(expr) == 0 {
-		log.Warn("empty expr")
-		return
-	}
-
-	plan, err := createExprPlan(schema, expr)
-	if err != nil {
-		return res, 0, fmt.Errorf("failed to create expr plan, expr = %s", expr)
-	}
-
-	// delete request only support expr "id in [a, b]"
-	termExpr, ok := plan.Node.(*planpb.PlanNode_Predicates).Predicates.Expr.(*planpb.Expr_TermExpr)
-	if !ok {
-		return res, 0, fmt.Errorf("invalid plan node type, only pk in [1, 2] supported")
-	}
-
-	res = &schemapb.IDs{}
-	rowNum = int64(len(termExpr.TermExpr.Values))
-	switch termExpr.TermExpr.ColumnInfo.GetDataType() {
-	case schemapb.DataType_Int64:
-		ids := make([]int64, 0)
-		for _, v := range termExpr.TermExpr.Values {
-			ids = append(ids, v.GetInt64Val())
-		}
-		res.IdField = &schemapb.IDs_IntId{
-			IntId: &schemapb.LongArray{
-				Data: ids,
-			},
-		}
-	case schemapb.DataType_VarChar:
-		ids := make([]string, 0)
-		for _, v := range termExpr.TermExpr.Values {
-			ids = append(ids, v.GetStringVal())
-		}
-		res.IdField = &schemapb.IDs_StrId{
-			StrId: &schemapb.StringArray{
-				Data: ids,
-			},
-		}
-	default:
-		return res, 0, fmt.Errorf("invalid field data type specifyed in delete expr")
-	}
-
-	return res, rowNum, nil
-}
-
-func (dt *deleteTask) PreExecute(ctx context.Context) error {
-	dt.Base.MsgType = commonpb.MsgType_Delete
-	dt.Base.SourceID = Params.ProxyCfg.GetNodeID()
-
-	dt.result = &milvuspb.MutationResult{
-		Status: &commonpb.Status{
-			ErrorCode: commonpb.ErrorCode_Success,
-		},
-		IDs: &schemapb.IDs{
-			IdField: nil,
-		},
-		Timestamp: dt.BeginTs(),
-	}
-
-	collName := dt.CollectionName
-	if err := validateCollectionName(collName); err != nil {
-		log.Error("Invalid collection name", zap.String("collectionName", collName))
-		return err
-	}
-	collID, err := globalMetaCache.GetCollectionID(ctx, collName)
-	if err != nil {
-		log.Debug("Failed to get collection id", zap.String("collectionName", collName))
-		return err
-	}
-	dt.DeleteRequest.CollectionID = collID
-	dt.collectionID = collID
-
-	// If partitionName is not empty, partitionID will be set.
-	if len(dt.PartitionName) > 0 {
-		partName := dt.PartitionName
-		if err := validatePartitionTag(partName, true); err != nil {
-			log.Error("Invalid partition name", zap.String("partitionName", partName))
-			return err
-		}
-		partID, err := globalMetaCache.GetPartitionID(ctx, collName, partName)
-		if err != nil {
-			log.Debug("Failed to get partition id", zap.String("collectionName", collName), zap.String("partitionName", partName))
-			return err
-		}
-		dt.DeleteRequest.PartitionID = partID
-	} else {
-		dt.DeleteRequest.PartitionID = common.InvalidPartitionID
-	}
-
-	schema, err := globalMetaCache.GetCollectionSchema(ctx, collName)
-	if err != nil {
-		log.Error("Failed to get collection schema", zap.String("collectionName", collName))
-		return err
-	}
-	dt.schema = schema
-
-	// get delete.primaryKeys from delete expr
-	primaryKeys, numRow, err := getPrimaryKeysFromExpr(schema, dt.deleteExpr)
-	if err != nil {
-		log.Error("Failed to get primary keys from expr", zap.Error(err))
-		return err
-	}
-
-	dt.DeleteRequest.NumRows = numRow
-	dt.DeleteRequest.PrimaryKeys = primaryKeys
-	log.Debug("get primary keys from expr", zap.Int64("len of primary keys", dt.DeleteRequest.NumRows))
-
-	// set result
-	dt.result.IDs = primaryKeys
-	dt.result.DeleteCnt = dt.DeleteRequest.NumRows
-
-	dt.Timestamps = make([]uint64, numRow)
-	for index := range dt.Timestamps {
-		dt.Timestamps[index] = dt.BeginTs()
-	}
-
-	return nil
-}
-
-func (dt *deleteTask) Execute(ctx context.Context) (err error) {
-	sp, ctx := trace.StartSpanFromContextWithOperationName(dt.ctx, "Proxy-Delete-Execute")
-	defer sp.Finish()
-
-	tr := timerecord.NewTimeRecorder(fmt.Sprintf("proxy execute delete %d", dt.ID()))
-
-	collID := dt.DeleteRequest.CollectionID
-	stream, err := dt.chMgr.getOrCreateDmlStream(collID)
-	if err != nil {
-		return err
-	}
-
-	// hash primary keys to channels
-	channelNames, err := dt.chMgr.getVChannels(collID)
-	if err != nil {
-		log.Error("get vChannels failed", zap.Int64("collectionID", collID), zap.Error(err))
-		dt.result.Status.ErrorCode = commonpb.ErrorCode_UnexpectedError
-		dt.result.Status.Reason = err.Error()
-		return err
-	}
-	dt.HashValues = typeutil.HashPK2Channels(dt.result.IDs, channelNames)
-
-	log.Info("send delete request to virtual channels",
-		zap.String("collection", dt.GetCollectionName()),
-		zap.Int64("collection_id", collID),
-		zap.Strings("virtual_channels", channelNames),
-		zap.Int64("task_id", dt.ID()))
-
-	tr.Record("get vchannels")
-	// repack delete msg by dmChannel
-	result := make(map[uint32]msgstream.TsMsg)
-	collectionName := dt.CollectionName
-	collectionID := dt.CollectionID
-	partitionID := dt.PartitionID
-	partitionName := dt.PartitionName
-	proxyID := dt.Base.SourceID
-	for index, key := range dt.HashValues {
-		ts := dt.Timestamps[index]
-		_, ok := result[key]
-		if !ok {
-			sliceRequest := internalpb.DeleteRequest{
-				Base: &commonpb.MsgBase{
-					MsgType:   commonpb.MsgType_Delete,
-					MsgID:     dt.Base.MsgID,
-					Timestamp: ts,
-					SourceID:  proxyID,
-				},
-				CollectionID:   collectionID,
-				PartitionID:    partitionID,
-				CollectionName: collectionName,
-				PartitionName:  partitionName,
-				PrimaryKeys:    &schemapb.IDs{},
-			}
-			deleteMsg := &msgstream.DeleteMsg{
-				BaseMsg: msgstream.BaseMsg{
-					Ctx: ctx,
-				},
-				DeleteRequest: sliceRequest,
-			}
-			result[key] = deleteMsg
-		}
-		curMsg := result[key].(*msgstream.DeleteMsg)
-		curMsg.HashValues = append(curMsg.HashValues, dt.HashValues[index])
-		curMsg.Timestamps = append(curMsg.Timestamps, dt.Timestamps[index])
-		typeutil.AppendIDs(curMsg.PrimaryKeys, dt.PrimaryKeys, index)
-		curMsg.NumRows++
-	}
-
-	// send delete request to log broker
-	msgPack := &msgstream.MsgPack{
-		BeginTs: dt.BeginTs(),
-		EndTs:   dt.EndTs(),
-	}
-	for _, msg := range result {
-		if msg != nil {
-			msgPack.Msgs = append(msgPack.Msgs, msg)
-		}
-	}
-
-	tr.Record("pack messages")
-	err = stream.Produce(msgPack)
-	if err != nil {
-		dt.result.Status.ErrorCode = commonpb.ErrorCode_UnexpectedError
-		dt.result.Status.Reason = err.Error()
-		return err
-	}
-	sendMsgDur := tr.Record("send delete request to dml channels")
-	metrics.ProxySendMutationReqLatency.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), metrics.DeleteLabel).Observe(float64(sendMsgDur.Milliseconds()))
-
-	return nil
-}
-
-func (dt *deleteTask) PostExecute(ctx context.Context) error {
 	return nil
 }
 
@@ -1896,7 +1717,7 @@ func (c *CreateAliasTask) SetTs(ts Timestamp) {
 
 // OnEnqueue defines the behavior task enqueued
 func (c *CreateAliasTask) OnEnqueue() error {
-	c.Base = &commonpb.MsgBase{}
+	c.Base = commonpbutil.NewMsgBase()
 	return nil
 }
 
@@ -1976,7 +1797,7 @@ func (d *DropAliasTask) SetTs(ts Timestamp) {
 }
 
 func (d *DropAliasTask) OnEnqueue() error {
-	d.Base = &commonpb.MsgBase{}
+	d.Base = commonpbutil.NewMsgBase()
 	return nil
 }
 
@@ -2042,7 +1863,7 @@ func (a *AlterAliasTask) SetTs(ts Timestamp) {
 }
 
 func (a *AlterAliasTask) OnEnqueue() error {
-	a.Base = &commonpb.MsgBase{}
+	a.Base = commonpbutil.NewMsgBase()
 	return nil
 }
 

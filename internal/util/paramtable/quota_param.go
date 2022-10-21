@@ -29,7 +29,11 @@ import (
 const (
 	// defaultMax is the default unlimited rate or threshold.
 	defaultMax = float64(math.MaxFloat64)
-	// defaultMax is the default minimal rate.
+	// MBSize used to convert megabytes and bytes.
+	MBSize = 1024.0 * 1024.0
+	// defaultDiskQuotaInMB is the default disk quota in megabytes.
+	defaultDiskQuotaInMB = defaultMax / MBSize
+	// defaultMin is the default minimal rate.
 	defaultMin = float64(0)
 	// defaultLowWaterLevel is the default memory low water level.
 	defaultLowWaterLevel = float64(0.85)
@@ -85,13 +89,17 @@ type quotaConfig struct {
 	DataNodeMemoryHighWaterLevel  float64
 	QueryNodeMemoryLowWaterLevel  float64
 	QueryNodeMemoryHighWaterLevel float64
+	DiskProtectionEnabled         bool
+	DiskQuota                     float64
 
 	// limit reading
-	ForceDenyReading       bool
-	QueueProtectionEnabled bool
-	NQInQueueThreshold     int64
-	QueueLatencyThreshold  float64
-	CoolOffSpeed           float64
+	ForceDenyReading        bool
+	QueueProtectionEnabled  bool
+	NQInQueueThreshold      int64
+	QueueLatencyThreshold   float64
+	ResultProtectionEnabled bool
+	MaxReadResultRate       float64
+	CoolOffSpeed            float64
 }
 
 func (p *quotaConfig) init(base *BaseTable) {
@@ -140,12 +148,16 @@ func (p *quotaConfig) init(base *BaseTable) {
 	p.initDataNodeMemoryHighWaterLevel()
 	p.initQueryNodeMemoryLowWaterLevel()
 	p.initQueryNodeMemoryHighWaterLevel()
+	p.initDiskProtectionEnabled()
+	p.initDiskQuota()
 
 	// limit reading
 	p.initForceDenyReading()
 	p.initQueueProtectionEnabled()
 	p.initNQInQueueThreshold()
 	p.initQueueLatencyThreshold()
+	p.initResultProtectionEnabled()
+	p.initMaxReadResultRate()
 	p.initCoolOffSpeed()
 }
 
@@ -238,8 +250,8 @@ func (p *quotaConfig) initMaxCompactionRate() {
 	}
 }
 
-func megaBytesRate2Bytes(f float64) float64 {
-	return f * 1024 * 1024
+func megaBytes2Bytes(f float64) float64 {
+	return f * MBSize
 }
 
 func (p *quotaConfig) checkMinMaxLegal(min, max float64) bool {
@@ -262,7 +274,7 @@ func (p *quotaConfig) initDMLMaxInsertRate() {
 	}
 	p.DMLMaxInsertRate = p.Base.ParseFloatWithDefault("quotaAndLimits.dml.insertRate.max", defaultMax)
 	if math.Abs(p.DMLMaxInsertRate-defaultMax) > 0.001 { // maxRate != defaultMax
-		p.DMLMaxInsertRate = megaBytesRate2Bytes(p.DMLMaxInsertRate)
+		p.DMLMaxInsertRate = megaBytes2Bytes(p.DMLMaxInsertRate)
 	}
 	// [0, inf)
 	if p.DMLMaxInsertRate < 0 {
@@ -276,7 +288,7 @@ func (p *quotaConfig) initDMLMinInsertRate() {
 		return
 	}
 	p.DMLMinInsertRate = p.Base.ParseFloatWithDefault("quotaAndLimits.dml.insertRate.min", defaultMin)
-	p.DMLMinInsertRate = megaBytesRate2Bytes(p.DMLMinInsertRate)
+	p.DMLMinInsertRate = megaBytes2Bytes(p.DMLMinInsertRate)
 	// [0, inf)
 	if p.DMLMinInsertRate < 0 {
 		p.DMLMinInsertRate = defaultMin
@@ -294,7 +306,7 @@ func (p *quotaConfig) initDMLMaxDeleteRate() {
 	}
 	p.DMLMaxDeleteRate = p.Base.ParseFloatWithDefault("quotaAndLimits.dml.deleteRate.max", defaultMax)
 	if math.Abs(p.DMLMaxDeleteRate-defaultMax) > 0.001 { // maxRate != defaultMax
-		p.DMLMaxDeleteRate = megaBytesRate2Bytes(p.DMLMaxDeleteRate)
+		p.DMLMaxDeleteRate = megaBytes2Bytes(p.DMLMaxDeleteRate)
 	}
 	// [0, inf)
 	if p.DMLMaxDeleteRate < 0 {
@@ -308,7 +320,7 @@ func (p *quotaConfig) initDMLMinDeleteRate() {
 		return
 	}
 	p.DMLMinDeleteRate = p.Base.ParseFloatWithDefault("quotaAndLimits.dml.deleteRate.min", defaultMin)
-	p.DMLMinDeleteRate = megaBytesRate2Bytes(p.DMLMinDeleteRate)
+	p.DMLMinDeleteRate = megaBytes2Bytes(p.DMLMinDeleteRate)
 	// [0, inf)
 	if p.DMLMinDeleteRate < 0 {
 		p.DMLMinDeleteRate = defaultMin
@@ -326,7 +338,7 @@ func (p *quotaConfig) initDMLMaxBulkLoadRate() {
 	}
 	p.DMLMaxBulkLoadRate = p.Base.ParseFloatWithDefault("quotaAndLimits.dml.bulkLoadRate.max", defaultMax)
 	if math.Abs(p.DMLMaxBulkLoadRate-defaultMax) > 0.001 { // maxRate != defaultMax
-		p.DMLMaxBulkLoadRate = megaBytesRate2Bytes(p.DMLMaxBulkLoadRate)
+		p.DMLMaxBulkLoadRate = megaBytes2Bytes(p.DMLMaxBulkLoadRate)
 	}
 	// [0, inf)
 	if p.DMLMaxBulkLoadRate < 0 {
@@ -340,7 +352,7 @@ func (p *quotaConfig) initDMLMinBulkLoadRate() {
 		return
 	}
 	p.DMLMinBulkLoadRate = p.Base.ParseFloatWithDefault("quotaAndLimits.dml.bulkLoadRate.min", defaultMin)
-	p.DMLMinBulkLoadRate = megaBytesRate2Bytes(p.DMLMinBulkLoadRate)
+	p.DMLMinBulkLoadRate = megaBytes2Bytes(p.DMLMinBulkLoadRate)
 	// [0, inf)
 	if p.DMLMinBulkLoadRate < 0 {
 		p.DMLMinBulkLoadRate = defaultMin
@@ -420,11 +432,12 @@ func (p *quotaConfig) initForceDenyWriting() {
 }
 
 func (p *quotaConfig) initTtProtectionEnabled() {
-	p.TtProtectionEnabled = p.Base.ParseBool("quotaAndLimits.limitWriting.ttProtection", true)
+	p.TtProtectionEnabled = p.Base.ParseBool("quotaAndLimits.limitWriting.ttProtection.enabled", true)
 }
 
 func (p *quotaConfig) initMaxTimeTickDelay() {
 	if !p.TtProtectionEnabled {
+		p.MaxTimeTickDelay = math.MaxInt64
 		return
 	}
 	const defaultMaxTtDelay = 30.0
@@ -454,6 +467,7 @@ func (p *quotaConfig) initDataNodeMemoryLowWaterLevel() {
 
 func (p *quotaConfig) initDataNodeMemoryHighWaterLevel() {
 	if !p.MemProtectionEnabled {
+		p.DataNodeMemoryHighWaterLevel = 1
 		return
 	}
 	p.DataNodeMemoryHighWaterLevel = p.Base.ParseFloatWithDefault("quotaAndLimits.limitWriting.memProtection.dataNodeMemoryHighWaterLevel", defaultHighWaterLevel)
@@ -482,6 +496,7 @@ func (p *quotaConfig) initQueryNodeMemoryLowWaterLevel() {
 
 func (p *quotaConfig) initQueryNodeMemoryHighWaterLevel() {
 	if !p.MemProtectionEnabled {
+		p.QueryNodeMemoryLowWaterLevel = defaultLowWaterLevel
 		return
 	}
 	p.QueryNodeMemoryHighWaterLevel = p.Base.ParseFloatWithDefault("quotaAndLimits.limitWriting.memProtection.queryNodeMemoryHighWaterLevel", defaultHighWaterLevel)
@@ -496,6 +511,29 @@ func (p *quotaConfig) initQueryNodeMemoryHighWaterLevel() {
 	}
 }
 
+func (p *quotaConfig) initDiskProtectionEnabled() {
+	p.DiskProtectionEnabled = p.Base.ParseBool("quotaAndLimits.limitWriting.diskProtection.enabled", true)
+}
+
+func (p *quotaConfig) initDiskQuota() {
+	if !p.DiskProtectionEnabled {
+		p.DiskQuota = defaultMax
+		return
+	}
+	p.DiskQuota = p.Base.ParseFloatWithDefault("quotaAndLimits.limitWriting.diskProtection.diskQuota", defaultDiskQuotaInMB)
+	// (0, +inf)
+	if p.DiskQuota <= 0 {
+		p.DiskQuota = defaultDiskQuotaInMB
+	}
+	if p.DiskQuota < defaultDiskQuotaInMB {
+		log.Debug("init disk quota", zap.Float64("diskQuota(MB)", p.DiskQuota))
+	} else {
+		log.Debug("init disk quota", zap.String("diskQuota(MB)", "+inf"))
+	}
+	// megabytes to bytes
+	p.DiskQuota = megaBytes2Bytes(p.DiskQuota)
+}
+
 func (p *quotaConfig) initForceDenyReading() {
 	p.ForceDenyReading = p.Base.ParseBool("quotaAndLimits.limitReading.forceDeny", false)
 }
@@ -506,6 +544,7 @@ func (p *quotaConfig) initQueueProtectionEnabled() {
 
 func (p *quotaConfig) initNQInQueueThreshold() {
 	if !p.QueueProtectionEnabled {
+		p.NQInQueueThreshold = math.MaxInt64
 		return
 	}
 	p.NQInQueueThreshold = p.Base.ParseInt64WithDefault("quotaAndLimits.limitReading.queueProtection.nqInQueueThreshold", math.MaxInt64)
@@ -517,6 +556,7 @@ func (p *quotaConfig) initNQInQueueThreshold() {
 
 func (p *quotaConfig) initQueueLatencyThreshold() {
 	if !p.QueueProtectionEnabled {
+		p.QueueLatencyThreshold = defaultMax
 		return
 	}
 	p.QueueLatencyThreshold = p.Base.ParseFloatWithDefault("quotaAndLimits.limitReading.queueProtection.queueLatencyThreshold", defaultMax)
@@ -526,13 +566,29 @@ func (p *quotaConfig) initQueueLatencyThreshold() {
 	}
 }
 
+func (p *quotaConfig) initResultProtectionEnabled() {
+	p.ResultProtectionEnabled = p.Base.ParseBool("quotaAndLimits.limitReading.resultProtection.enabled", false)
+}
+
+func (p *quotaConfig) initMaxReadResultRate() {
+	if !p.ResultProtectionEnabled {
+		p.MaxReadResultRate = defaultMax
+		return
+	}
+	p.MaxReadResultRate = p.Base.ParseFloatWithDefault("quotaAndLimits.limitReading.resultProtection.maxReadResultRate", defaultMax)
+	if math.Abs(p.MaxReadResultRate-defaultMax) > 0.001 { // maxRate != defaultMax
+		p.MaxReadResultRate = megaBytes2Bytes(p.MaxReadResultRate)
+	}
+	// [0, inf)
+	if p.MaxReadResultRate < 0 {
+		p.MaxReadResultRate = defaultMax
+	}
+}
+
 func (p *quotaConfig) initCoolOffSpeed() {
 	const defaultSpeed = 0.9
 	p.CoolOffSpeed = defaultSpeed
-	if !p.QueueProtectionEnabled {
-		return
-	}
-	p.CoolOffSpeed = p.Base.ParseFloatWithDefault("quotaAndLimits.limitReading.queueProtection.coolOffSpeed", defaultSpeed)
+	p.CoolOffSpeed = p.Base.ParseFloatWithDefault("quotaAndLimits.limitReading.coolOffSpeed", defaultSpeed)
 	// (0, 1]
 	if p.CoolOffSpeed <= 0 || p.CoolOffSpeed > 1 {
 		log.Warn("CoolOffSpeed must in the range of `(0, 1]`, use default value", zap.Float64("speed", p.CoolOffSpeed), zap.Float64("default", defaultSpeed))

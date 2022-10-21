@@ -23,13 +23,14 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/commonpbutil"
 	"github.com/milvus-io/milvus/internal/util/concurrency"
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
@@ -42,7 +43,7 @@ type dataSyncService struct {
 	fg           *flowgraph.TimeTickedFlowGraph // internal flowgraph processes insert/delta messages
 	flushCh      chan flushMsg                  // chan to notify flush
 	resendTTCh   chan resendTTMsg               // chan to ask for resending DataNode time tick message.
-	replica      Replica                        // segment replica stores meta
+	channel      Channel                        // channel stores meta of channel
 	idAllocator  allocatorInterface             // id/timestamp allocator
 	msFactory    msgstream.Factory
 	collectionID UniqueID // collection id of vchan for which this data sync service serves
@@ -54,15 +55,12 @@ type dataSyncService struct {
 	flushManager     flushManager // flush manager handles flush process
 	chunkManager     storage.ChunkManager
 	compactor        *compactionExecutor // reference to compaction executor
-
-	// concurrent add segments, reduce time to load delta log from oss
-	ioPool *concurrency.Pool
 }
 
 func newDataSyncService(ctx context.Context,
 	flushCh chan flushMsg,
 	resendTTCh chan resendTTMsg,
-	replica Replica,
+	channel Channel,
 	alloc allocatorInterface,
 	factory msgstream.Factory,
 	vchan *datapb.VchannelInfo,
@@ -73,16 +71,8 @@ func newDataSyncService(ctx context.Context,
 	compactor *compactionExecutor,
 ) (*dataSyncService, error) {
 
-	if replica == nil {
+	if channel == nil {
 		return nil, errors.New("Nil input")
-	}
-
-	// Initialize io cocurrency pool
-	log.Info("initialize io concurrency pool", zap.String("vchannel", vchan.GetChannelName()), zap.Int("ioConcurrency", Params.DataNodeCfg.IOConcurrency))
-	ioPool, err := concurrency.NewPool(Params.DataNodeCfg.IOConcurrency)
-	if err != nil {
-		log.Error("failed to create goroutine pool for dataSyncService", zap.Error(err))
-		return nil, err
 	}
 
 	ctx1, cancel := context.WithCancel(ctx)
@@ -93,7 +83,7 @@ func newDataSyncService(ctx context.Context,
 		fg:               nil,
 		flushCh:          flushCh,
 		resendTTCh:       resendTTCh,
-		replica:          replica,
+		channel:          channel,
 		idAllocator:      alloc,
 		msFactory:        factory,
 		collectionID:     vchan.GetCollectionID(),
@@ -103,7 +93,6 @@ func newDataSyncService(ctx context.Context,
 		flushingSegCache: flushingSegCache,
 		chunkManager:     chunkManager,
 		compactor:        compactor,
-		ioPool:           ioPool,
 	}
 
 	if err := service.initNodes(vchan); err != nil {
@@ -121,7 +110,7 @@ type nodeConfig struct {
 	msFactory    msgstream.Factory // msgStream factory
 	collectionID UniqueID
 	vChannelName string
-	replica      Replica // Segment replica
+	channel      Channel // Channel info
 	allocator    allocatorInterface
 
 	// defaults
@@ -160,7 +149,7 @@ func (dsService *dataSyncService) close() {
 }
 
 func (dsService *dataSyncService) clearGlobalFlushingCache() {
-	segments := dsService.replica.listAllSegmentIDs()
+	segments := dsService.channel.listAllSegmentIDs()
 	dsService.flushingSegCache.Remove(segments...)
 }
 
@@ -168,7 +157,7 @@ func (dsService *dataSyncService) clearGlobalFlushingCache() {
 func (dsService *dataSyncService) initNodes(vchanInfo *datapb.VchannelInfo) error {
 	dsService.fg = flowgraph.NewTimeTickedFlowGraph(dsService.ctx)
 	// initialize flush manager for DataSync Service
-	dsService.flushManager = NewRendezvousFlushManager(dsService.idAllocator, dsService.chunkManager, dsService.replica,
+	dsService.flushManager = NewRendezvousFlushManager(dsService.idAllocator, dsService.chunkManager, dsService.channel,
 		flushNotifyFunc(dsService), dropVirtualChannelFunc(dsService))
 
 	var err error
@@ -201,25 +190,18 @@ func (dsService *dataSyncService) initNodes(vchanInfo *datapb.VchannelInfo) erro
 			zap.Int64("segmentID", us.GetID()),
 			zap.Int64("numRows", us.GetNumOfRows()),
 		)
-		var cp *segmentCheckPoint
-		if us.GetDmlPosition() != nil {
-			cp = &segmentCheckPoint{
-				numRows: us.GetNumOfRows(),
-				pos:     *us.GetDmlPosition(),
-			}
-		}
+
 		// avoid closure capture iteration variable
 		segment := us
-		future := dsService.ioPool.Submit(func() (interface{}, error) {
-			if err := dsService.replica.addSegment(addSegmentReq{
+		future := getOrCreateIOPool().Submit(func() (interface{}, error) {
+			if err := dsService.channel.addSegment(addSegmentReq{
 				segType:      datapb.SegmentType_Normal,
 				segID:        segment.GetID(),
 				collID:       segment.CollectionID,
 				partitionID:  segment.PartitionID,
-				channelName:  segment.GetInsertChannel(),
 				numOfRows:    segment.GetNumOfRows(),
 				statsBinLogs: segment.Statslogs,
-				cp:           cp,
+				endPos:       segment.GetDmlPosition(),
 				recoverTs:    vchanInfo.GetSeekPosition().GetTimestamp()}); err != nil {
 				return nil, err
 			}
@@ -246,13 +228,12 @@ func (dsService *dataSyncService) initNodes(vchanInfo *datapb.VchannelInfo) erro
 		)
 		// avoid closure capture iteration variable
 		segment := fs
-		future := dsService.ioPool.Submit(func() (interface{}, error) {
-			if err := dsService.replica.addSegment(addSegmentReq{
+		future := getOrCreateIOPool().Submit(func() (interface{}, error) {
+			if err := dsService.channel.addSegment(addSegmentReq{
 				segType:      datapb.SegmentType_Flushed,
 				segID:        segment.GetID(),
 				collID:       segment.CollectionID,
 				partitionID:  segment.PartitionID,
-				channelName:  segment.GetInsertChannel(),
 				numOfRows:    segment.GetNumOfRows(),
 				statsBinLogs: segment.Statslogs,
 				recoverTs:    vchanInfo.GetSeekPosition().GetTimestamp(),
@@ -273,7 +254,7 @@ func (dsService *dataSyncService) initNodes(vchanInfo *datapb.VchannelInfo) erro
 		msFactory:    dsService.msFactory,
 		collectionID: vchanInfo.GetCollectionID(),
 		vChannelName: vchanInfo.GetChannelName(),
-		replica:      dsService.replica,
+		channel:      dsService.channel,
 		allocator:    dsService.idAllocator,
 
 		parallelConfig: newParallelConfig(),
@@ -326,7 +307,6 @@ func (dsService *dataSyncService) initNodes(vchanInfo *datapb.VchannelInfo) erro
 
 	// ddStreamNode
 	err = dsService.fg.SetEdges(dmStreamNode.Name(),
-		[]string{},
 		[]string{ddNode.Name()},
 	)
 	if err != nil {
@@ -336,7 +316,6 @@ func (dsService *dataSyncService) initNodes(vchanInfo *datapb.VchannelInfo) erro
 
 	// ddNode
 	err = dsService.fg.SetEdges(ddNode.Name(),
-		[]string{dmStreamNode.Name()},
 		[]string{insertBufferNode.Name()},
 	)
 	if err != nil {
@@ -346,7 +325,6 @@ func (dsService *dataSyncService) initNodes(vchanInfo *datapb.VchannelInfo) erro
 
 	// insertBufferNode
 	err = dsService.fg.SetEdges(insertBufferNode.Name(),
-		[]string{ddNode.Name()},
 		[]string{deleteNode.Name()},
 	)
 	if err != nil {
@@ -356,7 +334,6 @@ func (dsService *dataSyncService) initNodes(vchanInfo *datapb.VchannelInfo) erro
 
 	//deleteNode
 	err = dsService.fg.SetEdges(deleteNode.Name(),
-		[]string{insertBufferNode.Name()},
 		[]string{},
 	)
 	if err != nil {
@@ -369,12 +346,12 @@ func (dsService *dataSyncService) initNodes(vchanInfo *datapb.VchannelInfo) erro
 // getSegmentInfos return the SegmentInfo details according to the given ids through RPC to datacoord
 func (dsService *dataSyncService) getSegmentInfos(segmentIDs []int64) ([]*datapb.SegmentInfo, error) {
 	infoResp, err := dsService.dataCoord.GetSegmentInfo(dsService.ctx, &datapb.GetSegmentInfoRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:   commonpb.MsgType_SegmentInfo,
-			MsgID:     0,
-			Timestamp: 0,
-			SourceID:  Params.ProxyCfg.GetNodeID(),
-		},
+		Base: commonpbutil.NewMsgBase(
+			commonpbutil.WithMsgType(commonpb.MsgType_SegmentInfo),
+			commonpbutil.WithMsgID(0),
+			commonpbutil.WithTimeStamp(0),
+			commonpbutil.WithSourceID(Params.ProxyCfg.GetNodeID()),
+		),
 		SegmentIDs:       segmentIDs,
 		IncludeUnHealthy: true,
 	})
@@ -390,19 +367,19 @@ func (dsService *dataSyncService) getSegmentInfos(segmentIDs []int64) ([]*datapb
 	return infoResp.Infos, nil
 }
 
-func (dsService *dataSyncService) getChannelLatestMsgID(ctx context.Context, channelName string) ([]byte, error) {
+func (dsService *dataSyncService) getChannelLatestMsgID(ctx context.Context, channelName string, segmentID int64) ([]byte, error) {
 	pChannelName := funcutil.ToPhysicalChannel(channelName)
-	log.Info("ddNode convert vChannel to pChannel",
-		zap.String("vChannelName", channelName),
-		zap.String("pChannelName", pChannelName),
-	)
-
 	dmlStream, err := dsService.msFactory.NewMsgStream(ctx)
 	defer dmlStream.Close()
 	if err != nil {
 		return nil, err
 	}
-	dmlStream.AsConsumer([]string{pChannelName}, channelName)
+	subName := fmt.Sprintf("datanode-%d-%s-%d", Params.DataNodeCfg.GetNodeID(), channelName, segmentID)
+	log.Debug("dataSyncService register consumer for getChannelLatestMsgID",
+		zap.String("pChannelName", pChannelName),
+		zap.String("subscription", subName),
+	)
+	dmlStream.AsConsumer([]string{pChannelName}, subName)
 	id, err := dmlStream.GetLatestMsgID(pChannelName)
 	if err != nil {
 		return nil, err

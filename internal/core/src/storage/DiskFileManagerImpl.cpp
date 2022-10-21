@@ -19,6 +19,7 @@
 #include <mutex>
 
 #include "common/Consts.h"
+#include "common/Slice.h"
 #include "log/Log.h"
 #include "config/ConfigKnowhere.h"
 #include "storage/DiskFileManagerImpl.h"
@@ -58,8 +59,12 @@ using WriteLock = std::lock_guard<std::shared_mutex>;
 
 namespace milvus::storage {
 
-DiskFileManagerImpl::DiskFileManagerImpl(const FieldDataMeta& field_mata, const IndexMeta& index_meta)
+DiskFileManagerImpl::DiskFileManagerImpl(const FieldDataMeta& field_mata,
+                                         const IndexMeta& index_meta,
+                                         const StorageConfig& storage_config)
     : field_meta_(field_mata), index_meta_(index_meta) {
+    remote_root_path_ = storage_config.remote_root_path;
+    rcm_ = std::make_unique<MinioChunkManager>(storage_config);
 }
 
 DiskFileManagerImpl::~DiskFileManagerImpl() {
@@ -75,7 +80,6 @@ DiskFileManagerImpl::LoadFile(const std::string& file) noexcept {
 bool
 DiskFileManagerImpl::AddFile(const std::string& file) noexcept {
     auto& local_chunk_manager = LocalChunkManager::GetInstance();
-    auto& remote_chunk_manager = MinioChunkManager::GetInstance();
     FILEMANAGER_TRY
     if (!local_chunk_manager.Exist(file)) {
         LOG_SEGCORE_ERROR_C << "local file: " << file << " does not exist ";
@@ -94,7 +98,7 @@ DiskFileManagerImpl::AddFile(const std::string& file) noexcept {
     int slice_num = 0;
     auto remotePrefix = GetRemoteIndexObjectPrefix();
     for (int64_t offset = 0; offset < fileSize; slice_num++) {
-        auto batch_size = std::min(milvus::config::KnowhereGetIndexSliceSize() << 20, int64_t(fileSize) - offset);
+        auto batch_size = std::min(index_file_slice_size << 20, int64_t(fileSize) - offset);
 
         auto fieldData = std::make_shared<FieldData>(buf.get() + offset, batch_size);
         auto indexData = std::make_shared<IndexData>(fieldData);
@@ -106,7 +110,7 @@ DiskFileManagerImpl::AddFile(const std::string& file) noexcept {
         // Put file to remote
         char objectKey[200];
         snprintf(objectKey, sizeof(objectKey), "%s/%s_%d", remotePrefix.c_str(), fileName.c_str(), slice_num);
-        remote_chunk_manager.Write(objectKey, serialized_index_data.data(), serialized_index_size);
+        rcm_->Write(objectKey, serialized_index_data.data(), serialized_index_size);
 
         offset += batch_size;
         // record remote file to save etcd
@@ -121,7 +125,6 @@ DiskFileManagerImpl::AddFile(const std::string& file) noexcept {
 void
 DiskFileManagerImpl::CacheIndexToDisk(std::vector<std::string> remote_files) {
     auto& local_chunk_manager = LocalChunkManager::GetInstance();
-    auto& remote_chunk_manager = MinioChunkManager::GetInstance();
 
     std::map<std::string, std::vector<int>> index_slices;
     for (auto& file_path : remote_files) {
@@ -140,9 +143,9 @@ DiskFileManagerImpl::CacheIndexToDisk(std::vector<std::string> remote_files) {
         int64_t offset = 0;
         for (auto iter = slices.second.begin(); iter != slices.second.end(); iter++) {
             auto origin_file = prefix + "_" + std::to_string(*iter);
-            auto fileSize = remote_chunk_manager.Size(origin_file);
+            auto fileSize = rcm_->Size(origin_file);
             auto buf = std::unique_ptr<uint8_t[]>(new uint8_t[fileSize]);
-            remote_chunk_manager.Read(origin_file, buf.get(), fileSize);
+            rcm_->Read(origin_file, buf.get(), fileSize);
 
             auto decoded_index_data = DeserializeFileData(buf.get(), fileSize);
             auto index_payload = decoded_index_data->GetPayload();
@@ -164,9 +167,9 @@ DiskFileManagerImpl::GetFileName(const std::string& localfile) {
 
 std::string
 DiskFileManagerImpl::GetRemoteIndexObjectPrefix() {
-    return ChunkMangerConfig::GetRemoteRootPath() + "/" + std::string(INDEX_ROOT_PATH) + "/" +
-           std::to_string(index_meta_.build_id) + "/" + std::to_string(index_meta_.index_version) + "/" +
-           std::to_string(field_meta_.partition_id) + "/" + std::to_string(field_meta_.segment_id);
+    return remote_root_path_ + "/" + std::string(INDEX_ROOT_PATH) + "/" + std::to_string(index_meta_.build_id) + "/" +
+           std::to_string(index_meta_.index_version) + "/" + std::to_string(field_meta_.partition_id) + "/" +
+           std::to_string(field_meta_.segment_id);
 }
 
 std::string
@@ -181,42 +184,14 @@ DiskFileManagerImpl::GetLocalRawDataObjectPrefix() {
 
 bool
 DiskFileManagerImpl::RemoveFile(const std::string& file) noexcept {
-    // remove local file
-    bool localExist = false;
-    auto& local_chunk_manager = LocalChunkManager::GetInstance();
-    auto& remote_chunk_manager = MinioChunkManager::GetInstance();
-    FILEMANAGER_TRY
-    localExist = local_chunk_manager.Exist(file);
-    FILEMANAGER_CATCH
-    FILEMANAGER_END
-    if (!localExist) {
-        FILEMANAGER_TRY
-        local_chunk_manager.Remove(file);
-        FILEMANAGER_CATCH
-        FILEMANAGER_END
-    }
-
-    // remove according remote file
-    std::string remoteFile = "";
-    bool remoteExist = false;
-    FILEMANAGER_TRY
-    remoteExist = remote_chunk_manager.Exist(remoteFile);
-    FILEMANAGER_CATCH
-    FILEMANAGER_END
-    if (!remoteExist) {
-        FILEMANAGER_TRY
-        remote_chunk_manager.Remove(file);
-        FILEMANAGER_CATCH
-        FILEMANAGER_END
-    }
-    return true;
+    // TODO: implement this interface
+    return false;
 }
 
 std::optional<bool>
 DiskFileManagerImpl::IsExisted(const std::string& file) noexcept {
     bool isExist = false;
     auto& local_chunk_manager = LocalChunkManager::GetInstance();
-    auto& remote_chunk_manager = MinioChunkManager::GetInstance();
     try {
         isExist = local_chunk_manager.Exist(file);
     } catch (LocalChunkManagerException& e) {

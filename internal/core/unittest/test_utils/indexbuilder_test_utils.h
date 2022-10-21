@@ -16,6 +16,8 @@
 #include <limits>
 #include <cmath>
 #include <google/protobuf/text_format.h>
+#include <boost/filesystem.hpp>
+#include <yaml-cpp/yaml.h>
 
 #include "DataGen.h"
 #include "index/ScalarIndex.h"
@@ -28,6 +30,7 @@
 #include "knowhere/index/vector_index/helpers/IndexParameter.h"
 #include "knowhere/index/vector_index/adapter/VectorAdapter.h"
 #include "pb/index_cgo_msg.pb.h"
+#include "storage/Types.h"
 
 constexpr int64_t DIM = 16;
 constexpr int64_t NQ = 10;
@@ -43,8 +46,93 @@ using milvus::indexbuilder::ScalarIndexCreator;
 using ScalarTestParams = std::pair<MapParams, MapParams>;
 using milvus::index::ScalarIndexPtr;
 using milvus::index::StringIndexPtr;
+using milvus::storage::StorageConfig;
+using namespace boost::filesystem;
 
 namespace {
+
+bool
+find_file(const path& dir, const std::string& file_name, path& path_found) {
+    const recursive_directory_iterator end;
+    boost::system::error_code err;
+    auto iter = recursive_directory_iterator(dir, err);
+    while (iter != end) {
+        try {
+            if ((*iter).path().filename() == file_name) {
+                path_found = (*iter).path();
+                return true;
+            }
+            iter++;
+        } catch (filesystem_error& e) {
+        } catch (std::exception& e) {
+            // ignore error
+        }
+    }
+    return false;
+}
+
+StorageConfig
+get_default_storage_config() {
+    char testPath[100];
+    auto pwd = std::string(getcwd(testPath, sizeof(testPath)));
+    path filepath;
+    auto currentPath = path(pwd);
+    while (!find_file(currentPath, "milvus.yaml", filepath)) {
+        currentPath = currentPath.append("../");
+    }
+    auto configPath = filepath.string();
+    YAML::Node config;
+    config = YAML::LoadFile(configPath);
+    auto minioConfig = config["minio"];
+    auto address = minioConfig["address"].as<std::string>();
+    auto port = minioConfig["port"].as<std::string>();
+    auto endpoint = address + ":" + port;
+    auto accessKey = minioConfig["accessKeyID"].as<std::string>();
+    auto accessValue = minioConfig["secretAccessKey"].as<std::string>();
+    auto rootPath = minioConfig["rootPath"].as<std::string>();
+    auto useSSL = minioConfig["useSSL"].as<bool>();
+    auto useIam = minioConfig["useIAM"].as<bool>();
+    auto iamEndPoint = minioConfig["iamEndpoint"].as<std::string>();
+    auto bucketName = minioConfig["bucketName"].as<std::string>();
+
+    return StorageConfig{endpoint, bucketName, accessKey, accessValue, rootPath, "minio", iamEndPoint, useSSL, useIam};
+}
+
+CStorageConfig
+get_default_cstorage_config() {
+    char testPath[100];
+    auto pwd = std::string(getcwd(testPath, sizeof(testPath)));
+    path filepath;
+    auto currentPath = path(pwd);
+    while (!find_file(currentPath, "milvus.yaml", filepath)) {
+        currentPath = currentPath.append("../");
+    }
+    auto configPath = filepath.string();
+    YAML::Node config;
+    config = YAML::LoadFile(configPath);
+    auto minioConfig = config["minio"];
+    auto address = minioConfig["address"].as<std::string>();
+    auto port = minioConfig["port"].as<std::string>();
+    auto endpoint = address + ":" + port;
+    auto accessKey = minioConfig["accessKeyID"].as<std::string>();
+    auto accessValue = minioConfig["secretAccessKey"].as<std::string>();
+    auto rootPath = minioConfig["rootPath"].as<std::string>();
+    auto useSSL = minioConfig["useSSL"].as<bool>();
+    auto useIam = minioConfig["useIAM"].as<bool>();
+    auto iamEndPoint = minioConfig["iamEndpoint"].as<std::string>();
+    auto bucketName = minioConfig["bucketName"].as<std::string>();
+
+    return CStorageConfig{endpoint.c_str(),
+                          bucketName.c_str(),
+                          accessKey.c_str(),
+                          accessValue.c_str(),
+                          rootPath.c_str(),
+                          "minio",
+                          iamEndPoint.c_str(),
+                          useSSL,
+                          useIam};
+}
+
 auto
 generate_build_conf(const milvus::IndexType& index_type, const milvus::MetricType& metric_type) {
     if (index_type == knowhere::IndexEnum::INDEX_FAISS_IDMAP) {
@@ -98,6 +186,10 @@ generate_build_conf(const milvus::IndexType& index_type, const milvus::MetricTyp
         return knowhere::Config{
             {knowhere::meta::METRIC_TYPE, metric_type},
             {knowhere::meta::DIM, std::to_string(DIM)},
+            {milvus::index::DISK_ANN_MAX_DEGREE, std::to_string(48)},
+            {milvus::index::DISK_ANN_SEARCH_LIST_SIZE, std::to_string(128)},
+            {milvus::index::DISK_ANN_PQ_CODE_BUDGET, std::to_string(0.001)},
+            {milvus::index::DISK_ANN_BUILD_DRAM_BUDGET, std::to_string(32)},
         };
     }
     return knowhere::Config();
@@ -109,7 +201,7 @@ generate_load_conf(const milvus::IndexType& index_type, const milvus::MetricType
         return knowhere::Config{
             {knowhere::meta::METRIC_TYPE, metric_type},
             {knowhere::meta::DIM, std::to_string(DIM)},
-            {milvus::index::NUM_ROW_OF_RAW_DATA, std::to_string(nb)},
+            {milvus::index::DISK_ANN_SEARCH_CACHE_BUDGET, std::to_string(0.0002)},
         };
     }
     return knowhere::Config();
@@ -129,7 +221,6 @@ search_with_nprobe_list() {
 auto
 generate_search_conf(const milvus::IndexType& index_type, const milvus::MetricType& metric_type) {
     auto conf = milvus::Config{
-        {knowhere::meta::SLICE_SIZE, knowhere::index_file_slice_size},
         {knowhere::meta::METRIC_TYPE, metric_type},
     };
 

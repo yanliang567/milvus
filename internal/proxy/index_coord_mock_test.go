@@ -28,8 +28,8 @@ import (
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/uniquegenerator"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
@@ -48,40 +48,41 @@ type IndexCoordMock struct {
 	timeTickChannel   string
 
 	minioBucketName string
+	checkHealthFunc func(ctx context.Context, req *milvuspb.CheckHealthRequest) (*milvuspb.CheckHealthResponse, error)
 }
 
-func (coord *IndexCoordMock) updateState(state internalpb.StateCode) {
+func (coord *IndexCoordMock) updateState(state commonpb.StateCode) {
 	coord.state.Store(state)
 }
 
-func (coord *IndexCoordMock) getState() internalpb.StateCode {
-	return coord.state.Load().(internalpb.StateCode)
+func (coord *IndexCoordMock) getState() commonpb.StateCode {
+	return coord.state.Load().(commonpb.StateCode)
 }
 
 func (coord *IndexCoordMock) healthy() bool {
-	return coord.getState() == internalpb.StateCode_Healthy
+	return coord.getState() == commonpb.StateCode_Healthy
 }
 
 func (coord *IndexCoordMock) Init() error {
-	coord.updateState(internalpb.StateCode_Initializing)
+	coord.updateState(commonpb.StateCode_Initializing)
 	return nil
 }
 
 func (coord *IndexCoordMock) Start() error {
-	defer coord.updateState(internalpb.StateCode_Healthy)
+	defer coord.updateState(commonpb.StateCode_Healthy)
 
 	return nil
 }
 
 func (coord *IndexCoordMock) Stop() error {
-	defer coord.updateState(internalpb.StateCode_Abnormal)
+	defer coord.updateState(commonpb.StateCode_Abnormal)
 
 	return nil
 }
 
-func (coord *IndexCoordMock) GetComponentStates(ctx context.Context) (*internalpb.ComponentStates, error) {
-	return &internalpb.ComponentStates{
-		State: &internalpb.ComponentInfo{
+func (coord *IndexCoordMock) GetComponentStates(ctx context.Context) (*milvuspb.ComponentStates, error) {
+	return &milvuspb.ComponentStates{
+		State: &milvuspb.ComponentInfo{
 			NodeID:    coord.nodeID,
 			Role:      typeutil.IndexCoordRole,
 			StateCode: coord.getState(),
@@ -229,6 +230,13 @@ func (coord *IndexCoordMock) GetMetrics(ctx context.Context, req *milvuspb.GetMe
 	}, nil
 }
 
+func (coord *IndexCoordMock) CheckHealth(ctx context.Context, req *milvuspb.CheckHealthRequest) (*milvuspb.CheckHealthResponse, error) {
+	if coord.checkHealthFunc != nil {
+		return coord.checkHealthFunc(ctx, req)
+	}
+	return &milvuspb.CheckHealthResponse{IsHealthy: true}, nil
+}
+
 func NewIndexCoordMock() *IndexCoordMock {
 	return &IndexCoordMock{
 		nodeID:            typeutil.UniqueID(uniquegenerator.GetUniqueIntGeneratorIns().GetInt()),
@@ -240,10 +248,12 @@ func NewIndexCoordMock() *IndexCoordMock {
 }
 
 type GetIndexStateFunc func(ctx context.Context, request *indexpb.GetIndexStateRequest) (*indexpb.GetIndexStateResponse, error)
+type DescribeIndexFunc func(ctx context.Context, request *indexpb.DescribeIndexRequest) (*indexpb.DescribeIndexResponse, error)
 
 type mockIndexCoord struct {
 	types.IndexCoord
 	GetIndexStateFunc
+	DescribeIndexFunc
 }
 
 func (m *mockIndexCoord) GetIndexState(ctx context.Context, request *indexpb.GetIndexStateRequest) (*indexpb.GetIndexStateResponse, error) {
@@ -252,6 +262,15 @@ func (m *mockIndexCoord) GetIndexState(ctx context.Context, request *indexpb.Get
 		return m.GetIndexStateFunc(ctx, request)
 	}
 	log.Warn("func nil")
+	return nil, errors.New("mock")
+}
+
+func (m *mockIndexCoord) DescribeIndex(ctx context.Context, request *indexpb.DescribeIndexRequest) (*indexpb.DescribeIndexResponse, error) {
+	if m.DescribeIndexFunc != nil {
+		log.Warn("DescribeIndexFunc not nil")
+		return m.DescribeIndexFunc(ctx, request)
+	}
+	log.Warn("DescribeIndexFunc nil")
 	return nil, errors.New("mock")
 }
 

@@ -20,9 +20,10 @@ import (
 	"context"
 	"sync"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
+	"github.com/milvus-io/milvus/internal/util/hardware"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/ratelimitutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
@@ -35,21 +36,22 @@ type showConfigurationsFuncType func(ctx context.Context, request *internalpb.Sh
 func getQuotaMetrics() (*metricsinfo.ProxyQuotaMetrics, error) {
 	var err error
 	rms := make([]metricsinfo.RateMetric, 0)
-	getRateMetric := func(rateType internalpb.RateType) {
-		rate, err2 := rateCol.Rate(rateType.String(), ratelimitutil.DefaultAvgDuration)
+	getRateMetric := func(label string) {
+		rate, err2 := rateCol.Rate(label, ratelimitutil.DefaultAvgDuration)
 		if err2 != nil {
 			err = err2
 			return
 		}
 		rms = append(rms, metricsinfo.RateMetric{
-			Label: rateType.String(),
+			Label: label,
 			Rate:  rate,
 		})
 	}
-	getRateMetric(internalpb.RateType_DMLInsert)
-	getRateMetric(internalpb.RateType_DMLDelete)
-	getRateMetric(internalpb.RateType_DQLSearch)
-	getRateMetric(internalpb.RateType_DQLQuery)
+	getRateMetric(internalpb.RateType_DMLInsert.String())
+	getRateMetric(internalpb.RateType_DMLDelete.String())
+	getRateMetric(internalpb.RateType_DQLSearch.String())
+	getRateMetric(internalpb.RateType_DQLQuery.String())
+	getRateMetric(metricsinfo.ReadResultThroughput)
 	if err != nil {
 		return nil, err
 	}
@@ -61,20 +63,20 @@ func getQuotaMetrics() (*metricsinfo.ProxyQuotaMetrics, error) {
 
 // getProxyMetrics get metrics of Proxy, not including the topological metrics of Query cluster and Data cluster.
 func getProxyMetrics(ctx context.Context, request *milvuspb.GetMetricsRequest, node *Proxy) (*milvuspb.GetMetricsResponse, error) {
-	totalMem := metricsinfo.GetMemoryCount()
-	usedMem := metricsinfo.GetUsedMemoryCount()
+	totalMem := hardware.GetMemoryCount()
+	usedMem := hardware.GetUsedMemoryCount()
 	quotaMetrics, err := getQuotaMetrics()
 	if err != nil {
 		return nil, err
 	}
 	hardwareMetrics := metricsinfo.HardwareMetrics{
 		IP:           node.session.Address,
-		CPUCoreCount: metricsinfo.GetCPUCoreCount(false),
-		CPUCoreUsage: metricsinfo.GetCPUUsage(),
+		CPUCoreCount: hardware.GetCPUNum(),
+		CPUCoreUsage: hardware.GetCPUUsage(),
 		Memory:       totalMem,
 		MemoryUsage:  usedMem,
-		Disk:         metricsinfo.GetDiskCount(),
-		DiskUsage:    metricsinfo.GetDiskUsage(),
+		Disk:         hardware.GetDiskCount(),
+		DiskUsage:    hardware.GetDiskUsage(),
 	}
 	quotaMetrics.Hms = hardwareMetrics
 
@@ -137,12 +139,12 @@ func getSystemInfoMetrics(
 				Name:        proxyRoleName,
 				HardwareInfos: metricsinfo.HardwareMetrics{
 					IP:           node.session.Address,
-					CPUCoreCount: metricsinfo.GetCPUCoreCount(false),
-					CPUCoreUsage: metricsinfo.GetCPUUsage(),
-					Memory:       metricsinfo.GetMemoryCount(),
-					MemoryUsage:  metricsinfo.GetUsedMemoryCount(),
-					Disk:         metricsinfo.GetDiskCount(),
-					DiskUsage:    metricsinfo.GetDiskUsage(),
+					CPUCoreCount: hardware.GetCPUNum(),
+					CPUCoreUsage: hardware.GetCPUUsage(),
+					Memory:       hardware.GetMemoryCount(),
+					MemoryUsage:  hardware.GetUsedMemoryCount(),
+					Disk:         hardware.GetDiskCount(),
+					DiskUsage:    hardware.GetDiskUsage(),
 				},
 				SystemInfo:  metricsinfo.DeployMetrics{},
 				CreatedTime: Params.ProxyCfg.CreatedTime.String(),

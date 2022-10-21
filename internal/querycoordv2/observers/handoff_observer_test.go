@@ -1,3 +1,19 @@
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package observers
 
 import (
@@ -10,9 +26,8 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/stretchr/testify/suite"
 	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
@@ -22,6 +37,11 @@ import (
 	"github.com/milvus-io/milvus/internal/util"
 	"github.com/milvus-io/milvus/internal/util/etcd"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
+)
+
+const (
+	defaultVecFieldID = 1
+	defaultIndexID    = 1
 )
 
 type HandoffObserverTestSuit struct {
@@ -129,6 +149,7 @@ func (suite *HandoffObserverTestSuit) TestFlushingHandoff() {
 		CollectionID: suite.collection,
 		PartitionID:  suite.partition,
 		SegmentState: commonpb.SegmentState_Sealed,
+		IndexInfos:   []*querypb.FieldIndexInfo{{IndexID: defaultIndexID}},
 	}
 	suite.produceHandOffEvent(flushingSegment)
 
@@ -144,10 +165,6 @@ func (suite *HandoffObserverTestSuit) TestFlushingHandoff() {
 		Segments:        map[int64]*querypb.SegmentDist{1: {NodeID: 1, Version: 0}, 2: {NodeID: 2, Version: 0}, 3: {NodeID: 3, Version: 0}},
 		GrowingSegments: typeutil.NewUniqueSet(3),
 	})
-
-	suite.Eventually(func() bool {
-		return suite.target.ContainSegment(3)
-	}, 3*time.Second, 1*time.Second)
 
 	// fake release CompactFrom Segment
 	suite.dist.LeaderViewManager.Update(1, &meta.LeaderView{
@@ -188,11 +205,11 @@ func (suite *HandoffObserverTestSuit) TestCompactHandoff() {
 		SegmentState:        commonpb.SegmentState_Sealed,
 		CompactionFrom:      []int64{1},
 		CreatedByCompaction: true,
+		IndexInfos:          []*querypb.FieldIndexInfo{{IndexID: defaultIndexID}},
 	}
 	suite.produceHandOffEvent(compactSegment)
 
 	suite.Eventually(func() bool {
-		log.Info("", zap.Bool("contains", suite.target.ContainSegment(3)))
 		return suite.target.ContainSegment(3)
 	}, 3*time.Second, 1*time.Second)
 
@@ -205,7 +222,6 @@ func (suite *HandoffObserverTestSuit) TestCompactHandoff() {
 	})
 
 	suite.Eventually(func() bool {
-		log.Info("", zap.Bool("contains", suite.target.ContainSegment(1)))
 		return !suite.target.ContainSegment(1)
 	}, 3*time.Second, 1*time.Second)
 
@@ -243,6 +259,7 @@ func (suite *HandoffObserverTestSuit) TestRecursiveHandoff() {
 		CollectionID: suite.collection,
 		PartitionID:  suite.partition,
 		SegmentState: commonpb.SegmentState_Sealed,
+		IndexInfos:   []*querypb.FieldIndexInfo{{IndexID: defaultIndexID}},
 	}
 
 	compactSegment1 := &querypb.SegmentInfo{
@@ -252,6 +269,7 @@ func (suite *HandoffObserverTestSuit) TestRecursiveHandoff() {
 		SegmentState:        commonpb.SegmentState_Sealed,
 		CompactionFrom:      []int64{3},
 		CreatedByCompaction: true,
+		IndexInfos:          []*querypb.FieldIndexInfo{{IndexID: defaultIndexID}},
 	}
 
 	compactSegment2 := &querypb.SegmentInfo{
@@ -261,6 +279,7 @@ func (suite *HandoffObserverTestSuit) TestRecursiveHandoff() {
 		SegmentState:        commonpb.SegmentState_Sealed,
 		CompactionFrom:      []int64{4},
 		CreatedByCompaction: true,
+		IndexInfos:          []*querypb.FieldIndexInfo{{IndexID: defaultIndexID}},
 	}
 
 	suite.produceHandOffEvent(flushingSegment)
@@ -277,11 +296,11 @@ func (suite *HandoffObserverTestSuit) TestRecursiveHandoff() {
 	})
 
 	suite.Eventually(func() bool {
-		return !suite.target.ContainSegment(3) && !suite.target.ContainSegment(4)
+		return suite.target.ContainSegment(1) && suite.target.ContainSegment(2) && suite.target.ContainSegment(5)
 	}, 3*time.Second, 1*time.Second)
 
 	suite.Eventually(func() bool {
-		return suite.target.ContainSegment(1) && suite.target.ContainSegment(2) && suite.target.ContainSegment(5)
+		return !suite.target.ContainSegment(3) && !suite.target.ContainSegment(4)
 	}, 3*time.Second, 1*time.Second)
 
 	// fake release CompactFrom Segment
@@ -293,11 +312,11 @@ func (suite *HandoffObserverTestSuit) TestRecursiveHandoff() {
 	})
 
 	suite.Eventually(func() bool {
-		return !suite.target.ContainSegment(3) && !suite.target.ContainSegment(4)
+		return suite.target.ContainSegment(1) && suite.target.ContainSegment(2) && suite.target.ContainSegment(5)
 	}, 3*time.Second, 1*time.Second)
 
 	suite.Eventually(func() bool {
-		return suite.target.ContainSegment(1) && suite.target.ContainSegment(2) && suite.target.ContainSegment(5)
+		return !suite.target.ContainSegment(3) && !suite.target.ContainSegment(4)
 	}, 3*time.Second, 1*time.Second)
 
 	suite.Eventually(func() bool {
@@ -327,6 +346,7 @@ func (suite *HandoffObserverTestSuit) TestReloadHandoffEventOrder() {
 		CollectionID: suite.collection,
 		PartitionID:  suite.partition,
 		SegmentState: commonpb.SegmentState_Sealed,
+		IndexInfos:   []*querypb.FieldIndexInfo{{IndexID: defaultIndexID}},
 	}
 	compactSegment1 := &querypb.SegmentInfo{
 		SegmentID:           9,
@@ -335,6 +355,7 @@ func (suite *HandoffObserverTestSuit) TestReloadHandoffEventOrder() {
 		SegmentState:        commonpb.SegmentState_Sealed,
 		CompactionFrom:      []int64{3},
 		CreatedByCompaction: true,
+		IndexInfos:          []*querypb.FieldIndexInfo{{IndexID: defaultIndexID}},
 	}
 	compactSegment2 := &querypb.SegmentInfo{
 		SegmentID:           10,
@@ -343,6 +364,7 @@ func (suite *HandoffObserverTestSuit) TestReloadHandoffEventOrder() {
 		SegmentState:        commonpb.SegmentState_Sealed,
 		CompactionFrom:      []int64{4},
 		CreatedByCompaction: true,
+		IndexInfos:          []*querypb.FieldIndexInfo{{IndexID: defaultIndexID}},
 	}
 
 	suite.produceHandOffEvent(flushingSegment)
@@ -372,6 +394,7 @@ func (suite *HandoffObserverTestSuit) TestLoadHandoffEventFromStore() {
 		CollectionID: suite.collection,
 		PartitionID:  suite.partition,
 		SegmentState: commonpb.SegmentState_Sealed,
+		IndexInfos:   []*querypb.FieldIndexInfo{{IndexID: defaultIndexID}},
 	}
 	compactSegment1 := &querypb.SegmentInfo{
 		SegmentID:           4,
@@ -380,6 +403,7 @@ func (suite *HandoffObserverTestSuit) TestLoadHandoffEventFromStore() {
 		SegmentState:        commonpb.SegmentState_Sealed,
 		CompactionFrom:      []int64{3},
 		CreatedByCompaction: true,
+		IndexInfos:          []*querypb.FieldIndexInfo{{IndexID: defaultIndexID}},
 	}
 	compactSegment2 := &querypb.SegmentInfo{
 		SegmentID:           5,
@@ -388,6 +412,7 @@ func (suite *HandoffObserverTestSuit) TestLoadHandoffEventFromStore() {
 		SegmentState:        commonpb.SegmentState_Sealed,
 		CompactionFrom:      []int64{4},
 		CreatedByCompaction: true,
+		IndexInfos:          []*querypb.FieldIndexInfo{{IndexID: defaultIndexID}},
 	}
 
 	suite.produceHandOffEvent(flushingSegment)
@@ -408,11 +433,11 @@ func (suite *HandoffObserverTestSuit) TestLoadHandoffEventFromStore() {
 	})
 
 	suite.Eventually(func() bool {
-		return !suite.target.ContainSegment(3) && !suite.target.ContainSegment(4)
+		return suite.target.ContainSegment(1) && suite.target.ContainSegment(2) && suite.target.ContainSegment(5)
 	}, 3*time.Second, 1*time.Second)
 
 	suite.Eventually(func() bool {
-		return suite.target.ContainSegment(1) && suite.target.ContainSegment(2) && suite.target.ContainSegment(5)
+		return !suite.target.ContainSegment(3) && !suite.target.ContainSegment(4)
 	}, 3*time.Second, 1*time.Second)
 
 	// fake release CompactFrom Segment
@@ -424,11 +449,11 @@ func (suite *HandoffObserverTestSuit) TestLoadHandoffEventFromStore() {
 	})
 
 	suite.Eventually(func() bool {
-		return !suite.target.ContainSegment(3) && !suite.target.ContainSegment(4)
+		return suite.target.ContainSegment(1) && suite.target.ContainSegment(2) && suite.target.ContainSegment(5)
 	}, 3*time.Second, 1*time.Second)
 
 	suite.Eventually(func() bool {
-		return suite.target.ContainSegment(1) && suite.target.ContainSegment(2) && suite.target.ContainSegment(5)
+		return !suite.target.ContainSegment(3) && !suite.target.ContainSegment(4)
 	}, 3*time.Second, 1*time.Second)
 
 	suite.Eventually(func() bool {
@@ -450,6 +475,12 @@ func (suite *HandoffObserverTestSuit) produceHandOffEvent(segmentInfo *querypb.S
 	suite.NoError(err)
 }
 
+func (suite *HandoffObserverTestSuit) existHandOffEvent(segmentInfo *querypb.SegmentInfo) bool {
+	key := fmt.Sprintf("%s/%d/%d/%d", util.HandoffSegmentPrefix, segmentInfo.CollectionID, segmentInfo.PartitionID, segmentInfo.SegmentID)
+	_, err := suite.kv.Load(key)
+	return err == nil
+}
+
 func (suite *HandoffObserverTestSuit) load() {
 	// Mock meta data
 	replicas, err := suite.meta.ReplicaManager.Spawn(suite.collection, suite.replicaNumber)
@@ -465,6 +496,7 @@ func (suite *HandoffObserverTestSuit) load() {
 			CollectionID:  suite.collection,
 			ReplicaNumber: suite.replicaNumber,
 			Status:        querypb.LoadStatus_Loaded,
+			FieldIndexID:  map[int64]int64{defaultVecFieldID: defaultIndexID},
 		},
 		LoadPercentage: 0,
 		CreatedAt:      time.Now(),
@@ -510,23 +542,53 @@ func (suite *HandoffObserverTestSuit) TestHandoffOnUnLoadedPartition() {
 		SegmentState:        commonpb.SegmentState_Sealed,
 		CompactionFrom:      []int64{2},
 		CreatedByCompaction: true,
+		IndexInfos:          []*querypb.FieldIndexInfo{{IndexID: defaultIndexID}},
 	}
 	suite.produceHandOffEvent(compactSegment)
 
 	suite.Eventually(func() bool {
-		log.Info("", zap.Bool("contains", suite.target.ContainSegment(3)))
-		return !suite.target.ContainSegment(3)
+		return suite.target.ContainSegment(1) && suite.target.ContainSegment(2)
 	}, 3*time.Second, 1*time.Second)
 
 	suite.Eventually(func() bool {
-		log.Info("", zap.Bool("contains", suite.target.ContainSegment(1)))
-		return suite.target.ContainSegment(1) && suite.target.ContainSegment(2)
+		return !suite.target.ContainSegment(3)
 	}, 3*time.Second, 1*time.Second)
 
 	suite.Eventually(func() bool {
 		key := fmt.Sprintf("%s/%d/%d/%d", util.HandoffSegmentPrefix, suite.collection, suite.partition, 3)
 		value, err := suite.kv.Load(key)
 		return len(value) == 0 && err != nil
+	}, 3*time.Second, 1*time.Second)
+}
+
+func (suite *HandoffObserverTestSuit) TestFilterOutEventByIndexID() {
+	// init leader view
+	suite.dist.LeaderViewManager.Update(2, &meta.LeaderView{
+		ID:           1,
+		CollectionID: suite.collection,
+		Channel:      suite.channel.ChannelName,
+		Segments:     map[int64]*querypb.SegmentDist{1: {NodeID: 1, Version: 0}, 2: {NodeID: 2, Version: 0}},
+	})
+
+	Params.QueryCoordCfg.CheckHandoffInterval = 1 * time.Second
+	err := suite.observer.Start(context.Background())
+	suite.NoError(err)
+
+	compactSegment := &querypb.SegmentInfo{
+		SegmentID:           3,
+		CollectionID:        suite.collection,
+		PartitionID:         suite.partition,
+		SegmentState:        commonpb.SegmentState_Sealed,
+		CompactionFrom:      []int64{1},
+		CreatedByCompaction: true,
+	}
+	suite.produceHandOffEvent(compactSegment)
+
+	suite.Eventually(func() bool {
+		suite.observer.handoffEventLock.RLock()
+		defer suite.observer.handoffEventLock.RUnlock()
+		_, ok := suite.observer.handoffEvents[compactSegment.GetSegmentID()]
+		return !ok && !suite.target.ContainSegment(3) && !suite.existHandOffEvent(compactSegment)
 	}, 3*time.Second, 1*time.Second)
 }
 

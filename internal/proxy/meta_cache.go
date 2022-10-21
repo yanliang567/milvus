@@ -24,13 +24,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/util/commonpbutil"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 
+	"go.uber.org/atomic"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
-	"github.com/milvus-io/milvus/api/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
@@ -61,7 +63,7 @@ type Cache interface {
 	GetShards(ctx context.Context, withCache bool, collectionName string) (map[string][]nodeInfo, error)
 	ClearShards(collectionName string)
 	RemoveCollection(ctx context.Context, collectionName string)
-	RemoveCollectionsByID(ctx context.Context, collectionID UniqueID)
+	RemoveCollectionsByID(ctx context.Context, collectionID UniqueID) []string
 	RemovePartition(ctx context.Context, collectionName string, partitionName string)
 
 	// GetCredentialInfo operate credential cache
@@ -79,23 +81,46 @@ type collectionInfo struct {
 	collID              typeutil.UniqueID
 	schema              *schemapb.CollectionSchema
 	partInfo            map[string]*partitionInfo
-	shardLeaders        map[string][]nodeInfo
-	leaderMutex         sync.Mutex
+	leaderMutex         sync.RWMutex
+	shardLeaders        *shardLeaders
 	createdTimestamp    uint64
 	createdUtcTimestamp uint64
 	isLoaded            bool
 }
 
-// CloneShardLeaders returns a copy of shard leaders
-// leaderMutex shall be accuired before invoking this method
-func (c *collectionInfo) CloneShardLeaders() map[string][]nodeInfo {
-	m := make(map[string][]nodeInfo)
-	for channel, leaders := range c.shardLeaders {
-		l := make([]nodeInfo, len(leaders))
-		copy(l, leaders)
-		m[channel] = l
+// shardLeaders wraps shard leader mapping for iteration.
+type shardLeaders struct {
+	idx *atomic.Int64
+
+	shardLeaders map[string][]nodeInfo
+}
+
+type shardLeadersReader struct {
+	leaders *shardLeaders
+	idx     int64
+}
+
+// Shuffle returns the shuffled shard leader list.
+func (it shardLeadersReader) Shuffle() map[string][]nodeInfo {
+	result := make(map[string][]nodeInfo)
+	for channel, leaders := range it.leaders.shardLeaders {
+		l := len(leaders)
+		shuffled := make([]nodeInfo, 0, len(leaders))
+		for i := 0; i < l; i++ {
+			shuffled = append(shuffled, leaders[(i+int(it.idx))%l])
+		}
+		result[channel] = shuffled
 	}
-	return m
+	return result
+}
+
+// GetReader returns shuffer reader for shard leader.
+func (sl *shardLeaders) GetReader() shardLeadersReader {
+	idx := sl.idx.Inc()
+	return shardLeadersReader{
+		leaders: sl,
+		idx:     idx,
+	}
 }
 
 type partitionInfo struct {
@@ -163,7 +188,7 @@ func (m *MetaCache) GetCollectionID(ctx context.Context, collectionName string) 
 	collInfo, ok := m.collInfo[collectionName]
 
 	if !ok {
-		metrics.ProxyCacheHitCounter.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), "GeCollectionID", metrics.CacheMissLabel).Inc()
+		metrics.ProxyCacheStatsCounter.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), "GeCollectionID", metrics.CacheMissLabel).Inc()
 		tr := timerecord.NewTimeRecorder("UpdateCache")
 		m.mu.RUnlock()
 		coll, err := m.describeCollection(ctx, collectionName)
@@ -178,7 +203,7 @@ func (m *MetaCache) GetCollectionID(ctx context.Context, collectionName string) 
 		return collInfo.collID, nil
 	}
 	defer m.mu.RUnlock()
-	metrics.ProxyCacheHitCounter.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), "GetCollectionID", metrics.CacheHitLabel).Inc()
+	metrics.ProxyCacheStatsCounter.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), "GetCollectionID", metrics.CacheHitLabel).Inc()
 
 	return collInfo.collID, nil
 }
@@ -193,7 +218,7 @@ func (m *MetaCache) GetCollectionInfo(ctx context.Context, collectionName string
 
 	if !ok {
 		tr := timerecord.NewTimeRecorder("UpdateCache")
-		metrics.ProxyCacheHitCounter.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), "GetCollectionInfo", metrics.CacheMissLabel).Inc()
+		metrics.ProxyCacheStatsCounter.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), "GetCollectionInfo", metrics.CacheMissLabel).Inc()
 		coll, err := m.describeCollection(ctx, collectionName)
 		if err != nil {
 			return nil, err
@@ -208,10 +233,10 @@ func (m *MetaCache) GetCollectionInfo(ctx context.Context, collectionName string
 	if !collInfo.isLoaded {
 		// check if collection was loaded
 		showResp, err := m.queryCoord.ShowCollections(ctx, &querypb.ShowCollectionsRequest{
-			Base: &commonpb.MsgBase{
-				MsgType:  commonpb.MsgType_ShowCollections,
-				SourceID: Params.ProxyCfg.GetNodeID(),
-			},
+			Base: commonpbutil.NewMsgBase(
+				commonpbutil.WithMsgType(commonpb.MsgType_ShowCollections),
+				commonpbutil.WithSourceID(Params.ProxyCfg.GetNodeID()),
+			),
 			CollectionIDs: []int64{collInfo.collID},
 		})
 		if err != nil {
@@ -239,7 +264,7 @@ func (m *MetaCache) GetCollectionInfo(ctx context.Context, collectionName string
 		}
 	}
 
-	metrics.ProxyCacheHitCounter.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), "GetCollectionInfo", metrics.CacheHitLabel).Inc()
+	metrics.ProxyCacheStatsCounter.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), "GetCollectionInfo", metrics.CacheHitLabel).Inc()
 	return collInfo, nil
 }
 
@@ -248,7 +273,7 @@ func (m *MetaCache) GetCollectionSchema(ctx context.Context, collectionName stri
 	collInfo, ok := m.collInfo[collectionName]
 
 	if !ok {
-		metrics.ProxyCacheHitCounter.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), "GetCollectionSchema", metrics.CacheMissLabel).Inc()
+		metrics.ProxyCacheStatsCounter.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), "GetCollectionSchema", metrics.CacheMissLabel).Inc()
 		tr := timerecord.NewTimeRecorder("UpdateCache")
 		m.mu.RUnlock()
 		coll, err := m.describeCollection(ctx, collectionName)
@@ -269,7 +294,7 @@ func (m *MetaCache) GetCollectionSchema(ctx context.Context, collectionName stri
 		return collInfo.schema, nil
 	}
 	defer m.mu.RUnlock()
-	metrics.ProxyCacheHitCounter.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), "GetCollectionSchema", metrics.CacheHitLabel).Inc()
+	metrics.ProxyCacheStatsCounter.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), "GetCollectionSchema", metrics.CacheHitLabel).Inc()
 
 	return collInfo.schema, nil
 }
@@ -309,7 +334,7 @@ func (m *MetaCache) GetPartitions(ctx context.Context, collectionName string) (m
 
 	if collInfo.partInfo == nil || len(collInfo.partInfo) == 0 {
 		tr := timerecord.NewTimeRecorder("UpdateCache")
-		metrics.ProxyCacheHitCounter.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), "GetPartitions", metrics.CacheMissLabel).Inc()
+		metrics.ProxyCacheStatsCounter.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), "GetPartitions", metrics.CacheMissLabel).Inc()
 		m.mu.RUnlock()
 
 		partitions, err := m.showPartitions(ctx, collectionName)
@@ -335,7 +360,7 @@ func (m *MetaCache) GetPartitions(ctx context.Context, collectionName string) (m
 
 	}
 	defer m.mu.RUnlock()
-	metrics.ProxyCacheHitCounter.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), "GetPartitions", metrics.CacheHitLabel).Inc()
+	metrics.ProxyCacheStatsCounter.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), "GetPartitions", metrics.CacheHitLabel).Inc()
 
 	ret := make(map[string]typeutil.UniqueID)
 	partInfo := m.collInfo[collectionName].partInfo
@@ -366,7 +391,7 @@ func (m *MetaCache) GetPartitionInfo(ctx context.Context, collectionName string,
 
 	if !ok {
 		tr := timerecord.NewTimeRecorder("UpdateCache")
-		metrics.ProxyCacheHitCounter.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), "GetPartitionInfo", metrics.CacheMissLabel).Inc()
+		metrics.ProxyCacheStatsCounter.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), "GetPartitionInfo", metrics.CacheMissLabel).Inc()
 		partitions, err := m.showPartitions(ctx, collectionName)
 		if err != nil {
 			return nil, err
@@ -385,7 +410,7 @@ func (m *MetaCache) GetPartitionInfo(ctx context.Context, collectionName string,
 			return nil, fmt.Errorf("partitionID of partitionName:%s can not be find", partitionName)
 		}
 	}
-	metrics.ProxyCacheHitCounter.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), "GetPartitionInfo", metrics.CacheHitLabel).Inc()
+	metrics.ProxyCacheStatsCounter.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), "GetPartitionInfo", metrics.CacheHitLabel).Inc()
 	return &partitionInfo{
 		partitionID:         partInfo.partitionID,
 		createdTimestamp:    partInfo.createdTimestamp,
@@ -396,9 +421,9 @@ func (m *MetaCache) GetPartitionInfo(ctx context.Context, collectionName string,
 // Get the collection information from rootcoord.
 func (m *MetaCache) describeCollection(ctx context.Context, collectionName string) (*milvuspb.DescribeCollectionResponse, error) {
 	req := &milvuspb.DescribeCollectionRequest{
-		Base: &commonpb.MsgBase{
-			MsgType: commonpb.MsgType_DescribeCollection,
-		},
+		Base: commonpbutil.NewMsgBase(
+			commonpbutil.WithMsgType(commonpb.MsgType_DescribeCollection),
+		),
 		CollectionName: collectionName,
 	}
 	coll, err := m.rootCoord.DescribeCollection(ctx, req)
@@ -432,9 +457,9 @@ func (m *MetaCache) describeCollection(ctx context.Context, collectionName strin
 
 func (m *MetaCache) showPartitions(ctx context.Context, collectionName string) (*milvuspb.ShowPartitionsResponse, error) {
 	req := &milvuspb.ShowPartitionsRequest{
-		Base: &commonpb.MsgBase{
-			MsgType: commonpb.MsgType_ShowPartitions,
-		},
+		Base: commonpbutil.NewMsgBase(
+			commonpbutil.WithMsgType(commonpb.MsgType_ShowPartitions),
+		),
 		CollectionName: collectionName,
 	}
 
@@ -490,14 +515,17 @@ func (m *MetaCache) RemoveCollection(ctx context.Context, collectionName string)
 	delete(m.collInfo, collectionName)
 }
 
-func (m *MetaCache) RemoveCollectionsByID(ctx context.Context, collectionID UniqueID) {
+func (m *MetaCache) RemoveCollectionsByID(ctx context.Context, collectionID UniqueID) []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	var collNames []string
 	for k, v := range m.collInfo {
 		if v.collID == collectionID {
 			delete(m.collInfo, k)
+			collNames = append(collNames, k)
 		}
 	}
+	return collNames
 }
 
 func (m *MetaCache) RemovePartition(ctx context.Context, collectionName, partitionName string) {
@@ -524,9 +552,9 @@ func (m *MetaCache) GetCredentialInfo(ctx context.Context, username string) (*in
 
 	if !ok {
 		req := &rootcoordpb.GetCredentialRequest{
-			Base: &commonpb.MsgBase{
-				MsgType: commonpb.MsgType_GetCredential,
-			},
+			Base: commonpbutil.NewMsgBase(
+				commonpbutil.WithMsgType(commonpb.MsgType_GetCredential),
+			),
 			Username: username,
 		}
 		resp, err := m.rootCoord.GetCredential(ctx, req)
@@ -571,22 +599,24 @@ func (m *MetaCache) GetShards(ctx context.Context, withCache bool, collectionNam
 	}
 
 	if withCache {
-		if len(info.shardLeaders) > 0 {
-			info.leaderMutex.Lock()
-			updateShardsWithRoundRobin(info.shardLeaders)
+		var shardLeaders *shardLeaders
+		info.leaderMutex.RLock()
+		shardLeaders = info.shardLeaders
+		info.leaderMutex.RUnlock()
 
-			shards := info.CloneShardLeaders()
-			info.leaderMutex.Unlock()
-			return shards, nil
+		if shardLeaders != nil {
+			iterator := info.shardLeaders.GetReader()
+			return iterator.Shuffle(), nil
 		}
+
 		log.Info("no shard cache for collection, try to get shard leaders from QueryCoord",
 			zap.String("collectionName", collectionName))
 	}
 	req := &querypb.GetShardLeadersRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:  commonpb.MsgType_GetShardLeaders,
-			SourceID: Params.ProxyCfg.GetNodeID(),
-		},
+		Base: commonpbutil.NewMsgBase(
+			commonpbutil.WithMsgType(commonpb.MsgType_GetShardLeaders),
+			commonpbutil.WithSourceID(Params.ProxyCfg.GetNodeID()),
+		),
 		CollectionID: info.collID,
 	}
 
@@ -617,19 +647,29 @@ func (m *MetaCache) GetShards(ctx context.Context, withCache bool, collectionNam
 
 	shards := parseShardLeaderList2QueryNode(resp.GetShards())
 
-	// manipulate info in map, get map returns a copy of the information
-	m.mu.RLock()
-	info = m.collInfo[collectionName]
+	info, err = m.GetCollectionInfo(ctx, collectionName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get shards, collection %s not found", collectionName)
+	}
 	// lock leader
 	info.leaderMutex.Lock()
 	oldShards := info.shardLeaders
-	info.shardLeaders = shards
+	info.shardLeaders = &shardLeaders{
+		shardLeaders: shards,
+		idx:          atomic.NewInt64(0),
+	}
+	iterator := info.shardLeaders.GetReader()
 	info.leaderMutex.Unlock()
-	m.mu.RUnlock()
 
+	ret := iterator.Shuffle()
+	oldLeaders := make(map[string][]nodeInfo)
+	if oldShards != nil {
+		oldLeaders = oldShards.shardLeaders
+	}
 	// update refcnt in shardClientMgr
-	ret := info.CloneShardLeaders()
-	_ = m.shardMgr.UpdateShardLeaders(oldShards, ret)
+	// and create new client for new leaders
+	_ = m.shardMgr.UpdateShardLeaders(oldLeaders, ret)
+
 	return ret, nil
 }
 
@@ -659,8 +699,8 @@ func (m *MetaCache) ClearShards(collectionName string) {
 	}
 	m.mu.Unlock()
 	// delete refcnt in shardClientMgr
-	if ok {
-		_ = m.shardMgr.UpdateShardLeaders(info.shardLeaders, nil)
+	if ok && info.shardLeaders != nil {
+		_ = m.shardMgr.UpdateShardLeaders(info.shardLeaders.shardLeaders, nil)
 	}
 }
 

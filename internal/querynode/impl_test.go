@@ -27,8 +27,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
@@ -51,7 +51,7 @@ func TestImpl_GetComponentStates(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, commonpb.ErrorCode_Success, rsp.Status.ErrorCode)
 
-	node.UpdateStateCode(internalpb.StateCode_Abnormal)
+	node.UpdateStateCode(commonpb.StateCode_Abnormal)
 	rsp, err = node.GetComponentStates(ctx)
 	assert.NoError(t, err)
 	assert.Equal(t, commonpb.ErrorCode_Success, rsp.Status.ErrorCode)
@@ -136,7 +136,7 @@ func TestImpl_WatchDmChannels(t *testing.T) {
 				MsgID:   rand.Int63(),
 			},
 		}
-		node.UpdateStateCode(internalpb.StateCode_Abnormal)
+		node.UpdateStateCode(commonpb.StateCode_Abnormal)
 		status, err := node.WatchDmChannels(ctx, req)
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
@@ -169,7 +169,7 @@ func TestImpl_UnsubDmChannel(t *testing.T) {
 				MsgID:   rand.Int63(),
 			},
 		}
-		node.UpdateStateCode(internalpb.StateCode_Abnormal)
+		node.UpdateStateCode(commonpb.StateCode_Abnormal)
 		status, err := node.UnsubDmChannel(ctx, req)
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
@@ -214,7 +214,7 @@ func TestImpl_LoadSegments(t *testing.T) {
 	})
 
 	t.Run("server unhealthy", func(t *testing.T) {
-		node.UpdateStateCode(internalpb.StateCode_Abnormal)
+		node.UpdateStateCode(commonpb.StateCode_Abnormal)
 		status, err := node.LoadSegments(ctx, req)
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
@@ -240,7 +240,7 @@ func TestImpl_ReleaseCollection(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
 
-	node.UpdateStateCode(internalpb.StateCode_Abnormal)
+	node.UpdateStateCode(commonpb.StateCode_Abnormal)
 	status, err = node.ReleaseCollection(ctx, req)
 	assert.NoError(t, err)
 	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
@@ -266,7 +266,7 @@ func TestImpl_ReleasePartitions(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, commonpb.ErrorCode_Success, status.ErrorCode)
 
-	node.UpdateStateCode(internalpb.StateCode_Abnormal)
+	node.UpdateStateCode(commonpb.StateCode_Abnormal)
 	status, err = node.ReleasePartitions(ctx, req)
 	assert.NoError(t, err)
 	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, status.ErrorCode)
@@ -299,7 +299,7 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 		assert.Equal(t, commonpb.ErrorCode_Success, rsp.Status.ErrorCode)
 		assert.Equal(t, 0, len(rsp.GetInfos()))
 
-		node.UpdateStateCode(internalpb.StateCode_Abnormal)
+		node.UpdateStateCode(commonpb.StateCode_Abnormal)
 		rsp, err = node.GetSegmentInfo(ctx, req)
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, rsp.Status.ErrorCode)
@@ -386,7 +386,7 @@ func TestImpl_GetSegmentInfo(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, rsp.Status.ErrorCode)
 
-		node.UpdateStateCode(internalpb.StateCode_Abnormal)
+		node.UpdateStateCode(commonpb.StateCode_Abnormal)
 		rsp, err = node.GetSegmentInfo(ctx, req)
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, rsp.Status.ErrorCode)
@@ -430,7 +430,7 @@ func TestImpl_ShowConfigurations(t *testing.T) {
 		node, err := genSimpleQueryNode(ctx)
 		assert.NoError(t, err)
 		node.session = sessionutil.NewSession(node.queryNodeLoopCtx, Params.EtcdCfg.MetaRootPath, etcdCli)
-		node.UpdateStateCode(internalpb.StateCode_Abnormal)
+		node.UpdateStateCode(commonpb.StateCode_Abnormal)
 
 		pattern := "Cache"
 		req := &internalpb.ShowConfigurationsRequest{
@@ -493,7 +493,7 @@ func TestImpl_GetMetrics(t *testing.T) {
 		_, err = node.GetMetrics(ctx, req)
 		assert.NoError(t, err)
 
-		node.UpdateStateCode(internalpb.StateCode_Abnormal)
+		node.UpdateStateCode(commonpb.StateCode_Abnormal)
 		_, err = node.GetMetrics(ctx, req)
 		assert.NoError(t, err)
 	})
@@ -539,7 +539,7 @@ func TestImpl_ReleaseSegments(t *testing.T) {
 			SegmentIDs:   []UniqueID{defaultSegmentID},
 		}
 
-		node.UpdateStateCode(internalpb.StateCode_Abnormal)
+		node.UpdateStateCode(commonpb.StateCode_Abnormal)
 		resp, err := node.ReleaseSegments(ctx, req)
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp.GetErrorCode())
@@ -620,7 +620,7 @@ func TestImpl_Search(t *testing.T) {
 	// shard cluster sync segments
 	sc, ok := node.ShardClusterService.getShardCluster(defaultDMLChannel)
 	assert.True(t, ok)
-	sc.SyncSegments(nil, segmentStateLoaded)
+	sc.SetupFirstVersion()
 
 	_, err = node.Search(ctx, &queryPb.SearchRequest{
 		Req:             req,
@@ -645,7 +645,7 @@ func TestImpl_searchWithDmlChannel(t *testing.T) {
 	node.ShardClusterService.addShardCluster(defaultCollectionID, defaultReplicaID, defaultDMLChannel)
 	sc, ok := node.ShardClusterService.getShardCluster(defaultDMLChannel)
 	assert.True(t, ok)
-	sc.SyncSegments(nil, segmentStateLoaded)
+	sc.SetupFirstVersion()
 
 	_, err = node.searchWithDmlChannel(ctx, &queryPb.SearchRequest{
 		Req:             req,
@@ -730,7 +730,7 @@ func TestImpl_Query(t *testing.T) {
 	// sync cluster segments
 	sc, ok := node.ShardClusterService.getShardCluster(defaultDMLChannel)
 	assert.True(t, ok)
-	sc.SyncSegments(nil, segmentStateLoaded)
+	sc.SetupFirstVersion()
 
 	_, err = node.Query(ctx, &queryPb.QueryRequest{
 		Req:             req,
@@ -756,7 +756,7 @@ func TestImpl_queryWithDmlChannel(t *testing.T) {
 	node.ShardClusterService.addShardCluster(defaultCollectionID, defaultReplicaID, defaultDMLChannel)
 	sc, ok := node.ShardClusterService.getShardCluster(defaultDMLChannel)
 	assert.True(t, ok)
-	sc.SyncSegments(nil, segmentStateLoaded)
+	sc.SetupFirstVersion()
 
 	_, err = node.queryWithDmlChannel(ctx, &queryPb.QueryRequest{
 		Req:             req,
@@ -782,7 +782,7 @@ func TestImpl_SyncReplicaSegments(t *testing.T) {
 		defer node.Stop()
 		assert.NoError(t, err)
 
-		node.UpdateStateCode(internalpb.StateCode_Abnormal)
+		node.UpdateStateCode(commonpb.StateCode_Abnormal)
 
 		resp, err := node.SyncReplicaSegments(ctx, &querypb.SyncReplicaSegmentsRequest{})
 		assert.NoError(t, err)
@@ -820,6 +820,9 @@ func TestImpl_SyncReplicaSegments(t *testing.T) {
 		assert.NoError(t, err)
 
 		node.ShardClusterService.addShardCluster(defaultCollectionID, defaultReplicaID, defaultDMLChannel)
+		cs, ok := node.ShardClusterService.getShardCluster(defaultDMLChannel)
+		require.True(t, ok)
+		cs.SetupFirstVersion()
 
 		resp, err := node.SyncReplicaSegments(ctx, &querypb.SyncReplicaSegmentsRequest{
 			VchannelName: defaultDMLChannel,
@@ -837,8 +840,6 @@ func TestImpl_SyncReplicaSegments(t *testing.T) {
 		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetErrorCode())
 		t.Log(resp.GetReason())
 
-		cs, ok := node.ShardClusterService.getShardCluster(defaultDMLChannel)
-		require.True(t, ok)
 		segment, ok := cs.getSegment(1)
 		require.True(t, ok)
 		assert.Equal(t, common.InvalidNodeID, segment.nodeID)
@@ -856,7 +857,7 @@ func TestSyncDistribution(t *testing.T) {
 		defer node.Stop()
 		assert.NoError(t, err)
 
-		node.UpdateStateCode(internalpb.StateCode_Abnormal)
+		node.UpdateStateCode(commonpb.StateCode_Abnormal)
 
 		resp, err := node.SyncDistribution(ctx, &querypb.SyncDistributionRequest{})
 		assert.NoError(t, err)
@@ -921,6 +922,9 @@ func TestSyncDistribution(t *testing.T) {
 		assert.NoError(t, err)
 
 		node.ShardClusterService.addShardCluster(defaultCollectionID, defaultReplicaID, defaultDMLChannel)
+		cs, ok := node.ShardClusterService.getShardCluster(defaultDMLChannel)
+		require.True(t, ok)
+		cs.SetupFirstVersion()
 
 		resp, err := node.SyncDistribution(ctx, &querypb.SyncDistributionRequest{
 			Base:         &commonpb.MsgBase{TargetID: node.session.ServerID},
@@ -939,8 +943,6 @@ func TestSyncDistribution(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetErrorCode())
 
-		cs, ok := node.ShardClusterService.getShardCluster(defaultDMLChannel)
-		require.True(t, ok)
 		segment, ok := cs.getSegment(defaultSegmentID)
 		require.True(t, ok)
 		assert.Equal(t, common.InvalidNodeID, segment.nodeID)
@@ -979,7 +981,7 @@ func TestGetDataDistribution(t *testing.T) {
 		defer node.Stop()
 		assert.NoError(t, err)
 
-		node.UpdateStateCode(internalpb.StateCode_Abnormal)
+		node.UpdateStateCode(commonpb.StateCode_Abnormal)
 
 		resp, err := node.GetDataDistribution(ctx, &querypb.GetDataDistributionRequest{})
 		assert.NoError(t, err)

@@ -24,8 +24,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 )
 
@@ -49,6 +49,11 @@ func TestRateLimitInterceptor(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, proto.Size(&milvuspb.DeleteRequest{}), size)
 		assert.Equal(t, internalpb.RateType_DMLDelete, rt)
+
+		rt, size, err = getRequestInfo(&milvuspb.ImportRequest{})
+		assert.NoError(t, err)
+		assert.Equal(t, proto.Size(&milvuspb.ImportRequest{}), size)
+		assert.Equal(t, internalpb.RateType_DMLBulkLoad, rt)
 
 		rt, size, err = getRequestInfo(&milvuspb.SearchRequest{})
 		assert.NoError(t, err)
@@ -93,6 +98,7 @@ func TestRateLimitInterceptor(t *testing.T) {
 		}
 
 		testGetFailedResponse(&milvuspb.DeleteRequest{})
+		testGetFailedResponse(&milvuspb.ImportRequest{})
 		testGetFailedResponse(&milvuspb.SearchRequest{})
 		testGetFailedResponse(&milvuspb.QueryRequest{})
 		testGetFailedResponse(&milvuspb.CreateCollectionRequest{})

@@ -10,11 +10,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/internal/util/funcutil"
-
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
+	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/storage"
-
-	"github.com/milvus-io/milvus/api/schemapb"
+	"github.com/milvus-io/milvus/internal/util/funcutil"
 )
 
 type indexTestCase struct {
@@ -209,7 +208,6 @@ func genFloatVecIndexCases(dtype schemapb.DataType) []indexTestCase {
 				"nlist":       strconv.Itoa(nlist),
 				"m":           strconv.Itoa(m),
 				"nbits":       strconv.Itoa(nbits),
-				"SLICE_SIZE":  strconv.Itoa(sliceSize),
 			},
 		},
 		{
@@ -220,7 +218,6 @@ func genFloatVecIndexCases(dtype schemapb.DataType) []indexTestCase {
 				"metric_type": L2,
 				"dim":         strconv.Itoa(dim),
 				"nlist":       strconv.Itoa(nlist),
-				"SLICE_SIZE":  strconv.Itoa(sliceSize),
 			},
 		},
 	}
@@ -237,7 +234,6 @@ func genBinaryVecIndexCases(dtype schemapb.DataType) []indexTestCase {
 				"dim":         strconv.Itoa(dim),
 				"nlist":       strconv.Itoa(nlist),
 				"nbits":       strconv.Itoa(nbits),
-				"SLICE_SIZE":  strconv.Itoa(sliceSize),
 			},
 		},
 	}
@@ -293,9 +289,26 @@ func genIndexCase() []indexTestCase {
 	return ret
 }
 
+func genStorageConfig() *indexpb.StorageConfig {
+	InitOnce.Do(func() {
+		Params.Init()
+	})
+
+	return &indexpb.StorageConfig{
+		Address:         Params.MinioCfg.Address,
+		AccessKeyID:     Params.MinioCfg.AccessKeyID,
+		SecretAccessKey: Params.MinioCfg.SecretAccessKey,
+		BucketName:      Params.MinioCfg.BucketName,
+		RootPath:        Params.MinioCfg.RootPath,
+		IAMEndpoint:     Params.MinioCfg.IAMEndpoint,
+		UseSSL:          Params.MinioCfg.UseSSL,
+		UseIAM:          Params.MinioCfg.UseIAM,
+	}
+}
+
 func TestCgoIndex(t *testing.T) {
 	for _, testCase := range genIndexCase() {
-		index, err := NewCgoIndex(testCase.dtype, testCase.typeParams, testCase.indexParams)
+		index, err := NewCgoIndex(testCase.dtype, testCase.typeParams, testCase.indexParams, genStorageConfig())
 		assert.NoError(t, err, testCase)
 
 		dataset := GenDataset(genFieldData(testCase.dtype, nb, dim))
@@ -304,7 +317,7 @@ func TestCgoIndex(t *testing.T) {
 		blobs, err := index.Serialize()
 		assert.NoError(t, err, testCase)
 
-		copyIndex, err := NewCgoIndex(testCase.dtype, testCase.typeParams, testCase.indexParams)
+		copyIndex, err := NewCgoIndex(testCase.dtype, testCase.typeParams, testCase.indexParams, genStorageConfig())
 		assert.NoError(t, err, testCase)
 
 		assert.NoError(t, copyIndex.Load(blobs), testCase)

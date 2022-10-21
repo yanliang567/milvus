@@ -25,16 +25,19 @@ import (
 	"io/ioutil"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 
 	"github.com/gin-gonic/gin"
 	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
 	grpc_auth "github.com/grpc-ecosystem/go-grpc-middleware/auth"
 	ot "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	dcc "github.com/milvus-io/milvus/internal/distributed/datacoord/client"
 	icc "github.com/milvus-io/milvus/internal/distributed/indexcoord/client"
 	"github.com/milvus-io/milvus/internal/distributed/proxy/httpserver"
@@ -469,8 +472,8 @@ func (s *Server) init() error {
 	s.proxy.SetQueryCoordClient(s.queryCoordClient)
 	log.Debug("set QueryCoord client for Proxy done")
 
-	log.Debug(fmt.Sprintf("update Proxy's state to %s", internalpb.StateCode_Initializing.String()))
-	s.proxy.UpdateStateCode(internalpb.StateCode_Initializing)
+	log.Debug(fmt.Sprintf("update Proxy's state to %s", commonpb.StateCode_Initializing.String()))
+	s.proxy.UpdateStateCode(commonpb.StateCode_Initializing)
 
 	log.Debug("init Proxy")
 	if err := s.proxy.Init(); err != nil {
@@ -539,7 +542,7 @@ func (s *Server) Stop() error {
 }
 
 // GetComponentStates get the component states
-func (s *Server) GetComponentStates(ctx context.Context, request *internalpb.GetComponentStatesRequest) (*internalpb.ComponentStates, error) {
+func (s *Server) GetComponentStates(ctx context.Context, request *milvuspb.GetComponentStatesRequest) (*milvuspb.ComponentStates, error) {
 	return s.proxy.GetComponentStates(ctx)
 }
 
@@ -590,6 +593,10 @@ func (s *Server) GetCollectionStatistics(ctx context.Context, request *milvuspb.
 
 func (s *Server) ShowCollections(ctx context.Context, request *milvuspb.ShowCollectionsRequest) (*milvuspb.ShowCollectionsResponse, error) {
 	return s.proxy.ShowCollections(ctx, request)
+}
+
+func (s *Server) AlterCollection(ctx context.Context, request *milvuspb.AlterCollectionRequest) (*commonpb.Status, error) {
+	return s.proxy.AlterCollection(ctx, request)
 }
 
 // CreatePartition notifies Proxy to create a partition
@@ -777,7 +784,7 @@ func (s *Server) Check(ctx context.Context, req *grpc_health_v1.HealthCheckReque
 	if state.Status.ErrorCode != commonpb.ErrorCode_Success {
 		return ret, nil
 	}
-	if state.State.StateCode != internalpb.StateCode_Healthy {
+	if state.State.StateCode != commonpb.StateCode_Healthy {
 		return ret, nil
 	}
 	ret.Status = grpc_health_v1.HealthCheckResponse_SERVING
@@ -796,7 +803,7 @@ func (s *Server) Watch(req *grpc_health_v1.HealthCheckRequest, server grpc_healt
 	if state.Status.ErrorCode != commonpb.ErrorCode_Success {
 		return server.Send(ret)
 	}
-	if state.State.StateCode != internalpb.StateCode_Healthy {
+	if state.State.StateCode != commonpb.StateCode_Healthy {
 		return server.Send(ret)
 	}
 	ret.Status = grpc_health_v1.HealthCheckResponse_SERVING
@@ -867,4 +874,19 @@ func (s *Server) SetRates(ctx context.Context, request *proxypb.SetRatesRequest)
 // GetProxyMetrics gets the metrics of proxy.
 func (s *Server) GetProxyMetrics(ctx context.Context, request *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
 	return s.proxy.GetProxyMetrics(ctx, request)
+}
+
+func (s *Server) GetVersion(ctx context.Context, request *milvuspb.GetVersionRequest) (*milvuspb.GetVersionResponse, error) {
+	buildTags := os.Getenv(metricsinfo.GitBuildTagsEnvKey)
+	return &milvuspb.GetVersionResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+			Reason:    "",
+		},
+		Version: buildTags,
+	}, nil
+}
+
+func (s *Server) CheckHealth(ctx context.Context, request *milvuspb.CheckHealthRequest) (*milvuspb.CheckHealthResponse, error) {
+	return s.proxy.CheckHealth(ctx, request)
 }

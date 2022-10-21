@@ -1,3 +1,19 @@
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package dist
 
 import (
@@ -7,7 +23,7 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
@@ -15,6 +31,7 @@ import (
 	. "github.com/milvus-io/milvus/internal/querycoordv2/params"
 	"github.com/milvus-io/milvus/internal/querycoordv2/session"
 	"github.com/milvus-io/milvus/internal/querycoordv2/task"
+	"github.com/milvus-io/milvus/internal/util/commonpbutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 	"go.uber.org/zap"
 )
@@ -34,6 +51,7 @@ type distHandler struct {
 	dist        *meta.DistributionManager
 	target      *meta.TargetManager
 	mu          sync.Mutex
+	stopOnce    sync.Once
 }
 
 func (dh *distHandler) start(ctx context.Context) {
@@ -55,7 +73,9 @@ func (dh *distHandler) start(ctx context.Context) {
 			dh.mu.Lock()
 			cctx, cancel := context.WithTimeout(ctx, distReqTimeout)
 			resp, err := dh.client.GetDataDistribution(cctx, dh.nodeID, &querypb.GetDataDistributionRequest{
-				Base: &commonpb.MsgBase{MsgType: commonpb.MsgType_GetDistribution},
+				Base: commonpbutil.NewMsgBase(
+					commonpbutil.WithMsgType(commonpb.MsgType_GetDistribution),
+				),
 			})
 			cancel()
 
@@ -178,7 +198,9 @@ func (dh *distHandler) getDistribution(ctx context.Context) {
 	defer dh.mu.Unlock()
 	cctx, cancel := context.WithTimeout(ctx, distReqTimeout)
 	resp, err := dh.client.GetDataDistribution(cctx, dh.nodeID, &querypb.GetDataDistributionRequest{
-		Base: &commonpb.MsgBase{MsgType: commonpb.MsgType_GetDistribution},
+		Base: commonpbutil.NewMsgBase(
+			commonpbutil.WithMsgType(commonpb.MsgType_GetDistribution),
+		),
 	})
 	cancel()
 
@@ -190,8 +212,10 @@ func (dh *distHandler) getDistribution(ctx context.Context) {
 }
 
 func (dh *distHandler) stop() {
-	close(dh.c)
-	dh.wg.Wait()
+	dh.stopOnce.Do(func() {
+		close(dh.c)
+		dh.wg.Wait()
+	})
 }
 
 func newDistHandler(

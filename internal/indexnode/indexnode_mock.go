@@ -21,11 +21,12 @@ import (
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/hardware"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
@@ -37,12 +38,12 @@ type Mock struct {
 	CallInit                 func() error
 	CallStart                func() error
 	CallStop                 func() error
-	CallGetComponentStates   func(ctx context.Context) (*internalpb.ComponentStates, error)
+	CallGetComponentStates   func(ctx context.Context) (*milvuspb.ComponentStates, error)
 	CallGetStatisticsChannel func(ctx context.Context) (*milvuspb.StringResponse, error)
 	CallRegister             func() error
 
 	CallSetEtcdClient   func(etcdClient *clientv3.Client)
-	CallUpdateStateCode func(stateCode internalpb.StateCode)
+	CallUpdateStateCode func(stateCode commonpb.StateCode)
 
 	CallCreateJob   func(ctx context.Context, req *indexpb.CreateJobRequest) (*commonpb.Status, error)
 	CallQueryJobs   func(ctx context.Context, in *indexpb.QueryJobsRequest) (*indexpb.QueryJobsResponse, error)
@@ -69,14 +70,14 @@ func NewIndexNodeMock() *Mock {
 		},
 		CallSetEtcdClient: func(etcdClient *clientv3.Client) {
 		},
-		CallUpdateStateCode: func(stateCode internalpb.StateCode) {
+		CallUpdateStateCode: func(stateCode commonpb.StateCode) {
 		},
-		CallGetComponentStates: func(ctx context.Context) (*internalpb.ComponentStates, error) {
-			return &internalpb.ComponentStates{
-				State: &internalpb.ComponentInfo{
+		CallGetComponentStates: func(ctx context.Context) (*milvuspb.ComponentStates, error) {
+			return &milvuspb.ComponentStates{
+				State: &milvuspb.ComponentInfo{
 					NodeID:    1,
 					Role:      typeutil.IndexCoordRole,
-					StateCode: internalpb.StateCode_Healthy,
+					StateCode: commonpb.StateCode_Healthy,
 				},
 				SubcomponentStates: nil,
 				Status: &commonpb.Status{
@@ -100,9 +101,9 @@ func NewIndexNodeMock() *Mock {
 			indexInfos := make([]*indexpb.IndexTaskInfo, 0)
 			for _, buildID := range in.BuildIDs {
 				indexInfos = append(indexInfos, &indexpb.IndexTaskInfo{
-					BuildID:    buildID,
-					State:      commonpb.IndexState_Finished,
-					IndexFiles: []string{"file1", "file2"},
+					BuildID:       buildID,
+					State:         commonpb.IndexState_Finished,
+					IndexFileKeys: []string{"file1", "file2"},
 				})
 			}
 			return &indexpb.QueryJobsResponse{
@@ -163,7 +164,7 @@ func (m *Mock) Stop() error {
 	return m.CallStop()
 }
 
-func (m *Mock) GetComponentStates(ctx context.Context) (*internalpb.ComponentStates, error) {
+func (m *Mock) GetComponentStates(ctx context.Context) (*milvuspb.ComponentStates, error) {
 	return m.CallGetComponentStates(ctx)
 }
 
@@ -178,7 +179,7 @@ func (m *Mock) Register() error {
 func (m *Mock) SetEtcdClient(etcdClient *clientv3.Client) {
 }
 
-func (m *Mock) UpdateStateCode(stateCode internalpb.StateCode) {
+func (m *Mock) UpdateStateCode(stateCode commonpb.StateCode) {
 }
 
 func (m *Mock) CreateJob(ctx context.Context, req *indexpb.CreateJobRequest) (*commonpb.Status, error) {
@@ -216,12 +217,12 @@ func getMockSystemInfoMetrics(
 		BaseComponentInfos: metricsinfo.BaseComponentInfos{
 			Name: metricsinfo.ConstructComponentName(typeutil.IndexNodeRole, Params.IndexNodeCfg.GetNodeID()),
 			HardwareInfos: metricsinfo.HardwareMetrics{
-				CPUCoreCount: metricsinfo.GetCPUCoreCount(false),
-				CPUCoreUsage: metricsinfo.GetCPUUsage(),
+				CPUCoreCount: hardware.GetCPUNum(),
+				CPUCoreUsage: hardware.GetCPUUsage(),
 				Memory:       1000,
-				MemoryUsage:  metricsinfo.GetUsedMemoryCount(),
-				Disk:         metricsinfo.GetDiskCount(),
-				DiskUsage:    metricsinfo.GetDiskUsage(),
+				MemoryUsage:  hardware.GetUsedMemoryCount(),
+				Disk:         hardware.GetDiskCount(),
+				DiskUsage:    hardware.GetDiskUsage(),
 			},
 			SystemInfo:  metricsinfo.DeployMetrics{},
 			CreatedTime: Params.IndexNodeCfg.CreatedTime.String(),

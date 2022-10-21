@@ -24,8 +24,8 @@ import (
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/kv"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
@@ -43,14 +43,14 @@ type Mock struct {
 	CallInit                 func() error
 	CallStart                func() error
 	CallStop                 func() error
-	CallGetComponentStates   func(ctx context.Context) (*internalpb.ComponentStates, error)
+	CallGetComponentStates   func(ctx context.Context) (*milvuspb.ComponentStates, error)
 	CallGetStatisticsChannel func(ctx context.Context) (*milvuspb.StringResponse, error)
 	CallRegister             func() error
 
 	CallSetEtcdClient   func(etcdClient *clientv3.Client)
 	CallSetDataCoord    func(dataCoord types.DataCoord) error
 	CallSetRootCoord    func(rootCoord types.RootCoord) error
-	CallUpdateStateCode func(stateCode internalpb.StateCode)
+	CallUpdateStateCode func(stateCode commonpb.StateCode)
 
 	CallCreateIndex           func(ctx context.Context, req *indexpb.CreateIndexRequest) (*commonpb.Status, error)
 	CallGetIndexState         func(ctx context.Context, req *indexpb.GetIndexStateRequest) (*indexpb.GetIndexStateResponse, error)
@@ -95,12 +95,12 @@ func (m *Mock) SetRootCoord(rootCoord types.RootCoord) error {
 	return m.CallSetRootCoord(rootCoord)
 }
 
-func (m *Mock) UpdateStateCode(stateCode internalpb.StateCode) {
+func (m *Mock) UpdateStateCode(stateCode commonpb.StateCode) {
 	m.CallUpdateStateCode(stateCode)
 }
 
 // GetComponentStates gets the component states of the mocked IndexCoord.
-func (m *Mock) GetComponentStates(ctx context.Context) (*internalpb.ComponentStates, error) {
+func (m *Mock) GetComponentStates(ctx context.Context) (*milvuspb.ComponentStates, error) {
 	return m.CallGetComponentStates(ctx)
 }
 
@@ -145,6 +145,12 @@ func (m *Mock) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) 
 	return m.CallGetMetrics(ctx, req)
 }
 
+func (m *Mock) CheckHealth(ctx context.Context, req *milvuspb.CheckHealthRequest) (*milvuspb.CheckHealthResponse, error) {
+	return &milvuspb.CheckHealthResponse{
+		IsHealthy: true,
+	}, nil
+}
+
 func NewIndexCoordMock() *Mock {
 	return &Mock{
 		CallInit: func() error {
@@ -167,12 +173,12 @@ func NewIndexCoordMock() *Mock {
 		CallSetRootCoord: func(rootCoord types.RootCoord) error {
 			return nil
 		},
-		CallGetComponentStates: func(ctx context.Context) (*internalpb.ComponentStates, error) {
-			return &internalpb.ComponentStates{
-				State: &internalpb.ComponentInfo{
+		CallGetComponentStates: func(ctx context.Context) (*milvuspb.ComponentStates, error) {
+			return &milvuspb.ComponentStates{
+				State: &milvuspb.ComponentInfo{
 					NodeID:    1,
 					Role:      typeutil.IndexCoordRole,
-					StateCode: internalpb.StateCode_Healthy,
+					StateCode: commonpb.StateCode_Healthy,
 				},
 				SubcomponentStates: nil,
 				Status: &commonpb.Status{
@@ -292,9 +298,10 @@ type RootCoordMock struct {
 
 	CallInit               func() error
 	CallStart              func() error
-	CallGetComponentStates func(ctx context.Context) (*internalpb.ComponentStates, error)
+	CallGetComponentStates func(ctx context.Context) (*milvuspb.ComponentStates, error)
 
-	CallAllocID func(ctx context.Context, req *rootcoordpb.AllocIDRequest) (*rootcoordpb.AllocIDResponse, error)
+	CallAllocID        func(ctx context.Context, req *rootcoordpb.AllocIDRequest) (*rootcoordpb.AllocIDResponse, error)
+	CallAllocTimestamp func(ctx context.Context, req *rootcoordpb.AllocTimestampRequest) (*rootcoordpb.AllocTimestampResponse, error)
 }
 
 func (rcm *RootCoordMock) Init() error {
@@ -305,8 +312,12 @@ func (rcm *RootCoordMock) Start() error {
 	return rcm.CallStart()
 }
 
-func (rcm *RootCoordMock) GetComponentStates(ctx context.Context) (*internalpb.ComponentStates, error) {
+func (rcm *RootCoordMock) GetComponentStates(ctx context.Context) (*milvuspb.ComponentStates, error) {
 	return rcm.CallGetComponentStates(ctx)
+}
+
+func (rcm *RootCoordMock) AllocTimestamp(ctx context.Context, req *rootcoordpb.AllocTimestampRequest) (*rootcoordpb.AllocTimestampResponse, error) {
+	return rcm.CallAllocTimestamp(ctx, req)
 }
 
 func (rcm *RootCoordMock) AllocID(ctx context.Context, req *rootcoordpb.AllocIDRequest) (*rootcoordpb.AllocIDResponse, error) {
@@ -321,12 +332,12 @@ func NewRootCoordMock() *RootCoordMock {
 		CallStart: func() error {
 			return nil
 		},
-		CallGetComponentStates: func(ctx context.Context) (*internalpb.ComponentStates, error) {
-			return &internalpb.ComponentStates{
-				State: &internalpb.ComponentInfo{
+		CallGetComponentStates: func(ctx context.Context) (*milvuspb.ComponentStates, error) {
+			return &milvuspb.ComponentStates{
+				State: &milvuspb.ComponentInfo{
 					NodeID:    1,
 					Role:      typeutil.IndexCoordRole,
-					StateCode: internalpb.StateCode_Healthy,
+					StateCode: commonpb.StateCode_Healthy,
 				},
 				SubcomponentStates: nil,
 				Status: &commonpb.Status{
@@ -343,6 +354,15 @@ func NewRootCoordMock() *RootCoordMock {
 				Count: req.Count,
 			}, nil
 		},
+		CallAllocTimestamp: func(ctx context.Context, req *rootcoordpb.AllocTimestampRequest) (*rootcoordpb.AllocTimestampResponse, error) {
+			return &rootcoordpb.AllocTimestampResponse{
+				Status: &commonpb.Status{
+					ErrorCode: commonpb.ErrorCode_Success,
+				},
+				Timestamp: 1,
+				Count:     req.Count,
+			}, nil
+		},
 	}
 }
 
@@ -353,7 +373,7 @@ type DataCoordMock struct {
 
 	CallInit               func() error
 	CallStart              func() error
-	CallGetComponentStates func(ctx context.Context) (*internalpb.ComponentStates, error)
+	CallGetComponentStates func(ctx context.Context) (*milvuspb.ComponentStates, error)
 
 	CallGetSegmentInfo     func(ctx context.Context, req *datapb.GetSegmentInfoRequest) (*datapb.GetSegmentInfoResponse, error)
 	CallGetFlushedSegment  func(ctx context.Context, req *datapb.GetFlushedSegmentsRequest) (*datapb.GetFlushedSegmentsResponse, error)
@@ -369,7 +389,7 @@ func (dcm *DataCoordMock) Start() error {
 	return dcm.CallStart()
 }
 
-func (dcm *DataCoordMock) GetComponentStates(ctx context.Context) (*internalpb.ComponentStates, error) {
+func (dcm *DataCoordMock) GetComponentStates(ctx context.Context) (*milvuspb.ComponentStates, error) {
 	return dcm.CallGetComponentStates(ctx)
 }
 
@@ -406,12 +426,12 @@ func NewDataCoordMock() *DataCoordMock {
 		CallStart: func() error {
 			return nil
 		},
-		CallGetComponentStates: func(ctx context.Context) (*internalpb.ComponentStates, error) {
-			return &internalpb.ComponentStates{
-				State: &internalpb.ComponentInfo{
+		CallGetComponentStates: func(ctx context.Context) (*milvuspb.ComponentStates, error) {
+			return &milvuspb.ComponentStates{
+				State: &milvuspb.ComponentInfo{
 					NodeID:    1,
 					Role:      typeutil.IndexCoordRole,
-					StateCode: internalpb.StateCode_Healthy,
+					StateCode: commonpb.StateCode_Healthy,
 				},
 				SubcomponentStates: nil,
 				Status: &commonpb.Status{

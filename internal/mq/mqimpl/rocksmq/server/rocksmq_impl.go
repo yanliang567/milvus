@@ -14,7 +14,6 @@ package server
 import (
 	"errors"
 	"fmt"
-	"math"
 	"path"
 	"runtime"
 	"strconv"
@@ -23,18 +22,18 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tecbot/gorocksdb"
+	"go.uber.org/zap"
+
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/kv"
 	rocksdbkv "github.com/milvus-io/milvus/internal/kv/rocksdb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/mq/msgstream/mqwrapper"
-	"github.com/milvus-io/milvus/internal/util/metricsinfo"
+	"github.com/milvus-io/milvus/internal/util/hardware"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-
-	"github.com/tecbot/gorocksdb"
-	"go.uber.org/zap"
 )
 
 // UniqueID is the type of message ID
@@ -52,7 +51,7 @@ var RocksDBLRUCacheMaxCapacity = uint64(4 << 30)
 
 // Const variable that will be used in rocksmqs
 const (
-	DefaultMessageID = -1
+	DefaultMessageID UniqueID = -1
 
 	kvSuffix = "_meta_kv"
 
@@ -73,9 +72,6 @@ const (
 	// acked_ts/topicName/pageId, record the latest ack ts of each page, will be purged on retention or destroy of the topic
 	AckedTsTitle = "acked_ts/"
 
-	// only in memory
-	CurrentIDSuffix = "current_id"
-
 	RmqNotServingErrMsg = "Rocksmq is not serving"
 )
 
@@ -90,7 +86,7 @@ const (
  * Construct current id
  */
 func constructCurrentID(topicName, groupName string) string {
-	return groupName + "/" + topicName + "/" + CurrentIDSuffix
+	return groupName + "/" + topicName
 }
 
 /**
@@ -141,7 +137,7 @@ func NewRocksMQ(params paramtable.BaseTable, name string, idAllocator allocator.
 	} else if maxProcs > 8 {
 		parallelism = 2
 	}
-	memoryCount := metricsinfo.GetMemoryCount()
+	memoryCount := hardware.GetMemoryCount()
 	// default rocks db cache is set with memory
 	rocksDBLRUCacheCapacity := RocksDBLRUCacheMinCapacity
 	if memoryCount > 0 {
@@ -226,7 +222,8 @@ func NewRocksMQ(params paramtable.BaseTable, name string, idAllocator allocator.
 	// TODO add this to monitor metrics
 	go func() {
 		for {
-			time.Sleep(5 * time.Minute)
+			time.Sleep(10 * time.Minute)
+
 			log.Info("Rocksmq stats",
 				zap.String("cache", kv.DB.GetProperty("rocksdb.block-cache-usage")),
 				zap.String("rockskv memtable ", kv.DB.GetProperty("rocksdb.size-all-mem-tables")),
@@ -241,6 +238,7 @@ func NewRocksMQ(params paramtable.BaseTable, name string, idAllocator allocator.
 				zap.String("store l3 file num", db.GetProperty("rocksdb.num-files-at-level3")),
 				zap.String("store l4 file num", db.GetProperty("rocksdb.num-files-at-level4")),
 			)
+			rmq.Info()
 		}
 	}()
 
@@ -274,6 +272,30 @@ func (rmq *rocksmq) Close() {
 	rmq.kv.Close()
 	rmq.store.Close()
 	log.Info("Successfully close rocksmq")
+}
+
+//print rmq consumer Info
+func (rmq *rocksmq) Info() {
+	rmq.consumers.Range(func(key, vals interface{}) bool {
+		topic, _ := key.(string)
+		consumers, _ := vals.([]*Consumer)
+
+		consumersPosition := make([]UniqueID, len(consumers))
+		consumersName := make([]string, len(consumers))
+		for id, consumer := range consumers {
+			groupKey := constructCurrentID(consumer.Topic, consumer.GroupName)
+			groupPosition, ok := rmq.consumersID.Load(groupKey)
+			if !ok {
+				log.Error("some group not regist", zap.String("topic", consumer.Topic), zap.String("groupName", consumer.GroupName))
+				continue
+			}
+			consumersPosition[id] = groupPosition.(UniqueID)
+			consumersName[id] = consumer.GroupName
+		}
+
+		log.Info("Rocksmq Info", zap.String("topic", topic), zap.Int("consumer num", len(consumers)), zap.Any("group names", consumersName), zap.Any("group positions", consumersPosition))
+		return true
+	})
 }
 
 func (rmq *rocksmq) stopRetention() {
@@ -607,6 +629,7 @@ func (rmq *rocksmq) updatePageInfo(topicName string, msgIDs []UniqueID, msgSizes
 			// Current page is full
 			newPageSize := curMsgSize + msgSize
 			pageEndID := id
+			log.Info("new page", zap.String("topic", topicName), zap.Int64("pageId", pageEndID))
 			// Update page message size for current page. key is page end ID
 			pageMsgSizeKey := fixedPageSizeKey + "/" + strconv.FormatInt(pageEndID, 10)
 			mutateBuffer[pageMsgSizeKey] = strconv.FormatInt(newPageSize, 10)
@@ -701,19 +724,13 @@ func (rmq *rocksmq) Consume(topicName string, groupName string, n int) ([]Consum
 		return consumerMessage, nil
 	}
 
-	consumedIDs := make([]UniqueID, 0, len(consumerMessage))
-	for _, msg := range consumerMessage {
-		consumedIDs = append(consumedIDs, msg.MsgID)
-	}
-	newID := consumedIDs[len(consumedIDs)-1]
-	err := rmq.updateAckedInfo(topicName, groupName, consumedIDs)
+	newID := consumerMessage[len(consumerMessage)-1].MsgID
+	moveConsumePosTime := time.Since(start).Milliseconds()
+
+	err := rmq.moveConsumePos(topicName, groupName, newID+1)
 	if err != nil {
-		log.Warn("failed to update acked info ", zap.String("topic", topicName),
-			zap.String("groupName", groupName), zap.Error(err))
 		return nil, err
 	}
-	updateAckedTime := time.Since(start).Milliseconds()
-	rmq.moveConsumePos(topicName, groupName, newID+1)
 
 	// TODO add this to monitor metrics
 	getConsumeTime := time.Since(start).Milliseconds()
@@ -721,7 +738,7 @@ func (rmq *rocksmq) Consume(topicName string, groupName string, n int) ([]Consum
 		log.Warn("rocksmq consume too slowly", zap.String("topic", topicName),
 			zap.Int64("get lock elapse", getLockTime),
 			zap.Int64("iterator elapse", iterTime-getLockTime),
-			zap.Int64("updateAckedInfo elapse", updateAckedTime-iterTime),
+			zap.Int64("moveConsumePosTime elapse", moveConsumePosTime-iterTime),
 			zap.Int64("total consume elapse", getConsumeTime))
 	}
 	return consumerMessage, nil
@@ -748,18 +765,38 @@ func (rmq *rocksmq) seek(topicName string, groupName string, msgID UniqueID) err
 	if !val.Exists() {
 		log.Warn("RocksMQ: trying to seek to no exist position, reset current id",
 			zap.String("topic", topicName), zap.String("group", groupName), zap.Int64("msgId", msgID))
-		rmq.moveConsumePos(topicName, groupName, DefaultMessageID)
+		err := rmq.moveConsumePos(topicName, groupName, DefaultMessageID)
 		//skip seek if key is not found, this is the behavior as pulsar
-		return nil
+		return err
 	}
 	/* Step II: update current_id */
-	rmq.moveConsumePos(topicName, groupName, msgID)
-	return nil
+	err = rmq.moveConsumePos(topicName, groupName, msgID)
+	return err
 }
 
-func (rmq *rocksmq) moveConsumePos(topicName string, groupName string, msgID UniqueID) {
+func (rmq *rocksmq) moveConsumePos(topicName string, groupName string, msgID UniqueID) error {
 	key := constructCurrentID(topicName, groupName)
+	oldPos, ok := rmq.consumersID.Load(key)
+	if !ok {
+		return errors.New("move unknown consumer")
+	}
+
+	if msgID < oldPos.(UniqueID) {
+		log.Warn("RocksMQ: trying to move Consume position backward",
+			zap.String("key", key), zap.Int64("oldPos", oldPos.(UniqueID)), zap.Int64("newPos", msgID))
+		panic("move consume position backward")
+	}
+
+	//update ack if position move forward
+	err := rmq.updateAckedInfo(topicName, groupName, oldPos.(UniqueID), msgID-1)
+	if err != nil {
+		log.Warn("failed to update acked info ", zap.String("topic", topicName),
+			zap.String("groupName", groupName), zap.Error(err))
+		return err
+	}
+
 	rmq.consumersID.Store(key, msgID)
+	return nil
 }
 
 // Seek updates the current id to the given msgID
@@ -787,6 +824,39 @@ func (rmq *rocksmq) Seek(topicName string, groupName string, msgID UniqueID) err
 	return nil
 }
 
+//Only for test
+func (rmq *rocksmq) ForceSeek(topicName string, groupName string, msgID UniqueID) error {
+	log.Warn("Use method ForceSeek that only for test")
+	if rmq.isClosed() {
+		return errors.New(RmqNotServingErrMsg)
+	}
+	/* Step I: Check if key exists */
+	ll, ok := topicMu.Load(topicName)
+	if !ok {
+		return fmt.Errorf("Topic %s not exist, %w", topicName, mqwrapper.ErrTopicNotExist)
+	}
+	lock, ok := ll.(*sync.Mutex)
+	if !ok {
+		return fmt.Errorf("get mutex failed, topic name = %s", topicName)
+	}
+	lock.Lock()
+	defer lock.Unlock()
+	rmq.storeMu.Lock()
+	defer rmq.storeMu.Unlock()
+
+	key := constructCurrentID(topicName, groupName)
+	_, ok = rmq.consumersID.Load(key)
+	if !ok {
+		return fmt.Errorf("ConsumerGroup %s, channel %s not exists", groupName, topicName)
+	}
+
+	rmq.consumersID.Store(key, msgID)
+
+	log.Debug("successfully force seek", zap.String("topic", topicName),
+		zap.String("group", groupName), zap.Uint64("msgID", uint64(msgID)))
+	return nil
+}
+
 // SeekToLatest updates current id to the msg id of latest message + 1
 func (rmq *rocksmq) SeekToLatest(topicName, groupName string) error {
 	if rmq.isClosed() {
@@ -794,6 +864,7 @@ func (rmq *rocksmq) SeekToLatest(topicName, groupName string) error {
 	}
 	rmq.storeMu.Lock()
 	defer rmq.storeMu.Unlock()
+
 	key := constructCurrentID(topicName, groupName)
 	_, ok := rmq.consumersID.Load(key)
 	if !ok {
@@ -806,7 +877,11 @@ func (rmq *rocksmq) SeekToLatest(topicName, groupName string) error {
 	}
 
 	// current msgID should not be included
-	rmq.moveConsumePos(topicName, groupName, msgID+1)
+	err = rmq.moveConsumePos(topicName, groupName, msgID+1)
+	if err != nil {
+		return err
+	}
+
 	log.Debug("successfully seek to latest", zap.String("topic", topicName),
 		zap.String("group", groupName), zap.Uint64("latest", uint64(msgID+1)))
 	return nil
@@ -868,13 +943,7 @@ func (rmq *rocksmq) Notify(topicName, groupName string) {
 }
 
 // updateAckedInfo update acked informations for retention after consume
-func (rmq *rocksmq) updateAckedInfo(topicName, groupName string, ids []UniqueID) error {
-	if len(ids) == 0 {
-		return nil
-	}
-	firstID := ids[0]
-	lastID := ids[len(ids)-1]
-
+func (rmq *rocksmq) updateAckedInfo(topicName, groupName string, firstID UniqueID, lastID UniqueID) error {
 	// 1. Try to get the page id between first ID and last ID of ids
 	pageMsgPrefix := constructKey(PageMsgSizeTitle, topicName) + "/"
 	readOpts := gorocksdb.NewDefaultReadOptions()
@@ -914,19 +983,19 @@ func (rmq *rocksmq) updateAckedInfo(topicName, groupName string, ids []UniqueID)
 		if !ok || len(consumers) == 0 {
 			return nil
 		}
-		// update consumer id
-		for _, consumer := range consumers {
-			if consumer.GroupName == groupName {
-				consumer.beginID = lastID
-				break
-			}
-		}
 
 		// find min id of all consumer
-		var minBeginID int64 = math.MaxInt64
+		var minBeginID UniqueID = lastID
 		for _, consumer := range consumers {
-			if consumer.beginID < minBeginID {
-				minBeginID = consumer.beginID
+			if consumer.GroupName != groupName {
+				key := constructCurrentID(consumer.Topic, consumer.GroupName)
+				beginID, ok := rmq.consumersID.Load(key)
+				if !ok {
+					return fmt.Errorf("currentID of topicName=%s, groupName=%s not exist", consumer.Topic, consumer.GroupName)
+				}
+				if beginID.(UniqueID) < minBeginID {
+					minBeginID = beginID.(UniqueID)
+				}
 			}
 		}
 

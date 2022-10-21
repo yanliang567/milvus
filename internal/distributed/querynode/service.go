@@ -32,8 +32,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
@@ -121,8 +121,8 @@ func (s *Server) init() error {
 		return err
 	}
 
-	s.querynode.UpdateStateCode(internalpb.StateCode_Initializing)
-	log.Debug("QueryNode", zap.Any("State", internalpb.StateCode_Initializing))
+	s.querynode.UpdateStateCode(commonpb.StateCode_Initializing)
+	log.Debug("QueryNode", zap.Any("State", commonpb.StateCode_Initializing))
 	if err := s.querynode.Init(); err != nil {
 		log.Error("QueryNode init error: ", zap.Error(err))
 		return err
@@ -257,7 +257,7 @@ func (s *Server) GetStatisticsChannel(ctx context.Context, req *internalpb.GetSt
 }
 
 // GetComponentStates gets the component states of QueryNode.
-func (s *Server) GetComponentStates(ctx context.Context, req *internalpb.GetComponentStatesRequest) (*internalpb.ComponentStates, error) {
+func (s *Server) GetComponentStates(ctx context.Context, req *milvuspb.GetComponentStatesRequest) (*milvuspb.ComponentStates, error) {
 	// ignore ctx and in
 	return s.querynode.GetComponentStates(ctx)
 }

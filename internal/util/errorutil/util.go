@@ -2,12 +2,12 @@ package errorutil
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
-
-	"fmt"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
 // ErrorList for print error log
@@ -31,10 +31,10 @@ func (el ErrorList) Error() string {
 	return builder.String()
 }
 
-func UnhealthyStatus(code internalpb.StateCode) *commonpb.Status {
+func UnhealthyStatus(code commonpb.StateCode) *commonpb.Status {
 	return &commonpb.Status{
 		ErrorCode: commonpb.ErrorCode_UnexpectedError,
-		Reason:    "proxy not healthy, StateCode=" + internalpb.StateCode_name[int32(code)],
+		Reason:    "proxy not healthy, StateCode=" + commonpb.StateCode_name[int32(code)],
 	}
 }
 
@@ -44,4 +44,24 @@ func UnhealthyError() error {
 
 func PermissionDenyError() error {
 	return errors.New("permission deny")
+}
+
+func UnHealthReason(role string, nodeID typeutil.UniqueID, reason string) string {
+	return fmt.Sprintf("role %s[nodeID: %d] is unhealthy, reason: %s", role, nodeID, reason)
+}
+
+func UnHealthReasonWithComponentStatesOrErr(role string, nodeID typeutil.UniqueID, cs *milvuspb.ComponentStates, err error) (bool, string) {
+	if err != nil {
+		return false, UnHealthReason(role, nodeID, fmt.Sprintf("inner error: %s", err.Error()))
+	}
+
+	if cs != nil && cs.GetStatus().GetErrorCode() != commonpb.ErrorCode_Success {
+		return false, UnHealthReason(role, nodeID, fmt.Sprintf("rpc status error: %d", cs.GetStatus().GetErrorCode()))
+	}
+
+	if cs != nil && cs.GetState().GetStateCode() != commonpb.StateCode_Healthy {
+		return false, UnHealthReason(role, nodeID, fmt.Sprintf("node is unhealthy, state code: %d", cs.GetState().GetStateCode()))
+	}
+
+	return true, ""
 }

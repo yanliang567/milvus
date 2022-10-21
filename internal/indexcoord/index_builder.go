@@ -26,7 +26,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
@@ -219,7 +219,7 @@ func (ib *indexBuilder) process(buildID UniqueID) bool {
 			if err := ib.meta.FinishTask(&indexpb.IndexTaskInfo{
 				BuildID:        buildID,
 				State:          commonpb.IndexState_Finished,
-				IndexFiles:     nil,
+				IndexFileKeys:  nil,
 				SerializedSize: 0,
 				FailReason:     "",
 			}); err != nil {

@@ -26,15 +26,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/milvus-io/milvus/internal/metastore/model"
-
-	"github.com/stretchr/testify/assert"
-
-	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/indexnode"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/metastore/kv/indexcoord"
+	"github.com/milvus-io/milvus/internal/metastore/model"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
@@ -43,6 +41,7 @@ import (
 	"github.com/milvus-io/milvus/internal/util/etcd"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestMockEtcd(t *testing.T) {
@@ -171,7 +170,9 @@ func testIndexCoord(t *testing.T) {
 	assert.NoError(t, err)
 
 	mockKv := NewMockEtcdKVWithReal(ic.etcdKV)
-	ic.metaTable, err = NewMetaTable(mockKv)
+	ic.metaTable.catalog = &indexcoord.Catalog{
+		Txn: mockKv,
+	}
 	assert.NoError(t, err)
 
 	err = ic.Register()
@@ -180,7 +181,7 @@ func testIndexCoord(t *testing.T) {
 	err = ic.Start()
 	assert.NoError(t, err)
 
-	ic.UpdateStateCode(internalpb.StateCode_Healthy)
+	ic.UpdateStateCode(commonpb.StateCode_Healthy)
 
 	ic.nodeManager.setClient(1, inm0)
 
@@ -188,7 +189,7 @@ func testIndexCoord(t *testing.T) {
 	t.Run("GetComponentStates", func(t *testing.T) {
 		states, err := ic.GetComponentStates(ctx)
 		assert.NoError(t, err)
-		assert.Equal(t, internalpb.StateCode_Healthy, states.State.StateCode)
+		assert.Equal(t, commonpb.StateCode_Healthy, states.State.StateCode)
 	})
 
 	t.Run("GetStatisticsChannel", func(t *testing.T) {
@@ -202,6 +203,7 @@ func testIndexCoord(t *testing.T) {
 			CollectionID: collID,
 			FieldID:      fieldID,
 			IndexName:    indexName,
+			Timestamp:    createTs,
 		}
 		resp, err := ic.CreateIndex(ctx, req)
 		assert.NoError(t, err)
@@ -457,7 +459,7 @@ func TestIndexCoord_EnableActiveStandby(t *testing.T) {
 
 func TestIndexCoord_GetComponentStates(t *testing.T) {
 	ic := &IndexCoord{}
-	ic.stateCode.Store(internalpb.StateCode_Healthy)
+	ic.stateCode.Store(commonpb.StateCode_Healthy)
 	resp, err := ic.GetComponentStates(context.Background())
 	assert.NoError(t, err)
 	assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
@@ -475,7 +477,7 @@ func TestIndexCoord_UnHealthy(t *testing.T) {
 	ic := &IndexCoord{
 		serverID: 1,
 	}
-	ic.stateCode.Store(internalpb.StateCode_Abnormal)
+	ic.stateCode.Store(commonpb.StateCode_Abnormal)
 
 	// Test IndexCoord function
 	t.Run("CreateIndex", func(t *testing.T) {
@@ -587,7 +589,7 @@ func TestIndexCoord_DropIndex(t *testing.T) {
 				},
 			}),
 		}
-		ic.UpdateStateCode(internalpb.StateCode_Healthy)
+		ic.UpdateStateCode(commonpb.StateCode_Healthy)
 		resp, err := ic.DropIndex(context.Background(), &indexpb.DropIndexRequest{
 			CollectionID: collID,
 			PartitionIDs: []int64{partID},
@@ -631,7 +633,7 @@ func TestIndexCoord_DropIndex(t *testing.T) {
 				},
 			}),
 		}
-		ic.UpdateStateCode(internalpb.StateCode_Healthy)
+		ic.UpdateStateCode(commonpb.StateCode_Healthy)
 
 		resp, err := ic.DropIndex(context.Background(), &indexpb.DropIndexRequest{
 			CollectionID: collID,
@@ -775,7 +777,7 @@ func TestIndexCoord_DropIndex(t *testing.T) {
 //
 //func TestIndexCoord_GetComponentStates(t *testing.T) {
 //	n := &IndexCoord{}
-//	n.stateCode.Store(internalpb.StateCode_Healthy)
+//	n.stateCode.Store(commonpb.StateCode_Healthy)
 //	resp, err := n.GetComponentStates(context.Background())
 //	assert.NoError(t, err)
 //	assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
@@ -789,7 +791,7 @@ func TestIndexCoord_DropIndex(t *testing.T) {
 //
 //func TestIndexCoord_NotHealthy(t *testing.T) {
 //	ic := &IndexCoord{}
-//	ic.stateCode.Store(internalpb.StateCode_Abnormal)
+//	ic.stateCode.Store(commonpb.StateCode_Abnormal)
 //	req := &indexpb.BuildIndexRequest{}
 //	resp, err := ic.BuildIndex(context.Background(), req)
 //	assert.Error(t, err)
@@ -826,7 +828,7 @@ func TestIndexCoord_DropIndex(t *testing.T) {
 //					indexMeta: &indexpb.IndexMeta{
 //						IndexBuildID:   1,
 //						State:          commonpb.IndexState_Finished,
-//						IndexFilePaths: []string{"indexFiles-1", "indexFiles-2"},
+//						IndexFileKeys: []string{"indexFiles-1", "indexFiles-2"},
 //					},
 //				},
 //				2: {
@@ -839,21 +841,21 @@ func TestIndexCoord_DropIndex(t *testing.T) {
 //		},
 //	}
 //
-//	ic.stateCode.Store(internalpb.StateCode_Healthy)
+//	ic.stateCode.Store(commonpb.StateCode_Healthy)
 //
 //	t.Run("GetIndexFilePaths success", func(t *testing.T) {
 //		resp, err := ic.GetIndexFilePaths(context.Background(), &indexpb.GetIndexFilePathsRequest{IndexBuildIDs: []UniqueID{1}})
 //		assert.NoError(t, err)
 //		assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
 //		assert.Equal(t, 1, len(resp.FilePaths))
-//		assert.ElementsMatch(t, resp.FilePaths[0].IndexFilePaths, []string{"indexFiles-1", "indexFiles-2"})
+//		assert.ElementsMatch(t, resp.FilePaths[0].IndexFileKeys, []string{"indexFiles-1", "indexFiles-2"})
 //	})
 //
 //	t.Run("GetIndexFilePaths failed", func(t *testing.T) {
 //		resp, err := ic.GetIndexFilePaths(context.Background(), &indexpb.GetIndexFilePathsRequest{IndexBuildIDs: []UniqueID{2}})
 //		assert.NoError(t, err)
 //		assert.Equal(t, commonpb.ErrorCode_Success, resp.Status.ErrorCode)
-//		assert.Equal(t, 0, len(resp.FilePaths[0].IndexFilePaths))
+//		assert.Equal(t, 0, len(resp.FilePaths[0].IndexFileKeys))
 //	})
 //
 //	t.Run("set DataCoord with nil", func(t *testing.T) {
@@ -932,7 +934,7 @@ func TestIndexCoord_DropIndex(t *testing.T) {
 //			notify: make(chan struct{}, 10),
 //		},
 //	}
-//	ic.stateCode.Store(internalpb.StateCode_Healthy)
+//	ic.stateCode.Store(commonpb.StateCode_Healthy)
 //	status, err := ic.RemoveIndex(context.Background(), &indexpb.RemoveIndexRequest{BuildIDs: []UniqueID{0}})
 //	assert.Nil(t, err)
 //	assert.Equal(t, commonpb.ErrorCode_Success, status.GetErrorCode())
@@ -1014,5 +1016,62 @@ func TestIndexCoord_pullSegmentInfo(t *testing.T) {
 		info, err := ic.pullSegmentInfo(context.Background(), segID)
 		assert.ErrorIs(t, err, ErrSegmentNotFound)
 		assert.Nil(t, info)
+	})
+}
+
+func TestIndexCoord_CheckHealth(t *testing.T) {
+	t.Run("not healthy", func(t *testing.T) {
+		ctx := context.Background()
+		ic := &IndexCoord{session: &sessionutil.Session{ServerID: 1}}
+		ic.stateCode.Store(commonpb.StateCode_Abnormal)
+		resp, err := ic.CheckHealth(ctx, &milvuspb.CheckHealthRequest{})
+		assert.NoError(t, err)
+		assert.Equal(t, false, resp.IsHealthy)
+		assert.NotEmpty(t, resp.Reasons)
+	})
+
+	t.Run("index node health check is ok", func(t *testing.T) {
+		ctx := context.Background()
+		indexNode := indexnode.NewIndexNodeMock()
+		nm := NewNodeManager(ctx)
+		nm.nodeClients[1] = indexNode
+		ic := &IndexCoord{
+			session:     &sessionutil.Session{ServerID: 1},
+			nodeManager: nm,
+		}
+		ic.stateCode.Store(commonpb.StateCode_Healthy)
+		resp, err := ic.CheckHealth(ctx, &milvuspb.CheckHealthRequest{})
+		assert.NoError(t, err)
+		assert.Equal(t, true, resp.IsHealthy)
+		assert.Empty(t, resp.Reasons)
+	})
+
+	t.Run("index node health check is fail", func(t *testing.T) {
+		ctx := context.Background()
+		indexNode := indexnode.NewIndexNodeMock()
+		indexNode.CallGetComponentStates = func(ctx context.Context) (*milvuspb.ComponentStates, error) {
+			return &milvuspb.ComponentStates{
+				State: &milvuspb.ComponentInfo{
+					NodeID:    1,
+					StateCode: commonpb.StateCode_Abnormal,
+				},
+				SubcomponentStates: nil,
+				Status: &commonpb.Status{
+					ErrorCode: commonpb.ErrorCode_Success,
+				},
+			}, nil
+		}
+		nm := NewNodeManager(ctx)
+		nm.nodeClients[1] = indexNode
+		ic := &IndexCoord{
+			nodeManager: nm,
+			session:     &sessionutil.Session{ServerID: 1},
+		}
+		ic.stateCode.Store(commonpb.StateCode_Healthy)
+
+		resp, err := ic.CheckHealth(ctx, &milvuspb.CheckHealthRequest{})
+		assert.NoError(t, err)
+		assert.Equal(t, false, resp.IsHealthy)
+		assert.NotEmpty(t, resp.Reasons)
 	})
 }

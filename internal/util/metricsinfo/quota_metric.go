@@ -28,6 +28,7 @@ type RateMetricLabel = string
 const (
 	NQPerSecond             RateMetricLabel = "NQPerSecond"
 	SearchThroughput        RateMetricLabel = "SearchThroughput"
+	ReadResultThroughput    RateMetricLabel = "ReadResultThroughput"
 	InsertConsumeThroughput RateMetricLabel = "InsertConsumeThroughput"
 	DeleteConsumeThroughput RateMetricLabel = "DeleteConsumeThroughput"
 )
@@ -60,6 +61,10 @@ type QueryNodeQuotaMetrics struct {
 	Fgm         FlowGraphMetric
 	SearchQueue ReadInfoInQueue
 	QueryQueue  ReadInfoInQueue
+}
+
+type DataCoordQuotaMetrics struct {
+	TotalBinlogSize int64
 }
 
 // DataNodeQuotaMetrics are metrics of DataNode.

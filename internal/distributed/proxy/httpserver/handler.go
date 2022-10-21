@@ -5,7 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang/protobuf/proto"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/types"
 )
 
@@ -113,6 +113,7 @@ func (h *Handlers) handleCreateCollection(c *gin.Context) (interface{}, error) {
 		Schema:           schemaProto,
 		ShardsNum:        wrappedReq.ShardsNum,
 		ConsistencyLevel: wrappedReq.ConsistencyLevel,
+		Properties:       wrappedReq.Properties,
 	}
 	return h.proxy.CreateCollection(c, req)
 }

@@ -11,7 +11,7 @@ import "schema.proto";
 import "data_coord.proto";
 
 service QueryCoord {
-  rpc GetComponentStates(internal.GetComponentStatesRequest) returns (internal.ComponentStates) {}
+  rpc GetComponentStates(milvus.GetComponentStatesRequest) returns (milvus.ComponentStates) {}
   rpc GetTimeTickChannel(internal.GetTimeTickChannelRequest) returns(milvus.StringResponse) {}
   rpc GetStatisticsChannel(internal.GetStatisticsChannelRequest) returns(milvus.StringResponse){}
 
@@ -34,10 +34,12 @@ service QueryCoord {
   // https://wiki.lfaidata.foundation/display/MIL/MEP+23+--+Multiple+memory+replication+design
   rpc GetReplicas(milvus.GetReplicasRequest) returns (milvus.GetReplicasResponse) {}
   rpc GetShardLeaders(GetShardLeadersRequest) returns (GetShardLeadersResponse) {}
+
+  rpc CheckHealth(milvus.CheckHealthRequest) returns (milvus.CheckHealthResponse) {}
 }
 
 service QueryNode {
-  rpc GetComponentStates(internal.GetComponentStatesRequest) returns (internal.ComponentStates) {}
+  rpc GetComponentStates(milvus.GetComponentStatesRequest) returns (milvus.ComponentStates) {}
   rpc GetTimeTickChannel(internal.GetTimeTickChannelRequest) returns(milvus.StringResponse) {}
   rpc GetStatisticsChannel(internal.GetStatisticsChannelRequest) returns(milvus.StringResponse){}
 
@@ -96,6 +98,8 @@ message LoadCollectionRequest {
   int64 collectionID = 3;
   schema.CollectionSchema schema = 4;
   int32 replica_number = 5;
+  // fieldID -> indexID
+  map<int64, int64> field_indexID = 6;
 }
 
 message ReleaseCollectionRequest {
@@ -120,6 +124,8 @@ message LoadPartitionsRequest {
   repeated int64 partitionIDs = 4;
   schema.CollectionSchema schema = 5;
   int32 replica_number = 6;
+  // fieldID -> indexID
+  map<int64, int64> field_indexID = 7;
 }
 
 message ReleasePartitionsRequest {
@@ -225,6 +231,7 @@ message FieldIndexInfo {
   repeated string index_file_paths = 7;
   int64 index_size = 8;
   int64 index_version = 9;
+  int64 num_rows = 10;
 }
 
 message LoadSegmentsRequest {
@@ -459,6 +466,7 @@ message CollectionLoadInfo {
   repeated int64 released_partitions = 2;
   int32 replica_number = 3;
   LoadStatus status = 4;
+  map<int64, int64> field_indexID = 5;
 }
 
 message PartitionLoadInfo {
@@ -466,6 +474,7 @@ message PartitionLoadInfo {
   int64 partitionID = 2;
   int32 replica_number = 3;
   LoadStatus status = 4;
+  map<int64, int64> field_indexID = 5;
 }
 
 message Replica {

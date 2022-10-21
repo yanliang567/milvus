@@ -1,3 +1,19 @@
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package querycoordv2
 
 import (
@@ -9,8 +25,8 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
@@ -167,6 +183,55 @@ func (suite *ServerSuite) TestNodeDown() {
 		}
 		return true
 	}, 5*time.Second, time.Second)
+}
+
+func (suite *ServerSuite) TestDisableActiveStandby() {
+	Params.QueryCoordCfg.EnableActiveStandby = false
+
+	err := suite.server.Stop()
+	suite.NoError(err)
+
+	suite.server, err = newQueryCoord()
+	suite.NoError(err)
+	suite.hackServer()
+	err = suite.server.Start()
+	suite.NoError(err)
+	err = suite.server.Register()
+	suite.NoError(err)
+
+	states, err := suite.server.GetComponentStates(context.Background())
+	suite.NoError(err)
+	suite.Equal(commonpb.StateCode_Healthy, states.GetState().GetStateCode())
+}
+
+func (suite *ServerSuite) TestEnableActiveStandby() {
+	Params.QueryCoordCfg.EnableActiveStandby = true
+
+	err := suite.server.Stop()
+	suite.NoError(err)
+
+	suite.server, err = newQueryCoord()
+	suite.NoError(err)
+	suite.hackServer()
+	err = suite.server.Start()
+	suite.NoError(err)
+	states1, err := suite.server.GetComponentStates(context.Background())
+	suite.NoError(err)
+	suite.Equal(commonpb.StateCode_StandBy, states1.GetState().GetStateCode())
+	err = suite.server.Register()
+	suite.NoError(err)
+
+	states2, err := suite.server.GetComponentStates(context.Background())
+	suite.NoError(err)
+	suite.Equal(commonpb.StateCode_Healthy, states2.GetState().GetStateCode())
+
+	Params.QueryCoordCfg.EnableActiveStandby = false
+}
+
+func (suite *ServerSuite) TestStop() {
+	suite.server.Stop()
+	// Stop has to be idempotent
+	suite.server.Stop()
 }
 
 func (suite *ServerSuite) waitNodeUp(node *mocks.MockQueryNode, timeout time.Duration) bool {

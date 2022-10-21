@@ -22,13 +22,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/milvus-io/milvus/api/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
+	"github.com/milvus-io/milvus/internal/util/commonpbutil"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 
 	"github.com/golang/protobuf/proto"
 
-	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
@@ -221,12 +222,12 @@ func (it *InsertMsg) CheckAligned() error {
 
 func (it *InsertMsg) rowBasedIndexRequest(index int) internalpb.InsertRequest {
 	return internalpb.InsertRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:   commonpb.MsgType_Insert,
-			MsgID:     it.Base.MsgID,
-			Timestamp: it.Timestamps[index],
-			SourceID:  it.Base.SourceID,
-		},
+		Base: commonpbutil.NewMsgBase(
+			commonpbutil.WithMsgType(commonpb.MsgType_Insert),
+			commonpbutil.WithMsgID(it.Base.MsgID),
+			commonpbutil.WithTimeStamp(it.Timestamps[index]),
+			commonpbutil.WithSourceID(it.Base.SourceID),
+		),
 		DbID:           it.DbID,
 		CollectionID:   it.CollectionID,
 		PartitionID:    it.PartitionID,
@@ -246,12 +247,12 @@ func (it *InsertMsg) columnBasedIndexRequest(index int) internalpb.InsertRequest
 	fieldsData := make([]*schemapb.FieldData, colNum)
 	typeutil.AppendFieldData(fieldsData, it.GetFieldsData(), int64(index))
 	return internalpb.InsertRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:   commonpb.MsgType_Insert,
-			MsgID:     it.Base.MsgID,
-			Timestamp: it.Timestamps[index],
-			SourceID:  it.Base.SourceID,
-		},
+		Base: commonpbutil.NewMsgBase(
+			commonpbutil.WithMsgType(commonpb.MsgType_Insert),
+			commonpbutil.WithMsgID(it.Base.MsgID),
+			commonpbutil.WithTimeStamp(it.Timestamps[index]),
+			commonpbutil.WithSourceID(it.Base.SourceID),
+		),
 		DbID:           it.DbID,
 		CollectionID:   it.CollectionID,
 		PartitionID:    it.PartitionID,

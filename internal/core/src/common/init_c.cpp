@@ -14,53 +14,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <mutex>
+
 #include "common/init_c.h"
 
 #include <string>
 #include "config/ConfigChunkManager.h"
+#include "common/Slice.h"
+
+std::once_flag flag1, flag2;
 
 void
-MinioAddressInit(const char* address) {
-    std::string minio_address(address);
-    milvus::ChunkMangerConfig::SetAddress(address);
-}
-
-void
-MinioAccessKeyInit(const char* key) {
-    std::string minio_access_key(key);
-    milvus::ChunkMangerConfig::SetAccessKey(minio_access_key);
-}
-
-void
-MinioAccessValueInit(const char* value) {
-    std::string minio_access_value(value);
-    milvus::ChunkMangerConfig::SetAccessValue(value);
-}
-
-void
-MinioSSLInit(bool use_ssl) {
-    milvus::ChunkMangerConfig::SetUseSSL(use_ssl);
-}
-
-void
-MinioUseIamInit(bool use_iam) {
-    milvus::ChunkMangerConfig::SetUseIAM(use_iam);
-}
-
-void
-MinioBucketNameInit(const char* name) {
-    std::string bucket_name(name);
-    milvus::ChunkMangerConfig::SetBucketName(name);
-}
-
-void
-MinioRootPathInit(const char* name) {
-    std::string root_path(name);
-    milvus::ChunkMangerConfig::SetRemoteRootPath(name);
-}
-
-void
-LocalRootPathInit(const char* root_path) {
+InitLocalRootPath(const char* root_path) {
     std::string local_path_root(root_path);
-    milvus::ChunkMangerConfig::SetLocalRootPath(local_path_root);
+    std::call_once(
+        flag1, [](std::string path) { milvus::ChunkMangerConfig::SetLocalRootPath(path); }, local_path_root);
+}
+
+void
+InitIndexSliceSize(const int64_t size) {
+    std::call_once(
+        flag2, [](int64_t size) { milvus::SetIndexSliceSize(size); }, size);
 }

@@ -21,8 +21,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/mocks"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
@@ -33,7 +33,7 @@ import (
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 type MockDataCoord struct {
-	states                    *internalpb.ComponentStates
+	states                    *milvuspb.ComponentStates
 	status                    *commonpb.Status
 	err                       error
 	initErr                   error
@@ -67,6 +67,7 @@ type MockDataCoord struct {
 	addSegmentResp            *commonpb.Status
 	unsetIsImportingStateResp *commonpb.Status
 	markSegmentsDroppedResp   *commonpb.Status
+	broadCastResp             *commonpb.Status
 }
 
 func (m *MockDataCoord) Init() error {
@@ -91,7 +92,7 @@ func (m *MockDataCoord) SetEtcdClient(etcdClient *clientv3.Client) {
 func (m *MockDataCoord) SetIndexCoord(indexCoord types.IndexCoord) {
 }
 
-func (m *MockDataCoord) GetComponentStates(ctx context.Context) (*internalpb.ComponentStates, error) {
+func (m *MockDataCoord) GetComponentStates(ctx context.Context) (*milvuspb.ComponentStates, error) {
 	return m.states, m.err
 }
 
@@ -219,6 +220,16 @@ func (m *MockDataCoord) MarkSegmentsDropped(ctx context.Context, req *datapb.Mar
 	return m.markSegmentsDroppedResp, m.err
 }
 
+func (m *MockDataCoord) BroadcastAlteredCollection(ctx context.Context, req *milvuspb.AlterCollectionRequest) (*commonpb.Status, error) {
+	return m.broadCastResp, m.err
+}
+
+func (m *MockDataCoord) CheckHealth(ctx context.Context, req *milvuspb.CheckHealthRequest) (*milvuspb.CheckHealthResponse, error) {
+	return &milvuspb.CheckHealthResponse{
+		IsHealthy: true,
+	}, nil
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 func Test_NewServer(t *testing.T) {
 	ctx := context.Background()
@@ -237,7 +248,7 @@ func Test_NewServer(t *testing.T) {
 
 	t.Run("GetComponentStates", func(t *testing.T) {
 		server.dataCoord = &MockDataCoord{
-			states: &internalpb.ComponentStates{},
+			states: &milvuspb.ComponentStates{},
 		}
 		states, err := server.GetComponentStates(ctx, nil)
 		assert.Nil(t, err)
@@ -517,6 +528,22 @@ func Test_NewServer(t *testing.T) {
 		resp, err := server.MarkSegmentsDropped(ctx, nil)
 		assert.Nil(t, err)
 		assert.NotNil(t, resp)
+	})
+
+	t.Run("broadcast altered collection", func(t *testing.T) {
+		server.dataCoord = &MockDataCoord{
+			broadCastResp: &commonpb.Status{},
+		}
+		resp, err := server.BroadcastAlteredCollection(ctx, nil)
+		assert.Nil(t, err)
+		assert.NotNil(t, resp)
+	})
+
+	t.Run("CheckHealth", func(t *testing.T) {
+		server.dataCoord = &MockDataCoord{}
+		ret, err := server.CheckHealth(ctx, nil)
+		assert.Nil(t, err)
+		assert.Equal(t, true, ret.IsHealthy)
 	})
 
 	err := server.Stop()

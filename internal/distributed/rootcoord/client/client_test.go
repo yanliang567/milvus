@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
 	"github.com/milvus-io/milvus/internal/util/mock"
 	"google.golang.org/grpc"
 
@@ -212,24 +213,28 @@ func Test_NewClient(t *testing.T) {
 			r, err := client.ShowConfigurations(ctx, nil)
 			retCheck(retNotNil, r, err)
 		}
+		{
+			r, err := client.CheckHealth(ctx, nil)
+			retCheck(retNotNil, r, err)
+		}
 	}
 
-	client.grpcClient = &mock.GRPCClientBase{
+	client.grpcClient = &mock.GRPCClientBase[rootcoordpb.RootCoordClient]{
 		GetGrpcClientErr: errors.New("dummy"),
 	}
 
-	newFunc1 := func(cc *grpc.ClientConn) interface{} {
+	newFunc1 := func(cc *grpc.ClientConn) rootcoordpb.RootCoordClient {
 		return &mock.GrpcRootCoordClient{Err: nil}
 	}
 	client.grpcClient.SetNewGrpcClientFunc(newFunc1)
 
 	checkFunc(false)
 
-	client.grpcClient = &mock.GRPCClientBase{
+	client.grpcClient = &mock.GRPCClientBase[rootcoordpb.RootCoordClient]{
 		GetGrpcClientErr: nil,
 	}
 
-	newFunc2 := func(cc *grpc.ClientConn) interface{} {
+	newFunc2 := func(cc *grpc.ClientConn) rootcoordpb.RootCoordClient {
 		return &mock.GrpcRootCoordClient{Err: errors.New("dummy")}
 	}
 
@@ -237,11 +242,11 @@ func Test_NewClient(t *testing.T) {
 
 	checkFunc(false)
 
-	client.grpcClient = &mock.GRPCClientBase{
+	client.grpcClient = &mock.GRPCClientBase[rootcoordpb.RootCoordClient]{
 		GetGrpcClientErr: nil,
 	}
 
-	newFunc3 := func(cc *grpc.ClientConn) interface{} {
+	newFunc3 := func(cc *grpc.ClientConn) rootcoordpb.RootCoordClient {
 		return &mock.GrpcRootCoordClient{Err: nil}
 	}
 	client.grpcClient.SetNewGrpcClientFunc(newFunc3)
@@ -408,6 +413,10 @@ func Test_NewClient(t *testing.T) {
 	}
 	{
 		rTimeout, err := client.ListPolicy(shortCtx, nil)
+		retCheck(rTimeout, err)
+	}
+	{
+		rTimeout, err := client.CheckHealth(shortCtx, nil)
 		retCheck(rTimeout, err)
 	}
 	// clean up

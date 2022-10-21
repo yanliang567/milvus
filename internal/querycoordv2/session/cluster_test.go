@@ -1,3 +1,19 @@
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package session
 
 import (
@@ -6,8 +22,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/querycoordv2/mocks"
 	"github.com/stretchr/testify/mock"
@@ -118,6 +134,13 @@ func (suite *ClusterTestSuite) createDefaultMockServer() querypb.QueryNodeServer
 		mock.Anything,
 		mock.AnythingOfType("*querypb.SyncDistributionRequest"),
 	).Maybe().Return(succStatus, nil)
+	svr.EXPECT().GetComponentStates(
+		mock.Anything,
+		mock.AnythingOfType("*milvuspb.GetComponentStatesRequest"),
+	).Maybe().Return(&milvuspb.ComponentStates{
+		State:  &milvuspb.ComponentInfo{StateCode: commonpb.StateCode_Healthy},
+		Status: &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success},
+	}, nil)
 	return svr
 }
 
@@ -156,6 +179,13 @@ func (suite *ClusterTestSuite) createFailedMockServer() querypb.QueryNodeServer 
 		mock.Anything,
 		mock.AnythingOfType("*querypb.SyncDistributionRequest"),
 	).Maybe().Return(failStatus, nil)
+	svr.EXPECT().GetComponentStates(
+		mock.Anything,
+		mock.AnythingOfType("*milvuspb.GetComponentStatesRequest"),
+	).Maybe().Return(&milvuspb.ComponentStates{
+		State:  &milvuspb.ComponentInfo{StateCode: commonpb.StateCode_Abnormal},
+		Status: &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success},
+	}, nil)
 	return svr
 }
 
@@ -310,6 +340,17 @@ func (suite *ClusterTestSuite) TestSyncDistribution() {
 		ErrorCode: commonpb.ErrorCode_UnexpectedError,
 		Reason:    "unexpected error",
 	}, status)
+}
+
+func (suite *ClusterTestSuite) TestGetComponentStates() {
+	ctx := context.TODO()
+	status, err := suite.cluster.GetComponentStates(ctx, 0)
+	suite.NoError(err)
+	suite.Equal(status.State.GetStateCode(), commonpb.StateCode_Healthy)
+
+	status, err = suite.cluster.GetComponentStates(ctx, 1)
+	suite.NoError(err)
+	suite.Equal(status.State.GetStateCode(), commonpb.StateCode_Abnormal)
 }
 
 func TestClusterSuite(t *testing.T) {

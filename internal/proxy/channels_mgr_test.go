@@ -23,8 +23,8 @@ import (
 
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -370,9 +370,8 @@ func Test_singleTypeChannelsMgr_removeStream(t *testing.T) {
 			},
 		},
 	}
-	err := m.removeStream(100)
-	assert.NoError(t, err)
-	_, err = m.lockGetStream(100)
+	m.removeStream(100)
+	_, err := m.lockGetStream(100)
 	assert.Error(t, err)
 }
 
@@ -384,8 +383,7 @@ func Test_singleTypeChannelsMgr_removeAllStream(t *testing.T) {
 			},
 		},
 	}
-	err := m.removeAllStream()
-	assert.NoError(t, err)
-	_, err = m.lockGetStream(100)
+	m.removeAllStream()
+	_, err := m.lockGetStream(100)
 	assert.Error(t, err)
 }

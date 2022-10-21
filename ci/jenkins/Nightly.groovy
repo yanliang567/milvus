@@ -3,12 +3,12 @@
 // When scheduling a job that gets automatically triggered by changes,
 // you need to include a [cronjob] tag within the commit message.
 String cron_timezone = 'TZ=Asia/Shanghai'
-String cron_string = BRANCH_NAME == "master" ? "50 22,5 * * * " : ""
+String cron_string = BRANCH_NAME == "master" ? "50 1 * * * " : ""
 
 // Make timeout 4 hours so that we can run two nightly during the ci
 int total_timeout_minutes = 7 * 60
 def imageTag=''
-def chart_version='3.1.11'
+def chart_version='3.2.9'
 pipeline {
     triggers {
         cron """${cron_timezone}
@@ -20,6 +20,7 @@ pipeline {
         buildDiscarder logRotator(artifactDaysToKeepStr: '30')
     // parallelsAlwaysFailFast()
         preserveStashes(buildCount: 5)
+        disableConcurrentBuilds()
     }
     agent {
         kubernetes {

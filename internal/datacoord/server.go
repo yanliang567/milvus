@@ -28,12 +28,11 @@ import (
 	"time"
 
 	"github.com/blang/semver/v4"
-	"github.com/minio/minio-go/v7"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	datanodeclient "github.com/milvus-io/milvus/internal/distributed/datanode/client"
 	rootcoordclient "github.com/milvus-io/milvus/internal/distributed/rootcoord/client"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
@@ -44,6 +43,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/commonpbutil"
 	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/logutil"
@@ -77,20 +77,6 @@ type (
 	Timestamp = typeutil.Timestamp
 )
 
-// ServerState type alias, presents datacoord Server State
-type ServerState = int64
-
-const (
-	// ServerStateStopped state stands for just created or stopped `Server` instance
-	ServerStateStopped ServerState = 0
-	// ServerStateInitializing state stands initializing `Server` instance
-	ServerStateInitializing ServerState = 1
-	// ServerStateHealthy state stands for healthy `Server` instance
-	ServerStateHealthy ServerState = 2
-	// ServerStateStandby state stands for standby `Server` instance
-	ServerStateStandby ServerState = 3
-)
-
 type dataNodeCreatorFunc func(ctx context.Context, addr string) (types.DataNode, error)
 type rootCoordCreatorFunc func(ctx context.Context, metaRootPath string, etcdClient *clientv3.Client) (types.RootCoord, error)
 
@@ -107,7 +93,7 @@ type Server struct {
 	serverLoopCancel context.CancelFunc
 	serverLoopWg     sync.WaitGroup
 	quitCh           chan struct{}
-	isServing        ServerState
+	stateCode        atomic.Value
 	helper           ServerHelper
 
 	etcdCli          *clientv3.Client
@@ -265,7 +251,7 @@ func (s *Server) initSession() error {
 // Init change server state to Initializing
 func (s *Server) Init() error {
 	var err error
-	atomic.StoreInt64(&s.isServing, ServerStateInitializing)
+	s.stateCode.Store(commonpb.StateCode_Initializing)
 	s.factory.Init(&Params)
 
 	if err = s.initRootCoordClient(); err != nil {
@@ -309,12 +295,12 @@ func (s *Server) Init() error {
 }
 
 // Start initialize `Server` members and start loops, follow steps are taken:
-// 1. initialize message factory parameters
-// 2. initialize root coord client, meta, datanode cluster, segment info channel,
-//		allocator, segment manager
-// 3. start service discovery and server loops, which includes message stream handler (segment statistics,datanode tt)
-//		datanodes etcd watch, etcd alive check and flush completed status check
-// 4. set server state to Healthy
+//  1. initialize message factory parameters
+//  2. initialize root coord client, meta, datanode cluster, segment info channel,
+//     allocator, segment manager
+//  3. start service discovery and server loops, which includes message stream handler (segment statistics,datanode tt)
+//     datanodes etcd watch, etcd alive check and flush completed status check
+//  4. set server state to Healthy
 func (s *Server) Start() error {
 	s.compactionHandler.start()
 	s.compactionTrigger.start()
@@ -324,14 +310,14 @@ func (s *Server) Start() error {
 			// todo complete the activateFunc
 			log.Info("datacoord switch from standby to active, activating")
 			s.startServerLoop()
-			atomic.StoreInt64(&s.isServing, ServerStateHealthy)
+			s.stateCode.Store(commonpb.StateCode_Healthy)
 			logutil.Logger(s.ctx).Debug("startup success")
 		}
-		atomic.StoreInt64(&s.isServing, ServerStateStandby)
+		s.stateCode.Store(commonpb.StateCode_StandBy)
 		logutil.Logger(s.ctx).Debug("DataCoord enter standby mode successfully")
 	} else {
 		s.startServerLoop()
-		atomic.StoreInt64(&s.isServing, ServerStateHealthy)
+		s.stateCode.Store(commonpb.StateCode_Healthy)
 		logutil.Logger(s.ctx).Debug("DataCoord startup successfully")
 	}
 
@@ -381,7 +367,7 @@ func (s *Server) stopCompactionHandler() {
 }
 
 func (s *Server) createCompactionTrigger() {
-	s.compactionTrigger = newCompactionTrigger(s.meta, s.compactionHandler, s.allocator, s.segReferManager, s.indexCoord)
+	s.compactionTrigger = newCompactionTrigger(s.meta, s.compactionHandler, s.allocator, s.segReferManager, s.indexCoord, s.handler)
 }
 
 func (s *Server) stopCompactionTrigger() {
@@ -399,30 +385,13 @@ func (s *Server) newChunkManagerFactory() (storage.ChunkManager, error) {
 }
 
 func (s *Server) initGarbageCollection(cli storage.ChunkManager) {
-	s.garbageCollector = newGarbageCollector(s.meta, s.segReferManager, s.indexCoord, GcOption{
+	s.garbageCollector = newGarbageCollector(s.meta, s.handler, s.segReferManager, s.indexCoord, GcOption{
 		cli:              cli,
 		enabled:          Params.DataCoordCfg.EnableGarbageCollection,
 		checkInterval:    Params.DataCoordCfg.GCInterval,
 		missingTolerance: Params.DataCoordCfg.GCMissingTolerance,
 		dropTolerance:    Params.DataCoordCfg.GCDropTolerance,
 	})
-}
-
-// here we use variable for test convenience
-var getCheckBucketFn = func(cli *minio.Client) func() error {
-	return func() error {
-		has, err := cli.BucketExists(context.TODO(), Params.MinioCfg.BucketName)
-		if err != nil {
-			return err
-		}
-		if !has {
-			err = cli.MakeBucket(context.TODO(), Params.MinioCfg.BucketName, minio.MakeBucketOptions{})
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	}
 }
 
 func (s *Server) initServiceDiscovery() error {
@@ -626,13 +595,12 @@ func (s *Server) handleTimetickMessage(ctx context.Context, ttMsg *msgstream.Dat
 func (s *Server) updateSegmentStatistics(stats []*datapb.SegmentStats) {
 	for _, stat := range stats {
 		// Log if # of rows is updated.
-		if s.meta.GetAllSegment(stat.GetSegmentID()) != nil &&
-			s.meta.GetAllSegment(stat.GetSegmentID()).GetNumOfRows() != stat.GetNumRows() {
+		if s.meta.GetSegmentUnsafe(stat.GetSegmentID()) != nil &&
+			s.meta.GetSegmentUnsafe(stat.GetSegmentID()).GetNumOfRows() != stat.GetNumRows() {
 			log.Debug("Updating segment number of rows",
 				zap.Int64("segment ID", stat.GetSegmentID()),
-				zap.Int64("old value", s.meta.GetAllSegment(stat.GetSegmentID()).GetNumOfRows()),
+				zap.Int64("old value", s.meta.GetSegmentUnsafe(stat.GetSegmentID()).GetNumOfRows()),
 				zap.Int64("new value", stat.GetNumRows()),
-				zap.Any("seg info", s.meta.GetSegment(stat.GetSegmentID())),
 			)
 		}
 		s.meta.SetCurrentRows(stat.GetSegmentID(), stat.GetNumRows())
@@ -865,9 +833,10 @@ func (s *Server) initRootCoordClient() error {
 // Stop do the Server finalize processes
 // it checks the server status is healthy, if not, just quit
 // if Server is healthy, set server state to stopped, release etcd session,
+//
 //	stop message stream client and stop server loops
 func (s *Server) Stop() error {
-	if !atomic.CompareAndSwapInt64(&s.isServing, ServerStateHealthy, ServerStateStopped) {
+	if !s.stateCode.CompareAndSwap(commonpb.StateCode_Healthy, commonpb.StateCode_Abnormal) {
 		return nil
 	}
 	logutil.Logger(s.ctx).Debug("server shutdown")
@@ -913,10 +882,10 @@ func (s *Server) stopServerLoop() {
 // collection information will be added to server meta info.
 func (s *Server) loadCollectionFromRootCoord(ctx context.Context, collectionID int64) error {
 	resp, err := s.rootCoordClient.DescribeCollection(ctx, &milvuspb.DescribeCollectionRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:  commonpb.MsgType_DescribeCollection,
-			SourceID: Params.DataCoordCfg.GetNodeID(),
-		},
+		Base: commonpbutil.NewMsgBase(
+			commonpbutil.WithMsgType(commonpb.MsgType_DescribeCollection),
+			commonpbutil.WithSourceID(Params.DataCoordCfg.GetNodeID()),
+		),
 		DbName:       "",
 		CollectionID: collectionID,
 	})
@@ -924,12 +893,12 @@ func (s *Server) loadCollectionFromRootCoord(ctx context.Context, collectionID i
 		return err
 	}
 	presp, err := s.rootCoordClient.ShowPartitions(ctx, &milvuspb.ShowPartitionsRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:   commonpb.MsgType_ShowPartitions,
-			MsgID:     0,
-			Timestamp: 0,
-			SourceID:  Params.DataCoordCfg.GetNodeID(),
-		},
+		Base: commonpbutil.NewMsgBase(
+			commonpbutil.WithMsgType(commonpb.MsgType_ShowPartitions),
+			commonpbutil.WithMsgID(0),
+			commonpbutil.WithTimeStamp(0),
+			commonpbutil.WithSourceID(Params.DataCoordCfg.GetNodeID()),
+		),
 		DbName:         "",
 		CollectionName: resp.Schema.Name,
 		CollectionID:   resp.CollectionID,
@@ -939,11 +908,18 @@ func (s *Server) loadCollectionFromRootCoord(ctx context.Context, collectionID i
 			zap.Int64("collectionID", resp.CollectionID), zap.Error(err))
 		return err
 	}
-	collInfo := &datapb.CollectionInfo{
+
+	properties := make(map[string]string)
+	for _, pair := range resp.Properties {
+		properties[pair.GetKey()] = pair.GetValue()
+	}
+
+	collInfo := &collectionInfo{
 		ID:             resp.CollectionID,
 		Schema:         resp.Schema,
 		Partitions:     presp.PartitionIDs,
 		StartPositions: resp.GetStartPositions(),
+		Properties:     properties,
 	}
 	s.meta.AddCollection(collInfo)
 	return nil

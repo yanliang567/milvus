@@ -19,8 +19,8 @@ package mock
 import (
 	"context"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/types"
@@ -49,8 +49,8 @@ func (q QueryNodeClient) Stop() error {
 	return nil
 }
 
-func (q QueryNodeClient) GetComponentStates(ctx context.Context) (*internalpb.ComponentStates, error) {
-	return q.grpcClient.GetComponentStates(ctx, &internalpb.GetComponentStatesRequest{})
+func (q QueryNodeClient) GetComponentStates(ctx context.Context) (*milvuspb.ComponentStates, error) {
+	return q.grpcClient.GetComponentStates(ctx, &milvuspb.GetComponentStatesRequest{})
 }
 
 func (q QueryNodeClient) GetStatisticsChannel(ctx context.Context) (*milvuspb.StringResponse, error) {

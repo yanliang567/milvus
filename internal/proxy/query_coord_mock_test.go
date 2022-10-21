@@ -25,8 +25,8 @@ import (
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/uniquegenerator"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
@@ -43,6 +43,12 @@ type queryCoordShowConfigurationsFuncType func(ctx context.Context, request *int
 func SetQueryCoordShowCollectionsFunc(f queryCoordShowCollectionsFuncType) QueryCoordMockOption {
 	return func(mock *QueryCoordMock) {
 		mock.showCollectionsFunc = f
+	}
+}
+
+func SetQueryCoordShowPartitionsFunc(f queryCoordShowPartitionsFuncType) QueryCoordMockOption {
+	return func(mock *QueryCoordMock) {
+		mock.showPartitionsFunc = f
 	}
 }
 
@@ -71,40 +77,48 @@ type QueryCoordMock struct {
 	timeTickChannel   string
 
 	validShardLeaders bool
+	checkHealthFunc   func(ctx context.Context, req *milvuspb.CheckHealthRequest) (*milvuspb.CheckHealthResponse, error)
 }
 
-func (coord *QueryCoordMock) updateState(state internalpb.StateCode) {
+func (coord *QueryCoordMock) CheckHealth(ctx context.Context, req *milvuspb.CheckHealthRequest) (*milvuspb.CheckHealthResponse, error) {
+	if coord.checkHealthFunc != nil {
+		return coord.checkHealthFunc(ctx, req)
+	}
+	return &milvuspb.CheckHealthResponse{IsHealthy: true}, nil
+}
+
+func (coord *QueryCoordMock) updateState(state commonpb.StateCode) {
 	coord.state.Store(state)
 }
 
-func (coord *QueryCoordMock) getState() internalpb.StateCode {
-	return coord.state.Load().(internalpb.StateCode)
+func (coord *QueryCoordMock) getState() commonpb.StateCode {
+	return coord.state.Load().(commonpb.StateCode)
 }
 
 func (coord *QueryCoordMock) healthy() bool {
-	return coord.getState() == internalpb.StateCode_Healthy
+	return coord.getState() == commonpb.StateCode_Healthy
 }
 
 func (coord *QueryCoordMock) Init() error {
-	coord.updateState(internalpb.StateCode_Initializing)
+	coord.updateState(commonpb.StateCode_Initializing)
 	return nil
 }
 
 func (coord *QueryCoordMock) Start() error {
-	defer coord.updateState(internalpb.StateCode_Healthy)
+	defer coord.updateState(commonpb.StateCode_Healthy)
 
 	return nil
 }
 
 func (coord *QueryCoordMock) Stop() error {
-	defer coord.updateState(internalpb.StateCode_Abnormal)
+	defer coord.updateState(commonpb.StateCode_Abnormal)
 
 	return nil
 }
 
-func (coord *QueryCoordMock) GetComponentStates(ctx context.Context) (*internalpb.ComponentStates, error) {
-	return &internalpb.ComponentStates{
-		State: &internalpb.ComponentInfo{
+func (coord *QueryCoordMock) GetComponentStates(ctx context.Context) (*milvuspb.ComponentStates, error) {
+	return &milvuspb.ComponentStates{
+		State: &milvuspb.ComponentInfo{
 			NodeID:    coord.nodeID,
 			Role:      typeutil.QueryCoordRole,
 			StateCode: coord.getState(),

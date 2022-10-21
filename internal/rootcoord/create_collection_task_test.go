@@ -11,13 +11,12 @@ import (
 	"github.com/stretchr/testify/mock"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
-	"github.com/milvus-io/milvus/api/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/metastore/model"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/etcdpb"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/stretchr/testify/assert"
 )
@@ -35,6 +34,17 @@ func Test_createCollectionTask_validate(t *testing.T) {
 		task := createCollectionTask{
 			Req: &milvuspb.CreateCollectionRequest{
 				Base: &commonpb.MsgBase{MsgType: commonpb.MsgType_DropCollection},
+			},
+		}
+		err := task.validate()
+		assert.Error(t, err)
+	})
+
+	t.Run("shard num exceeds limit", func(t *testing.T) {
+		task := createCollectionTask{
+			Req: &milvuspb.CreateCollectionRequest{
+				Base:      &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection},
+				ShardsNum: maxShardNum + 1,
 			},
 		}
 		err := task.validate()
@@ -370,11 +380,11 @@ func Test_createCollectionTask_Execute(t *testing.T) {
 		}
 
 		dc := newMockDataCoord()
-		dc.GetComponentStatesFunc = func(ctx context.Context) (*internalpb.ComponentStates, error) {
-			return &internalpb.ComponentStates{
-				State: &internalpb.ComponentInfo{
+		dc.GetComponentStatesFunc = func(ctx context.Context) (*milvuspb.ComponentStates, error) {
+			return &milvuspb.ComponentStates{
+				State: &milvuspb.ComponentInfo{
 					NodeID:    TestRootCoordID,
-					StateCode: internalpb.StateCode_Healthy,
+					StateCode: commonpb.StateCode_Healthy,
 				},
 				SubcomponentStates: nil,
 				Status:             succStatus(),

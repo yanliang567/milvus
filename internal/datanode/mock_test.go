@@ -40,9 +40,9 @@ import (
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
-	"github.com/milvus-io/milvus/api/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/etcdpb"
@@ -271,9 +271,21 @@ func (ds *DataCoordFactory) MarkSegmentsDropped(context.Context, *datapb.MarkSeg
 	}, nil
 }
 
+func (ds *DataCoordFactory) BroadcastAlteredCollection(ctx context.Context, req *milvuspb.AlterCollectionRequest) (*commonpb.Status, error) {
+	return &commonpb.Status{
+		ErrorCode: commonpb.ErrorCode_Success,
+	}, nil
+}
+
+func (ds *DataCoordFactory) CheckHealth(ctx context.Context, req *milvuspb.CheckHealthRequest) (*milvuspb.CheckHealthResponse, error) {
+	return &milvuspb.CheckHealthResponse{
+		IsHealthy: true,
+	}, nil
+}
+
 func (ds *DataCoordFactory) GetSegmentInfo(ctx context.Context, req *datapb.GetSegmentInfoRequest) (*datapb.GetSegmentInfoResponse, error) {
 	if ds.GetSegmentInfosError {
-		return nil, errors.New("mock error")
+		return nil, errors.New("mock get segment info error")
 	}
 	if ds.GetSegmentInfosNotSuccess {
 		return &datapb.GetSegmentInfoResponse{
@@ -1002,10 +1014,10 @@ func (m *RootCoordFactory) DescribeCollection(ctx context.Context, in *milvuspb.
 	return resp, nil
 }
 
-func (m *RootCoordFactory) GetComponentStates(ctx context.Context) (*internalpb.ComponentStates, error) {
-	return &internalpb.ComponentStates{
-		State:              &internalpb.ComponentInfo{},
-		SubcomponentStates: make([]*internalpb.ComponentInfo, 0),
+func (m *RootCoordFactory) GetComponentStates(ctx context.Context) (*milvuspb.ComponentStates, error) {
+	return &milvuspb.ComponentStates{
+		State:              &milvuspb.ComponentInfo{},
+		SubcomponentStates: make([]*milvuspb.ComponentInfo, 0),
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_Success,
 		},
@@ -1021,7 +1033,7 @@ func (m *RootCoordFactory) ReportImport(ctx context.Context, req *rootcoordpb.Im
 	if m.ReportImportErr {
 		return &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_Success,
-		}, fmt.Errorf("mock error")
+		}, fmt.Errorf("mock report import error")
 	}
 	if m.ReportImportNotSuccess {
 		return &commonpb.Status{

@@ -5,11 +5,15 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
+
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
+	"github.com/milvus-io/milvus/internal/util/commonpbutil"
 
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 
-	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"go.uber.org/zap"
@@ -21,6 +25,7 @@ type watchInfo struct {
 	partitionID    UniqueID
 	vChannels      []string
 	startPositions []*commonpb.KeyDataPair
+	schema         *schemapb.CollectionSchema
 }
 
 // Broker communicates with other components.
@@ -40,6 +45,8 @@ type Broker interface {
 	DropCollectionIndex(ctx context.Context, collID UniqueID, partIDs []UniqueID) error
 	GetSegmentIndexState(ctx context.Context, collID UniqueID, indexName string, segIDs []UniqueID) ([]*indexpb.SegmentIndexState, error)
 	DescribeIndex(ctx context.Context, colID UniqueID) (*indexpb.DescribeIndexResponse, error)
+
+	BroadcastAlteredCollection(ctx context.Context, req *milvuspb.AlterCollectionRequest) error
 }
 
 type ServerBroker struct {
@@ -54,7 +61,7 @@ func (b *ServerBroker) ReleaseCollection(ctx context.Context, collectionID Uniqu
 	log.Info("releasing collection", zap.Int64("collection", collectionID))
 
 	resp, err := b.s.queryCoord.ReleaseCollection(ctx, &querypb.ReleaseCollectionRequest{
-		Base:         &commonpb.MsgBase{MsgType: commonpb.MsgType_ReleaseCollection},
+		Base:         commonpbutil.NewMsgBase(commonpbutil.WithMsgType(commonpb.MsgType_ReleaseCollection)),
 		CollectionID: collectionID,
 		NodeID:       b.s.session.ServerID,
 	})
@@ -72,10 +79,10 @@ func (b *ServerBroker) ReleaseCollection(ctx context.Context, collectionID Uniqu
 
 func (b *ServerBroker) GetQuerySegmentInfo(ctx context.Context, collectionID int64, segIDs []int64) (retResp *querypb.GetSegmentInfoResponse, retErr error) {
 	resp, err := b.s.queryCoord.GetSegmentInfo(ctx, &querypb.GetSegmentInfoRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:  commonpb.MsgType_GetSegmentState,
-			SourceID: b.s.session.ServerID,
-		},
+		Base: commonpbutil.NewMsgBase(
+			commonpbutil.WithMsgType(commonpb.MsgType_GetSegmentState),
+			commonpbutil.WithSourceID(b.s.session.ServerID),
+		),
 		CollectionID: collectionID,
 		SegmentIDs:   segIDs,
 	})
@@ -100,6 +107,7 @@ func (b *ServerBroker) WatchChannels(ctx context.Context, info *watchInfo) error
 		CollectionID:   info.collectionID,
 		ChannelNames:   info.vChannels,
 		StartPositions: info.startPositions,
+		Schema:         info.schema,
 	})
 	if err != nil {
 		return err
@@ -162,10 +170,10 @@ func (b *ServerBroker) ReleaseSegRefLock(ctx context.Context, taskID int64, segI
 
 func (b *ServerBroker) Flush(ctx context.Context, cID int64, segIDs []int64) error {
 	resp, err := b.s.dataCoord.Flush(ctx, &datapb.FlushRequest{
-		Base: &commonpb.MsgBase{
-			MsgType:  commonpb.MsgType_Flush,
-			SourceID: b.s.session.ServerID,
-		},
+		Base: commonpbutil.NewMsgBase(
+			commonpbutil.WithMsgType(commonpb.MsgType_Flush),
+			commonpbutil.WithSourceID(b.s.session.ServerID),
+		),
 		DbID:         0,
 		SegmentIDs:   segIDs,
 		CollectionID: cID,
@@ -221,6 +229,19 @@ func (b *ServerBroker) GetSegmentIndexState(ctx context.Context, collID UniqueID
 	}
 
 	return resp.GetStates(), nil
+}
+
+func (b *ServerBroker) BroadcastAlteredCollection(ctx context.Context, req *milvuspb.AlterCollectionRequest) error {
+	log.Info("")
+	resp, err := b.s.dataCoord.BroadcastAlteredCollection(ctx, req)
+	if err != nil {
+		return err
+	}
+
+	if resp.ErrorCode != commonpb.ErrorCode_Success {
+		return errors.New(resp.Reason)
+	}
+	return nil
 }
 
 func (b *ServerBroker) DescribeIndex(ctx context.Context, colID UniqueID) (*indexpb.DescribeIndexResponse, error) {

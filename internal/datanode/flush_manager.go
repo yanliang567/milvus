@@ -27,7 +27,7 @@ import (
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
@@ -35,9 +35,11 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/etcdpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/storage"
+	"github.com/milvus-io/milvus/internal/util/commonpbutil"
 	"github.com/milvus-io/milvus/internal/util/metautil"
 	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
+	"github.com/samber/lo"
 )
 
 // flushManager defines a flush manager signature
@@ -261,7 +263,7 @@ type dropHandler struct {
 type rendezvousFlushManager struct {
 	allocatorInterface
 	storage.ChunkManager
-	Replica
+	Channel
 
 	// segment id => flush queue
 	dispatcher sync.Map
@@ -404,24 +406,26 @@ func (m *rendezvousFlushManager) flushBufferData(data *BufferData, segStats []by
 	field2Stats := make(map[UniqueID]*datapb.Binlog)
 	// write stats binlog
 
-	pkID := getPKID(meta)
-	if pkID == common.InvalidFieldID {
-		return fmt.Errorf("failed to get pk id for segment %d", segmentID)
+	// if segStats content is not nil, means segment stats changed
+	if len(segStats) > 0 {
+		pkID := getPKID(meta)
+		if pkID == common.InvalidFieldID {
+			return fmt.Errorf("failed to get pk id for segment %d", segmentID)
+		}
+
+		logidx := start + int64(len(binLogs))
+		k := metautil.JoinIDPath(collID, partID, segmentID, pkID, logidx)
+		key := path.Join(m.ChunkManager.RootPath(), common.SegmentStatslogPath, k)
+		kvs[key] = segStats
+		field2Stats[pkID] = &datapb.Binlog{
+			EntriesNum:    0,
+			TimestampFrom: 0, //TODO
+			TimestampTo:   0, //TODO,
+			LogPath:       key,
+			LogSize:       int64(len(segStats)),
+		}
 	}
 
-	logidx := start + int64(len(binLogs))
-	k := metautil.JoinIDPath(collID, partID, segmentID, pkID, logidx)
-	key := path.Join(m.ChunkManager.RootPath(), common.SegmentStatslogPath, k)
-	kvs[key] = segStats
-	field2Stats[pkID] = &datapb.Binlog{
-		EntriesNum:    0,
-		TimestampFrom: 0, //TODO
-		TimestampTo:   0, //TODO,
-		LogPath:       key,
-		LogSize:       int64(len(segStats)),
-	}
-
-	m.updateSegmentCheckPoint(segmentID)
 	m.handleInsertTask(segmentID, &flushBufferInsertTask{
 		ChunkManager: m.ChunkManager,
 		data:         kvs,
@@ -483,7 +487,7 @@ func (m *rendezvousFlushManager) injectFlush(injection *taskInjection, segments 
 // fetch meta info for segment
 func (m *rendezvousFlushManager) getSegmentMeta(segmentID UniqueID, pos *internalpb.MsgPosition) (UniqueID, UniqueID, *etcdpb.CollectionMeta, error) {
 	if !m.hasSegment(segmentID, true) {
-		return -1, -1, nil, fmt.Errorf("no such segment %d in the replica", segmentID)
+		return -1, -1, nil, fmt.Errorf("no such segment %d in the channel", segmentID)
 	}
 
 	// fetch meta information of segment
@@ -607,12 +611,12 @@ func (t *flushBufferDeleteTask) flushDeleteData() error {
 }
 
 // NewRendezvousFlushManager create rendezvousFlushManager with provided allocator and kv
-func NewRendezvousFlushManager(allocator allocatorInterface, cm storage.ChunkManager, replica Replica, f notifyMetaFunc, drop flushAndDropFunc) *rendezvousFlushManager {
+func NewRendezvousFlushManager(allocator allocatorInterface, cm storage.ChunkManager, channel Channel, f notifyMetaFunc, drop flushAndDropFunc) *rendezvousFlushManager {
 	fm := &rendezvousFlushManager{
 		allocatorInterface: allocator,
 		ChunkManager:       cm,
 		notifyFunc:         f,
-		Replica:            replica,
+		Channel:            channel,
 		dropHandler: dropHandler{
 			flushAndDrop: drop,
 		},
@@ -634,12 +638,12 @@ func getFieldBinlogs(fieldID UniqueID, binlogs []*datapb.FieldBinlog) *datapb.Fi
 func dropVirtualChannelFunc(dsService *dataSyncService, opts ...retry.Option) flushAndDropFunc {
 	return func(packs []*segmentFlushPack) {
 		req := &datapb.DropVirtualChannelRequest{
-			Base: &commonpb.MsgBase{
-				MsgType:   0, //TODO msg type
-				MsgID:     0, //TODO msg id
-				Timestamp: 0, //TODO time stamp
-				SourceID:  Params.DataNodeCfg.GetNodeID(),
-			},
+			Base: commonpbutil.NewMsgBase(
+				commonpbutil.WithMsgType(0),   //TODO msg type
+				commonpbutil.WithMsgID(0),     //TODO msg id
+				commonpbutil.WithTimeStamp(0), //TODO time stamp
+				commonpbutil.WithSourceID(Params.DataNodeCfg.GetNodeID()),
+			),
 			ChannelName: dsService.vchannelName,
 		}
 
@@ -679,7 +683,7 @@ func dropVirtualChannelFunc(dsService *dataSyncService, opts ...retry.Option) fl
 			segment.Deltalogs = append(segment.Deltalogs, &datapb.FieldBinlog{
 				Binlogs: pack.deltaLogs,
 			})
-			updates, _ := dsService.replica.getSegmentStatisticsUpdates(pack.segmentID)
+			updates, _ := dsService.channel.getSegmentStatisticsUpdates(pack.segmentID)
 			segment.NumOfRows = updates.GetNumRows()
 			if pack.pos != nil {
 				if segment.CheckPoint == nil || pack.pos.Timestamp > segment.CheckPoint.Timestamp {
@@ -688,8 +692,9 @@ func dropVirtualChannelFunc(dsService *dataSyncService, opts ...retry.Option) fl
 			}
 		}
 
+		startPos := dsService.channel.listNewSegmentsStartPositions()
 		// start positions for all new segments
-		for _, pos := range dsService.replica.listNewSegmentsStartPositions() {
+		for _, pos := range startPos {
 			segment, has := segmentPack[pos.GetSegmentID()]
 			if !has {
 				segment = &datapb.DropVirtualChannelSegment{
@@ -726,6 +731,9 @@ func dropVirtualChannelFunc(dsService *dataSyncService, opts ...retry.Option) fl
 			if rsp.GetStatus().GetErrorCode() != commonpb.ErrorCode_Success {
 				return fmt.Errorf("data service DropVirtualChannel failed, reason = %s", rsp.GetStatus().GetReason())
 			}
+			dsService.channel.transferNewSegments(lo.Map(startPos, func(pos *datapb.SegmentStartPosition, _ int) UniqueID {
+				return pos.GetSegmentID()
+			}))
 			return nil
 		}, opts...)
 		if err != nil {
@@ -733,7 +741,7 @@ func dropVirtualChannelFunc(dsService *dataSyncService, opts ...retry.Option) fl
 			panic(err)
 		}
 		for segID := range segmentPack {
-			dsService.replica.segmentFlushed(segID)
+			dsService.channel.segmentFlushed(segID)
 			dsService.flushingSegCache.Remove(segID)
 		}
 	}
@@ -763,14 +771,14 @@ func flushNotifyFunc(dsService *dataSyncService, opts ...retry.Option) notifyMet
 		deltaInfos[0] = &datapb.FieldBinlog{Binlogs: pack.deltaLogs}
 
 		// only current segment checkpoint info,
-		updates, _ := dsService.replica.getSegmentStatisticsUpdates(pack.segmentID)
+		updates, _ := dsService.channel.getSegmentStatisticsUpdates(pack.segmentID)
 		checkPoints = append(checkPoints, &datapb.CheckPoint{
 			SegmentID: pack.segmentID,
 			NumOfRows: updates.GetNumRows(),
 			Position:  pack.pos,
 		})
 
-		startPos := dsService.replica.listNewSegmentsStartPositions()
+		startPos := dsService.channel.listNewSegmentsStartPositions()
 
 		log.Info("SaveBinlogPath",
 			zap.Int64("SegmentID", pack.segmentID),
@@ -783,12 +791,12 @@ func flushNotifyFunc(dsService *dataSyncService, opts ...retry.Option) notifyMet
 		)
 
 		req := &datapb.SaveBinlogPathsRequest{
-			Base: &commonpb.MsgBase{
-				MsgType:   0, //TODO msg type
-				MsgID:     0, //TODO msg id
-				Timestamp: 0, //TODO time stamp
-				SourceID:  Params.DataNodeCfg.GetNodeID(),
-			},
+			Base: commonpbutil.NewMsgBase(
+				commonpbutil.WithMsgType(0),
+				commonpbutil.WithMsgID(0),
+				commonpbutil.WithTimeStamp(0),
+				commonpbutil.WithSourceID(Params.DataNodeCfg.GetNodeID()),
+			),
 			SegmentID:           pack.segmentID,
 			CollectionID:        dsService.collectionID,
 			Field2BinlogPaths:   fieldInsert,
@@ -827,6 +835,10 @@ func flushNotifyFunc(dsService *dataSyncService, opts ...retry.Option) notifyMet
 			if rsp.ErrorCode != commonpb.ErrorCode_Success {
 				return fmt.Errorf("data service save bin log path failed, reason = %s", rsp.Reason)
 			}
+
+			dsService.channel.transferNewSegments(lo.Map(startPos, func(pos *datapb.SegmentStartPosition, _ int) UniqueID {
+				return pos.GetSegmentID()
+			}))
 			return nil
 		}, opts...)
 		if err != nil {
@@ -837,7 +849,7 @@ func flushNotifyFunc(dsService *dataSyncService, opts ...retry.Option) notifyMet
 			panic(err)
 		}
 		if pack.flushed || pack.dropped {
-			dsService.replica.segmentFlushed(pack.segmentID)
+			dsService.channel.segmentFlushed(pack.segmentID)
 		}
 		dsService.flushingSegCache.Remove(req.GetSegmentID())
 	}

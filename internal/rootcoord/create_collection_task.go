@@ -8,9 +8,10 @@ import (
 	ms "github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 
+	"github.com/milvus-io/milvus/internal/util/commonpbutil"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 
-	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 
 	pb "github.com/milvus-io/milvus/internal/proto/etcdpb"
 
@@ -22,9 +23,9 @@ import (
 
 	"github.com/golang/protobuf/proto"
 
-	"github.com/milvus-io/milvus/api/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 )
 
 type collectionChannels struct {
@@ -48,6 +49,10 @@ func (t *createCollectionTask) validate() error {
 
 	if err := CheckMsgType(t.Req.GetBase().GetMsgType(), commonpb.MsgType_CreateCollection); err != nil {
 		return err
+	}
+
+	if t.Req.GetShardsNum() >= maxShardNum {
+		return fmt.Errorf("shard num (%d) exceeds limit (%d)", t.Req.GetShardsNum(), maxShardNum)
 	}
 
 	return nil
@@ -187,7 +192,10 @@ func (t *createCollectionTask) genCreateCollectionMsg(ctx context.Context) *ms.M
 	msg := &ms.CreateCollectionMsg{
 		BaseMsg: baseMsg,
 		CreateCollectionRequest: internalpb.CreateCollectionRequest{
-			Base:                 &commonpb.MsgBase{MsgType: commonpb.MsgType_CreateCollection, Timestamp: ts},
+			Base: commonpbutil.NewMsgBase(
+				commonpbutil.WithMsgType(commonpb.MsgType_CreateCollection),
+				commonpbutil.WithTimeStamp(ts),
+			),
 			CollectionID:         collectionID,
 			PartitionID:          partitionID,
 			Schema:               marshaledSchema,
@@ -242,6 +250,7 @@ func (t *createCollectionTask) Execute(ctx context.Context) error {
 				State:                     pb.PartitionState_PartitionCreated,
 			},
 		},
+		Properties: t.Req.Properties,
 	}
 
 	// We cannot check the idempotency inside meta table when adding collection, since we'll execute duplicate steps
@@ -288,6 +297,12 @@ func (t *createCollectionTask) Execute(ctx context.Context) error {
 			collectionID:   collID,
 			vChannels:      t.channels.virtualChannels,
 			startPositions: toKeyDataPairs(startPositions),
+			schema: &schemapb.CollectionSchema{
+				Name:        collInfo.Name,
+				Description: collInfo.Description,
+				AutoID:      collInfo.AutoID,
+				Fields:      model.MarshalFieldModels(collInfo.Fields),
+			},
 		},
 	}, &nullStep{})
 	undoTask.AddStep(&changeCollectionStateStep{

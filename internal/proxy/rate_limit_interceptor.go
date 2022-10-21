@@ -24,8 +24,8 @@ import (
 	"github.com/golang/protobuf/proto"
 	"google.golang.org/grpc"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/types"
 )
@@ -60,7 +60,8 @@ func getRequestInfo(req interface{}) (internalpb.RateType, int, error) {
 		return internalpb.RateType_DMLInsert, proto.Size(r), nil
 	case *milvuspb.DeleteRequest:
 		return internalpb.RateType_DMLDelete, proto.Size(r), nil
-	// TODO: add bulkLoad
+	case *milvuspb.ImportRequest:
+		return internalpb.RateType_DMLBulkLoad, proto.Size(r), nil
 	case *milvuspb.SearchRequest:
 		return internalpb.RateType_DQLSearch, int(r.GetNq()), nil
 	case *milvuspb.QueryRequest:
@@ -115,7 +116,10 @@ func getFailedResponse(req interface{}, code commonpb.ErrorCode, reason string) 
 	switch req.(type) {
 	case *milvuspb.InsertRequest, *milvuspb.DeleteRequest:
 		return failedMutationResult(code, reason), nil
-	// TODO: add bulkLoad
+	case *milvuspb.ImportRequest:
+		return &milvuspb.ImportResponse{
+			Status: failedStatus(code, reason),
+		}, nil
 	case *milvuspb.SearchRequest:
 		return &milvuspb.SearchResults{
 			Status: failedStatus(code, reason),

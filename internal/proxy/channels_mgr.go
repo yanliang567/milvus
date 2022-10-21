@@ -24,12 +24,13 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/commonpbutil"
 
 	"go.uber.org/zap"
 )
@@ -39,8 +40,8 @@ type channelsMgr interface {
 	getChannels(collectionID UniqueID) ([]pChan, error)
 	getVChannels(collectionID UniqueID) ([]vChan, error)
 	getOrCreateDmlStream(collectionID UniqueID) (msgstream.MsgStream, error)
-	removeDMLStream(collectionID UniqueID) error
-	removeAllDMLStream() error
+	removeDMLStream(collectionID UniqueID)
+	removeAllDMLStream()
 }
 
 type channelInfos struct {
@@ -89,7 +90,7 @@ type repackFuncType = func(tsMsgs []msgstream.TsMsg, hashKeys [][]int32) (map[in
 func getDmlChannelsFunc(ctx context.Context, rc types.RootCoord) getChannelsFuncType {
 	return func(collectionID UniqueID) (channelInfos, error) {
 		req := &milvuspb.DescribeCollectionRequest{
-			Base:         &commonpb.MsgBase{MsgType: commonpb.MsgType_DescribeCollection},
+			Base:         commonpbutil.NewMsgBase(commonpbutil.WithMsgType(commonpb.MsgType_DescribeCollection)),
 			CollectionID: collectionID,
 		}
 
@@ -279,7 +280,7 @@ func (mgr *singleTypeChannelsMgr) getOrCreateStream(collectionID UniqueID) (msgs
 
 // removeStream remove the corresponding stream of the specified collection. Idempotent.
 // If stream already exists, remove it, otherwise do nothing.
-func (mgr *singleTypeChannelsMgr) removeStream(collectionID UniqueID) error {
+func (mgr *singleTypeChannelsMgr) removeStream(collectionID UniqueID) {
 	mgr.mu.Lock()
 	defer mgr.mu.Unlock()
 	if info, ok := mgr.infos[collectionID]; ok {
@@ -288,11 +289,10 @@ func (mgr *singleTypeChannelsMgr) removeStream(collectionID UniqueID) error {
 		delete(mgr.infos, collectionID)
 	}
 	log.Info("dml stream removed", zap.Int64("collection_id", collectionID))
-	return nil
 }
 
 // removeAllStream remove all message stream.
-func (mgr *singleTypeChannelsMgr) removeAllStream() error {
+func (mgr *singleTypeChannelsMgr) removeAllStream() {
 	mgr.mu.Lock()
 	defer mgr.mu.Unlock()
 	for _, info := range mgr.infos {
@@ -301,7 +301,6 @@ func (mgr *singleTypeChannelsMgr) removeAllStream() error {
 	}
 	mgr.infos = make(map[UniqueID]streamInfos)
 	log.Info("all dml stream removed")
-	return nil
 }
 
 func newSingleTypeChannelsMgr(
@@ -339,12 +338,12 @@ func (mgr *channelsMgrImpl) getOrCreateDmlStream(collectionID UniqueID) (msgstre
 	return mgr.dmlChannelsMgr.getOrCreateStream(collectionID)
 }
 
-func (mgr *channelsMgrImpl) removeDMLStream(collectionID UniqueID) error {
-	return mgr.dmlChannelsMgr.removeStream(collectionID)
+func (mgr *channelsMgrImpl) removeDMLStream(collectionID UniqueID) {
+	mgr.dmlChannelsMgr.removeStream(collectionID)
 }
 
-func (mgr *channelsMgrImpl) removeAllDMLStream() error {
-	return mgr.dmlChannelsMgr.removeAllStream()
+func (mgr *channelsMgrImpl) removeAllDMLStream() {
+	mgr.dmlChannelsMgr.removeAllStream()
 }
 
 // newChannelsMgrImpl constructs a channels manager.

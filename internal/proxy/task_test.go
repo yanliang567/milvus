@@ -27,6 +27,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/proto/querypb"
+
+	"github.com/milvus-io/milvus/internal/proto/indexpb"
+
 	"github.com/milvus-io/milvus/internal/mocks"
 	"github.com/stretchr/testify/mock"
 
@@ -38,9 +42,9 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/milvus-io/milvus/api/commonpb"
-	"github.com/milvus-io/milvus/api/milvuspb"
-	"github.com/milvus-io/milvus/api/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 
@@ -827,7 +831,7 @@ func TestHasCollectionTask(t *testing.T) {
 	err = task.PreExecute(ctx)
 	assert.NotNil(t, err)
 
-	rc.updateState(internalpb.StateCode_Abnormal)
+	rc.updateState(commonpb.StateCode_Abnormal)
 	task.CollectionName = collectionName
 	err = task.PreExecute(ctx)
 	assert.Nil(t, err)
@@ -1089,6 +1093,18 @@ func TestDropPartitionTask(t *testing.T) {
 	collectionName := prefix + funcutil.GenRandomStr()
 	partitionName := prefix + funcutil.GenRandomStr()
 
+	showPartitionsMock := func(ctx context.Context, request *querypb.ShowPartitionsRequest) (*querypb.ShowPartitionsResponse, error) {
+		return &querypb.ShowPartitionsResponse{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_Success,
+				Reason:    "",
+			},
+			PartitionIDs: []int64{},
+		}, nil
+	}
+	qc := NewQueryCoordMock(withValidShardLeaders(), SetQueryCoordShowPartitionsFunc(showPartitionsMock))
+	qc.updateState(commonpb.StateCode_Healthy)
+
 	task := &dropPartitionTask{
 		Condition: NewTaskCondition(ctx),
 		DropPartitionRequest: &milvuspb.DropPartitionRequest{
@@ -1101,9 +1117,10 @@ func TestDropPartitionTask(t *testing.T) {
 			CollectionName: collectionName,
 			PartitionName:  partitionName,
 		},
-		ctx:       ctx,
-		rootCoord: rc,
-		result:    nil,
+		ctx:        ctx,
+		rootCoord:  rc,
+		queryCoord: qc,
+		result:     nil,
 	}
 	task.PreExecute(ctx)
 
@@ -2059,6 +2076,7 @@ func Test_checkTrain(t *testing.T) {
 func Test_createIndexTask_PreExecute(t *testing.T) {
 	collectionName := "test"
 	fieldName := "test"
+	Params.Init()
 
 	cit := &createIndexTask{
 		req: &milvuspb.CreateIndexRequest{
@@ -2121,6 +2139,35 @@ func Test_createIndexTask_PreExecute(t *testing.T) {
 		globalMetaCache = cache
 		assert.Error(t, cit.PreExecute(context.Background()))
 	})
+
+	t.Run("index name length exceed 255", func(t *testing.T) {
+		cache := newMockCache()
+		cache.setGetIDFunc(func(ctx context.Context, collectionName string) (typeutil.UniqueID, error) {
+			return 100, nil
+		})
+		globalMetaCache = cache
+
+		for i := 0; i < 256; i++ {
+			cit.req.IndexName += "a"
+		}
+		err := cit.PreExecute(context.Background())
+
+		assert.Error(t, err)
+	})
+
+	t.Run("index name start with number", func(t *testing.T) {
+		cit.req.IndexName = "12a"
+		err := cit.PreExecute(context.Background())
+
+		assert.Error(t, err)
+	})
+
+	t.Run("index name include special characters", func(t *testing.T) {
+		cit.req.IndexName = "ac#1"
+		err := cit.PreExecute(context.Background())
+
+		assert.Error(t, err)
+	})
 }
 
 func Test_dropCollectionTask_PreExecute(t *testing.T) {
@@ -2172,4 +2219,198 @@ func Test_dropCollectionTask_Execute(t *testing.T) {
 func Test_dropCollectionTask_PostExecute(t *testing.T) {
 	dct := &dropCollectionTask{}
 	assert.NoError(t, dct.PostExecute(context.Background()))
+}
+
+func Test_loadCollectionTask_Execute(t *testing.T) {
+	rc := newMockRootCoord()
+	qc := NewQueryCoordMock(withValidShardLeaders())
+	ic := newMockIndexCoord()
+
+	dbName := funcutil.GenRandomStr()
+	collectionName := funcutil.GenRandomStr()
+	collectionID := UniqueID(1)
+	//fieldName := funcutil.GenRandomStr()
+	indexName := funcutil.GenRandomStr()
+	ctx := context.Background()
+	indexID := int64(1000)
+
+	shardMgr := newShardClientMgr()
+	// failed to get collection id.
+	_ = InitMetaCache(ctx, rc, qc, shardMgr)
+
+	rc.DescribeCollectionFunc = func(ctx context.Context, request *milvuspb.DescribeCollectionRequest) (*milvuspb.DescribeCollectionResponse, error) {
+		return &milvuspb.DescribeCollectionResponse{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_Success,
+			},
+			Schema:         newTestSchema(),
+			CollectionID:   collectionID,
+			CollectionName: request.CollectionName,
+		}, nil
+	}
+
+	lct := &loadCollectionTask{
+		LoadCollectionRequest: &milvuspb.LoadCollectionRequest{
+			Base: &commonpb.MsgBase{
+				MsgType:   commonpb.MsgType_LoadCollection,
+				MsgID:     1,
+				Timestamp: 1,
+				SourceID:  1,
+				TargetID:  1,
+			},
+			DbName:         dbName,
+			CollectionName: collectionName,
+			ReplicaNumber:  1,
+		},
+		ctx:          ctx,
+		queryCoord:   qc,
+		indexCoord:   ic,
+		result:       nil,
+		collectionID: 0,
+	}
+
+	t.Run("indexcoord describe index error", func(t *testing.T) {
+		err := lct.Execute(ctx)
+		assert.Error(t, err)
+	})
+
+	t.Run("indexcoord describe index not success", func(t *testing.T) {
+		ic.DescribeIndexFunc = func(ctx context.Context, request *indexpb.DescribeIndexRequest) (*indexpb.DescribeIndexResponse, error) {
+			return &indexpb.DescribeIndexResponse{
+				Status: &commonpb.Status{
+					ErrorCode: commonpb.ErrorCode_UnexpectedError,
+					Reason:    "fail reason",
+				},
+			}, nil
+		}
+
+		err := lct.Execute(ctx)
+		assert.Error(t, err)
+	})
+
+	t.Run("no vector index", func(t *testing.T) {
+		ic.DescribeIndexFunc = func(ctx context.Context, request *indexpb.DescribeIndexRequest) (*indexpb.DescribeIndexResponse, error) {
+			return &indexpb.DescribeIndexResponse{
+				Status: &commonpb.Status{
+					ErrorCode: commonpb.ErrorCode_Success,
+				},
+				IndexInfos: []*indexpb.IndexInfo{
+					{
+						CollectionID:         collectionID,
+						FieldID:              100,
+						IndexName:            indexName,
+						IndexID:              indexID,
+						TypeParams:           nil,
+						IndexParams:          nil,
+						IndexedRows:          1025,
+						TotalRows:            1025,
+						State:                commonpb.IndexState_Finished,
+						IndexStateFailReason: "",
+						IsAutoIndex:          false,
+						UserIndexParams:      nil,
+					},
+				},
+			}, nil
+		}
+
+		err := lct.Execute(ctx)
+		assert.Error(t, err)
+	})
+}
+
+func Test_loadPartitionTask_Execute(t *testing.T) {
+	rc := newMockRootCoord()
+	qc := NewQueryCoordMock(withValidShardLeaders())
+	ic := newMockIndexCoord()
+
+	dbName := funcutil.GenRandomStr()
+	collectionName := funcutil.GenRandomStr()
+	collectionID := UniqueID(1)
+	//fieldName := funcutil.GenRandomStr()
+	indexName := funcutil.GenRandomStr()
+	ctx := context.Background()
+	indexID := int64(1000)
+
+	shardMgr := newShardClientMgr()
+	// failed to get collection id.
+	_ = InitMetaCache(ctx, rc, qc, shardMgr)
+
+	rc.DescribeCollectionFunc = func(ctx context.Context, request *milvuspb.DescribeCollectionRequest) (*milvuspb.DescribeCollectionResponse, error) {
+		return &milvuspb.DescribeCollectionResponse{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_Success,
+			},
+			Schema:         newTestSchema(),
+			CollectionID:   collectionID,
+			CollectionName: request.CollectionName,
+		}, nil
+	}
+
+	lpt := &loadPartitionsTask{
+		LoadPartitionsRequest: &milvuspb.LoadPartitionsRequest{
+			Base: &commonpb.MsgBase{
+				MsgType:   commonpb.MsgType_LoadCollection,
+				MsgID:     1,
+				Timestamp: 1,
+				SourceID:  1,
+				TargetID:  1,
+			},
+			DbName:         dbName,
+			CollectionName: collectionName,
+			ReplicaNumber:  1,
+		},
+		ctx:          ctx,
+		queryCoord:   qc,
+		indexCoord:   ic,
+		result:       nil,
+		collectionID: 0,
+	}
+
+	t.Run("indexcoord describe index error", func(t *testing.T) {
+		err := lpt.Execute(ctx)
+		assert.Error(t, err)
+	})
+
+	t.Run("indexcoord describe index not success", func(t *testing.T) {
+		ic.DescribeIndexFunc = func(ctx context.Context, request *indexpb.DescribeIndexRequest) (*indexpb.DescribeIndexResponse, error) {
+			return &indexpb.DescribeIndexResponse{
+				Status: &commonpb.Status{
+					ErrorCode: commonpb.ErrorCode_UnexpectedError,
+					Reason:    "fail reason",
+				},
+			}, nil
+		}
+
+		err := lpt.Execute(ctx)
+		assert.Error(t, err)
+	})
+
+	t.Run("no vector index", func(t *testing.T) {
+		ic.DescribeIndexFunc = func(ctx context.Context, request *indexpb.DescribeIndexRequest) (*indexpb.DescribeIndexResponse, error) {
+			return &indexpb.DescribeIndexResponse{
+				Status: &commonpb.Status{
+					ErrorCode: commonpb.ErrorCode_Success,
+				},
+				IndexInfos: []*indexpb.IndexInfo{
+					{
+						CollectionID:         collectionID,
+						FieldID:              100,
+						IndexName:            indexName,
+						IndexID:              indexID,
+						TypeParams:           nil,
+						IndexParams:          nil,
+						IndexedRows:          1025,
+						TotalRows:            1025,
+						State:                commonpb.IndexState_Finished,
+						IndexStateFailReason: "",
+						IsAutoIndex:          false,
+						UserIndexParams:      nil,
+					},
+				},
+			}, nil
+		}
+
+		err := lpt.Execute(ctx)
+		assert.Error(t, err)
+	})
 }

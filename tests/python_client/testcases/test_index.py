@@ -176,8 +176,8 @@ class TestIndexParams(TestcaseBase):
                                                             "but parameters are inconsistent"})
 
     @pytest.mark.tags(CaseLabel.L1)
-    @pytest.mark.xfail(reason="issue 19181")
-    @pytest.mark.parametrize("get_invalid_index_name", ["1nDex", "$in4t", "12 s", None, "(中文)"])
+    # @pytest.mark.xfail(reason="issue 19181")
+    @pytest.mark.parametrize("get_invalid_index_name", ["1nDex", "$in4t", "12 s", "(中文)"])
     def test_index_name_invalid(self, get_invalid_index_name):
         """
         target: test index with error index name
@@ -188,7 +188,10 @@ class TestIndexParams(TestcaseBase):
         index_name = get_invalid_index_name
         collection_w = self.init_collection_wrap(name=c_name)
         self.index_wrap.init_index(collection_w.collection, default_field_name, default_index_params,
-                                   index_name=get_invalid_index_name)
+                                   index_name=get_invalid_index_name,
+                                   check_task=CheckTasks.err_res,
+                                   check_items={ct.err_code: 1,
+                                                ct.err_msg: "Invalid index name"})
 
 
 class TestIndexOperation(TestcaseBase):
@@ -210,6 +213,19 @@ class TestIndexOperation(TestcaseBase):
 
         assert len(collection_w.indexes) == 1
         assert collection_w.indexes[0].params["index_type"] == default_index_params["index_type"]
+
+    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.xfail(reason="issue 19972")
+    def test_index_create_indexes_for_different_fields(self):
+        """
+        target: Test create indexes for different fields
+        method: create two different indexes
+        expected: create successfully
+        """
+        collection_w = self.init_collection_general(prefix, True, is_index=True)[0]
+        default_index = {"index_type": "IVF_FLAT", "params": {"nlist": 128}, "metric_type": "L2"}
+        collection_w.create_index(default_field_name, default_index)
+        collection_w.create_index(ct.default_int64_field_name, {})
 
     @pytest.mark.tags(CaseLabel.L1)
     def test_index_collection_empty(self):
@@ -668,6 +684,7 @@ class TestNewIndexBase(TestcaseBase):
             index_name = cf.gen_unique_str("name")
             collection_w.create_index(default_float_vec_field_name, index, index_name=index_name)
             collection_w.load()
+            collection_w.release()
             collection_w.drop_index(index_name=index_name)
         assert len(collection_w.collection.indexes) == 0
 
@@ -1165,7 +1182,7 @@ class TestNewIndexBinary(TestcaseBase):
         assert len(collection_w.indexes) == 0
 
 
-class TestIndexInvalid(object):
+class TestIndexInvalid(TestcaseBase):
     """
     Test create / describe / drop index interfaces with invalid collection names
     """
@@ -1216,6 +1233,23 @@ class TestIndexInvalid(object):
         log.info(get_index)
         with pytest.raises(Exception) as e:
             connect.create_index(collection, field_name, get_index)
+
+    @pytest.mark.tags(CaseLabel.L1)
+    def test_drop_index_without_release(self):
+        """
+        target: test drop index after load without release
+        method: 1. create a collection and build an index then load
+                2. drop the index
+        expected: raise exception
+        """
+        collection_w = self.init_collection_general(prefix, True, is_index=True)[0]
+        default_index = {"index_type": "IVF_FLAT", "params": {"nlist": 128}, "metric_type": "L2"}
+        collection_w.create_index("float_vector", default_index)
+        collection_w.load()
+        collection_w.drop_index(check_task=CheckTasks.err_res,
+                                check_items={"err_code": 1,
+                                             "err_msg": "index cannot be dropped, collection is "
+                                                        "loaded, please release it first"})
 
 
 class TestNewIndexAsync(TestcaseBase):
@@ -1272,6 +1306,7 @@ class TestNewIndexAsync(TestcaseBase):
         assert len(search_res) == ct.default_nq
         assert len(search_res[0]) == ct.default_limit
 
+        collection_w.release()
         if _async:
             res.done()
             assert collection_w.indexes[0].params == default_index_params
@@ -1333,6 +1368,7 @@ class TestIndexString(TestcaseBase):
         index, _ = self.index_wrap.init_index(collection_w.collection, default_string_field_name,
                                               default_string_index_params)
         cf.assert_equal_index(index, collection_w.indexes[0])
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index, index_name="vector_flat")
         collection_w.load()
         assert collection_w.num_entities == default_nb
 
@@ -1348,6 +1384,7 @@ class TestIndexString(TestcaseBase):
         collection_w = self.init_collection_wrap(name=c_name)
         data = cf.gen_default_list_data(ct.default_nb)
         collection_w.insert(data=data)
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index, index_name="vector_flat")
         collection_w.load()
         index, _ = self.index_wrap.init_index(collection_w.collection, default_string_field_name,
                                               default_string_index_params)

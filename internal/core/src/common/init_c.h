@@ -21,30 +21,13 @@ extern "C" {
 #endif
 
 #include <stdbool.h>
+#include <stdint.h>
 
 void
-MinioAddressInit(const char*);
+InitIndexSliceSize(const int64_t);
 
 void
-MinioAccessKeyInit(const char*);
-
-void
-MinioAccessValueInit(const char*);
-
-void
-MinioSSLInit(bool use_ssl);
-
-void
-MinioUseIamInit(bool use_iam);
-
-void
-MinioBucketNameInit(const char*);
-
-void
-MinioRootPathInit(const char*);
-
-void
-LocalRootPathInit(const char*);
+InitLocalRootPath(const char*);
 
 #ifdef __cplusplus
 };

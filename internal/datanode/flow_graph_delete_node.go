@@ -19,27 +19,20 @@ package datanode
 import (
 	"context"
 	"fmt"
-	"math"
 	"reflect"
 	"sync"
 
 	"github.com/opentracing/opentracing-go"
 	"go.uber.org/zap"
 
-	"github.com/milvus-io/milvus/api/schemapb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
-	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/trace"
-)
-
-type (
-	// DeleteData record deleted IDs and Timestamps
-	DeleteData = storage.DeleteData
 )
 
 // DeleteNode is to process delete msg, flush delete info into storage.
@@ -49,52 +42,11 @@ type deleteNode struct {
 	ctx          context.Context
 	channelName  string
 	delBuf       sync.Map // map[segmentID]*DelDataBuf
-	replica      Replica
+	channel      Channel
 	idAllocator  allocatorInterface
 	flushManager flushManager
 
 	clearSignal chan<- string
-}
-
-// DelDataBuf buffers insert data, monitoring buffer size and limit
-// size and limit both indicate numOfRows
-type DelDataBuf struct {
-	datapb.Binlog
-	delData *DeleteData
-}
-
-func (ddb *DelDataBuf) updateSize(size int64) {
-	ddb.EntriesNum += size
-}
-
-func (ddb *DelDataBuf) updateTimeRange(tr TimeRange) {
-	if tr.timestampMin < ddb.TimestampFrom {
-		ddb.TimestampFrom = tr.timestampMin
-	}
-	if tr.timestampMax > ddb.TimestampTo {
-		ddb.TimestampTo = tr.timestampMax
-	}
-}
-
-func (ddb *DelDataBuf) updateFromBuf(buf *DelDataBuf) {
-	ddb.updateSize(buf.EntriesNum)
-
-	tr := TimeRange{timestampMax: buf.TimestampTo, timestampMin: buf.TimestampFrom}
-	ddb.updateTimeRange(tr)
-
-	ddb.delData.Pks = append(ddb.delData.Pks, buf.delData.Pks...)
-	ddb.delData.Tss = append(ddb.delData.Tss, buf.delData.Tss...)
-}
-
-func newDelDataBuf() *DelDataBuf {
-	return &DelDataBuf{
-		delData: &DeleteData{},
-		Binlog: datapb.Binlog{
-			EntriesNum:    0,
-			TimestampFrom: math.MaxUint64,
-			TimestampTo:   0,
-		},
-	}
 }
 
 func (dn *deleteNode) Name() string {
@@ -120,20 +72,19 @@ func (dn *deleteNode) showDelBuf(segIDs []UniqueID, ts Timestamp) {
 
 // Operate implementing flowgraph.Node, performs delete data process
 func (dn *deleteNode) Operate(in []Msg) []Msg {
-	//log.Debug("deleteNode Operating")
+	if in == nil {
+		log.Debug("type assertion failed for flowGraphMsg because it's nil")
+		return []Msg{}
+	}
 
 	if len(in) != 1 {
 		log.Error("Invalid operate message input in deleteNode", zap.Int("input length", len(in)))
-		return nil
+		return []Msg{}
 	}
 
 	fgMsg, ok := in[0].(*flowGraphMsg)
 	if !ok {
-		if in[0] == nil {
-			log.Debug("type assertion failed for flowGraphMsg because it's nil")
-		} else {
-			log.Warn("type assertion failed for flowGraphMsg", zap.String("name", reflect.TypeOf(in[0]).Name()))
-		}
+		log.Warn("type assertion failed for flowGraphMsg", zap.String("name", reflect.TypeOf(in[0]).Name()))
 		return []Msg{}
 	}
 
@@ -205,20 +156,20 @@ func (dn *deleteNode) Operate(in []Msg) []Msg {
 	for _, sp := range spans {
 		sp.Finish()
 	}
-	return nil
+	return in
 }
 
 // update delBuf for compacted segments
 func (dn *deleteNode) updateCompactedSegments() {
-	compactedTo2From := dn.replica.listCompactedSegmentIDs()
+	compactedTo2From := dn.channel.listCompactedSegmentIDs()
 
 	for compactedTo, compactedFrom := range compactedTo2From {
 		// if the compactedTo segment has 0 numRows, remove all segments related
-		if !dn.replica.hasSegment(compactedTo, true) {
+		if !dn.channel.hasSegment(compactedTo, true) {
 			for _, segID := range compactedFrom {
 				dn.delBuf.Delete(segID)
 			}
-			dn.replica.removeSegments(compactedFrom...)
+			dn.channel.removeSegments(compactedFrom...)
 			continue
 		}
 
@@ -244,7 +195,7 @@ func (dn *deleteNode) updateCompactedSegments() {
 			zap.Int64("compactedTo segmentID", compactedTo),
 			zap.Int64s("compactedFrom segmentIDs", compactedFrom),
 		)
-		dn.replica.removeSegments(compactedFrom...)
+		dn.channel.removeSegments(compactedFrom...)
 	}
 }
 
@@ -302,7 +253,7 @@ func (dn *deleteNode) filterSegmentByPK(partID UniqueID, pks []primaryKey, tss [
 	segID2Pks := make(map[UniqueID][]primaryKey)
 	segID2Tss := make(map[UniqueID][]uint64)
 	buf := make([]byte, 8)
-	segments := dn.replica.filterSegments(dn.channelName, partID)
+	segments := dn.channel.filterSegments(partID)
 	for index, pk := range pks {
 		for _, segment := range segments {
 			segmentID := segment.segmentID
@@ -311,10 +262,10 @@ func (dn *deleteNode) filterSegmentByPK(partID UniqueID, pks []primaryKey, tss [
 			case schemapb.DataType_Int64:
 				int64Pk := pk.(*int64PrimaryKey)
 				common.Endian.PutUint64(buf, uint64(int64Pk.Value))
-				exist = segment.pkFilter.Test(buf)
+				exist = segment.pkStat.pkFilter.Test(buf)
 			case schemapb.DataType_VarChar:
 				varCharPk := pk.(*varCharPrimaryKey)
-				exist = segment.pkFilter.TestString(varCharPk.Value)
+				exist = segment.pkStat.pkFilter.TestString(varCharPk.Value)
 			default:
 				//TODO::
 			}
@@ -338,7 +289,7 @@ func newDeleteNode(ctx context.Context, fm flushManager, sig chan<- string, conf
 		BaseNode: baseNode,
 		delBuf:   sync.Map{},
 
-		replica:      config.replica,
+		channel:      config.channel,
 		idAllocator:  config.allocator,
 		channelName:  config.vChannelName,
 		flushManager: fm,

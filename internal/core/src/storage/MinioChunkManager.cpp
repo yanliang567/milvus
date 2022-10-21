@@ -20,6 +20,7 @@
 #include <aws/core/auth/STSCredentialsProvider.h>
 #include <aws/s3/model/CreateBucketRequest.h>
 #include <aws/s3/model/DeleteBucketRequest.h>
+#include <aws/s3/model/HeadBucketRequest.h>
 #include <aws/s3/model/DeleteObjectRequest.h>
 #include <aws/s3/model/HeadObjectRequest.h>
 #include <aws/s3/model/ListObjectsRequest.h>
@@ -40,6 +41,8 @@
 
 #define S3NoSuchBucket "NoSuchBucket"
 namespace milvus::storage {
+
+std::atomic<size_t> MinioChunkManager::init_count_(0);
 
 /**
  * @brief convert std::string to Aws::String
@@ -64,18 +67,16 @@ ConvertFromAwsString(const Aws::String& aws_str) {
     return std::string(aws_str.c_str(), aws_str.size());
 }
 
-MinioChunkManager::MinioChunkManager(const std::string& endpoint,
-                                     const std::string& access_key,
-                                     const std::string& access_value,
-                                     const std::string& bucket_name,
-                                     bool secure,
-                                     bool use_iam)
-    : default_bucket_name_(bucket_name) {
-    Aws::InitAPI(sdk_options_);
+MinioChunkManager::MinioChunkManager(const StorageConfig& storage_config)
+    : default_bucket_name_(storage_config.bucket_name) {
+    const size_t initCount = init_count_++;
+    if (initCount == 0) {
+        Aws::InitAPI(sdk_options_);
+    }
     Aws::Client::ClientConfiguration config;
-    config.endpointOverride = ConvertToAwsString(endpoint);
+    config.endpointOverride = ConvertToAwsString(storage_config.address);
 
-    if (secure) {
+    if (storage_config.useSSL) {
         config.scheme = Aws::Http::Scheme::HTTPS;
         config.verifySSL = true;
     } else {
@@ -83,7 +84,7 @@ MinioChunkManager::MinioChunkManager(const std::string& endpoint,
         config.verifySSL = false;
     }
 
-    if (use_iam) {
+    if (storage_config.useIAM) {
         auto provider = std::make_shared<Aws::Auth::DefaultAWSCredentialsProviderChain>();
         client_ = std::make_shared<Aws::S3::S3Client>(provider, config,
                                                       Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy::Never, false);
@@ -94,17 +95,26 @@ MinioChunkManager::MinioChunkManager(const std::string& endpoint,
                            << " token:" << provider->GetAWSCredentials().GetSessionToken() << "}";
     } else {
         client_ = std::make_shared<Aws::S3::S3Client>(
-            Aws::Auth::AWSCredentials(ConvertToAwsString(access_key), ConvertToAwsString(access_value)), config,
-            Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy::Never, false);
+            Aws::Auth::AWSCredentials(ConvertToAwsString(storage_config.access_key_id),
+                                      ConvertToAwsString(storage_config.access_key_value)),
+            config, Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy::Never, false);
     }
 
-    LOG_SEGCORE_INFO_C << "init MinioChunkManager with parameter[endpoint: '" << endpoint << "', access_key:'"
-                       << access_key << "', access_value:'" << access_value << "', default_bucket_name:'" << bucket_name
-                       << "', use_secure:'" << std::boolalpha << secure << "']";
+    if (!BucketExists(storage_config.bucket_name)) {
+        CreateBucket(storage_config.bucket_name);
+    }
+
+    LOG_SEGCORE_INFO_C << "init MinioChunkManager with parameter[endpoint: '" << storage_config.address
+                       << "', access_key:'" << storage_config.access_key_id << "', access_value:'"
+                       << storage_config.access_key_value << "', default_bucket_name:'" << storage_config.bucket_name
+                       << "', use_secure:'" << std::boolalpha << storage_config.useSSL << "']";
 }
 
 MinioChunkManager::~MinioChunkManager() {
-    Aws::ShutdownAPI(sdk_options_);
+    const size_t initCount = --init_count_;
+    if (initCount == 0) {
+        Aws::ShutdownAPI(sdk_options_);
+    }
     client_.reset();
 }
 
@@ -145,17 +155,31 @@ MinioChunkManager::Write(const std::string& filepath, void* buf, uint64_t size) 
 
 bool
 MinioChunkManager::BucketExists(const std::string& bucket_name) {
-    auto outcome = client_->ListBuckets();
+    // auto outcome = client_->ListBuckets();
+
+    // if (!outcome.IsSuccess()) {
+    //     THROWS3ERROR(BucketExists);
+    // }
+    // for (auto&& b : outcome.GetResult().GetBuckets()) {
+    //     if (ConvertFromAwsString(b.GetName()) == bucket_name) {
+    //         return true;
+    //     }
+    // }
+    Aws::S3::Model::HeadBucketRequest request;
+    request.SetBucket(bucket_name.c_str());
+
+    auto outcome = client_->HeadBucket(request);
 
     if (!outcome.IsSuccess()) {
-        THROWS3ERROR(BucketExists);
-    }
-    for (auto&& b : outcome.GetResult().GetBuckets()) {
-        if (ConvertFromAwsString(b.GetName()) == bucket_name) {
-            return true;
+        auto error = outcome.GetError();
+        if (!error.GetExceptionName().empty()) {
+            std::stringstream err_msg;
+            err_msg << "Error: BucketExists: " << error.GetExceptionName() + " - " + error.GetMessage();
+            throw S3ErrorException(err_msg.str());
         }
+        return false;
     }
-    return false;
+    return true;
 }
 
 std::vector<std::string>
@@ -179,7 +203,8 @@ MinioChunkManager::CreateBucket(const std::string& bucket_name) {
 
     auto outcome = client_->CreateBucket(request);
 
-    if (!outcome.IsSuccess()) {
+    if (!outcome.IsSuccess() &&
+        Aws::S3::S3Errors(outcome.GetError().GetErrorType()) != Aws::S3::S3Errors::BUCKET_ALREADY_OWNED_BY_YOU) {
         THROWS3ERROR(CreateBucket);
     }
     return true;

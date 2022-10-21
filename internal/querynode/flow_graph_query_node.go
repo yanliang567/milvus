@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/milvus-io/milvus/internal/mq/msgstream/mqwrapper"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
+	"github.com/milvus-io/milvus/internal/util/tsoutil"
 )
 
 // queryNodeFlowGraph is a TimeTickedFlowGraph in query node
@@ -75,7 +77,6 @@ func newQueryNodeFlowGraph(ctx context.Context,
 
 	// dmStreamNode
 	err = q.flowGraph.SetEdges(dmStreamNode.Name(),
-		[]string{},
 		[]string{filterDmNode.Name()},
 	)
 	if err != nil {
@@ -84,7 +85,6 @@ func newQueryNodeFlowGraph(ctx context.Context,
 
 	// filterDmNode
 	err = q.flowGraph.SetEdges(filterDmNode.Name(),
-		[]string{dmStreamNode.Name()},
 		[]string{insertNode.Name()},
 	)
 	if err != nil {
@@ -93,7 +93,6 @@ func newQueryNodeFlowGraph(ctx context.Context,
 
 	// insertNode
 	err = q.flowGraph.SetEdges(insertNode.Name(),
-		[]string{filterDmNode.Name()},
 		[]string{serviceTimeNode.Name()},
 	)
 	if err != nil {
@@ -102,7 +101,6 @@ func newQueryNodeFlowGraph(ctx context.Context,
 
 	// serviceTimeNode
 	err = q.flowGraph.SetEdges(serviceTimeNode.Name(),
-		[]string{insertNode.Name()},
 		[]string{},
 	)
 	if err != nil {
@@ -145,7 +143,6 @@ func newQueryNodeDeltaFlowGraph(ctx context.Context,
 
 	// dmStreamNode
 	err = q.flowGraph.SetEdges(dmStreamNode.Name(),
-		[]string{},
 		[]string{filterDeleteNode.Name()},
 	)
 	if err != nil {
@@ -154,7 +151,6 @@ func newQueryNodeDeltaFlowGraph(ctx context.Context,
 
 	// filterDmNode
 	err = q.flowGraph.SetEdges(filterDeleteNode.Name(),
-		[]string{dmStreamNode.Name()},
 		[]string{deleteNode.Name()},
 	)
 	if err != nil {
@@ -163,7 +159,6 @@ func newQueryNodeDeltaFlowGraph(ctx context.Context,
 
 	// insertNode
 	err = q.flowGraph.SetEdges(deleteNode.Name(),
-		[]string{filterDeleteNode.Name()},
 		[]string{serviceTimeNode.Name()},
 	)
 	if err != nil {
@@ -172,7 +167,6 @@ func newQueryNodeDeltaFlowGraph(ctx context.Context,
 
 	// serviceTimeNode
 	err = q.flowGraph.SetEdges(serviceTimeNode.Name(),
-		[]string{deleteNode.Name()},
 		[]string{},
 	)
 	if err != nil {
@@ -234,9 +228,13 @@ func (q *queryNodeFlowGraph) consumeFlowGraphFromLatest(channel Channel, subName
 func (q *queryNodeFlowGraph) seekQueryNodeFlowGraph(position *internalpb.MsgPosition) error {
 	q.dmlStream.AsConsumer([]string{position.ChannelName}, position.MsgGroup)
 	err := q.dmlStream.Seek([]*internalpb.MsgPosition{position})
+
+	ts, _ := tsoutil.ParseTS(position.GetTimestamp())
 	log.Info("query node flow graph seeks from pChannel",
-		zap.Any("collectionID", q.collectionID),
-		zap.Any("channel", position.ChannelName),
+		zap.Int64("collectionID", q.collectionID),
+		zap.String("channel", position.ChannelName),
+		zap.Time("checkpointTs", ts),
+		zap.Duration("tsLag", time.Since(ts)),
 	)
 	q.consumerCnt++
 	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID())).Inc()

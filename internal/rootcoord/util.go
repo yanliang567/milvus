@@ -27,7 +27,7 @@ import (
 
 	"github.com/milvus-io/milvus/internal/metastore/model"
 
-	"github.com/milvus-io/milvus/api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
@@ -132,4 +132,8 @@ func getTravelTs(req TimeTravelRequest) Timestamp {
 		return typeutil.MaxTimestamp
 	}
 	return req.GetTimeStamp()
+}
+
+func isMaxTs(ts Timestamp) bool {
+	return ts == typeutil.MaxTimestamp
 }
