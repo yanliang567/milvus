@@ -9,20 +9,22 @@ from pymilvus import connections, DataType, \
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 DATE_FORMAT = "%m/%d/%Y %H:%M:%S %p"
 
-nb = 50000
+nb = 1000
 dim = 128
 auto_id = True
-index_params = {"index_type": "HNSW", "params": {"M": 8, "efConstruction": 96}, "metric_type": "L2"}
+index_params = {"index_type": "AUTOINDEX", "params": {}, "metric_type": "L2"}
 
 if __name__ == '__main__':
-    host = sys.argv[1]  # host address
-    collection_name = str(sys.argv[2])  # collection name
+    uri = str(sys.argv[1])  # uri for milvus cloud instance
+    user = str(sys.argv[2])  # user
+    pwd = str(sys.argv[3])   # password
+    collection_name = "autoindex_l2"   # str(sys.argv[4])  # collection name
     shards = 2          # shards number
-    insert_times = 20   # insert times
+    insert_times = 2000   # insert times
 
-    port = 19530
-    connections.add_connection(default={"host": host, "port": 19530})
-    connections.connect('default')
+    # connections.add_connection()
+    connections.connect(alias="default", uri=uri,
+                        user=user, password=pwd, secure=True)
     log_name = f"prepare_{collection_name}"
 
     logging.basicConfig(filename=f"/tmp/{log_name}.log",
