@@ -1924,6 +1924,7 @@ func (node *Proxy) CreateIndex(ctx context.Context, request *milvuspb.CreateInde
 		req:        request,
 		rootCoord:  node.rootCoord,
 		indexCoord: node.indexCoord,
+		queryCoord: node.queryCoord,
 	}
 
 	method := "CreateIndex"
@@ -3734,10 +3735,6 @@ func (node *Proxy) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsReque
 // GetProxyMetrics gets the metrics of proxy, it's an internal interface which is different from GetMetrics interface,
 // because it only obtains the metrics of Proxy, not including the topological metrics of Query cluster and Data cluster.
 func (node *Proxy) GetProxyMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
-	log.Debug("Proxy.GetProxyMetrics",
-		zap.Int64("node_id", Params.ProxyCfg.GetNodeID()),
-		zap.String("req", req.Request))
-
 	if !node.checkHealthy() {
 		log.Warn("Proxy.GetProxyMetrics failed",
 			zap.Int64("node_id", Params.ProxyCfg.GetNodeID()),
@@ -3767,9 +3764,6 @@ func (node *Proxy) GetProxyMetrics(ctx context.Context, req *milvuspb.GetMetrics
 		}, nil
 	}
 
-	log.Debug("Proxy.GetProxyMetrics",
-		zap.String("metric_type", metricType))
-
 	req.Base = commonpbutil.NewMsgBase(
 		commonpbutil.WithMsgType(commonpb.MsgType_SystemInfo),
 		commonpbutil.WithMsgID(0),
@@ -3796,8 +3790,7 @@ func (node *Proxy) GetProxyMetrics(ctx context.Context, req *milvuspb.GetMetrics
 		log.Debug("Proxy.GetProxyMetrics",
 			zap.Int64("node_id", Params.ProxyCfg.GetNodeID()),
 			zap.String("req", req.Request),
-			zap.String("metric_type", metricType),
-			zap.Error(err))
+			zap.String("metric_type", metricType))
 
 		return proxyMetrics, nil
 	}
@@ -3974,7 +3967,8 @@ func unhealthyStatus() *commonpb.Status {
 func (node *Proxy) Import(ctx context.Context, req *milvuspb.ImportRequest) (*milvuspb.ImportResponse, error) {
 	log.Info("received import request",
 		zap.String("collection name", req.GetCollectionName()),
-		zap.Bool("row-based", req.GetRowBased()))
+		zap.String("partition name", req.GetPartitionName()),
+		zap.Strings("files", req.GetFiles()))
 	resp := &milvuspb.ImportResponse{
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_Success,
@@ -4003,7 +3997,7 @@ func (node *Proxy) Import(ctx context.Context, req *milvuspb.ImportRequest) (*mi
 	respFromRC, err := node.rootCoord.Import(ctx, req)
 	if err != nil {
 		metrics.ProxyFunctionCall.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), method, metrics.FailLabel).Inc()
-		log.Error("failed to execute bulk load request", zap.Error(err))
+		log.Error("failed to execute bulk insert request", zap.Error(err))
 		resp.Status.ErrorCode = commonpb.ErrorCode_UnexpectedError
 		resp.Status.Reason = err.Error()
 		return resp, nil
@@ -4574,7 +4568,6 @@ func (node *Proxy) RefreshPolicyInfoCache(ctx context.Context, req *proxypb.Refr
 
 // SetRates limits the rates of requests.
 func (node *Proxy) SetRates(ctx context.Context, request *proxypb.SetRatesRequest) (*commonpb.Status, error) {
-	log.Debug("SetRates", zap.String("role", typeutil.ProxyRole), zap.Any("rates", request.GetRates()))
 	resp := &commonpb.Status{
 		ErrorCode: commonpb.ErrorCode_UnexpectedError,
 	}

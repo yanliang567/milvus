@@ -28,6 +28,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/golang/protobuf/proto"
+
 	"github.com/milvus-io/milvus/internal/util/metautil"
 
 	"github.com/milvus-io/milvus/internal/util/errorutil"
@@ -66,7 +68,7 @@ var _ types.IndexCoord = (*IndexCoord)(nil)
 
 var Params paramtable.ComponentParam
 
-// IndexCoord is a component responsible for scheduling index construction tasks and maintaining index status.
+// IndexCoord is a component responsible for scheduling index construction segments and maintaining index status.
 // IndexCoord accepts requests from rootcoord to build indexes, delete indexes, and query index information.
 // IndexCoord is responsible for assigning IndexBuildID to the request to build the index, and forwarding the
 // request to build the index to IndexNode. IndexCoord records the status of the index, and the index file.
@@ -441,8 +443,10 @@ func (i *IndexCoord) CreateIndex(ctx context.Context, req *indexpb.CreateIndexRe
 		ErrorCode: commonpb.ErrorCode_UnexpectedError,
 	}
 
-	if !i.metaTable.CanCreateIndex(req) {
-		ret.Reason = "CreateIndex failed: index already exist, but parameters are inconsistent"
+	ok, err := i.metaTable.CanCreateIndex(req)
+	if !ok {
+		log.Error("CreateIndex failed", zap.Error(err))
+		ret.Reason = err.Error()
 		return ret, nil
 	}
 
@@ -458,7 +462,7 @@ func (i *IndexCoord) CreateIndex(ctx context.Context, req *indexpb.CreateIndexRe
 		req:              req,
 	}
 
-	err := i.sched.IndexAddQueue.Enqueue(t)
+	err = i.sched.IndexAddQueue.Enqueue(t)
 	if err != nil {
 		ret.ErrorCode = commonpb.ErrorCode_UnexpectedError
 		ret.Reason = err.Error()
@@ -785,6 +789,8 @@ func (i *IndexCoord) DropIndex(ctx context.Context, req *indexpb.DropIndexReques
 
 // GetIndexInfos gets the index file paths from IndexCoord.
 func (i *IndexCoord) GetIndexInfos(ctx context.Context, req *indexpb.GetIndexInfoRequest) (*indexpb.GetIndexInfoResponse, error) {
+	log.Debug("IndexCoord GetIndexInfos", zap.Int64("collectionID", req.CollectionID),
+		zap.String("indexName", req.GetIndexName()), zap.Int64s("segIDs", req.GetSegmentIDs()))
 	if !i.isHealthy() {
 		log.Warn(msgIndexCoordIsUnhealthy(i.serverID))
 		return &indexpb.GetIndexInfoResponse{
@@ -816,19 +822,21 @@ func (i *IndexCoord) GetIndexInfos(ctx context.Context, req *indexpb.GetIndexInf
 				indexFilePaths := metautil.BuildSegmentIndexFilePaths(i.chunkManager.RootPath(), segIdx.BuildID, segIdx.IndexVersion,
 					segIdx.PartitionID, segIdx.SegmentID, segIdx.IndexFileKeys)
 
-				ret.SegmentInfo[segID].IndexInfos = append(ret.SegmentInfo[segID].IndexInfos,
-					&indexpb.IndexFilePathInfo{
-						SegmentID:      segID,
-						FieldID:        i.metaTable.GetFieldIDByIndexID(segIdx.CollectionID, segIdx.IndexID),
-						IndexID:        segIdx.IndexID,
-						BuildID:        segIdx.BuildID,
-						IndexName:      i.metaTable.GetIndexNameByID(segIdx.CollectionID, segIdx.IndexID),
-						IndexParams:    i.metaTable.GetIndexParams(segIdx.CollectionID, segIdx.IndexID),
-						IndexFilePaths: indexFilePaths,
-						SerializedSize: segIdx.IndexSize,
-						IndexVersion:   segIdx.IndexVersion,
-						NumRows:        segIdx.NumRows,
-					})
+				if segIdx.IndexState == commonpb.IndexState_Finished {
+					ret.SegmentInfo[segID].IndexInfos = append(ret.SegmentInfo[segID].IndexInfos,
+						&indexpb.IndexFilePathInfo{
+							SegmentID:      segID,
+							FieldID:        i.metaTable.GetFieldIDByIndexID(segIdx.CollectionID, segIdx.IndexID),
+							IndexID:        segIdx.IndexID,
+							BuildID:        segIdx.BuildID,
+							IndexName:      i.metaTable.GetIndexNameByID(segIdx.CollectionID, segIdx.IndexID),
+							IndexParams:    i.metaTable.GetIndexParams(segIdx.CollectionID, segIdx.IndexID),
+							IndexFilePaths: indexFilePaths,
+							SerializedSize: segIdx.IndexSize,
+							IndexVersion:   segIdx.IndexVersion,
+							NumRows:        segIdx.NumRows,
+						})
+				}
 			}
 		}
 	}
@@ -838,6 +846,7 @@ func (i *IndexCoord) GetIndexInfos(ctx context.Context, req *indexpb.GetIndexInf
 
 // DescribeIndex describe the index info of the collection.
 func (i *IndexCoord) DescribeIndex(ctx context.Context, req *indexpb.DescribeIndexRequest) (*indexpb.DescribeIndexResponse, error) {
+	log.Debug("IndexCoord DescribeIndex", zap.Int64("collectionID", req.CollectionID), zap.String("indexName", req.GetIndexName()))
 	if !i.isHealthy() {
 		log.Warn(msgIndexCoordIsUnhealthy(i.serverID))
 		return &indexpb.DescribeIndexResponse{
@@ -1077,7 +1086,9 @@ func (i *IndexCoord) tryAcquireSegmentReferLock(ctx context.Context, buildID Uni
 	// IndexCoord use buildID instead of taskID.
 	log.Info("try to acquire segment reference lock", zap.Int64("buildID", buildID),
 		zap.Int64("ndoeID", nodeID), zap.Int64s("segIDs", segIDs))
-	status, err := i.dataCoordClient.AcquireSegmentLock(ctx, &datapb.AcquireSegmentLockRequest{
+	ctx1, cancel := context.WithTimeout(ctx, reqTimeoutInterval)
+	defer cancel()
+	status, err := i.dataCoordClient.AcquireSegmentLock(ctx1, &datapb.AcquireSegmentLockRequest{
 		TaskID:     buildID,
 		NodeID:     nodeID,
 		SegmentIDs: segIDs,
@@ -1099,7 +1110,9 @@ func (i *IndexCoord) tryAcquireSegmentReferLock(ctx context.Context, buildID Uni
 
 func (i *IndexCoord) tryReleaseSegmentReferLock(ctx context.Context, buildID UniqueID, nodeID UniqueID) error {
 	releaseLock := func() error {
-		status, err := i.dataCoordClient.ReleaseSegmentLock(ctx, &datapb.ReleaseSegmentLockRequest{
+		ctx1, cancel := context.WithTimeout(ctx, reqTimeoutInterval)
+		defer cancel()
+		status, err := i.dataCoordClient.ReleaseSegmentLock(ctx1, &datapb.ReleaseSegmentLockRequest{
 			TaskID: buildID,
 			NodeID: nodeID,
 		})
@@ -1222,14 +1235,21 @@ func (i *IndexCoord) watchFlushedSegmentLoop() {
 			for _, event := range events {
 				switch event.Type {
 				case mvccpb.PUT:
-					segmentID, err := strconv.ParseInt(string(event.Kv.Value), 10, 64)
-					if err != nil {
-						log.Error("IndexCoord watch flushed segment, but parse segmentID fail",
-							zap.String("event.Value", string(event.Kv.Value)), zap.Error(err))
-						continue
+					segmentInfo := &datapb.SegmentInfo{}
+					if err := proto.Unmarshal(event.Kv.Value, segmentInfo); err != nil {
+						// just for  backward compatibility
+						segID, err := strconv.ParseInt(string(event.Kv.Value), 10, 64)
+						if err != nil {
+							log.Error("watchFlushedSegmentLoop unmarshal fail", zap.String("value", string(event.Kv.Value)), zap.Error(err))
+							continue
+						}
+						segmentInfo.ID = segID
 					}
-					log.Debug("watchFlushedSegmentLoop watch event", zap.Int64("segID", segmentID))
-					i.flushedSegmentWatcher.enqueueInternalTask(segmentID)
+
+					log.Debug("watchFlushedSegmentLoop watch event",
+						zap.Int64("segID", segmentInfo.GetID()),
+						zap.Any("isFake", segmentInfo.GetIsFake()))
+					i.flushedSegmentWatcher.enqueueInternalTask(segmentInfo)
 				case mvccpb.DELETE:
 					log.Debug("the segment info has been deleted", zap.String("key", string(event.Kv.Key)))
 				}
@@ -1239,7 +1259,9 @@ func (i *IndexCoord) watchFlushedSegmentLoop() {
 }
 
 func (i *IndexCoord) pullSegmentInfo(ctx context.Context, segmentID UniqueID) (*datapb.SegmentInfo, error) {
-	resp, err := i.dataCoordClient.GetSegmentInfo(ctx, &datapb.GetSegmentInfoRequest{
+	ctx1, cancel := context.WithTimeout(ctx, reqTimeoutInterval)
+	defer cancel()
+	resp, err := i.dataCoordClient.GetSegmentInfo(ctx1, &datapb.GetSegmentInfoRequest{
 		SegmentIDs:       []int64{segmentID},
 		IncludeUnHealthy: false,
 	})

@@ -4,12 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/stretchr/testify/mock"
-
-	"github.com/milvus-io/milvus/internal/proto/etcdpb"
-	mockrootcoord "github.com/milvus-io/milvus/internal/rootcoord/mocks"
-
 	"github.com/milvus-io/milvus/internal/metastore/model"
+	"github.com/milvus-io/milvus/internal/proto/etcdpb"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 
 	"github.com/stretchr/testify/assert"
@@ -96,15 +92,7 @@ func Test_dropPartitionTask_Execute(t *testing.T) {
 		collectionName := funcutil.GenRandomStr()
 		partitionName := funcutil.GenRandomStr()
 		coll := &model.Collection{Name: collectionName, Partitions: []*model.Partition{{PartitionName: partitionName}}}
-		meta := mockrootcoord.NewIMetaTable(t)
-		meta.On("ChangePartitionState",
-			mock.Anything, // context.Context
-			mock.AnythingOfType("int64"),
-			mock.AnythingOfType("int64"),
-			mock.Anything, // pb.PartitionState
-			mock.AnythingOfType("uint64"),
-		).Return(nil)
-		core := newTestCore(withInvalidProxyManager(), withMeta(meta))
+		core := newTestCore(withInvalidProxyManager())
 		task := &dropPartitionTask{
 			baseTask: baseTask{core: core},
 			Req: &milvuspb.DropPartitionRequest{

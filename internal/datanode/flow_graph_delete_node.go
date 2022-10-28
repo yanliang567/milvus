@@ -96,7 +96,7 @@ func (dn *deleteNode) Operate(in []Msg) []Msg {
 	}
 
 	// update compacted segment before operation
-	if len(fgMsg.deleteMessages) > 0 || len(fgMsg.segmentsToFlush) > 0 {
+	if len(fgMsg.deleteMessages) > 0 || len(fgMsg.segmentsToSync) > 0 {
 		dn.updateCompactedSegments()
 	}
 
@@ -122,11 +122,11 @@ func (dn *deleteNode) Operate(in []Msg) []Msg {
 	}
 
 	// process flush messages
-	if len(fgMsg.segmentsToFlush) > 0 {
-		log.Debug("DeleteNode receives flush message",
-			zap.Int64s("segIDs", fgMsg.segmentsToFlush),
+	if len(fgMsg.segmentsToSync) > 0 {
+		log.Info("DeleteNode receives flush message",
+			zap.Int64s("segIDs", fgMsg.segmentsToSync),
 			zap.String("vChannelName", dn.channelName))
-		for _, segmentToFlush := range fgMsg.segmentsToFlush {
+		for _, segmentToFlush := range fgMsg.segmentsToSync {
 			buf, ok := dn.delBuf.Load(segmentToFlush)
 			if !ok {
 				// no related delta data to flush, send empty buf to complete flush life-cycle
@@ -149,7 +149,7 @@ func (dn *deleteNode) Operate(in []Msg) []Msg {
 	// process drop collection message, delete node shall notify flush manager all data are cleared and send signal to DataSyncService cleaner
 	if fgMsg.dropCollection {
 		dn.flushManager.notifyAllFlushed()
-		log.Debug("DeleteNode notifies BackgroundGC to release vchannel", zap.String("vChannelName", dn.channelName))
+		log.Info("DeleteNode notifies BackgroundGC to release vchannel", zap.String("vChannelName", dn.channelName))
 		dn.clearSignal <- dn.channelName
 	}
 
@@ -191,7 +191,7 @@ func (dn *deleteNode) updateCompactedSegments() {
 				}
 			}
 		}
-		log.Debug("update delBuf for compacted segments",
+		log.Info("update delBuf for compacted segments",
 			zap.Int64("compactedTo segmentID", compactedTo),
 			zap.Int64s("compactedFrom segmentIDs", compactedFrom),
 		)

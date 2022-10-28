@@ -86,8 +86,8 @@ type IMetaTable interface {
 	ListAliasesByID(collID UniqueID) []string
 
 	// TODO: better to accept ctx.
-	GetPartitionNameByID(collID UniqueID, partitionID UniqueID, ts Timestamp) (string, error) // serve for bulk load.
-	GetPartitionByName(collID UniqueID, partitionName string, ts Timestamp) (UniqueID, error) // serve for bulk load.
+	GetPartitionNameByID(collID UniqueID, partitionID UniqueID, ts Timestamp) (string, error) // serve for bulk insert.
+	GetPartitionByName(collID UniqueID, partitionName string, ts Timestamp) (UniqueID, error) // serve for bulk insert.
 
 	// TODO: better to accept ctx.
 	AddCredential(credInfo *internalpb.CredentialInfo) error
@@ -205,6 +205,35 @@ func (mt *MetaTable) ChangeCollectionState(ctx context.Context, collectionID Uni
 	return nil
 }
 
+func (mt *MetaTable) removeIfNameMatchedInternal(collectionID UniqueID, name string) {
+	id, ok := mt.collName2ID[name]
+	if ok && id == collectionID {
+		delete(mt.collName2ID, name)
+	}
+}
+
+func (mt *MetaTable) removeIfAliasMatchedInternal(collectionID UniqueID, alias string) {
+	id, ok := mt.collAlias2ID[alias]
+	if ok && id == collectionID {
+		delete(mt.collAlias2ID, alias)
+	}
+}
+
+func (mt *MetaTable) removeIfMatchedInternal(collectionID UniqueID, name string) {
+	mt.removeIfNameMatchedInternal(collectionID, name)
+	mt.removeIfAliasMatchedInternal(collectionID, name)
+}
+
+func (mt *MetaTable) removeAllNamesIfMatchedInternal(collectionID UniqueID, names []string) {
+	for _, name := range names {
+		mt.removeIfMatchedInternal(collectionID, name)
+	}
+}
+
+func (mt *MetaTable) removeCollectionByIDInternal(collectionID UniqueID) {
+	delete(mt.collID2Meta, collectionID)
+}
+
 func (mt *MetaTable) RemoveCollection(ctx context.Context, collectionID UniqueID, ts Timestamp) error {
 	mt.ddLock.Lock()
 	defer mt.ddLock.Unlock()
@@ -218,18 +247,18 @@ func (mt *MetaTable) RemoveCollection(ctx context.Context, collectionID UniqueID
 		return err
 	}
 
+	allNames := common.CloneStringList(aliases)
+
 	var name string
 	coll, ok := mt.collID2Meta[collectionID]
 	if ok && coll != nil {
 		name = coll.Name
-		delete(mt.collName2ID, name)
+		allNames = append(allNames, name)
 	}
 
-	for _, alias := range aliases {
-		delete(mt.collAlias2ID, alias)
-	}
-
-	delete(mt.collID2Meta, collectionID)
+	// We cannot delete the name directly, since newly collection with same name may be created.
+	mt.removeAllNamesIfMatchedInternal(collectionID, allNames)
+	mt.removeCollectionByIDInternal(collectionID)
 
 	log.Info("remove collection", zap.String("name", name), zap.Int64("id", collectionID), zap.Strings("aliases", aliases))
 	return nil
@@ -605,7 +634,7 @@ func (mt *MetaTable) ListAliasesByID(collID UniqueID) []string {
 	return mt.listAliasesByID(collID)
 }
 
-// GetCollectionNameByID serve for bulk load. TODO: why this didn't accept ts?
+// GetCollectionNameByID serve for bulk insert. TODO: why this didn't accept ts?
 // [Deprecated]
 func (mt *MetaTable) GetCollectionNameByID(collID UniqueID) (string, error) {
 	mt.ddLock.RLock()
@@ -619,7 +648,7 @@ func (mt *MetaTable) GetCollectionNameByID(collID UniqueID) (string, error) {
 	return coll.Name, nil
 }
 
-// GetPartitionNameByID serve for bulk load.
+// GetPartitionNameByID serve for bulk insert.
 func (mt *MetaTable) GetPartitionNameByID(collID UniqueID, partitionID UniqueID, ts Timestamp) (string, error) {
 	mt.ddLock.RLock()
 	defer mt.ddLock.RUnlock()
@@ -651,7 +680,7 @@ func (mt *MetaTable) GetPartitionNameByID(collID UniqueID, partitionID UniqueID,
 	return "", fmt.Errorf("partition not exist: %d", partitionID)
 }
 
-// GetCollectionIDByName serve for bulk load. TODO: why this didn't accept ts?
+// GetCollectionIDByName serve for bulk insert. TODO: why this didn't accept ts?
 // [Deprecated]
 func (mt *MetaTable) GetCollectionIDByName(name string) (UniqueID, error) {
 	mt.ddLock.RLock()
@@ -664,7 +693,7 @@ func (mt *MetaTable) GetCollectionIDByName(name string) (UniqueID, error) {
 	return id, nil
 }
 
-// GetPartitionByName serve for bulk load.
+// GetPartitionByName serve for bulk insert.
 func (mt *MetaTable) GetPartitionByName(collID UniqueID, partitionName string, ts Timestamp) (UniqueID, error) {
 	mt.ddLock.RLock()
 	defer mt.ddLock.RUnlock()

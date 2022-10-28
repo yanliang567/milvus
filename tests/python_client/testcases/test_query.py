@@ -748,7 +748,7 @@ class TestQueryParams(TestcaseBase):
         expected: verify query result
         """
         # init collection with fields: int64, float, float_vec
-        collection_w, vectors = self.init_collection_general(prefix, insert_data=True)[0:2]
+        collection_w, vectors = self.init_collection_general(prefix, insert_data=True, is_index=True)[0:2]
         df = vectors[0]
 
         # query with output_fields=["*", float_vector)
@@ -996,6 +996,28 @@ class TestQueryParams(TestcaseBase):
         query_params = {"offset": offset, "limit": 10}
         collection_w.query(default_term_expr, params=query_params,
                            check_task=CheckTasks.check_query_results, check_items={exp_res: res})
+
+    @pytest.mark.tags(CaseLabel.L1)
+    def test_query_pagination_without_limit(self, offset):
+        """
+        target: test query pagination without limit
+        method: create collection and query with pagination params(only offset),
+                compare the result with query without pagination params
+        expected: query successfully
+        """
+        collection_w, vectors = self.init_collection_general(prefix, insert_data=True)[0:2]
+        int_values = vectors[0][ct.default_int64_field_name].values.tolist()
+        pos = 10
+        term_expr = f'{ct.default_int64_field_name} in {int_values[offset: pos + offset]}'
+        res = vectors[0].iloc[offset:pos + offset, :1].to_dict('records')
+        query_params = {"offset": offset}
+        query_res = collection_w.query(term_expr, params=query_params,
+                                       check_task=CheckTasks.check_query_results,
+                                       check_items={exp_res: res})[0]
+        res = collection_w.query(term_expr,
+                                 check_task=CheckTasks.check_query_results,
+                                 check_items={exp_res: res})[0]
+        assert query_res == res
 
     @pytest.mark.tags(CaseLabel.L2)
     @pytest.mark.xfail(reason="issue #19482")

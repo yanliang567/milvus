@@ -514,7 +514,7 @@ func (s *Server) ShowConfigurations(ctx context.Context, req *internalpb.ShowCon
 		zap.Int64("msgID", req.GetBase().GetMsgID()),
 	)
 
-	log.Debug("show configurations request received", zap.String("pattern", req.GetPattern()))
+	log.Info("show configurations request received", zap.String("pattern", req.GetPattern()))
 
 	if s.status.Load() != commonpb.StateCode_Healthy {
 		msg := "failed to show configurations"
@@ -547,7 +547,7 @@ func (s *Server) ShowConfigurations(ctx context.Context, req *internalpb.ShowCon
 func (s *Server) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
 	log := log.With(zap.Int64("msgID", req.Base.GetMsgID()))
 
-	log.Info("get metrics request received",
+	log.Debug("get metrics request received",
 		zap.String("metricType", req.GetRequest()))
 
 	if s.status.Load() != commonpb.StateCode_Healthy {

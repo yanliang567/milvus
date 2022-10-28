@@ -107,12 +107,6 @@ func Test_dropCollectionTask_Execute(t *testing.T) {
 		meta.On("ListAliasesByID",
 			mock.AnythingOfType("int64"),
 		).Return([]string{})
-		meta.On("ChangeCollectionState",
-			mock.Anything, // context.Context
-			mock.AnythingOfType("int64"),
-			mock.Anything, // etcdpb.CollectionState
-			mock.AnythingOfType("uint64"),
-		).Return(nil)
 
 		core := newTestCore(withInvalidProxyManager(), withMeta(meta))
 		task := &dropCollectionTask{

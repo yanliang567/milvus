@@ -14,7 +14,7 @@ from pymilvus.orm.types import CONSISTENCY_STRONG
 from common.common_func import param_info
 
 TIMEOUT = 20
-INDEX_NAME = "_default_idx"
+INDEX_NAME = ""
 
 
 # keep small timeout for stability tests
@@ -238,7 +238,6 @@ class ApiCollectionWrapper:
         index_name = INDEX_NAME if index_name is None else index_name
         index_name = kwargs.get("index_name", index_name)
         kwargs.update({"timeout": timeout, "index_name": index_name})
-
         func_name = sys._getframe().f_code.co_name
         res, check = api_request([self.collection.create_index, field_name, index_params], **kwargs)
         check_result = ResponseChecker(res, func_name, check_task, check_items, check,

@@ -96,34 +96,41 @@ func (kc *Catalog) AddSegment(ctx context.Context, segment *datapb.SegmentInfo) 
 	if err != nil {
 		return err
 	}
+	return kc.Txn.MultiSave(kvs)
+}
 
-	// save handoff req if segment is flushed
-	if segment.State == commonpb.SegmentState_Flushed {
-		flushSegKey := buildFlushedSegmentPath(segment.GetCollectionID(), segment.GetPartitionID(), segment.GetID())
-		kvs[flushSegKey] = strconv.FormatInt(segment.GetID(), 10)
+func (kc *Catalog) AlterSegments(ctx context.Context, newSegments []*datapb.SegmentInfo) error {
+	if len(newSegments) == 0 {
+		return nil
+	}
+
+	kvs := make(map[string]string)
+	for _, segment := range newSegments {
+		segmentKvs, err := buildSegmentAndBinlogsKvs(segment)
+		if err != nil {
+			return err
+		}
+		maps.Copy(kvs, segmentKvs)
 	}
 
 	return kc.Txn.MultiSave(kvs)
 }
 
-func (kc *Catalog) AlterSegments(ctx context.Context, modSegments []*datapb.SegmentInfo) error {
-	if len(modSegments) == 0 {
-		return nil
-	}
-
+func (kc *Catalog) AlterSegment(ctx context.Context, newSegment *datapb.SegmentInfo, oldSegment *datapb.SegmentInfo) error {
 	kvs := make(map[string]string)
-	for _, segment := range modSegments {
-		segmentKvs, err := buildSegmentAndBinlogsKvs(segment)
+	segmentKvs, err := buildSegmentAndBinlogsKvs(newSegment)
+	if err != nil {
+		return err
+	}
+	maps.Copy(kvs, segmentKvs)
+	if newSegment.State == commonpb.SegmentState_Flushed && oldSegment.State != commonpb.SegmentState_Flushed {
+		flushSegKey := buildFlushedSegmentPath(newSegment.GetCollectionID(), newSegment.GetPartitionID(), newSegment.GetID())
+		newSeg := &datapb.SegmentInfo{ID: newSegment.GetID()}
+		segBytes, err := marshalSegmentInfo(newSeg)
 		if err != nil {
 			return err
 		}
-
-		maps.Copy(kvs, segmentKvs)
-		// save handoff req if segment is flushed
-		if segment.State == commonpb.SegmentState_Flushed {
-			flushSegKey := buildFlushedSegmentPath(segment.GetCollectionID(), segment.GetPartitionID(), segment.GetID())
-			kvs[flushSegKey] = strconv.FormatInt(segment.GetID(), 10)
-		}
+		kvs[flushSegKey] = segBytes
 	}
 
 	return kc.Txn.MultiSave(kvs)
@@ -185,14 +192,24 @@ func (kc *Catalog) AlterSegmentsAndAddNewSegment(ctx context.Context, segments [
 	}
 
 	if newSegment != nil {
-		segmentKvs, err := buildSegmentAndBinlogsKvs(newSegment)
-		if err != nil {
-			return err
+		if newSegment.GetNumOfRows() > 0 {
+			segmentKvs, err := buildSegmentAndBinlogsKvs(newSegment)
+			if err != nil {
+				return err
+			}
+			maps.Copy(kvs, segmentKvs)
+		} else {
+			// should be a faked segment, we create flush path directly here
+			flushSegKey := buildFlushedSegmentPath(newSegment.GetCollectionID(), newSegment.GetPartitionID(), newSegment.GetID())
+			clonedSegment := proto.Clone(newSegment).(*datapb.SegmentInfo)
+			clonedSegment.IsFake = true
+			segBytes, err := marshalSegmentInfo(clonedSegment)
+			if err != nil {
+				return err
+			}
+			kvs[flushSegKey] = segBytes
 		}
-
-		maps.Copy(kvs, segmentKvs)
 	}
-
 	return kc.Txn.MultiSave(kvs)
 }
 
@@ -487,13 +504,22 @@ func CloneSegmentWithExcludeBinlogs(segment *datapb.SegmentInfo) (*datapb.Segmen
 	return clonedSegment, binlogs, deltalogs, statlogs
 }
 
-func buildSegmentKv(segment *datapb.SegmentInfo) (string, string, error) {
+func marshalSegmentInfo(segment *datapb.SegmentInfo) (string, error) {
 	segBytes, err := proto.Marshal(segment)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to marshal segment: %d, err: %w", segment.ID, err)
+		return "", fmt.Errorf("failed to marshal segment: %d, err: %w", segment.ID, err)
+	}
+
+	return string(segBytes), nil
+}
+
+func buildSegmentKv(segment *datapb.SegmentInfo) (string, string, error) {
+	segBytes, err := marshalSegmentInfo(segment)
+	if err != nil {
+		return "", "", err
 	}
 	key := buildSegmentPath(segment.GetCollectionID(), segment.GetPartitionID(), segment.GetID())
-	return key, string(segBytes), nil
+	return key, segBytes, nil
 }
 
 // buildSegmentPath common logic mapping segment info to corresponding key in kv store

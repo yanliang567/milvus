@@ -225,6 +225,7 @@ func (ob *HandoffObserver) tryHandoff(ctx context.Context, segment *querypb.Segm
 	log := log.With(zap.Int64("collectionID", segment.GetCollectionID()),
 		zap.Int64("partitionID", segment.GetPartitionID()),
 		zap.Int64("segmentID", segment.GetSegmentID()),
+		zap.Bool("fake", segment.GetIsFake()),
 		zap.Int64s("indexIDs", indexIDs),
 	)
 
@@ -232,7 +233,7 @@ func (ob *HandoffObserver) tryHandoff(ctx context.Context, segment *querypb.Segm
 	status, ok := ob.collectionStatus[segment.GetCollectionID()]
 	if Params.QueryCoordCfg.AutoHandoff &&
 		ok &&
-		ob.meta.CollectionManager.ContainAnyIndex(segment.GetCollectionID(), indexIDs...) {
+		(segment.GetIsFake() || ob.meta.CollectionManager.ContainAnyIndex(segment.GetCollectionID(), indexIDs...)) {
 		if status == CollectionHandoffStatusRegistered {
 			ob.handoffEvents[segment.GetSegmentID()] = &HandoffEvent{
 				Segment: segment,
@@ -243,7 +244,10 @@ func (ob *HandoffObserver) tryHandoff(ctx context.Context, segment *querypb.Segm
 				Segment: segment,
 				Status:  HandoffEventStatusTriggered,
 			}
-			ob.handoff(segment)
+
+			if !segment.GetIsFake() {
+				ob.handoff(segment)
+			}
 		}
 		_, ok := ob.handoffSubmitOrders[segment.GetPartitionID()]
 		if !ok {
@@ -252,7 +256,7 @@ func (ob *HandoffObserver) tryHandoff(ctx context.Context, segment *querypb.Segm
 		ob.handoffSubmitOrders[segment.GetPartitionID()] = append(ob.handoffSubmitOrders[segment.GetPartitionID()], segment.GetSegmentID())
 	} else {
 		// ignore handoff task
-		log.Debug("handoff event trigger failed due to collection/partition is not loaded!")
+		log.Info("handoff event trigger failed due to collection/partition is not loaded!")
 		ob.cleanEvent(ctx, segment)
 	}
 }
@@ -313,9 +317,32 @@ func (ob *HandoffObserver) getOverrideSegmentInfo(handOffSegments []*datapb.Segm
 	return overrideSegments
 }
 
+func (ob *HandoffObserver) isAllCompactFromHandoffCompleted(segmentInfo *querypb.SegmentInfo) bool {
+	for _, segID := range segmentInfo.CompactionFrom {
+		_, ok := ob.handoffEvents[segID]
+		if ok {
+			return false
+		}
+	}
+	return true
+}
+
 func (ob *HandoffObserver) tryRelease(ctx context.Context, event *HandoffEvent) {
 	segment := event.Segment
+
 	if ob.isSealedSegmentLoaded(segment) || !ob.isSegmentExistOnTarget(segment) {
+		// Note: the fake segment will not add into target segments, in order to guarantee
+		// the all parent segments are released we check handoff events list instead of to
+		// check segment from the leader view, or might miss some segments to release.
+		if segment.GetIsFake() && !ob.isAllCompactFromHandoffCompleted(segment) {
+			log.Debug("try to release fake segments fails, due to the dependencies haven't complete handoff.",
+				zap.Int64("segmentID", segment.GetSegmentID()),
+				zap.Bool("faked", segment.GetIsFake()),
+				zap.Int64s("sourceSegments", segment.CompactionFrom),
+			)
+			return
+		}
+
 		compactSource := segment.CompactionFrom
 		if len(compactSource) == 0 {
 			return
@@ -324,6 +351,7 @@ func (ob *HandoffObserver) tryRelease(ctx context.Context, event *HandoffEvent) 
 			zap.Int64("collectionID", segment.GetCollectionID()),
 			zap.Int64("partitionID", segment.GetPartitionID()),
 			zap.Int64("segmentID", segment.GetSegmentID()),
+			zap.Bool("faked", segment.GetIsFake()),
 			zap.Int64s("sourceSegments", compactSource),
 		)
 		for _, toRelease := range compactSource {
@@ -353,6 +381,7 @@ func (ob *HandoffObserver) tryClean(ctx context.Context) {
 					zap.Int64("collectionID", segment.GetCollectionID()),
 					zap.Int64("partitionID", segment.GetPartitionID()),
 					zap.Int64("segmentID", segment.GetSegmentID()),
+					zap.Bool("faked", segment.GetIsFake()),
 				)
 				err := ob.cleanEvent(ctx, segment)
 				if err == nil {

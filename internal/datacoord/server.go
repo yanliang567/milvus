@@ -311,14 +311,14 @@ func (s *Server) Start() error {
 			log.Info("datacoord switch from standby to active, activating")
 			s.startServerLoop()
 			s.stateCode.Store(commonpb.StateCode_Healthy)
-			logutil.Logger(s.ctx).Debug("startup success")
+			logutil.Logger(s.ctx).Info("startup success")
 		}
 		s.stateCode.Store(commonpb.StateCode_StandBy)
-		logutil.Logger(s.ctx).Debug("DataCoord enter standby mode successfully")
+		logutil.Logger(s.ctx).Info("DataCoord enter standby mode successfully")
 	} else {
 		s.startServerLoop()
 		s.stateCode.Store(commonpb.StateCode_Healthy)
-		logutil.Logger(s.ctx).Debug("DataCoord startup successfully")
+		logutil.Logger(s.ctx).Info("DataCoord startup successfully")
 	}
 
 	Params.DataCoordCfg.CreatedTime = time.Now()
@@ -478,9 +478,9 @@ func (s *Server) startDataNodeTtLoop(ctx context.Context) {
 	ttMsgStream, err := s.factory.NewMsgStream(ctx)
 	if err != nil {
 		log.Error("DataCoord failed to create timetick channel", zap.Error(err))
-		return
+		panic(err)
 	}
-	ttMsgStream.AsConsumerWithPosition([]string{Params.CommonCfg.DataCoordTimeTick},
+	ttMsgStream.AsConsumer([]string{Params.CommonCfg.DataCoordTimeTick},
 		Params.CommonCfg.DataCoordSubName, mqwrapper.SubscriptionPositionLatest)
 	log.Info("DataCoord creates the timetick channel consumer",
 		zap.String("timeTickChannel", Params.CommonCfg.DataCoordTimeTick),
@@ -577,7 +577,8 @@ func (s *Server) handleTimetickMessage(ctx context.Context, ttMsg *msgstream.Dat
 	log.Info("start flushing segments",
 		zap.Int64s("segment IDs", flushableIDs),
 		zap.Int("# of stale/mark segments", len(staleSegments)))
-
+	// update segment last update triggered time
+	// it's ok to fail flushing, since next timetick after duration will re-trigger
 	s.setLastFlushTime(flushableSegments)
 	s.setLastFlushTime(staleSegments)
 
@@ -588,7 +589,12 @@ func (s *Server) handleTimetickMessage(ctx context.Context, ttMsg *msgstream.Dat
 	for _, info := range staleSegments {
 		minfo = append(minfo, info.SegmentInfo)
 	}
-	s.cluster.Flush(s.ctx, finfo, minfo)
+	err = s.cluster.Flush(s.ctx, ttMsg.GetBase().GetSourceID(), ch, finfo, minfo)
+	if err != nil {
+		log.Warn("handle")
+		return err
+	}
+
 	return nil
 }
 
@@ -597,7 +603,7 @@ func (s *Server) updateSegmentStatistics(stats []*datapb.SegmentStats) {
 		// Log if # of rows is updated.
 		if s.meta.GetSegmentUnsafe(stat.GetSegmentID()) != nil &&
 			s.meta.GetSegmentUnsafe(stat.GetSegmentID()).GetNumOfRows() != stat.GetNumRows() {
-			log.Debug("Updating segment number of rows",
+			log.Info("Updating segment number of rows",
 				zap.Int64("segment ID", stat.GetSegmentID()),
 				zap.Int64("old value", s.meta.GetSegmentUnsafe(stat.GetSegmentID()).GetNumOfRows()),
 				zap.Int64("new value", stat.GetNumRows()),
@@ -778,11 +784,15 @@ func (s *Server) startFlushLoop(ctx context.Context) {
 		for {
 			select {
 			case <-ctx.Done():
-				logutil.Logger(s.ctx).Debug("flush loop shutdown")
+				logutil.Logger(s.ctx).Info("flush loop shutdown")
 				return
 			case segmentID := <-s.flushCh:
 				//Ignore return error
-				_ = s.postFlush(ctx, segmentID)
+				log.Info("flush successfully", zap.Any("segmentID", segmentID))
+				err := s.postFlush(ctx, segmentID)
+				if err != nil {
+					log.Warn("failed to do post flush", zap.Any("segmentID", segmentID), zap.Error(err))
+				}
 			}
 		}
 	}()
@@ -795,8 +805,7 @@ func (s *Server) startFlushLoop(ctx context.Context) {
 func (s *Server) postFlush(ctx context.Context, segmentID UniqueID) error {
 	segment := s.meta.GetSegment(segmentID)
 	if segment == nil {
-		log.Warn("failed to get flused segment", zap.Int64("id", segmentID))
-		return errors.New("segment not found")
+		return errors.New("segment not found, might be a faked segemnt, ignore post flush")
 	}
 	// set segment to SegmentState_Flushed
 	if err := s.meta.SetState(segmentID, commonpb.SegmentState_Flushed); err != nil {
@@ -839,7 +848,7 @@ func (s *Server) Stop() error {
 	if !s.stateCode.CompareAndSwap(commonpb.StateCode_Healthy, commonpb.StateCode_Abnormal) {
 		return nil
 	}
-	logutil.Logger(s.ctx).Debug("server shutdown")
+	logutil.Logger(s.ctx).Info("server shutdown")
 	s.cluster.Close()
 	s.garbageCollector.close()
 	s.stopServerLoop()

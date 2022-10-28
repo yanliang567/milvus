@@ -279,7 +279,7 @@ func (s *Server) GetInsertBinlogPaths(ctx context.Context, req *datapb.GetInsert
 // for now only row count is returned
 func (s *Server) GetCollectionStatistics(ctx context.Context, req *datapb.GetCollectionStatisticsRequest) (*datapb.GetCollectionStatisticsResponse, error) {
 	ctx = logutil.WithModule(ctx, moduleName)
-	logutil.Logger(ctx).Debug("received request to get collection statistics")
+	logutil.Logger(ctx).Info("received request to get collection statistics")
 	resp := &datapb.GetCollectionStatisticsResponse{
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
@@ -292,7 +292,7 @@ func (s *Server) GetCollectionStatistics(ctx context.Context, req *datapb.GetCol
 	nums := s.meta.GetNumRowsOfCollection(req.CollectionID)
 	resp.Status.ErrorCode = commonpb.ErrorCode_Success
 	resp.Stats = append(resp.Stats, &commonpb.KeyValuePair{Key: "row_count", Value: strconv.FormatInt(nums, 10)})
-	logutil.Logger(ctx).Debug("success to get collection statistics", zap.Any("response", resp))
+	logutil.Logger(ctx).Info("success to get collection statistics", zap.Any("response", resp))
 	return resp, nil
 }
 
@@ -319,7 +319,7 @@ func (s *Server) GetPartitionStatistics(ctx context.Context, req *datapb.GetPart
 	}
 	resp.Status.ErrorCode = commonpb.ErrorCode_Success
 	resp.Stats = append(resp.Stats, &commonpb.KeyValuePair{Key: "row_count", Value: strconv.FormatInt(nums, 10)})
-	logutil.Logger(ctx).Debug("success to get partition statistics", zap.Any("response", resp))
+	logutil.Logger(ctx).Info("success to get partition statistics", zap.Any("response", resp))
 	return resp, nil
 }
 
@@ -614,7 +614,7 @@ func (s *Server) GetRecoveryInfo(ctx context.Context, req *datapb.GetRecoveryInf
 	for _, c := range channels {
 		channelInfo := s.handler.GetQueryVChanPositions(&channel{Name: c, CollectionID: collectionID}, partitionID)
 		channelInfos = append(channelInfos, channelInfo)
-		log.Debug("datacoord append channelInfo in GetRecoveryInfo",
+		log.Info("datacoord append channelInfo in GetRecoveryInfo",
 			zap.Any("channelInfo", channelInfo),
 		)
 		flushedIDs.Insert(channelInfo.GetFlushedSegmentIds()...)
@@ -637,7 +637,7 @@ func (s *Server) GetRecoveryInfo(ctx context.Context, req *datapb.GetRecoveryInf
 		if segment.State != commonpb.SegmentState_Flushed && segment.State != commonpb.SegmentState_Flushing && segment.State != commonpb.SegmentState_Dropped {
 			continue
 		}
-		// Also skip bulk load segments.
+		// Also skip bulk insert segments.
 		if segment.GetIsImporting() {
 			continue
 		}
@@ -712,7 +712,7 @@ func (s *Server) GetFlushedSegments(ctx context.Context, req *datapb.GetFlushedS
 	}
 	collectionID := req.GetCollectionID()
 	partitionID := req.GetPartitionID()
-	log.Debug("received get flushed segments request",
+	log.Info("received get flushed segments request",
 		zap.Int64("collectionID", collectionID),
 		zap.Int64("partitionID", partitionID),
 	)
@@ -755,7 +755,7 @@ func (s *Server) GetSegmentsByStates(ctx context.Context, req *datapb.GetSegment
 	collectionID := req.GetCollectionID()
 	partitionID := req.GetPartitionID()
 	states := req.GetStates()
-	log.Debug("received get segments by states request",
+	log.Info("received get segments by states request",
 		zap.Int64("collectionID", collectionID),
 		zap.Int64("partitionID", partitionID),
 		zap.Any("states", states))
@@ -811,10 +811,6 @@ func (s *Server) ShowConfigurations(ctx context.Context, req *internalpb.ShowCon
 // GetMetrics returns DataCoord metrics info
 // it may include SystemMetrics, Topology metrics, etc.
 func (s *Server) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
-	log.Debug("received get metrics request",
-		zap.Int64("nodeID", Params.DataCoordCfg.GetNodeID()),
-		zap.String("request", req.Request))
-
 	if s.isClosed() {
 		log.Warn("DataCoord.GetMetrics failed",
 			zap.Int64("node_id", Params.DataCoordCfg.GetNodeID()),
@@ -848,14 +844,17 @@ func (s *Server) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest
 		}, nil
 	}
 
-	log.Debug("DataCoord.GetMetrics",
-		zap.String("metric_type", metricType))
-
 	if metricType == metricsinfo.SystemInfoMetrics {
-		log.Debug("failed to get system info metrics from cache, recompute instead",
-			zap.Error(err))
-
 		metrics, err := s.getSystemInfoMetrics(ctx, req)
+		if err != nil {
+			log.Warn("DataCoord GetMetrics failed", zap.Int64("nodeID", Params.DataCoordCfg.GetNodeID()), zap.Error(err))
+			return &milvuspb.GetMetricsResponse{
+				Status: &commonpb.Status{
+					ErrorCode: commonpb.ErrorCode_UnexpectedError,
+					Reason:    err.Error(),
+				},
+			}, nil
+		}
 
 		log.Debug("DataCoord.GetMetrics",
 			zap.Int64("node_id", Params.DataCoordCfg.GetNodeID()),

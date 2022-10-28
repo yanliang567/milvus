@@ -55,6 +55,7 @@ type createIndexTask struct {
 	ctx        context.Context
 	rootCoord  types.RootCoord
 	indexCoord types.IndexCoord
+	queryCoord types.QueryCoord
 	result     *commonpb.Status
 
 	isAutoIndex    bool
@@ -283,7 +284,20 @@ func (cit *createIndexTask) PreExecute(ctx context.Context) error {
 	}
 	cit.fieldSchema = field
 	// check index param, not accurate, only some static rules
-	return cit.parseIndexParams()
+	err = cit.parseIndexParams()
+	if err != nil {
+		return err
+	}
+
+	loaded, err := isCollectionLoaded(ctx, cit.queryCoord, collID)
+	if err != nil {
+		return err
+	}
+
+	if loaded {
+		return fmt.Errorf("create index failed, collection is loaded, please release it first")
+	}
+	return nil
 }
 
 func (cit *createIndexTask) Execute(ctx context.Context) error {
@@ -374,7 +388,10 @@ func (dit *describeIndexTask) PreExecute(ctx context.Context) error {
 		return err
 	}
 
-	collID, _ := globalMetaCache.GetCollectionID(ctx, dit.CollectionName)
+	collID, err := globalMetaCache.GetCollectionID(ctx, dit.CollectionName)
+	if err != nil {
+		return err
+	}
 	dit.collectionID = collID
 	return nil
 }
@@ -487,18 +504,19 @@ func (dit *dropIndexTask) PreExecute(ctx context.Context) error {
 		return err
 	}
 
-	if err := validateFieldName(fieldName); err != nil {
+	if fieldName != "" {
+		if err := validateFieldName(fieldName); err != nil {
+			return err
+		}
+	}
+
+	collID, err := globalMetaCache.GetCollectionID(ctx, dit.CollectionName)
+	if err != nil {
 		return err
 	}
-
-	if dit.IndexName == "" {
-		dit.IndexName = Params.CommonCfg.DefaultIndexName
-	}
-
-	collID, _ := globalMetaCache.GetCollectionID(ctx, dit.CollectionName)
 	dit.collectionID = collID
 
-	loaded, err := isCollectionLoaded(ctx, dit.queryCoord, []int64{collID})
+	loaded, err := isCollectionLoaded(ctx, dit.queryCoord, collID)
 	if err != nil {
 		return err
 	}
@@ -511,7 +529,28 @@ func (dit *dropIndexTask) PreExecute(ctx context.Context) error {
 }
 
 func (dit *dropIndexTask) Execute(ctx context.Context) error {
-	var err error
+	resp, err := dit.indexCoord.DescribeIndex(ctx, &indexpb.DescribeIndexRequest{
+		CollectionID: dit.collectionID,
+		IndexName:    dit.GetIndexName(),
+	})
+	if err != nil {
+		return err
+	}
+	if resp.GetStatus().GetErrorCode() != commonpb.ErrorCode_Success {
+		if resp.GetStatus().GetErrorCode() == commonpb.ErrorCode_IndexNotExist {
+			// skip drop
+			return nil
+		}
+		return errors.New(resp.GetStatus().GetReason())
+	}
+
+	if len(resp.GetIndexInfos()) > 1 && dit.GetIndexName() == "" {
+		return ErrAmbiguousIndexName()
+	}
+
+	// if len(indexInfos) == 0, the ErrorCode must be IndexNotExist
+	dit.IndexName = resp.GetIndexInfos()[0].IndexName
+
 	dit.result, err = dit.indexCoord.DropIndex(ctx, &indexpb.DropIndexRequest{
 		CollectionID: dit.collectionID,
 		PartitionIDs: nil,

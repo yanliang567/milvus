@@ -60,18 +60,18 @@ func (t *dropCollectionTask) Execute(ctx context.Context) error {
 
 	redoTask := newBaseRedoTask(t.core.stepExecutor)
 
-	redoTask.AddSyncStep(&changeCollectionStateStep{
-		baseStep:     baseStep{core: t.core},
-		collectionID: collMeta.CollectionID,
-		state:        pb.CollectionState_CollectionDropping,
-		ts:           ts,
-	})
 	redoTask.AddSyncStep(&expireCacheStep{
 		baseStep:        baseStep{core: t.core},
 		collectionNames: append(aliases, collMeta.Name),
 		collectionID:    collMeta.CollectionID,
 		ts:              ts,
 		opts:            []expireCacheOpt{expireCacheWithDropFlag()},
+	})
+	redoTask.AddSyncStep(&changeCollectionStateStep{
+		baseStep:     baseStep{core: t.core},
+		collectionID: collMeta.CollectionID,
+		state:        pb.CollectionState_CollectionDropping,
+		ts:           ts,
 	})
 
 	redoTask.AddAsyncStep(&releaseCollectionStep{

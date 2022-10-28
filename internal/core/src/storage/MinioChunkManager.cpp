@@ -27,8 +27,8 @@
 #include <aws/s3/model/GetObjectRequest.h>
 #include <aws/s3/model/PutObjectRequest.h>
 
-#include "MinioChunkManager.h"
-
+#include "storage/MinioChunkManager.h"
+#include "exceptions/EasyAssert.h"
 #include "log/Log.h"
 
 #define THROWS3ERROR(FUNCTION)                                                                         \
@@ -94,15 +94,21 @@ MinioChunkManager::MinioChunkManager(const StorageConfig& storage_config)
                            << " access_key:" << provider->GetAWSCredentials().GetAWSSecretKey()
                            << " token:" << provider->GetAWSCredentials().GetSessionToken() << "}";
     } else {
+        AssertInfo(!storage_config.access_key_id.empty(), "if not use iam, access key should not be empty");
+        AssertInfo(!storage_config.access_key_value.empty(), "if not use iam, access value should not be empty");
+
         client_ = std::make_shared<Aws::S3::S3Client>(
             Aws::Auth::AWSCredentials(ConvertToAwsString(storage_config.access_key_id),
                                       ConvertToAwsString(storage_config.access_key_value)),
             config, Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy::Never, false);
     }
 
-    if (!BucketExists(storage_config.bucket_name)) {
-        CreateBucket(storage_config.bucket_name);
-    }
+    // TODO ::BucketExist and CreateBucket func not work, should be fixed
+    // index node has already tried to create bucket when receive index task if bucket not exist
+    // query node has already tried to create bucket during init stage if bucket not exist
+    //    if (!BucketExists(storage_config.bucket_name)) {
+    //        CreateBucket(storage_config.bucket_name);
+    //    }
 
     LOG_SEGCORE_INFO_C << "init MinioChunkManager with parameter[endpoint: '" << storage_config.address
                        << "', access_key:'" << storage_config.access_key_id << "', access_value:'"

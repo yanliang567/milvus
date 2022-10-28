@@ -82,17 +82,6 @@ func (dNode *deleteNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 		msg.SetTraceCtx(ctx)
 	}
 
-	collection, err := dNode.metaReplica.getCollectionByID(dNode.collectionID)
-	if err != nil {
-		log.Warn("failed to get collection",
-			zap.Int64("collectionID", dNode.collectionID),
-			zap.String("channel", dNode.channel),
-		)
-		return []Msg{}
-	}
-	collection.RLock()
-	defer collection.RUnlock()
-
 	// 1. filter segment by bloom filter
 	for i, delMsg := range dMsg.deleteMessages {
 		traceID, _, _ := trace.InfoFromSpan(spans[i])
@@ -144,7 +133,7 @@ func (dNode *deleteNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 			err := dNode.delete(delData, segmentID, &wg)
 			if err != nil {
 				// error occurs when segment cannot be found, calling cgo function delete failed and etc...
-				log.Error("failed to apply deletions to segment",
+				log.Warn("failed to apply deletions to segment",
 					zap.Int64("segmentID", segmentID),
 					zap.Error(err),
 				)

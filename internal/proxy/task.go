@@ -857,10 +857,19 @@ func (dpt *dropPartitionTask) PreExecute(ctx context.Context) error {
 		return err
 	}
 
-	collID, _ := globalMetaCache.GetCollectionID(ctx, dpt.GetCollectionName())
-	partID, _ := globalMetaCache.GetPartitionID(ctx, dpt.GetCollectionName(), dpt.GetPartitionName())
+	collID, err := globalMetaCache.GetCollectionID(ctx, dpt.GetCollectionName())
+	if err != nil {
+		return err
+	}
+	partID, err := globalMetaCache.GetPartitionID(ctx, dpt.GetCollectionName(), dpt.GetPartitionName())
+	if err != nil {
+		if err.Error() == ErrPartitionNotExist(dpt.GetPartitionName()).Error() {
+			return nil
+		}
+		return err
+	}
 
-	collLoaded, err := isCollectionLoaded(ctx, dpt.queryCoord, []int64{collID})
+	collLoaded, err := isCollectionLoaded(ctx, dpt.queryCoord, collID)
 	if err != nil {
 		return err
 	}
