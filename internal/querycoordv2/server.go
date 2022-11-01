@@ -308,6 +308,12 @@ func (s *Server) Start() error {
 	s.wg.Add(1)
 	go s.watchNodes(revision)
 
+	// handoff master start before recover collection, to clean all outdated handoff event.
+	if err := s.handoffObserver.Start(s.ctx); err != nil {
+		log.Error("start handoff observer failed, exit...", zap.Error(err))
+		panic(err.Error())
+	}
+
 	log.Info("start recovering dist and target")
 	err = s.recover()
 	if err != nil {
@@ -329,10 +335,6 @@ func (s *Server) Start() error {
 	log.Info("start observers...")
 	s.collectionObserver.Start(s.ctx)
 	s.leaderObserver.Start(s.ctx)
-	if err := s.handoffObserver.Start(s.ctx); err != nil {
-		log.Error("start handoff observer failed, exit...", zap.Error(err))
-		panic(err.Error())
-	}
 
 	if s.enableActiveStandBy {
 		s.activateFunc = func() {
@@ -352,29 +354,48 @@ func (s *Server) Start() error {
 
 func (s *Server) Stop() error {
 	s.cancel()
-	s.session.Revoke(time.Second)
+	if s.session != nil {
+		s.session.Revoke(time.Second)
+	}
 
-	log.Info("stop cluster...")
-	s.cluster.Stop()
+	if s.session != nil {
+		log.Info("stop cluster...")
+		s.cluster.Stop()
+	}
 
-	log.Info("stop dist controller...")
-	s.distController.Stop()
+	if s.distController != nil {
+		log.Info("stop dist controller...")
+		s.distController.Stop()
+	}
 
-	log.Info("stop checker controller...")
-	s.checkerController.Stop()
+	if s.checkerController != nil {
+		log.Info("stop checker controller...")
+		s.checkerController.Stop()
+	}
 
-	log.Info("stop task scheduler...")
-	s.taskScheduler.Stop()
+	if s.taskScheduler != nil {
+		log.Info("stop task scheduler...")
+		s.taskScheduler.Stop()
+	}
 
-	log.Info("stop job scheduler...")
-	s.jobScheduler.Stop()
+	if s.jobScheduler != nil {
+		log.Info("stop job scheduler...")
+		s.jobScheduler.Stop()
+	}
 
 	log.Info("stop observers...")
-	s.collectionObserver.Stop()
-	s.leaderObserver.Stop()
-	s.handoffObserver.Stop()
+	if s.collectionObserver != nil {
+		s.collectionObserver.Stop()
+	}
+	if s.leaderObserver != nil {
+		s.leaderObserver.Stop()
+	}
+	if s.handoffObserver != nil {
+		s.handoffObserver.Stop()
+	}
 
 	s.wg.Wait()
+	log.Info("QueryCoord stop successfully")
 	return nil
 }
 

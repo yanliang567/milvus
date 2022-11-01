@@ -4,7 +4,7 @@ int total_timeout_minutes = 60 * 5
 int e2e_timeout_seconds = 70 * 60
 def imageTag=''
 int case_timeout_seconds = 10 * 60
-def chart_version='3.2.12'
+def chart_version='3.2.13'
 pipeline {
     options {
         timestamps()
@@ -126,6 +126,9 @@ pipeline {
                                                 --set etcd.metrics.enabled=true \
                                                 --set etcd.metrics.podMonitor.enabled=true \
                                                 --set indexCoordinator.gc.interval=1 \
+                                                --set indexNode.disk.enabled=true \
+                                                --set queryNode.disk.enabled=true \
+                                                --set standalone.disk.enabled=true \
                                                 --version ${chart_version} \
                                                 -f values/ci/pr.yaml" 
                                                 """
@@ -198,6 +201,7 @@ pipeline {
                             dir ('tests/scripts') {  
                                 script {
                                     def release_name=sh(returnStdout: true, script: './get_release_name.sh')
+                                    sh "kubectl get pods -n ${MILVUS_HELM_NAMESPACE} | grep ${release_name} "
                                     sh "./uninstall_milvus.sh --release-name ${release_name}"
                                     sh "./ci_logs.sh --log-dir /ci-logs  --artifacts-name ${env.ARTIFACTS}/artifacts-${PROJECT_NAME}-${MILVUS_SERVER_TYPE}-${SEMVER}-${env.BUILD_NUMBER}-${MILVUS_CLIENT}-e2e-logs \
                                     --release-name ${release_name}"

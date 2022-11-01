@@ -12,6 +12,7 @@ from common.common_type import CaseLabel, CheckTasks
 from utils.util_k8s import (
     get_pod_ip_name_pairs,
     get_milvus_instance_name,
+    get_milvus_deploy_tool
 )
 from utils.util_log import test_log as log
 from bulk_insert_data import (
@@ -33,7 +34,7 @@ default_multi_fields = [
 default_vec_n_int_fields = [df.vec_field, df.int_field]
 
 
-milvus_ns = "chaos-testing"
+# milvus_ns = "chaos-testing"
 base_dir = "/tmp/bulk_insert_data"
 
 
@@ -50,12 +51,18 @@ def entity_suffix(entities):
 class TestcaseBaseBulkInsert(TestcaseBase):
 
     @pytest.fixture(scope="function", autouse=True)
-    def init_minio_client(self, host):
+    def init_minio_client(self, host, milvus_ns):
         Path("/tmp/bulk_insert_data").mkdir(parents=True, exist_ok=True)
         self._connect()
-        self.instance_name = get_milvus_instance_name(milvus_ns, host)
+        self.milvus_ns = milvus_ns
+        self.milvus_sys = MilvusSys(alias='default')
+        self.instance_name = get_milvus_instance_name(self.milvus_ns, host)
+        self.deploy_tool = get_milvus_deploy_tool(self.milvus_ns, self.milvus_sys)
+        minio_label = f"release={self.instance_name}, app=minio"
+        if self.deploy_tool == "milvus-operator":
+            minio_label = f"release={self.instance_name}-minio, app=minio"
         minio_ip_pod_pair = get_pod_ip_name_pairs(
-            milvus_ns, f"release={self.instance_name}, app=minio"
+            self.milvus_ns, minio_label
         )
         ms = MilvusSys()
         minio_ip = list(minio_ip_pod_pair.keys())[0]
@@ -73,7 +80,7 @@ class TestcaseBaseBulkInsert(TestcaseBase):
 class TestBulkInsert(TestcaseBaseBulkInsert):
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("auto_id", [True, False])
     @pytest.mark.parametrize("dim", [8])  # 8, 128
     @pytest.mark.parametrize("entities", [100])  # 100, 1000
@@ -112,7 +119,6 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
         task_ids, _ = self.utility_wrap.bulk_insert(
             collection_name=c_name,
             partition_name=None,
-            is_row_based=is_row_based,
             files=files,
         )
         logging.info(f"bulk insert task ids:{task_ids}")
@@ -156,7 +162,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
             assert len(results) == len(ids)
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("dim", [8])  # 8
     @pytest.mark.parametrize("entities", [100])  # 100
     def test_str_pk_float_vector_only(self, is_row_based, dim, entities):
@@ -193,7 +199,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
         # import data
         t0 = time.time()
         task_ids, _ = self.utility_wrap.bulk_insert(
-            collection_name=c_name, is_row_based=is_row_based, files=files
+            collection_name=c_name, files=files
         )
         logging.info(f"bulk insert task ids:{task_ids}")
         completed, _ = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
@@ -239,7 +245,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
             assert len(results) == len(ids)
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("auto_id", [True, False])
     @pytest.mark.parametrize("dim", [4])
     @pytest.mark.parametrize("entities", [3000])
@@ -291,7 +297,6 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
         task_ids, _ = self.utility_wrap.bulk_insert(
             collection_name=c_name,
             partition_name=p_name,
-            is_row_based=is_row_based,
             files=files,
         )
         logging.info(f"bulk insert task ids:{task_ids}")
@@ -332,7 +337,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
             assert len(results) == len(ids)
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("auto_id", [True, False])
     @pytest.mark.parametrize("dim", [16])
     @pytest.mark.parametrize("entities", [2000])
@@ -381,9 +386,8 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
         self.collection_wrap.load()
         # import data
         t0 = time.time()
-        task_ids, _ = self.utility_wrap.bulk_insert(
-            collection_name=c_name, is_row_based=is_row_based, files=files
-        )
+        task_ids, _ = self.utility_wrap.bulk_insert(collection_name=c_name,
+                                                    files=files)
         logging.info(f"bulk insert task ids:{task_ids}")
         success, _ = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
             task_ids=task_ids, timeout=90
@@ -416,7 +420,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
             assert len(results) == len(ids)
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("auto_id", [True, False])
     @pytest.mark.parametrize(
         "fields_num_in_file", ["equal", "more", "less"]
@@ -456,6 +460,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
             cf.gen_int32_field(name=df.int_field),
             cf.gen_string_field(name=df.string_field),
             cf.gen_bool_field(name=df.bool_field),
+            cf.gen_float_field(name=df.float_field),
         ]
         if fields_num_in_file == "more":
             fields.pop()
@@ -474,7 +479,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
         # import data
         t0 = time.time()
         task_ids, _ = self.utility_wrap.bulk_insert(
-            collection_name=c_name, is_row_based=is_row_based, files=files
+            collection_name=c_name, files=files
         )
         logging.info(f"bulk insert task ids:{task_ids}")
         success, states = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
@@ -482,12 +487,13 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
         )
         tt = time.time() - t0
         log.info(f"bulk insert state:{success} in {tt}")
-        if fields_num_in_file == "less":
+        if fields_num_in_file in ["less", "more"]:
             assert not success
             if is_row_based:
-                failed_reason = (
-                    f"JSON row validator: field {additional_field} missed at the row 0"
-                )
+                if fields_num_in_file == "less":
+                    failed_reason = f"field '{additional_field}' missed at the row 0"
+                else:
+                    failed_reason = f"field '{df.float_field}' is not defined in collection schema"
             else:
                 failed_reason = "is not equal to other fields"
             for state in states.values():
@@ -546,12 +552,13 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
         """
         bulk_insert_row = 500
         direct_insert_row = 3000
+        dim = 16
         files = prepare_bulk_insert_json_files(
             minio_endpoint=self.minio_endpoint,
             bucket_name=self.bucket_name,
             is_row_based=True,
             rows=bulk_insert_row,
-            dim=16,
+            dim=dim,
             data_fields=[df.pk_field, df.float_field, df.vec_field],
             force=True,
         )
@@ -560,12 +567,12 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
         fields = [
             cf.gen_int64_field(name=df.pk_field, is_primary=True),
             cf.gen_float_field(name=df.float_field),
-            cf.gen_float_vec_field(name=df.vec_field, dim=16),
+            cf.gen_float_vec_field(name=df.vec_field, dim=dim),
         ]
         data = [
             [i for i in range(direct_insert_row)],
             [np.float32(i) for i in range(direct_insert_row)],
-            cf.gen_vectors(direct_insert_row, 16),
+            cf.gen_vectors(direct_insert_row, dim=dim),
 
         ]
         schema = cf.gen_collection_schema(fields=fields)
@@ -584,7 +591,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
         # import data
         t0 = time.time()
         task_ids, _ = self.utility_wrap.bulk_insert(
-            collection_name=c_name, is_row_based=True, files=files
+            collection_name=c_name, files=files
         )
         logging.info(f"bulk insert task ids:{task_ids}")
         success, states = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
@@ -610,7 +617,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
         time.sleep(5)
         nq = 3
         topk = 10
-        search_data = cf.gen_vectors(nq, 16)
+        search_data = cf.gen_vectors(nq, dim=dim)
         search_params = ct.default_search_params
         res, _ = self.collection_wrap.search(
             search_data,
@@ -651,7 +658,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
             rows=500,
             dim=16,
             auto_id=True,
-            data_fields=[df.pk_field, df.vec_field],
+            data_fields=[df.vec_field],
             force=True,
         )
         self._connect()
@@ -673,7 +680,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
         # import data
         t0 = time.time()
         task_ids, _ = self.utility_wrap.bulk_insert(
-            collection_name=c_name, is_row_based=True, files=files
+            collection_name=c_name, files=files
         )
         logging.info(f"bulk insert task ids:{task_ids}")
         success, states = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
@@ -716,7 +723,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
             assert len(results) == len(ids)
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize(
         "fields_num_in_file", ["equal", "more", "less"]
     )  # "equal", "more", "less"
@@ -757,6 +764,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
             cf.gen_int32_field(name=df.int_field),
             cf.gen_string_field(name=df.string_field),
             cf.gen_bool_field(name=df.bool_field),
+            cf.gen_float_field(name=df.float_field),
         ]
         if fields_num_in_file == "more":
             fields.pop()
@@ -774,7 +782,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
         # import data
         t0 = time.time()
         task_ids, _ = self.utility_wrap.bulk_insert(
-            collection_name=c_name, is_row_based=is_row_based, files=files
+            collection_name=c_name, files=files
         )
         logging.info(f"bulk insert task ids:{task_ids}")
         success, states = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
@@ -782,12 +790,13 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
         )
         tt = time.time() - t0
         log.info(f"bulk insert state:{success} in {tt}")
-        if fields_num_in_file == "less":
+        if fields_num_in_file in ["less", "more"]:
             assert not success  # TODO: check error msg
             if is_row_based:
-                failed_reason = (
-                    f"JSON row validator: field {additional_field} missed at the row 0"
-                )
+                if fields_num_in_file == "less":
+                    failed_reason = f"field '{additional_field}' missed at the row 0"
+                else:
+                    failed_reason = f"field '{df.float_field}' is not defined in collection schema"
             else:
                 failed_reason = "is not equal to other fields"
             for state in states.values():
@@ -821,7 +830,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
                 assert len(results) == len(ids)
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [pytest.param(True, marks=pytest.mark.xfail(reason="issue: https://github.com/milvus-io/milvus/issues/19499")), False])  # True, False
+    @pytest.mark.parametrize("is_row_based", [pytest.param(True, marks=pytest.mark.xfail(reason="issue: https://github.com/milvus-io/milvus/issues/19499"))])  # True, False
     @pytest.mark.parametrize("auto_id", [True, False])  # True, False
     @pytest.mark.parametrize("dim", [16])  # 16
     @pytest.mark.parametrize("entities", [100])  # 3000
@@ -863,6 +872,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
             cf.gen_int32_field(name=df.int_field),
             cf.gen_string_field(name=df.string_field),
             cf.gen_bool_field(name=df.bool_field),
+            cf.gen_float_field(name=df.float_field)
         ]
         schema = cf.gen_collection_schema(fields=fields, auto_id=auto_id)
         self.collection_wrap.init_collection(c_name, schema=schema)
@@ -876,7 +886,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
         # import data
         t0 = time.time()
         task_ids, _ = self.utility_wrap.bulk_insert(
-            collection_name=c_name, is_row_based=is_row_based, files=files
+            collection_name=c_name, files=files
         )
         logging.info(f"bulk insert task ids:{task_ids}")
         success, states = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
@@ -922,11 +932,12 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
                 assert len(results) == len(ids)
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("auto_id", [True, False])
     @pytest.mark.parametrize("multi_fields", [True, False])
     @pytest.mark.parametrize("dim", [15])
     @pytest.mark.parametrize("entities", [200])
+    @pytest.mark.skip(reason="stop support for numpy files")
     def test_float_vector_from_numpy_file(
         self, is_row_based, auto_id, multi_fields, dim, entities
     ):
@@ -1006,7 +1017,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
         # import data
         t0 = time.time()
         task_ids, _ = self.utility_wrap.bulk_insert(
-            collection_name=c_name, is_row_based=is_row_based, files=files
+            collection_name=c_name, files=files
         )
         logging.info(f"bulk insert task ids:{task_ids}")
         success, states = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
@@ -1060,7 +1071,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
                 assert len(results) == len(ids)
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("dim", [8])
     @pytest.mark.parametrize("entities", [10])
     def test_data_type_float_on_int_pk(self, is_row_based, dim, entities):
@@ -1094,12 +1105,13 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
             cf.gen_int32_field(name=df.int_field),
             cf.gen_string_field(name=df.string_field),
             cf.gen_bool_field(name=df.bool_field),
+            cf.gen_float_field(name=df.float_field),
         ]
         schema = cf.gen_collection_schema(fields=fields, auto_id=False)
         self.collection_wrap.init_collection(c_name, schema=schema)
         # import data
         task_ids, _ = self.utility_wrap.bulk_insert(
-            collection_name=c_name, is_row_based=is_row_based, files=files
+            collection_name=c_name, files=files
         )
         logging.info(f"bulk insert task ids:{task_ids}")
         success, states = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
@@ -1122,7 +1134,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
         assert [{df.pk_field: 3}] == res
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("auto_id", [True, False])
     @pytest.mark.parametrize("dim", [8])
     @pytest.mark.parametrize("entities", [10])
@@ -1163,7 +1175,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
         self.collection_wrap.init_collection(c_name, schema=schema)
         # import data
         task_ids, _ = self.utility_wrap.bulk_insert(
-            collection_name=c_name, is_row_based=is_row_based, files=files
+            collection_name=c_name, files=files
         )
         logging.info(f"bulk insert task ids:{task_ids}")
         success, states = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
@@ -1200,6 +1212,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
     @pytest.mark.parametrize("auto_id", [True])
     @pytest.mark.parametrize("dim", [128])  # 128
     @pytest.mark.parametrize("entities", [1000])  # 1000
+    @pytest.mark.skip(reason="stop support for numpy files")
     def test_with_all_field_numpy(self, auto_id, dim, entities):
         """
         collection schema 1: [pk, int64, float64, string float_vector]
@@ -1233,7 +1246,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
         # import data
         t0 = time.time()
         task_ids, _ = self.utility_wrap.bulk_insert(
-            collection_name=c_name, is_row_based=False, files=files
+            collection_name=c_name, files=files
         )
         logging.info(f"bulk insert task ids:{task_ids}")
         success, states = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
@@ -1281,8 +1294,6 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
         2. import data
         3. verify that import numpy files in a loop
         """
-        is_row_based = False  # numpy files supports only column based
-
         self._connect()
         c_name = cf.gen_unique_str("bulk_insert")
         fields = [
@@ -1314,7 +1325,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
                 force=True,
             )
             task_id, _ = self.utility_wrap.bulk_insert(
-                collection_name=c_name, is_row_based=is_row_based, files=files
+                collection_name=c_name, files=files
             )
             task_ids.append(task_id[0])
         success, states = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
@@ -1348,8 +1359,7 @@ class TestBulkInsert(TestcaseBaseBulkInsert):
 class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
-    def test_non_existing_file(self, is_row_based):
+    def test_non_existing_file(self):
         """
         collection: either auto_id or not
         collection schema: not existing file(s)
@@ -1373,7 +1383,6 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         task_ids, _ = self.utility_wrap.bulk_insert(
             collection_name=c_name,
             partition_name=None,
-            is_row_based=is_row_based,
             files=files,
         )
         logging.info(f"bulk insert task ids:{task_ids}")
@@ -1381,13 +1390,13 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
             task_ids=task_ids, timeout=90
         )
         assert not success
-        failed_reason = f"failed to get file size of {files[0]}"
+        failed_reason = f"failed to get file size of '{files[0]}'"
         for state in states.values():
             assert state.state_name in ["Failed", "Failed and cleaned"]
             assert failed_reason in state.infos.get("failed_reason", "")
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("auto_id", [True, False])
     def test_empty_json_file(self, is_row_based, auto_id):
         """
@@ -1423,7 +1432,6 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         task_ids, _ = self.utility_wrap.bulk_insert(
             collection_name=c_name,
             partition_name=None,
-            is_row_based=is_row_based,
             files=files,
         )
         logging.info(f"bulk insert task ids:{task_ids}")
@@ -1431,13 +1439,13 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
             task_ids=task_ids, timeout=90
         )
         assert not success
-        failed_reason = "JSON parse: row count is 0"
+        failed_reason = "JSON parser: row count is 0"
         for state in states.values():
             assert state.state_name in ["Failed", "Failed and cleaned"]
             assert failed_reason in state.infos.get("failed_reason", "")
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("auto_id", [True, False])
     @pytest.mark.parametrize("dim", [8])  # 8
     @pytest.mark.parametrize("entities", [100])  # 100
@@ -1486,7 +1494,6 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         task_ids, _ = self.utility_wrap.bulk_insert(
             collection_name=c_name,
             partition_name=None,
-            is_row_based=is_row_based,
             files=files,
         )
         logging.info(f"bulk insert task ids:{task_ids}")
@@ -1502,7 +1509,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
             assert failed_reason in state.infos.get("failed_reason", "")
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("auto_id", [True, False])
     @pytest.mark.parametrize("dim", [8])
     @pytest.mark.parametrize("entities", [100])
@@ -1539,7 +1546,6 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         task_ids, _ = self.utility_wrap.bulk_insert(
             collection_name=c_name,
             partition_name=None,
-            is_row_based=is_row_based,
             files=files,
         )
         logging.info(f"bulk insert task ids:{task_ids}")
@@ -1549,7 +1555,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         assert not success
         if is_row_based:
             value = df.vec_field  # if auto_id else df.pk_field
-            failed_reason = f"JSON parse: invalid row-based JSON format, the key {value} is not found"
+            failed_reason = f"JSON parser: invalid row-based JSON format, the key {value} is not found"
         else:
             failed_reason = "JSON parse: row count is 0"
         for state in states.values():
@@ -1557,7 +1563,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
             assert failed_reason in state.infos.get("failed_reason", "")
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("auto_id", [True, False])
     @pytest.mark.parametrize("dim", [8])  # 8
     @pytest.mark.parametrize("entities", [100])  # 100
@@ -1594,7 +1600,6 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         task_ids, _ = self.utility_wrap.bulk_insert(
             collection_name=c_name,
             partition_name=None,
-            is_row_based=is_row_based,
             files=files,
         )
         logging.info(f"bulk insert task ids:{task_ids}")
@@ -1608,7 +1613,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         else:
             assert not success
             if is_row_based:
-                failed_reason = f"field {dismatch_pk_field} missed at the row 0"
+                failed_reason = f"the field '{df.pk_field}' is not defined in collection schema"
             else:
                 failed_reason = f"field {dismatch_pk_field} row count 0 is not equal to other fields row count"
             for state in states.values():
@@ -1616,7 +1621,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
                 assert failed_reason in state.infos.get("failed_reason", "")
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("auto_id", [True, False])
     @pytest.mark.parametrize("dim", [8])  # 8
     @pytest.mark.parametrize("entities", [100])  # 100
@@ -1652,7 +1657,6 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         task_ids, _ = self.utility_wrap.bulk_insert(
             collection_name=c_name,
             partition_name=None,
-            is_row_based=is_row_based,
             files=files,
         )
         logging.info(f"bulk insert task ids:{task_ids}")
@@ -1664,7 +1668,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
 
         assert not success
         if is_row_based:
-            failed_reason = f"field {dismatch_vec_field} missed at the row 0"
+            failed_reason = f"the field '{df.vec_field}' is not defined in collection schema"
         else:
             if auto_id:
                 failed_reason = f"JSON column consumer: row count is 0"
@@ -1675,7 +1679,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
             assert failed_reason in state.infos.get("failed_reason", "")
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("auto_id", [True, False])
     @pytest.mark.parametrize("dim", [4])
     @pytest.mark.parametrize("entities", [200])
@@ -1712,7 +1716,6 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         task_ids, _ = self.utility_wrap.bulk_insert(
             collection_name=c_name,
             partition_name="",
-            is_row_based=is_row_based,
             files=files,
         )
         logging.info(f"bulk insert task ids:{task_ids}")
@@ -1723,7 +1726,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         log.info(f"bulk insert state:{success} in {tt}")
         assert not success
         if is_row_based:
-            failed_reason = f"field {dismatch_scalar_field} missed at the row 0"
+            failed_reason = f"field '{df.int_field}' is not defined in collection schema"
         else:
             failed_reason = f"field {dismatch_scalar_field} row count 0 is not equal to other fields row count"
         for state in states.values():
@@ -1731,7 +1734,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
             assert failed_reason in state.infos.get("failed_reason", "")
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("auto_id", [True, False])
     @pytest.mark.parametrize("dim", [4])
     @pytest.mark.parametrize("entities", [200])
@@ -1763,7 +1766,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         self.collection_wrap.init_collection(c_name, schema=schema)
         # import data
         task_ids, _ = self.utility_wrap.bulk_insert(
-            collection_name=c_name, is_row_based=is_row_based, files=files
+            collection_name=c_name, files=files
         )
         logging.info(f"bulk insert task ids:{task_ids}")
         success, states = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
@@ -1771,13 +1774,13 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         )
         log.info(f"bulk insert state:{success}")
         assert not success
-        failed_reason = f"array size {dim} doesn't equal to vector dimension {wrong_dim} of field vectors at the row "
+        failed_reason = f"array size {dim} doesn't equal to vector dimension {wrong_dim} of field vectors"
         for state in states.values():
             assert state.state_name in ["Failed", "Failed and cleaned"]
             assert failed_reason in state.infos.get("failed_reason", "")
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("dim", [4])
     @pytest.mark.parametrize("entities", [200])
     def test_non_existing_collection(self, is_row_based, dim, entities):
@@ -1801,14 +1804,13 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         err_msg = f"can't find collection: {c_name}"
         task_ids, _ = self.utility_wrap.bulk_insert(
             collection_name=c_name,
-            is_row_based=is_row_based,
             files=files,
             check_task=CheckTasks.err_res,
             check_items={"err_code": 1, "err_msg": err_msg},
         )
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("dim", [4])
     @pytest.mark.parametrize("entities", [200])
     @pytest.mark.xfail(reason="issue: https://github.com/milvus-io/milvus/issues/19553")
@@ -1842,14 +1844,13 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         task_ids, _ = self.utility_wrap.bulk_insert(
             collection_name=c_name,
             partition_name=p_name,
-            is_row_based=is_row_based,
             files=files,
             check_task=CheckTasks.err_res,
             check_items={"err_code": 11, "err_msg": err_msg},
         )
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("auto_id", [True, False])
     @pytest.mark.parametrize("dim", [4])
     @pytest.mark.parametrize("entities", [1000])
@@ -1886,7 +1887,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         self.collection_wrap.init_collection(c_name, schema=schema)
         # import data
         task_ids, _ = self.utility_wrap.bulk_insert(
-            collection_name=c_name, is_row_based=is_row_based, files=files
+            collection_name=c_name, files=files
         )
         logging.info(f"bulk insert task ids:{task_ids}")
         success, states = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
@@ -1895,7 +1896,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         log.info(f"bulk insert state:{success}")
         assert not success
         failed_reason = (
-            f"doesn't equal to vector dimension {dim} of field vectors at the row"
+            f"doesn't equal to vector dimension {dim} of field vectors"
         )
         for state in states.values():
             assert state.state_name in ["Failed", "Failed and cleaned"]
@@ -1903,7 +1904,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         assert self.collection_wrap.num_entities == 0
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("auto_id", [True, False])
     @pytest.mark.parametrize("dim", [16])
     @pytest.mark.parametrize("entities", [300])
@@ -1952,6 +1953,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
             cf.gen_int32_field(name=df.int_field),
             cf.gen_string_field(name=df.string_field),
             cf.gen_bool_field(name=df.bool_field),
+            cf.gen_float_field(name=df.float_field),
         ]
         schema = cf.gen_collection_schema(fields=fields, auto_id=auto_id)
         self.collection_wrap.init_collection(c_name, schema=schema)
@@ -1959,7 +1961,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         # import data
         t0 = time.time()
         task_ids, _ = self.utility_wrap.bulk_insert(
-            collection_name=c_name, is_row_based=is_row_based, files=files
+            collection_name=c_name, files=files
         )
         logging.info(f"bulk insert task ids:{task_ids}")
         success, states = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
@@ -2011,7 +2013,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         # import data
         t0 = time.time()
         task_ids, _ = self.utility_wrap.bulk_insert(
-            collection_name=c_name, is_row_based=False, files=files
+            collection_name=c_name, files=files
         )
         logging.info(f"bulk insert task ids:{task_ids}")
         success, states = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
@@ -2021,7 +2023,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         log.info(f"bulk insert state:{success} in {tt}")
 
         assert not success
-        failed_reason = f"illegal row width {dim}"
+        failed_reason = f"illegal dimension {dim} of numpy file"
         for state in states.values():
             assert state.state_name in ["Failed", "Failed and cleaned"]
             assert failed_reason in state.infos.get("failed_reason", "")
@@ -2031,7 +2033,6 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
     @pytest.mark.parametrize("auto_id", [False])
     @pytest.mark.parametrize("dim", [15])
     @pytest.mark.parametrize("entities", [100])
-    @pytest.mark.xfail(reason="https://github.com/milvus-io/milvus/issues/18992")
     def test_wrong_field_name_in_numpy(self, auto_id, dim, entities):
         """
         collection schema 1: [pk, float_vector]
@@ -2068,7 +2069,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         # import data
         t0 = time.time()
         task_ids, _ = self.utility_wrap.bulk_insert(
-            collection_name=c_name, is_row_based=False, files=files
+            collection_name=c_name, files=files
         )
         logging.info(f"bulk insert task ids:{task_ids}")
         success, states = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
@@ -2078,7 +2079,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         log.info(f"bulk insert state:{success} in {tt}")
 
         assert not success
-        failed_reason = f"Numpy parse: the field {df.vec_field} doesn't exist"
+        failed_reason = f"file '{df.vec_field}.npy' has no corresponding field in collection"
         for state in states.values():
             assert state.state_name in ["Failed", "Failed and cleaned"]
             assert failed_reason in state.infos.get("failed_reason", "")
@@ -2119,7 +2120,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         # import data
         t0 = time.time()
         task_ids, _ = self.utility_wrap.bulk_insert(
-            collection_name=c_name, is_row_based=False, files=files
+            collection_name=c_name, files=files
         )
         logging.info(f"bulk insert task ids:{task_ids}")
         success, states = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
@@ -2135,7 +2136,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         assert self.collection_wrap.num_entities == 0
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("dim", [8])
     @pytest.mark.parametrize("entities", [10])
     def test_data_type_string_on_int_pk(self, is_row_based, dim, entities):
@@ -2168,12 +2169,13 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
             cf.gen_int32_field(name=df.int_field),
             cf.gen_string_field(name=df.string_field),
             cf.gen_bool_field(name=df.bool_field),
+            cf.gen_float_field(name=df.float_field),
         ]
         schema = cf.gen_collection_schema(fields=fields, auto_id=False)
         self.collection_wrap.init_collection(c_name, schema=schema)
         # import data
         task_ids, _ = self.utility_wrap.bulk_insert(
-            collection_name=c_name, is_row_based=is_row_based, files=files
+            collection_name=c_name, files=files
         )
         logging.info(f"bulk insert task ids:{task_ids}")
         success, states = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
@@ -2188,7 +2190,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         assert self.collection_wrap.num_entities == 0
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("auto_id", [True, False])
     @pytest.mark.parametrize("dim", [8])
     @pytest.mark.parametrize("entities", [10])
@@ -2211,7 +2213,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
             auto_id=False,
             data_fields=default_multi_fields,
             err_type=DataErrorType.typo_on_bool,
-            scalars=default_multi_fields,
+            force=True,
         )
         self._connect()
         c_name = cf.gen_unique_str("bulk_insert")
@@ -2228,7 +2230,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         self.collection_wrap.init_collection(c_name, schema=schema)
         # import data
         task_ids, _ = self.utility_wrap.bulk_insert(
-            collection_name=c_name, is_row_based=is_row_based, files=files
+            collection_name=c_name, files=files
         )
         logging.info(f"bulk insert task ids:{task_ids}")
         success, states = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
@@ -2271,7 +2273,6 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         2. import data
         3. fail to import data with errors
         """
-        is_row_based = False  # numpy files supports only column based
         data_fields = [df.vec_field]
         if not auto_id:
             data_fields.append(df.pk_field)
@@ -2295,7 +2296,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
 
         t0 = time.time()
         task_ids, _ = self.utility_wrap.bulk_insert(
-            collection_name=c_name, is_row_based=is_row_based, files=files
+            collection_name=c_name, files=files
         )
         success, states = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
             task_ids=task_ids, timeout=90
@@ -2311,7 +2312,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         assert self.collection_wrap.num_entities == 0
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("auto_id", [True, False])
     @pytest.mark.parametrize("dim", [9])
     @pytest.mark.parametrize("entities", [10])
@@ -2334,66 +2335,6 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
             auto_id=auto_id,
             data_fields=default_multi_fields,
             err_type=DataErrorType.str_on_float_scalar,
-            scalars=default_multi_fields,
-        )
-        self._connect()
-        c_name = cf.gen_unique_str("bulk_insert")
-        fields = [
-            cf.gen_int64_field(name=df.pk_field, is_primary=True),
-            cf.gen_float_vec_field(name=df.vec_field, dim=dim),
-            cf.gen_int32_field(name=df.int_field),
-            cf.gen_float_field(name=df.float_field),
-            cf.gen_string_field(name=df.string_field),
-            cf.gen_bool_field(name=df.bool_field),
-        ]
-        schema = cf.gen_collection_schema(fields=fields, auto_id=auto_id)
-        self.collection_wrap.init_collection(c_name, schema=schema)
-        # import data
-        task_ids, _ = self.utility_wrap.bulk_insert(
-            collection_name=c_name, is_row_based=is_row_based, files=files
-        )
-        logging.info(f"bulk insert task ids:{task_ids}")
-        success, states = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
-            task_ids=task_ids, timeout=90
-        )
-        log.info(f"bulk insert state:{success}")
-        assert not success
-        failed_reason = "illegal numeric value"
-        for state in states.values():
-            assert state.state_name in ["Failed", "Failed and cleaned"]
-            assert failed_reason in state.infos.get("failed_reason", "")
-        assert self.collection_wrap.num_entities == 0
-
-    @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
-    @pytest.mark.parametrize("auto_id", [True, False])
-    @pytest.mark.parametrize("float_vector", [True, False])
-    @pytest.mark.parametrize("dim", [8])
-    @pytest.mark.parametrize("entities", [500])
-    def test_data_type_str_on_vector_fields(
-        self, is_row_based, auto_id, float_vector, dim, entities
-    ):
-        """
-        collection schema: [pk, float_vector,
-                        float_scalar, int_scalar, string_scalar, bool_scalar]
-        data files: json file that entities has string data on vectors
-        Steps:
-        1. create collection
-        2. import data
-        3. verify import failed with errors
-        """
-        files = prepare_bulk_insert_json_files(
-            minio_endpoint=self.minio_endpoint,
-            bucket_name=self.bucket_name,
-            is_row_based=is_row_based,
-            rows=entities,
-            dim=dim,
-            auto_id=auto_id,
-            float_vector=float_vector,
-            data_fields=default_multi_fields,
-            err_type=DataErrorType.str_on_vector_field,
-            wrong_position=entities // 2,
-            scalars=default_multi_fields,
             force=True,
         )
         self._connect()
@@ -2410,7 +2351,69 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         self.collection_wrap.init_collection(c_name, schema=schema)
         # import data
         task_ids, _ = self.utility_wrap.bulk_insert(
-            collection_name=c_name, is_row_based=is_row_based, files=files
+            collection_name=c_name, files=files
+        )
+        logging.info(f"bulk insert task ids:{task_ids}")
+        success, states = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
+            task_ids=task_ids, timeout=90
+        )
+        log.info(f"bulk insert state:{success}")
+        assert not success
+        failed_reason = "illegal numeric value"
+        for state in states.values():
+            assert state.state_name in ["Failed", "Failed and cleaned"]
+            assert failed_reason in state.infos.get("failed_reason", "")
+        assert self.collection_wrap.num_entities == 0
+
+    @pytest.mark.tags(CaseLabel.L3)
+    @pytest.mark.parametrize("is_row_based", [True])
+    @pytest.mark.parametrize("auto_id", [True, False])
+    @pytest.mark.parametrize("float_vector", [True, False])
+    @pytest.mark.parametrize("dim", [8])
+    @pytest.mark.parametrize("entities", [500])
+    def test_data_type_str_on_vector_fields(
+        self, is_row_based, auto_id, float_vector, dim, entities
+    ):
+        """
+        collection schema: [pk, float_vector,
+                        float_scalar, int_scalar, string_scalar, bool_scalar]
+        data files: json file that entities has string data on vectors
+        Steps:
+        1. create collection
+        2. import data
+        3. verify import failed with errors
+        """
+        wrong_position = entities // 2
+        files = prepare_bulk_insert_json_files(
+            minio_endpoint=self.minio_endpoint,
+            bucket_name=self.bucket_name,
+            is_row_based=is_row_based,
+            rows=entities,
+            dim=dim,
+            auto_id=auto_id,
+            float_vector=float_vector,
+            data_fields=default_multi_fields,
+            err_type=DataErrorType.str_on_vector_field,
+            wrong_position=wrong_position,
+            force=True,
+        )
+        self._connect()
+        c_name = cf.gen_unique_str("bulk_insert")
+        fields = [cf.gen_float_vec_field(name=df.vec_field, dim=dim)]
+        if not float_vector:
+            fields = [cf.gen_binary_vec_field(name=df.vec_field, dim=dim)]
+        fields.extend([
+            cf.gen_int64_field(name=df.pk_field, is_primary=True),
+            cf.gen_int32_field(name=df.int_field),
+            cf.gen_float_field(name=df.float_field),
+            cf.gen_string_field(name=df.string_field),
+            cf.gen_bool_field(name=df.bool_field),
+        ])
+        schema = cf.gen_collection_schema(fields=fields, auto_id=auto_id)
+        self.collection_wrap.init_collection(c_name, schema=schema)
+        # import data
+        task_ids, _ = self.utility_wrap.bulk_insert(
+            collection_name=c_name, files=files
         )
         logging.info(f"bulk insert task ids:{task_ids}")
         success, states = self.utility_wrap.wait_for_bulk_insert_tasks_completed(
@@ -2420,7 +2423,7 @@ class TestBulkInsertInvalidParams(TestcaseBaseBulkInsert):
         assert not success
         failed_reason = "illegal numeric value"
         if not float_vector:
-            failed_reason = f"doesn't equal to vector dimension {dim} of field vectors"
+            failed_reason = f"the field '{df.vec_field}' value at the row {wrong_position} is invalid"
         for state in states.values():
             assert state.state_name in ["Failed", "Failed and cleaned"]
             assert failed_reason in state.infos.get("failed_reason", "")
@@ -2486,7 +2489,7 @@ class TestBulkInsertAdvanced(TestcaseBaseBulkInsert):
                     break
 
             task_ids, _ = self.utility_wrap.bulk_insert(
-                collection_name=c_name, is_row_based=False, files=files
+                collection_name=c_name, files=files
             )
             logging.info(f"bulk insert task ids:{task_ids}")
             success, states = self.utility_wrap.wait_for_bulk_insert_tasks_completed(

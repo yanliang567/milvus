@@ -12,6 +12,7 @@ from common.common_type import CaseLabel, CheckTasks
 from utils.util_k8s import (
     get_pod_ip_name_pairs,
     get_milvus_instance_name,
+    get_milvus_deploy_tool
 )
 from utils.util_log import test_log as log
 from bulk_insert_data import (
@@ -50,12 +51,18 @@ def entity_suffix(entities):
 class TestcaseBaseBulkInsert(TestcaseBase):
 
     @pytest.fixture(scope="function", autouse=True)
-    def init_minio_client(self, host):
+    def init_minio_client(self, host, milvus_ns):
         Path("/tmp/bulk_insert_data").mkdir(parents=True, exist_ok=True)
         self._connect()
-        self.instance_name = get_milvus_instance_name(milvus_ns, host)
+        self.milvus_ns = milvus_ns
+        self.milvus_sys = MilvusSys(alias='default')
+        self.instance_name = get_milvus_instance_name(self.milvus_ns, host)
+        self.deploy_tool = get_milvus_deploy_tool(self.milvus_ns, self.milvus_sys)
+        minio_label = f"release={self.instance_name}, app=minio"
+        if self.deploy_tool == "milvus-operator":
+            minio_label = f"release={self.instance_name}-minio, app=minio"
         minio_ip_pod_pair = get_pod_ip_name_pairs(
-            milvus_ns, f"release={self.instance_name}, app=minio"
+            self.milvus_ns, minio_label
         )
         ms = MilvusSys()
         minio_ip = list(minio_ip_pod_pair.keys())[0]
@@ -73,7 +80,7 @@ class TestcaseBaseBulkInsert(TestcaseBase):
 class TestBulkInsertTaskClean(TestcaseBaseBulkInsert):
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("auto_id", [True, False])
     @pytest.mark.parametrize("dim", [8])  # 8, 128
     @pytest.mark.parametrize("entities", [100])  # 100, 1000
@@ -114,7 +121,7 @@ class TestBulkInsertTaskClean(TestcaseBaseBulkInsert):
         task_ids, _ = self.utility_wrap.bulk_insert(
             collection_name=c_name,
             partition_name=None,
-            is_row_based=is_row_based,
+            # is_row_based=is_row_based,
             files=files,
         )
         logging.info(f"bulk insert task ids:{task_ids}")
@@ -175,7 +182,7 @@ class TestBulkInsertTaskClean(TestcaseBaseBulkInsert):
             assert len(results) == len(ids)
 
     @pytest.mark.tags(CaseLabel.L3)
-    @pytest.mark.parametrize("is_row_based", [True, False])
+    @pytest.mark.parametrize("is_row_based", [True])
     @pytest.mark.parametrize("auto_id", [True, False])
     @pytest.mark.parametrize("dim", [8])  # 8, 128
     @pytest.mark.parametrize("entities", [100])  # 100, 1000

@@ -82,6 +82,8 @@ type ReplicaInterface interface {
 	getPKFieldIDByCollectionID(collectionID UniqueID) (FieldID, error)
 	// getSegmentInfosByColID return segments info by collectionID
 	getSegmentInfosByColID(collectionID UniqueID) []*querypb.SegmentInfo
+	// removeCollectionVDeltaChannel remove vdelta channel replica info from collection.
+	removeCollectionVDeltaChannel(collectionID UniqueID, vDeltaChannel string)
 
 	// partition
 	// addPartition adds a new partition to collection
@@ -415,9 +417,8 @@ func (replica *metaReplica) addPartitionPrivate(collection *Collection, partitio
 		collection.addPartitionID(partitionID)
 		var newPartition = newPartition(collection.ID(), partitionID)
 		replica.partitions[partitionID] = newPartition
+		metrics.QueryNodeNumPartitions.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID())).Set(float64(len(replica.partitions)))
 	}
-
-	metrics.QueryNodeNumPartitions.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID())).Set(float64(len(replica.partitions)))
 	return nil
 }
 
@@ -851,6 +852,20 @@ func (replica *metaReplica) getSealedSegments() []*Segment {
 		}
 	}
 	return ret
+}
+
+// removeCollectionVDeltaChannel remove vdelta channel replica info from collection.
+func (replica *metaReplica) removeCollectionVDeltaChannel(collectionID UniqueID, vDeltaChannel string) {
+	replica.mu.RLock()
+	defer replica.mu.RUnlock()
+
+	coll, ok := replica.collections[collectionID]
+	if !ok {
+		// if collection already release, that's fine and just return
+		return
+	}
+
+	coll.removeVDeltaChannel(vDeltaChannel)
 }
 
 // newCollectionReplica returns a new ReplicaInterface
