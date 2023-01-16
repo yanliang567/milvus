@@ -19,20 +19,21 @@ package datanode
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
 	"github.com/milvus-io/milvus-proto/go-api/schemapb"
-	"go.uber.org/zap"
-
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/tsoutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
+	"github.com/samber/lo"
+	"go.uber.org/zap"
 )
 
 type (
@@ -60,18 +61,31 @@ type Channel interface {
 	filterSegments(partitionID UniqueID) []*Segment
 	listNewSegmentsStartPositions() []*datapb.SegmentStartPosition
 	transferNewSegments(segmentIDs []UniqueID)
-	updateSegmentEndPosition(segID UniqueID, endPos *internalpb.MsgPosition)
 	updateSegmentPKRange(segID UniqueID, ids storage.FieldData)
 	mergeFlushedSegments(seg *Segment, planID UniqueID, compactedFrom []UniqueID) error
 	hasSegment(segID UniqueID, countFlushed bool) bool
 	removeSegments(segID ...UniqueID)
 	listCompactedSegmentIDs() map[UniqueID][]UniqueID
+	listSegmentIDsToSync(ts Timestamp) []UniqueID
+	setSegmentLastSyncTs(segID UniqueID, ts Timestamp)
 
 	updateStatistics(segID UniqueID, numRows int64)
 	InitPKstats(ctx context.Context, s *Segment, statsBinlogs []*datapb.FieldBinlog, ts Timestamp) error
 	RollPKstats(segID UniqueID, stats []*storage.PrimaryKeyStats)
 	getSegmentStatisticsUpdates(segID UniqueID) (*datapb.SegmentStats, error)
 	segmentFlushed(segID UniqueID)
+
+	getChannelCheckpoint(ttPos *internalpb.MsgPosition) *internalpb.MsgPosition
+
+	getCurInsertBuffer(segmentID UniqueID) (*BufferData, bool)
+	setCurInsertBuffer(segmentID UniqueID, buf *BufferData)
+	rollInsertBuffer(segmentID UniqueID)
+	evictHistoryInsertBuffer(segmentID UniqueID, endPos *internalpb.MsgPosition)
+
+	getCurDeleteBuffer(segmentID UniqueID) (*DelDataBuf, bool)
+	setCurDeleteBuffer(segmentID UniqueID, buf *DelDataBuf)
+	rollDeleteBuffer(segmentID UniqueID)
+	evictHistoryDeleteBuffer(segmentID UniqueID, endPos *internalpb.MsgPosition)
 }
 
 // ChannelMeta contains channel meta and the latest segments infos of the channel.
@@ -84,8 +98,20 @@ type ChannelMeta struct {
 	segMu    sync.RWMutex
 	segments map[UniqueID]*Segment
 
+	syncPolicies []segmentSyncPolicy
+
 	metaService  *metaService
 	chunkManager storage.ChunkManager
+}
+
+type addSegmentReq struct {
+	segType                    datapb.SegmentType
+	segID, collID, partitionID UniqueID
+	numOfRows                  int64
+	startPos, endPos           *internalpb.MsgPosition
+	statsBinLogs               []*datapb.FieldBinlog
+	recoverTs                  Timestamp
+	importing                  bool
 }
 
 var _ Channel = &ChannelMeta{}
@@ -99,6 +125,10 @@ func newChannel(channelName string, collID UniqueID, schema *schemapb.Collection
 		channelName:  channelName,
 
 		segments: make(map[UniqueID]*Segment),
+
+		syncPolicies: []segmentSyncPolicy{
+			syncPeriodically(),
+		},
 
 		metaService:  metaService,
 		chunkManager: cm,
@@ -115,7 +145,6 @@ func (c *ChannelMeta) segmentFlushed(segID UniqueID) {
 	if seg, ok := c.segments[segID]; ok {
 		seg.setType(datapb.SegmentType_Flushed)
 	}
-	metrics.DataNodeNumUnflushedSegments.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID())).Dec()
 }
 
 // new2NormalSegment transfers a segment from *New* to *Normal*.
@@ -154,7 +183,7 @@ func (c *ChannelMeta) maxRowCountPerSegment(ts Timestamp) (int64, error) {
 		log.Warn("failed to estimate size per record", zap.Error(err))
 		return 0, err
 	}
-	threshold := Params.DataCoordCfg.SegmentMaxSize * 1024 * 1024
+	threshold := Params.DataCoordCfg.SegmentMaxSize.GetAsFloat() * 1024 * 1024
 	return int64(threshold / float64(sizePerRecord)), nil
 }
 
@@ -162,10 +191,10 @@ func (c *ChannelMeta) maxRowCountPerSegment(ts Timestamp) (int64, error) {
 // Make sure to verify `channel.hasSegment(segID)` == false before calling `channel.addSegment()`.
 func (c *ChannelMeta) addSegment(req addSegmentReq) error {
 	if req.collID != c.collectionID {
-		log.Warn("collection mismatch",
+		log.Warn("failed to addSegment, collection mismatch",
 			zap.Int64("current collection ID", req.collID),
 			zap.Int64("expected collection ID", c.collectionID))
-		return fmt.Errorf("mismatch collection, ID=%d", req.collID)
+		return fmt.Errorf("failed to addSegment, mismatch collection, ID=%d", req.collID)
 	}
 	log.Info("adding segment",
 		zap.String("type", req.segType.String()),
@@ -179,14 +208,16 @@ func (c *ChannelMeta) addSegment(req addSegmentReq) error {
 		zap.Bool("importing", req.importing),
 	)
 	seg := &Segment{
-		collectionID: req.collID,
-		partitionID:  req.partitionID,
-		segmentID:    req.segID,
-		numRows:      req.numOfRows, // 0 if segType == NEW
-		startPos:     req.startPos,
-		endPos:       req.endPos,
+		collectionID:     req.collID,
+		partitionID:      req.partitionID,
+		segmentID:        req.segID,
+		numRows:          req.numOfRows, // 0 if segType == NEW
+		historyInsertBuf: make([]*BufferData, 0),
+		historyDeleteBuf: make([]*DelDataBuf, 0),
+		startPos:         req.startPos,
+		lastSyncTs:       tsoutil.GetCurrentTime(),
 	}
-	seg.sType.Store(req.segType)
+	seg.setType(req.segType)
 	// Set up pk stats
 	err := c.InitPKstats(context.TODO(), seg, req.statsBinLogs, req.recoverTs)
 	if err != nil {
@@ -199,9 +230,6 @@ func (c *ChannelMeta) addSegment(req addSegmentReq) error {
 	c.segMu.Lock()
 	c.segments[req.segID] = seg
 	c.segMu.Unlock()
-	if req.segType == datapb.SegmentType_New || req.segType == datapb.SegmentType_Normal {
-		metrics.DataNodeNumUnflushedSegments.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID())).Inc()
-	}
 	return nil
 }
 
@@ -217,6 +245,33 @@ func (c *ChannelMeta) listCompactedSegmentIDs() map[UniqueID][]UniqueID {
 		}
 	}
 	return compactedTo2From
+}
+
+func (c *ChannelMeta) listSegmentIDsToSync(ts Timestamp) []UniqueID {
+	c.segMu.RLock()
+	defer c.segMu.RUnlock()
+
+	segIDsToSync := make([]UniqueID, 0)
+	for segID, seg := range c.segments {
+		if !seg.isValid() {
+			continue
+		}
+		for _, policy := range c.syncPolicies {
+			if policy(seg, ts) {
+				segIDsToSync = append(segIDsToSync, segID)
+				break
+			}
+		}
+	}
+	return segIDsToSync
+}
+
+func (c *ChannelMeta) setSegmentLastSyncTs(segID UniqueID, ts Timestamp) {
+	c.segMu.Lock()
+	defer c.segMu.Unlock()
+	if _, ok := c.segments[segID]; ok {
+		c.segments[segID].lastSyncTs = ts
+	}
 }
 
 // filterSegments return segments with same partitionID for all segments
@@ -328,7 +383,8 @@ func (c *ChannelMeta) RollPKstats(segID UniqueID, stats []*storage.PrimaryKeySta
 }
 
 // listNewSegmentsStartPositions gets all *New Segments* start positions and
-//   transfer segments states from *New* to *Normal*.
+//
+//	transfer segments states from *New* to *Normal*.
 func (c *ChannelMeta) listNewSegmentsStartPositions() []*datapb.SegmentStartPosition {
 	c.segMu.Lock()
 	defer c.segMu.Unlock()
@@ -355,20 +411,6 @@ func (c *ChannelMeta) transferNewSegments(segmentIDs []UniqueID) {
 	}
 }
 
-// updateSegmentEndPosition updates *New* or *Normal* segment's end position.
-func (c *ChannelMeta) updateSegmentEndPosition(segID UniqueID, endPos *internalpb.MsgPosition) {
-	c.segMu.Lock()
-	defer c.segMu.Unlock()
-
-	seg, ok := c.segments[segID]
-	if ok && seg.notFlushed() {
-		seg.endPos = endPos
-		return
-	}
-
-	log.Warn("No match segment", zap.Int64("ID", segID))
-}
-
 func (c *ChannelMeta) updateSegmentPKRange(segID UniqueID, ids storage.FieldData) {
 	c.segMu.Lock()
 	defer c.segMu.Unlock()
@@ -389,15 +431,19 @@ func (c *ChannelMeta) removeSegments(segIDs ...UniqueID) {
 	log.Info("remove segments if exist", zap.Int64s("segmentIDs", segIDs))
 	cnt := 0
 	for _, segID := range segIDs {
-		seg, ok := c.segments[segID]
-		if ok &&
-			(seg.getType() == datapb.SegmentType_New || seg.getType() == datapb.SegmentType_Normal) {
-			cnt++
+		if seg, ok := c.segments[segID]; ok {
+			if seg.notFlushed() {
+				cnt++
+			}
+			// free memory
+			seg.curInsertBuf = nil
+			seg.curDeleteBuf = nil
+			seg.historyInsertBuf = nil
+			seg.historyDeleteBuf = nil
 		}
 
 		delete(c.segments, segID)
 	}
-	metrics.DataNodeNumUnflushedSegments.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID())).Sub(float64(cnt))
 }
 
 // hasSegment checks whether this channel has a segment according to segment ID.
@@ -451,10 +497,14 @@ func (c *ChannelMeta) getCollectionID() UniqueID {
 }
 
 // getCollectionSchema gets collection schema from rootcoord for a certain timestamp.
-//   If you want the latest collection schema, ts should be 0.
+//
+//	If you want the latest collection schema, ts should be 0.
 func (c *ChannelMeta) getCollectionSchema(collID UniqueID, ts Timestamp) (*schemapb.CollectionSchema, error) {
-	if !c.validCollection(collID) {
-		return nil, fmt.Errorf("mismatch collection, want %d, actual %d", c.collectionID, collID)
+	if collID != c.collectionID {
+		log.Warn("failed to getCollectionSchema, collection mismatch",
+			zap.Int64("current collection ID", collID),
+			zap.Int64("expected collection ID", c.collectionID))
+		return nil, fmt.Errorf("failed to getCollectionSchema, mismatch collection, want %d, actual %d", c.collectionID, collID)
 	}
 
 	c.schemaMut.RLock()
@@ -477,12 +527,7 @@ func (c *ChannelMeta) getCollectionSchema(collID UniqueID, ts Timestamp) (*schem
 	return c.collSchema, nil
 }
 
-func (c *ChannelMeta) validCollection(collID UniqueID) bool {
-	return collID == c.collectionID
-}
-
 func (c *ChannelMeta) mergeFlushedSegments(seg *Segment, planID UniqueID, compactedFrom []UniqueID) error {
-
 	log := log.With(
 		zap.Int64("segment ID", seg.segmentID),
 		zap.Int64("collection ID", seg.collectionID),
@@ -492,26 +537,24 @@ func (c *ChannelMeta) mergeFlushedSegments(seg *Segment, planID UniqueID, compac
 		zap.String("channel name", c.channelName))
 
 	if seg.collectionID != c.collectionID {
-		log.Warn("Mismatch collection",
-			zap.Int64("expected collectionID", c.collectionID))
-		return fmt.Errorf("mismatch collection, ID=%d", seg.collectionID)
+		log.Warn("failed to mergeFlushedSegments, collection mismatch",
+			zap.Int64("current collection ID", seg.collectionID),
+			zap.Int64("expected collection ID", c.collectionID))
+		return fmt.Errorf("failed to mergeFlushedSegments, mismatch collection, ID=%d", seg.collectionID)
 	}
 
-	var inValidSegments []UniqueID
-	for _, ID := range compactedFrom {
-		// no such segments in channel or the segments are unflushed.
-		if !c.hasSegment(ID, true) || c.hasSegment(ID, false) {
-			inValidSegments = append(inValidSegments, ID)
+	compactedFrom = lo.Filter(compactedFrom, func(segID int64, _ int) bool {
+		// which means the segment is the `flushed` state
+		has := c.hasSegment(segID, true) && !c.hasSegment(segID, false)
+		if !has {
+			log.Warn("invalid segment", zap.Int64("segment_id", segID))
 		}
-	}
-
-	if len(inValidSegments) > 0 {
-		log.Warn("no match flushed segments to merge from", zap.Int64s("invalid segmentIDs", inValidSegments))
-		return fmt.Errorf("invalid compactedFrom segments: %v", inValidSegments)
-	}
+		return has
+	})
 
 	log.Info("merge flushed segments")
 	c.segMu.Lock()
+	defer c.segMu.Unlock()
 	for _, ID := range compactedFrom {
 		// the existent of the segments are already checked
 		s := c.segments[ID]
@@ -521,15 +564,11 @@ func (c *ChannelMeta) mergeFlushedSegments(seg *Segment, planID UniqueID, compac
 		s.currentStat = nil
 		s.historyStats = nil
 	}
-	c.segMu.Unlock()
 
 	// only store segments with numRows > 0
 	if seg.numRows > 0 {
 		seg.setType(datapb.SegmentType_Flushed)
-
-		c.segMu.Lock()
 		c.segments[seg.segmentID] = seg
-		c.segMu.Unlock()
 	}
 
 	return nil
@@ -538,10 +577,10 @@ func (c *ChannelMeta) mergeFlushedSegments(seg *Segment, planID UniqueID, compac
 // for tests only
 func (c *ChannelMeta) addFlushedSegmentWithPKs(segID, collID, partID UniqueID, numOfRows int64, ids storage.FieldData) error {
 	if collID != c.collectionID {
-		log.Warn("Mismatch collection",
-			zap.Int64("input ID", collID),
-			zap.Int64("expected ID", c.collectionID))
-		return fmt.Errorf("mismatch collection, ID=%d", collID)
+		log.Warn("failed to addFlushedSegmentWithPKs, collection mismatch",
+			zap.Int64("current collection ID", collID),
+			zap.Int64("expected collection ID", c.collectionID))
+		return fmt.Errorf("failed to addFlushedSegmentWithPKs, mismatch collection, ID=%d", collID)
 	}
 
 	log.Info("Add Flushed segment",
@@ -606,4 +645,133 @@ func (c *ChannelMeta) listNotFlushedSegmentIDs() []UniqueID {
 	}
 
 	return segIDs
+}
+
+func (c *ChannelMeta) getChannelCheckpoint(ttPos *internalpb.MsgPosition) *internalpb.MsgPosition {
+	c.segMu.RLock()
+	defer c.segMu.RUnlock()
+	channelCP := &internalpb.MsgPosition{Timestamp: math.MaxUint64}
+	// 1. find the earliest startPos in current buffer and history buffer
+	for _, seg := range c.segments {
+		if seg.curInsertBuf != nil && seg.curInsertBuf.startPos != nil && seg.curInsertBuf.startPos.Timestamp < channelCP.Timestamp {
+			channelCP = seg.curInsertBuf.startPos
+		}
+		if seg.curDeleteBuf != nil && seg.curDeleteBuf.startPos != nil && seg.curDeleteBuf.startPos.Timestamp < channelCP.Timestamp {
+			channelCP = seg.curDeleteBuf.startPos
+		}
+		for _, ib := range seg.historyInsertBuf {
+			if ib != nil && ib.startPos != nil && ib.startPos.Timestamp < channelCP.Timestamp {
+				channelCP = ib.startPos
+			}
+		}
+		for _, db := range seg.historyDeleteBuf {
+			if db != nil && db.startPos != nil && db.startPos.Timestamp < channelCP.Timestamp {
+				channelCP = db.startPos
+			}
+		}
+		// TODO: maybe too many logs would print
+		log.Debug("getChannelCheckpoint for segment", zap.Int64("segmentID", seg.segmentID),
+			zap.Bool("isCurIBEmpty", seg.curInsertBuf == nil),
+			zap.Bool("isCurDBEmpty", seg.curDeleteBuf == nil),
+			zap.Int("len(hisIB)", len(seg.historyInsertBuf)),
+			zap.Int("len(hisDB)", len(seg.historyDeleteBuf)))
+	}
+	// 2. if no data in buffer, use the current tt as channelCP
+	if channelCP.MsgID == nil {
+		channelCP = ttPos
+	}
+	return channelCP
+}
+
+func (c *ChannelMeta) getCurInsertBuffer(segmentID UniqueID) (*BufferData, bool) {
+	c.segMu.RLock()
+	defer c.segMu.RUnlock()
+	seg, ok := c.segments[segmentID]
+	if ok {
+		return seg.curInsertBuf, seg.curInsertBuf != nil
+	}
+	return nil, false
+}
+
+func (c *ChannelMeta) setCurInsertBuffer(segmentID UniqueID, buf *BufferData) {
+	c.segMu.Lock()
+	defer c.segMu.Unlock()
+
+	seg, ok := c.segments[segmentID]
+	if ok {
+		seg.curInsertBuf = buf
+		return
+	}
+	log.Warn("cannot find segment when setCurInsertBuffer", zap.Int64("segmentID", segmentID))
+}
+
+func (c *ChannelMeta) rollInsertBuffer(segmentID UniqueID) {
+	c.segMu.Lock()
+	defer c.segMu.Unlock()
+
+	seg, ok := c.segments[segmentID]
+	if ok {
+		seg.rollInsertBuffer()
+		return
+	}
+	log.Warn("cannot find segment when rollInsertBuffer", zap.Int64("segmentID", segmentID))
+}
+
+func (c *ChannelMeta) evictHistoryInsertBuffer(segmentID UniqueID, endPos *internalpb.MsgPosition) {
+	c.segMu.Lock()
+	defer c.segMu.Unlock()
+
+	seg, ok := c.segments[segmentID]
+	if ok {
+		seg.evictHistoryInsertBuffer(endPos)
+		return
+	}
+	log.Warn("cannot find segment when evictHistoryInsertBuffer", zap.Int64("segmentID", segmentID))
+}
+
+func (c *ChannelMeta) getCurDeleteBuffer(segmentID UniqueID) (*DelDataBuf, bool) {
+	c.segMu.RLock()
+	defer c.segMu.RUnlock()
+
+	seg, ok := c.segments[segmentID]
+	if ok {
+		return seg.curDeleteBuf, seg.curDeleteBuf != nil
+	}
+	return nil, false
+}
+
+func (c *ChannelMeta) setCurDeleteBuffer(segmentID UniqueID, buf *DelDataBuf) {
+	c.segMu.Lock()
+	defer c.segMu.Unlock()
+
+	seg, ok := c.segments[segmentID]
+	if ok {
+		seg.curDeleteBuf = buf
+		return
+	}
+	log.Warn("cannot find segment when setCurDeleteBuffer", zap.Int64("segmentID", segmentID))
+}
+
+func (c *ChannelMeta) rollDeleteBuffer(segmentID UniqueID) {
+	c.segMu.Lock()
+	defer c.segMu.Unlock()
+
+	seg, ok := c.segments[segmentID]
+	if ok {
+		seg.rollDeleteBuffer()
+		return
+	}
+	log.Warn("cannot find segment when rollDeleteBuffer", zap.Int64("segmentID", segmentID))
+}
+
+func (c *ChannelMeta) evictHistoryDeleteBuffer(segmentID UniqueID, endPos *internalpb.MsgPosition) {
+	c.segMu.Lock()
+	defer c.segMu.Unlock()
+
+	seg, ok := c.segments[segmentID]
+	if ok {
+		seg.evictHistoryDeleteBuffer(endPos)
+		return
+	}
+	log.Warn("cannot find segment when evictHistoryDeleteBuffer", zap.Int64("segmentID", segmentID))
 }

@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -17,7 +16,7 @@ import (
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
-	"github.com/milvus-io/milvus/internal/util/grpcclient"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
@@ -50,6 +49,7 @@ type queryTask struct {
 	ids            *schemapb.IDs
 	collectionName string
 	queryParams    *queryParams
+	schema         *schemapb.CollectionSchema
 
 	resultBuf       chan *internalpb.RetrieveResults
 	toReduceResults []*internalpb.RetrieveResults
@@ -110,6 +110,16 @@ func translateToOutputFieldIDs(outputFields []string, schema *schemapb.Collectio
 	return outputFieldIDs, nil
 }
 
+func filterSystemFields(outputFieldIDs []UniqueID) []UniqueID {
+	filtered := make([]UniqueID, 0, len(outputFieldIDs))
+	for _, outputFieldID := range outputFieldIDs {
+		if !common.IsSystemField(outputFieldID) {
+			filtered = append(filtered, outputFieldID)
+		}
+	}
+	return filtered
+}
+
 // parseQueryParams get limit and offset from queryParamsPair, both are optional.
 func parseQueryParams(queryParamsPair []*commonpb.KeyValuePair) (*queryParams, error) {
 	var (
@@ -164,50 +174,56 @@ func (t *queryTask) PreExecute(ctx context.Context) error {
 	}
 
 	t.Base.MsgType = commonpb.MsgType_Retrieve
-	t.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	t.Base.SourceID = paramtable.GetNodeID()
 
 	collectionName := t.request.CollectionName
 	t.collectionName = collectionName
 	if err := validateCollectionName(collectionName); err != nil {
-		log.Ctx(ctx).Warn("Invalid collection name.", zap.String("collectionName", collectionName),
-			zap.Int64("msgID", t.ID()), zap.String("requestType", "query"))
+		log.Ctx(ctx).Warn("Invalid collectionName.",
+			zap.String("collectionName", collectionName),
+			zap.String("requestType", "query"))
 		return err
 	}
 
-	log.Ctx(ctx).Debug("Validate collection name.", zap.Any("collectionName", collectionName),
-		zap.Int64("msgID", t.ID()), zap.Any("requestType", "query"))
+	log.Ctx(ctx).Debug("Validate collectionName.",
+		zap.Any("collectionName", collectionName),
+		zap.Any("requestType", "query"))
 
 	collID, err := globalMetaCache.GetCollectionID(ctx, collectionName)
 	if err != nil {
-		log.Ctx(ctx).Warn("Failed to get collection id.", zap.Any("collectionName", collectionName),
-			zap.Int64("msgID", t.ID()), zap.Any("requestType", "query"))
+		log.Ctx(ctx).Warn("Failed to get collection id.",
+			zap.Any("collectionName", collectionName),
+			zap.Any("requestType", "query"))
 		return err
 	}
 
 	t.CollectionID = collID
 	log.Ctx(ctx).Debug("Get collection ID by name",
-		zap.Int64("collectionID", t.CollectionID), zap.String("collection name", collectionName),
-		zap.Int64("msgID", t.ID()), zap.Any("requestType", "query"))
+		zap.Int64("collectionID", t.CollectionID),
+		zap.String("collectionName", collectionName),
+		zap.Any("requestType", "query"))
 
 	for _, tag := range t.request.PartitionNames {
 		if err := validatePartitionTag(tag, false); err != nil {
-			log.Ctx(ctx).Warn("invalid partition name", zap.String("partition name", tag),
-				zap.Int64("msgID", t.ID()), zap.Any("requestType", "query"))
+			log.Ctx(ctx).Warn("invalid partition name",
+				zap.String("partition name", tag),
+				zap.Any("requestType", "query"))
 			return err
 		}
 	}
 	log.Ctx(ctx).Debug("Validate partition names.",
-		zap.Int64("msgID", t.ID()), zap.Any("requestType", "query"))
+		zap.Any("requestType", "query"))
 
 	t.RetrieveRequest.PartitionIDs, err = getPartitionIDs(ctx, collectionName, t.request.GetPartitionNames())
 	if err != nil {
-		log.Ctx(ctx).Warn("failed to get partitions in collection.", zap.String("collection name", collectionName),
+		log.Ctx(ctx).Warn("failed to get partitions in collection.", zap.String("collectionName", collectionName),
 			zap.Error(err),
-			zap.Int64("msgID", t.ID()), zap.Any("requestType", "query"))
+			zap.Any("requestType", "query"))
 		return err
 	}
-	log.Ctx(ctx).Debug("Get partitions in collection.", zap.Any("collectionName", collectionName),
-		zap.Int64("msgID", t.ID()), zap.Any("requestType", "query"))
+	log.Ctx(ctx).Debug("Get partitions in collection.",
+		zap.Any("collectionName", collectionName),
+		zap.Any("requestType", "query"))
 
 	queryParams, err := parseQueryParams(t.request.GetQueryParams())
 	if err != nil {
@@ -225,6 +241,7 @@ func (t *queryTask) PreExecute(ctx context.Context) error {
 	}
 
 	schema, _ := globalMetaCache.GetCollectionSchema(ctx, collectionName)
+	t.schema = schema
 
 	if t.ids != nil {
 		pkField := ""
@@ -248,17 +265,20 @@ func (t *queryTask) PreExecute(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	log.Ctx(ctx).Debug("translate output fields", zap.Any("OutputFields", t.request.OutputFields),
-		zap.Int64("msgID", t.ID()), zap.Any("requestType", "query"))
+	log.Ctx(ctx).Debug("translate output fields",
+		zap.Any("OutputFields", t.request.OutputFields),
+		zap.Any("requestType", "query"))
 
 	outputFieldIDs, err := translateToOutputFieldIDs(t.request.GetOutputFields(), schema)
 	if err != nil {
 		return err
 	}
+	outputFieldIDs = append(outputFieldIDs, common.TimeStampField)
 	t.RetrieveRequest.OutputFieldsId = outputFieldIDs
 	plan.OutputFieldIds = outputFieldIDs
-	log.Ctx(ctx).Debug("translate output fields to field ids", zap.Any("OutputFieldsID", t.OutputFieldsId),
-		zap.Int64("msgID", t.ID()), zap.Any("requestType", "query"))
+	log.Ctx(ctx).Debug("translate output fields to field ids",
+		zap.Any("OutputFieldsID", t.OutputFieldsId),
+		zap.Any("requestType", "query"))
 
 	t.RetrieveRequest.SerializedExprPlan, err = proto.Marshal(plan)
 	if err != nil {
@@ -286,8 +306,9 @@ func (t *queryTask) PreExecute(ctx context.Context) error {
 
 	t.DbID = 0 // TODO
 	log.Ctx(ctx).Debug("Query PreExecute done.",
-		zap.Int64("msgID", t.ID()), zap.Any("requestType", "query"),
-		zap.Uint64("guarantee_ts", guaranteeTs), zap.Uint64("travel_ts", t.GetTravelTimestamp()),
+		zap.Any("requestType", "query"),
+		zap.Uint64("guarantee_ts", guaranteeTs),
+		zap.Uint64("travel_ts", t.GetTravelTimestamp()),
 		zap.Uint64("timeout_ts", t.GetTimeoutTimestamp()))
 	return nil
 }
@@ -295,6 +316,7 @@ func (t *queryTask) PreExecute(ctx context.Context) error {
 func (t *queryTask) Execute(ctx context.Context) error {
 	tr := timerecord.NewTimeRecorder(fmt.Sprintf("proxy execute query %d", t.ID()))
 	defer tr.CtxElapse(ctx, "done")
+	log := log.Ctx(ctx)
 
 	executeQuery := func(withCache bool) error {
 		shards, err := globalMetaCache.GetShards(ctx, withCache, t.collectionName)
@@ -311,17 +333,19 @@ func (t *queryTask) Execute(ctx context.Context) error {
 	}
 
 	err := executeQuery(WithCache)
-	if errors.Is(err, errInvalidShardLeaders) || funcutil.IsGrpcErr(err) || errors.Is(err, grpcclient.ErrConnect) {
-		log.Ctx(ctx).Warn("invalid shard leaders cache, updating shardleader caches and retry search",
-			zap.Int64("msgID", t.ID()), zap.Error(err))
-		return executeQuery(WithoutCache)
+	if err != nil {
+		log.Warn("invalid shard leaders cache, updating shardleader caches and retry query",
+			zap.Error(err))
+		// invalidate cache first, since ctx may be canceled or timeout here
+		globalMetaCache.ClearShards(t.collectionName)
+		err = executeQuery(WithoutCache)
 	}
 	if err != nil {
-		return fmt.Errorf("fail to search on all shard leaders, err=%s", err.Error())
+		return fmt.Errorf("fail to query on all shard leaders, err=%s", err.Error())
 	}
 
-	log.Ctx(ctx).Debug("Query Execute done.",
-		zap.Int64("msgID", t.ID()), zap.Any("requestType", "query"))
+	log.Debug("Query Execute done.",
+		zap.String("requestType", "query"))
 	return nil
 }
 
@@ -338,21 +362,21 @@ func (t *queryTask) PostExecute(ctx context.Context) error {
 		log.Ctx(ctx).Warn("proxy", zap.Int64("Query: wait to finish failed, timeout!, msgID:", t.ID()))
 		return nil
 	default:
-		log.Ctx(ctx).Debug("all queries are finished or canceled", zap.Int64("msgID", t.ID()))
+		log.Ctx(ctx).Debug("all queries are finished or canceled")
 		close(t.resultBuf)
 		for res := range t.resultBuf {
 			t.toReduceResults = append(t.toReduceResults, res)
-			log.Ctx(ctx).Debug("proxy receives one query result", zap.Int64("sourceID", res.GetBase().GetSourceID()), zap.Any("msgID", t.ID()))
+			log.Ctx(ctx).Debug("proxy receives one query result", zap.Int64("sourceID", res.GetBase().GetSourceID()))
 		}
 	}
 
-	metrics.ProxyDecodeResultLatency.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), metrics.QueryLabel).Observe(0.0)
+	metrics.ProxyDecodeResultLatency.WithLabelValues(strconv.FormatInt(paramtable.GetNodeID(), 10), metrics.QueryLabel).Observe(0.0)
 	tr.CtxRecord(ctx, "reduceResultStart")
-	t.result, err = reduceRetrieveResults(ctx, t.toReduceResults, t.queryParams)
+	t.result, err = reduceRetrieveResultsAndFillIfEmpty(ctx, t.toReduceResults, t.queryParams, t.GetOutputFieldsId(), t.schema)
 	if err != nil {
 		return err
 	}
-	metrics.ProxyReduceResultLatency.WithLabelValues(strconv.FormatInt(Params.ProxyCfg.GetNodeID(), 10), metrics.QueryLabel).Observe(float64(tr.RecordSpan().Milliseconds()))
+	metrics.ProxyReduceResultLatency.WithLabelValues(strconv.FormatInt(paramtable.GetNodeID(), 10), metrics.QueryLabel).Observe(float64(tr.RecordSpan().Milliseconds()))
 	t.result.CollectionName = t.collectionName
 
 	if len(t.result.FieldsData) > 0 {
@@ -360,7 +384,8 @@ func (t *queryTask) PostExecute(ctx context.Context) error {
 			ErrorCode: commonpb.ErrorCode_Success,
 		}
 	} else {
-		log.Ctx(ctx).Warn("Query result is nil", zap.Int64("msgID", t.ID()), zap.Any("requestType", "query"))
+		log.Ctx(ctx).Warn("Query result is nil",
+			zap.Any("requestType", "query"))
 		t.result.Status = &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_EmptyCollection,
 			Reason:    "empty collection", // TODO
@@ -373,29 +398,45 @@ func (t *queryTask) PostExecute(ctx context.Context) error {
 		return err
 	}
 	for i := 0; i < len(t.result.FieldsData); i++ {
+		if t.OutputFieldsId[i] == common.TimeStampField {
+			t.result.FieldsData = append(t.result.FieldsData[:i], t.result.FieldsData[(i+1):]...)
+			i--
+			continue
+		}
 		for _, field := range schema.Fields {
 			if field.FieldID == t.OutputFieldsId[i] {
+				// deal with the situation that offset equal to or greater than the number of entities
+				if t.result.FieldsData[i] == nil {
+					t.result.FieldsData[i], err = typeutil.GenEmptyFieldData(field)
+					if err != nil {
+						return err
+					}
+				}
 				t.result.FieldsData[i].FieldName = field.Name
 				t.result.FieldsData[i].FieldId = field.FieldID
 				t.result.FieldsData[i].Type = field.DataType
 			}
 		}
 	}
-	log.Ctx(ctx).Debug("Query PostExecute done", zap.Int64("msgID", t.ID()), zap.String("requestType", "query"))
+	log.Ctx(ctx).Debug("Query PostExecute done",
+		zap.String("requestType", "query"))
 	return nil
 }
 
 func (t *queryTask) queryShard(ctx context.Context, nodeID int64, qn types.QueryNode, channelIDs []string) error {
+	retrieveReq := typeutil.Clone(t.RetrieveRequest)
+	retrieveReq.GetBase().TargetID = nodeID
 	req := &querypb.QueryRequest{
-		Req:         t.RetrieveRequest,
+		Req:         retrieveReq,
 		DmlChannels: channelIDs,
 		Scope:       querypb.DataScope_All,
 	}
 
 	result, err := qn.Query(ctx, req)
 	if err != nil {
-		log.Ctx(ctx).Warn("QueryNode query return error", zap.Int64("msgID", t.ID()),
-			zap.Int64("nodeID", nodeID), zap.Strings("channels", channelIDs), zap.Error(err))
+		log.Ctx(ctx).Warn("QueryNode query return error",
+			zap.Int64("nodeID", nodeID),
+			zap.Strings("channels", channelIDs), zap.Error(err))
 		return err
 	}
 	if result.GetStatus().GetErrorCode() == commonpb.ErrorCode_NotShardLeader {
@@ -403,12 +444,15 @@ func (t *queryTask) queryShard(ctx context.Context, nodeID int64, qn types.Query
 		return errInvalidShardLeaders
 	}
 	if result.GetStatus().GetErrorCode() != commonpb.ErrorCode_Success {
-		log.Ctx(ctx).Warn("QueryNode query result error", zap.Int64("msgID", t.ID()), zap.Int64("nodeID", nodeID),
+		log.Ctx(ctx).Warn("QueryNode query result error",
+			zap.Int64("nodeID", nodeID),
 			zap.String("reason", result.GetStatus().GetReason()))
 		return fmt.Errorf("fail to Query, QueryNode ID = %d, reason=%s", nodeID, result.GetStatus().GetReason())
 	}
 
-	log.Ctx(ctx).Debug("get query result", zap.Int64("msgID", t.ID()), zap.Int64("nodeID", nodeID), zap.Strings("channelIDs", channelIDs))
+	log.Ctx(ctx).Debug("get query result",
+		zap.Int64("nodeID", nodeID),
+		zap.Strings("channelIDs", channelIDs))
 	t.resultBuf <- result
 	return nil
 }
@@ -489,6 +533,21 @@ func reduceRetrieveResults(ctx context.Context, retrieveResults []*internalpb.Re
 	}
 
 	return ret, nil
+}
+
+func reduceRetrieveResultsAndFillIfEmpty(ctx context.Context, retrieveResults []*internalpb.RetrieveResults, queryParams *queryParams, outputFieldsID []int64, schema *schemapb.CollectionSchema) (*milvuspb.QueryResults, error) {
+	result, err := reduceRetrieveResults(ctx, retrieveResults, queryParams)
+	if err != nil {
+		return nil, err
+	}
+
+	// filter system fields.
+	filtered := filterSystemFields(outputFieldsID)
+	if err := typeutil.FillRetrieveResultIfEmpty(typeutil.NewMilvusResult(result), filtered, schema); err != nil {
+		return nil, fmt.Errorf("failed to fill retrieve results: %s", err.Error())
+	}
+
+	return result, nil
 }
 
 func (t *queryTask) TraceCtx() context.Context {

@@ -24,12 +24,11 @@ import (
 	"sync"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/opentracing/opentracing-go"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
-	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
@@ -37,20 +36,21 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/commonpbutil"
+	"github.com/milvus-io/milvus/internal/util/flowgraph"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/retry"
-	"github.com/milvus-io/milvus/internal/util/trace"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
 )
 
 type insertBufferNode struct {
 	BaseNode
 
-	ctx          context.Context
-	channelName  string
-	insertBuffer sync.Map // SegmentID to BufferData
-	channel      Channel
-	idAllocator  allocatorInterface
+	ctx              context.Context
+	channelName      string
+	delBufferManager *DelBufferManager // manager of delete msg
+	channel          Channel
+	idAllocator      allocatorInterface
 
 	flushMap         sync.Map
 	flushChan        <-chan flushMsg
@@ -62,6 +62,7 @@ type insertBufferNode struct {
 	ttLogger       *timeTickLogger
 	ttMerger       *mergedTimeTickerSender
 
+	syncPolicies  []segmentSyncPolicy
 	lastTimestamp Timestamp
 }
 
@@ -102,22 +103,54 @@ func (ibNode *insertBufferNode) Close() {
 	}
 }
 
-func (ibNode *insertBufferNode) Operate(in []Msg) []Msg {
-	fgMsg, ok := ibNode.verifyInMsg(in)
+func (ibNode *insertBufferNode) IsValidInMsg(in []Msg) bool {
+	if !ibNode.BaseNode.IsValidInMsg(in) {
+		return false
+	}
+	_, ok := in[0].(*flowGraphMsg)
 	if !ok {
-		return []Msg{}
+		log.Warn("type assertion failed for flowGraphMsg", zap.String("name", reflect.TypeOf(in[0]).Name()))
+		return false
+	}
+	return true
+}
+
+func (ibNode *insertBufferNode) Operate(in []Msg) []Msg {
+	fgMsg := in[0].(*flowGraphMsg)
+	if fgMsg.IsCloseMsg() {
+		if len(fgMsg.endPositions) != 0 {
+			// try to sync all segments
+			segmentsToSync := ibNode.Sync(fgMsg, make([]UniqueID, 0), fgMsg.endPositions[0])
+			res := flowGraphMsg{
+				deleteMessages: []*msgstream.DeleteMsg{},
+				timeRange:      fgMsg.timeRange,
+				startPositions: fgMsg.startPositions,
+				endPositions:   fgMsg.endPositions,
+				segmentsToSync: segmentsToSync,
+				dropCollection: fgMsg.dropCollection,
+				BaseMsg:        flowgraph.NewBaseMsg(true),
+			}
+			return []Msg{&res}
+		}
+		return in
 	}
 
 	if fgMsg.dropCollection {
 		ibNode.flushManager.startDropping()
 	}
 
-	var spans []opentracing.Span
+	var spans []trace.Span
 	for _, msg := range fgMsg.insertMessages {
-		sp, ctx := trace.StartSpanFromContext(msg.TraceCtx())
+		ctx, sp := startTracer(msg, "InsertBuffer-Node")
 		spans = append(spans, sp)
 		msg.SetTraceCtx(ctx)
 	}
+
+	defer func() {
+		for _, sp := range spans {
+			sp.End()
+		}
+	}()
 
 	// replace pchannel with vchannel
 	startPositions := make([]*internalpb.MsgPosition, 0, len(fgMsg.startPositions))
@@ -126,12 +159,14 @@ func (ibNode *insertBufferNode) Operate(in []Msg) []Msg {
 		pos.ChannelName = ibNode.channelName
 		startPositions = append(startPositions, pos)
 	}
+	fgMsg.startPositions = startPositions
 	endPositions := make([]*internalpb.MsgPosition, 0, len(fgMsg.endPositions))
 	for idx := range fgMsg.endPositions {
 		pos := proto.Clone(fgMsg.endPositions[idx]).(*internalpb.MsgPosition)
 		pos.ChannelName = ibNode.channelName
 		endPositions = append(endPositions, pos)
 	}
+	fgMsg.endPositions = endPositions
 
 	if startPositions[0].Timestamp < ibNode.lastTimestamp {
 		// message stream should guarantee that this should not happen
@@ -154,7 +189,7 @@ func (ibNode *insertBufferNode) Operate(in []Msg) []Msg {
 
 	// insert messages -> buffer
 	for _, msg := range fgMsg.insertMessages {
-		err := ibNode.bufferInsertMsg(msg, endPositions[0])
+		err := ibNode.bufferInsertMsg(msg, startPositions[0], endPositions[0])
 		if err != nil {
 			// error occurs when missing schema info or data is misaligned, should not happen
 			err = fmt.Errorf("insertBufferNode msg to buffer failed, err = %s", err)
@@ -178,36 +213,13 @@ func (ibNode *insertBufferNode) Operate(in []Msg) []Msg {
 		dropCollection: fgMsg.dropCollection,
 	}
 
-	for _, sp := range spans {
-		sp.Finish()
-	}
-
 	// send delete msg to DeleteNode
 	return []Msg{&res}
 }
 
-func (ibNode *insertBufferNode) verifyInMsg(in []Msg) (*flowGraphMsg, bool) {
-	// while closing
-	if in == nil {
-		log.Debug("type assertion failed for flowGraphMsg because it's nil")
-		return nil, false
-	}
-
-	if len(in) != 1 {
-		log.Warn("Invalid operate message input in insertBufferNode", zap.Int("input length", len(in)))
-		return nil, false
-	}
-
-	fgMsg, ok := in[0].(*flowGraphMsg)
-	if !ok {
-		log.Warn("type assertion failed for flowGraphMsg", zap.String("name", reflect.TypeOf(in[0]).Name()))
-	}
-	return fgMsg, ok
-}
-
 func (ibNode *insertBufferNode) GetBufferIfFull(segID UniqueID) (*BufferData, bool) {
-	if bd, ok := ibNode.insertBuffer.Load(segID); ok && bd.(*BufferData).effectiveCap() <= 0 {
-		return bd.(*BufferData), true
+	if bd, ok := ibNode.channel.getCurInsertBuffer(segID); ok && bd.effectiveCap() <= 0 {
+		return bd, true
 	}
 
 	return nil, false
@@ -216,14 +228,14 @@ func (ibNode *insertBufferNode) GetBufferIfFull(segID UniqueID) (*BufferData, bo
 // GetBuffer returns buffer data for a segment, returns nil if segment's not in buffer
 func (ibNode *insertBufferNode) GetBuffer(segID UniqueID) *BufferData {
 	var buf *BufferData
-	if bd, ok := ibNode.insertBuffer.Load(segID); ok {
-		buf = bd.(*BufferData)
+	if bd, ok := ibNode.channel.getCurInsertBuffer(segID); ok {
+		buf = bd
 	}
 	return buf
 }
 
 // CollectSegmentsToSync collects segments from flushChan from DataCoord
-func (ibNode *insertBufferNode) CollectSegmentsToSync() (flushedSegments, staleSegments []UniqueID) {
+func (ibNode *insertBufferNode) CollectSegmentsToSync() (flushedSegments []UniqueID) {
 	var (
 		maxBatch    = 10
 		targetBatch int
@@ -238,23 +250,18 @@ func (ibNode *insertBufferNode) CollectSegmentsToSync() (flushedSegments, staleS
 
 	for i := 1; i <= targetBatch; i++ {
 		fmsg := <-ibNode.flushChan
-		if fmsg.flushed {
-			flushedSegments = append(flushedSegments, fmsg.segmentID)
-		} else {
-			staleSegments = append(staleSegments, fmsg.segmentID)
-		}
+		flushedSegments = append(flushedSegments, fmsg.segmentID)
 	}
 
 	if targetBatch > 0 {
 		log.Info("(Manual Sync) batch processing flush messages",
 			zap.Int("batchSize", targetBatch),
 			zap.Int64s("flushedSegments", flushedSegments),
-			zap.Int64s("staleSegments", staleSegments),
 			zap.String("channel", ibNode.channelName),
 		)
 	}
 
-	return flushedSegments, staleSegments
+	return flushedSegments
 }
 
 // DisplayStatistics logs the statistic changes of segment in mem
@@ -271,13 +278,13 @@ func (ibNode *insertBufferNode) DisplayStatistics(seg2Upload []UniqueID) {
 	displaySize := min(10, len(seg2Upload))
 
 	for k, segID := range seg2Upload[:displaySize] {
-		if bd, ok := ibNode.insertBuffer.Load(segID); ok {
+		if bd, ok := ibNode.channel.getCurInsertBuffer(segID); ok {
 			log.Info("segment buffer status",
 				zap.Int("no.", k),
 				zap.Int64("segmentID", segID),
 				zap.String("channel", ibNode.channelName),
-				zap.Int64("size", bd.(*BufferData).size),
-				zap.Int64("limit", bd.(*BufferData).limit))
+				zap.Int64("size", bd.size),
+				zap.Int64("limit", bd.limit))
 		}
 	}
 }
@@ -303,7 +310,6 @@ func (ibNode *insertBufferNode) FillInSyncTasks(fgMsg *flowGraphMsg, seg2Upload 
 
 		for _, segID := range segmentIDs {
 			buf := ibNode.GetBuffer(segID)
-
 			syncTasks[segID] = &syncTask{
 				buffer:    buf, // nil is valid
 				segmentID: segID,
@@ -314,7 +320,33 @@ func (ibNode *insertBufferNode) FillInSyncTasks(fgMsg *flowGraphMsg, seg2Upload 
 		return syncTasks
 	}
 
-	// Auto Sync
+	if fgMsg.IsCloseMsg() {
+		// All segments in the collection will be synced, not matter empty buffer or not
+		segmentIDs := ibNode.channel.listAllSegmentIDs()
+		log.Info("Receive close request and syncing all segments",
+			zap.Int64s("segments", segmentIDs),
+			zap.String("channel", ibNode.channelName),
+		)
+
+		for _, segID := range segmentIDs {
+			// if segment has data or delete then force sync
+			insertBuf, hasInsert := ibNode.channel.getCurInsertBuffer(segID)
+			deleteEntry := ibNode.delBufferManager.GetEntriesNum(segID)
+			// if insert buf or or delete buf is not empty, trigger sync
+			if (hasInsert && insertBuf.size > 0) || (deleteEntry > 0) {
+				syncTasks[segID] = &syncTask{
+					buffer:    insertBuf, // nil is valid
+					segmentID: segID,
+					flushed:   false,
+					dropped:   false,
+					auto:      true,
+				}
+			}
+		}
+		return syncTasks
+	}
+
+	// Auto Sync // TODO: move to segment_sync_policy
 	for _, segID := range seg2Upload {
 		if ibuffer, ok := ibNode.GetBufferIfFull(segID); ok {
 			log.Info("(Auto Sync)",
@@ -331,6 +363,32 @@ func (ibNode *insertBufferNode) FillInSyncTasks(fgMsg *flowGraphMsg, seg2Upload 
 				auto:      true,
 			}
 		}
+	}
+
+	// sync delete
+	//here we adopt a quite radical strategy:
+	//every time we make sure that the N biggest delDataBuf can be flushed
+	//when memsize usage reaches a certain level
+	//the aim for taking all these actions is to guarantee that the memory consumed by delBuf will not exceed a limit
+	segmentsToFlush := ibNode.delBufferManager.ShouldFlushSegments()
+	for _, segID := range segmentsToFlush {
+		syncTasks[segID] = &syncTask{
+			buffer:    nil, // nil is valid
+			segmentID: segID,
+		}
+	}
+
+	syncSegmentIDs := ibNode.channel.listSegmentIDsToSync(fgMsg.endPositions[0].Timestamp)
+	for _, segID := range syncSegmentIDs {
+		buf := ibNode.GetBuffer(segID)
+		syncTasks[segID] = &syncTask{
+			buffer:    buf, // nil is valid
+			segmentID: segID,
+		}
+	}
+	if len(syncSegmentIDs) > 0 {
+		log.Info("sync segments", zap.String("vChannel", ibNode.channelName),
+			zap.Int64s("segIDs", syncSegmentIDs)) // TODO: maybe too many prints here
 	}
 
 	mergeSyncTask := func(segmentIDs []UniqueID, syncTasks map[UniqueID]*syncTask, setupTask func(task *syncTask)) {
@@ -356,11 +414,11 @@ func (ibNode *insertBufferNode) FillInSyncTasks(fgMsg *flowGraphMsg, seg2Upload 
 		}
 	}
 
-	flushedSegments, staleSegments := ibNode.CollectSegmentsToSync()
-	mergeSyncTask(staleSegments, syncTasks, func(task *syncTask) {})
+	flushedSegments := ibNode.CollectSegmentsToSync()
 	mergeSyncTask(flushedSegments, syncTasks, func(task *syncTask) {
 		task.flushed = true
 	})
+	mergeSyncTask(syncSegmentIDs, syncTasks, func(task *syncTask) {})
 
 	// process drop partition
 	for _, partitionDrop := range fgMsg.dropPartitions {
@@ -394,6 +452,7 @@ func (ibNode *insertBufferNode) Sync(fgMsg *flowGraphMsg, seg2Upload []UniqueID,
 		)
 		// use the flushed pk stats to take current stat
 		var pkStats []*storage.PrimaryKeyStats
+		// TODO, this has to be async flush, no need to block here.
 		err := retry.Do(ibNode.ctx, func() error {
 			statBlobs, err := ibNode.flushManager.flushBufferData(task.buffer,
 				task.segmentID,
@@ -411,24 +470,24 @@ func (ibNode *insertBufferNode) Sync(fgMsg *flowGraphMsg, seg2Upload []UniqueID,
 			return nil
 		}, getFlowGraphRetryOpt())
 		if err != nil {
-			metrics.DataNodeFlushBufferCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.FailLabel).Inc()
-			metrics.DataNodeFlushBufferCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.TotalLabel).Inc()
+			metrics.DataNodeFlushBufferCount.WithLabelValues(fmt.Sprint(paramtable.GetNodeID()), metrics.FailLabel).Inc()
+			metrics.DataNodeFlushBufferCount.WithLabelValues(fmt.Sprint(paramtable.GetNodeID()), metrics.TotalLabel).Inc()
 			if task.auto {
-				metrics.DataNodeAutoFlushBufferCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.FailLabel).Inc()
-				metrics.DataNodeAutoFlushBufferCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.TotalLabel).Inc()
+				metrics.DataNodeAutoFlushBufferCount.WithLabelValues(fmt.Sprint(paramtable.GetNodeID()), metrics.FailLabel).Inc()
+				metrics.DataNodeAutoFlushBufferCount.WithLabelValues(fmt.Sprint(paramtable.GetNodeID()), metrics.TotalLabel).Inc()
 			}
 			err = fmt.Errorf("insertBufferNode flushBufferData failed, err = %s", err)
 			log.Error(err.Error())
 			panic(err)
 		}
 		segmentsToSync = append(segmentsToSync, task.segmentID)
-		ibNode.insertBuffer.Delete(task.segmentID)
+		ibNode.channel.rollInsertBuffer(task.segmentID)
 		ibNode.channel.RollPKstats(task.segmentID, pkStats)
-		metrics.DataNodeFlushBufferCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.SuccessLabel).Inc()
-		metrics.DataNodeFlushBufferCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.TotalLabel).Inc()
+		metrics.DataNodeFlushBufferCount.WithLabelValues(fmt.Sprint(paramtable.GetNodeID()), metrics.SuccessLabel).Inc()
+		metrics.DataNodeFlushBufferCount.WithLabelValues(fmt.Sprint(paramtable.GetNodeID()), metrics.TotalLabel).Inc()
 		if task.auto {
-			metrics.DataNodeAutoFlushBufferCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.TotalLabel).Inc()
-			metrics.DataNodeAutoFlushBufferCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.FailLabel).Inc()
+			metrics.DataNodeAutoFlushBufferCount.WithLabelValues(fmt.Sprint(paramtable.GetNodeID()), metrics.TotalLabel).Inc()
+			metrics.DataNodeAutoFlushBufferCount.WithLabelValues(fmt.Sprint(paramtable.GetNodeID()), metrics.FailLabel).Inc()
 		}
 	}
 	return segmentsToSync
@@ -457,7 +516,7 @@ func (ibNode *insertBufferNode) updateSegmentStates(insertMsgs []*msgstream.Inse
 					endPos:      endPos,
 				})
 			if err != nil {
-				log.Error("add segment wrong",
+				log.Warn("add segment wrong",
 					zap.Int64("segID", currentSegID),
 					zap.Int64("collID", collID),
 					zap.Int64("partID", partitionID),
@@ -486,7 +545,7 @@ func (ibNode *insertBufferNode) updateSegmentStates(insertMsgs []*msgstream.Inse
 // 	1.2 Get buffer data and put data into each field buffer
 // 	1.3 Put back into buffer
 // 	1.4 Update related statistics
-func (ibNode *insertBufferNode) bufferInsertMsg(msg *msgstream.InsertMsg, endPos *internalpb.MsgPosition) error {
+func (ibNode *insertBufferNode) bufferInsertMsg(msg *msgstream.InsertMsg, startPos, endPos *internalpb.MsgPosition) error {
 	if err := msg.CheckAligned(); err != nil {
 		return err
 	}
@@ -495,38 +554,24 @@ func (ibNode *insertBufferNode) bufferInsertMsg(msg *msgstream.InsertMsg, endPos
 
 	collSchema, err := ibNode.channel.getCollectionSchema(collectionID, msg.EndTs())
 	if err != nil {
-		log.Error("Get schema wrong:", zap.Error(err))
+		log.Warn("Get schema wrong:", zap.Error(err))
 		return err
 	}
 
-	// Get Dimension
-	// TODO GOOSE: under assumption that there's only 1 Vector field in one collection schema
-	var dimension int
-	for _, field := range collSchema.Fields {
-		if field.DataType == schemapb.DataType_FloatVector ||
-			field.DataType == schemapb.DataType_BinaryVector {
-
-			dimension, err = storage.GetDimFromParams(field.TypeParams)
-			if err != nil {
-				log.Error("failed to get dim from field", zap.Error(err))
-				return err
-			}
-			break
+	// load or store insertBuffer
+	var buffer *BufferData
+	var loaded bool
+	buffer, loaded = ibNode.channel.getCurInsertBuffer(currentSegID)
+	if !loaded {
+		buffer, err = newBufferData(collSchema)
+		if err != nil {
+			return fmt.Errorf("newBufferData failed, segment=%d, channel=%s, err=%w", currentSegID, ibNode.channelName, err)
 		}
 	}
 
-	newbd, err := newBufferData(int64(dimension))
-	if err != nil {
-		return err
-	}
-	bd, _ := ibNode.insertBuffer.LoadOrStore(currentSegID, newbd)
-
-	buffer := bd.(*BufferData)
-	// idata := buffer.buffer
-
 	addedBuffer, err := storage.InsertMsgToInsertData(msg, collSchema)
 	if err != nil {
-		log.Error("failed to transfer insert msg to insert data", zap.Error(err))
+		log.Warn("failed to transfer insert msg to insert data", zap.Error(err))
 		return err
 	}
 
@@ -548,16 +593,14 @@ func (ibNode *insertBufferNode) bufferInsertMsg(msg *msgstream.InsertMsg, endPos
 
 	// update buffer size
 	buffer.updateSize(int64(msg.NRows()))
-	// update timestamp range
+	// update timestamp range and start-end position
 	buffer.updateTimeRange(ibNode.getTimestampRange(tsData))
+	buffer.updateStartAndEndPosition(startPos, endPos)
 
-	metrics.DataNodeConsumeMsgRowsCount.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.InsertLabel).Add(float64(len(msg.RowData)))
+	metrics.DataNodeConsumeMsgRowsCount.WithLabelValues(fmt.Sprint(paramtable.GetNodeID()), metrics.InsertLabel).Add(float64(len(msg.RowData)))
 
 	// store in buffer
-	ibNode.insertBuffer.Store(currentSegID, buffer)
-
-	// store current endPositions as Segment->EndPostion
-	ibNode.channel.updateSegmentEndPosition(currentSegID, endPos)
+	ibNode.channel.setCurInsertBuffer(currentSegID, buffer)
 
 	return nil
 }
@@ -599,7 +642,7 @@ func (ibNode *insertBufferNode) getCollectionandPartitionIDbySegID(segmentID Uni
 	return ibNode.channel.getCollectionAndPartitionID(segmentID)
 }
 
-func newInsertBufferNode(ctx context.Context, collID UniqueID, flushCh <-chan flushMsg, resendTTCh <-chan resendTTMsg,
+func newInsertBufferNode(ctx context.Context, collID UniqueID, delBufManager *DelBufferManager, flushCh <-chan flushMsg, resendTTCh <-chan resendTTMsg,
 	fm flushManager, flushingSegCache *Cache, config *nodeConfig) (*insertBufferNode, error) {
 
 	baseNode := BaseNode{}
@@ -611,11 +654,10 @@ func newInsertBufferNode(ctx context.Context, collID UniqueID, flushCh <-chan fl
 	if err != nil {
 		return nil, err
 	}
-	wTt.AsProducer([]string{Params.CommonCfg.DataCoordTimeTick})
-	metrics.DataNodeNumProducers.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID())).Inc()
-	log.Info("datanode AsProducer", zap.String("TimeTickChannelName", Params.CommonCfg.DataCoordTimeTick))
+	wTt.AsProducer([]string{Params.CommonCfg.DataCoordTimeTick.GetValue()})
+	metrics.DataNodeNumProducers.WithLabelValues(fmt.Sprint(paramtable.GetNodeID())).Inc()
+	log.Info("datanode AsProducer", zap.String("TimeTickChannelName", Params.CommonCfg.DataCoordTimeTick.GetValue()))
 	var wTtMsgStream msgstream.MsgStream = wTt
-	wTtMsgStream.Start()
 
 	mt := newMergedTimeTickerSender(func(ts Timestamp, segmentIDs []int64) error {
 		stats := make([]*datapb.SegmentStats, 0, len(segmentIDs))
@@ -639,7 +681,7 @@ func newInsertBufferNode(ctx context.Context, collID UniqueID, flushCh <-chan fl
 					commonpbutil.WithMsgType(commonpb.MsgType_DataNodeTt),
 					commonpbutil.WithMsgID(0),
 					commonpbutil.WithTimeStamp(ts),
-					commonpbutil.WithSourceID(Params.DataNodeCfg.GetNodeID()),
+					commonpbutil.WithSourceID(config.serverID),
 				),
 				ChannelName:   config.vChannelName,
 				Timestamp:     ts,
@@ -647,16 +689,17 @@ func newInsertBufferNode(ctx context.Context, collID UniqueID, flushCh <-chan fl
 			},
 		}
 		msgPack.Msgs = append(msgPack.Msgs, &timeTickMsg)
-		pt, _ := tsoutil.ParseHybridTs(ts)
+		sub := tsoutil.SubByNow(ts)
 		pChan := funcutil.ToPhysicalChannel(config.vChannelName)
-		metrics.DataNodeTimeSync.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), pChan).Set(float64(pt))
+		metrics.DataNodeProduceTimeTickLag.
+			WithLabelValues(fmt.Sprint(paramtable.GetNodeID()), fmt.Sprint(collID), pChan).
+			Set(float64(sub))
 		return wTtMsgStream.Produce(&msgPack)
 	})
 
 	return &insertBufferNode{
-		ctx:          ctx,
-		BaseNode:     baseNode,
-		insertBuffer: sync.Map{},
+		ctx:      ctx,
+		BaseNode: baseNode,
 
 		timeTickStream:   wTtMsgStream,
 		flushMap:         sync.Map{},
@@ -665,10 +708,11 @@ func newInsertBufferNode(ctx context.Context, collID UniqueID, flushCh <-chan fl
 		flushingSegCache: flushingSegCache,
 		flushManager:     fm,
 
-		channel:     config.channel,
-		idAllocator: config.allocator,
-		channelName: config.vChannelName,
-		ttMerger:    mt,
-		ttLogger:    &timeTickLogger{vChannelName: config.vChannelName},
+		delBufferManager: delBufManager,
+		channel:          config.channel,
+		idAllocator:      config.allocator,
+		channelName:      config.vChannelName,
+		ttMerger:         mt,
+		ttLogger:         &timeTickLogger{vChannelName: config.vChannelName},
 	}, nil
 }

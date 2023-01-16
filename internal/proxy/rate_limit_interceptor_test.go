@@ -30,12 +30,20 @@ import (
 )
 
 type limiterMock struct {
-	limit bool
-	rate  float64
+	limit             bool
+	rate              float64
+	quotaStates       []milvuspb.QuotaState
+	quotaStateReasons []commonpb.ErrorCode
 }
 
-func (l *limiterMock) Limit(_ internalpb.RateType, _ int) (bool, float64) {
-	return l.limit, l.rate
+func (l *limiterMock) Check(rt internalpb.RateType, n int) commonpb.ErrorCode {
+	if l.rate == 0 {
+		return commonpb.ErrorCode_ForceDeny
+	}
+	if l.limit {
+		return commonpb.ErrorCode_RateLimit
+	}
+	return commonpb.ErrorCode_Success
 }
 
 func TestRateLimitInterceptor(t *testing.T) {
@@ -92,24 +100,24 @@ func TestRateLimitInterceptor(t *testing.T) {
 	})
 
 	t.Run("test getFailedResponse", func(t *testing.T) {
-		testGetFailedResponse := func(req interface{}) {
-			_, err := getFailedResponse(req, commonpb.ErrorCode_UnexpectedError, "mock")
-			assert.NoError(t, err)
+		testGetFailedResponse := func(req interface{}, rt internalpb.RateType, errCode commonpb.ErrorCode, fullMethod string) {
+			rsp := getFailedResponse(req, rt, errCode, fullMethod)
+			assert.NotNil(t, rsp)
 		}
 
-		testGetFailedResponse(&milvuspb.DeleteRequest{})
-		testGetFailedResponse(&milvuspb.ImportRequest{})
-		testGetFailedResponse(&milvuspb.SearchRequest{})
-		testGetFailedResponse(&milvuspb.QueryRequest{})
-		testGetFailedResponse(&milvuspb.CreateCollectionRequest{})
-		testGetFailedResponse(&milvuspb.FlushRequest{})
-		testGetFailedResponse(&milvuspb.ManualCompactionRequest{})
+		testGetFailedResponse(&milvuspb.DeleteRequest{}, internalpb.RateType_DMLDelete, commonpb.ErrorCode_ForceDeny, "delete")
+		testGetFailedResponse(&milvuspb.ImportRequest{}, internalpb.RateType_DMLBulkLoad, commonpb.ErrorCode_MemoryQuotaExhausted, "import")
+		testGetFailedResponse(&milvuspb.SearchRequest{}, internalpb.RateType_DQLSearch, commonpb.ErrorCode_DiskQuotaExhausted, "search")
+		testGetFailedResponse(&milvuspb.QueryRequest{}, internalpb.RateType_DQLQuery, commonpb.ErrorCode_ForceDeny, "query")
+		testGetFailedResponse(&milvuspb.CreateCollectionRequest{}, internalpb.RateType_DDLCollection, commonpb.ErrorCode_RateLimit, "createCollection")
+		testGetFailedResponse(&milvuspb.FlushRequest{}, internalpb.RateType_DDLFlush, commonpb.ErrorCode_RateLimit, "flush")
+		testGetFailedResponse(&milvuspb.ManualCompactionRequest{}, internalpb.RateType_DDLCompaction, commonpb.ErrorCode_RateLimit, "compaction")
 
 		// test illegal
-		_, err := getFailedResponse(&milvuspb.SearchResults{}, commonpb.ErrorCode_UnexpectedError, "mock")
-		assert.Error(t, err)
-		_, err = getFailedResponse(nil, commonpb.ErrorCode_UnexpectedError, "mock")
-		assert.Error(t, err)
+		rsp := getFailedResponse(&milvuspb.SearchResults{}, internalpb.RateType_DQLSearch, commonpb.ErrorCode_UnexpectedError, "method")
+		assert.Nil(t, rsp)
+		rsp = getFailedResponse(nil, internalpb.RateType_DQLSearch, commonpb.ErrorCode_UnexpectedError, "method")
+		assert.Nil(t, rsp)
 	})
 
 	t.Run("test RateLimitInterceptor", func(t *testing.T) {

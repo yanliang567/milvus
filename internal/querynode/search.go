@@ -22,29 +22,47 @@ import (
 	"fmt"
 	"sync"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.uber.org/zap"
+
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
 // searchOnSegments performs search on listed segments
 // all segment ids are validated before calling this function
-func searchOnSegments(ctx context.Context, replica ReplicaInterface, segType segmentType, searchReq *searchRequest, segIDs []UniqueID) ([]*SearchResult, error) {
-	// results variables
-	searchResults := make([]*SearchResult, len(segIDs))
-	errs := make([]error, len(segIDs))
+func searchSegments(ctx context.Context, replica ReplicaInterface, segType segmentType, searchReq *searchRequest, segIDs []UniqueID) ([]*SearchResult, error) {
+	var (
+		// results variables
+		resultCh = make(chan *SearchResult, len(segIDs))
+		errs     = make([]error, len(segIDs))
+		wg       sync.WaitGroup
+
+		// For log only
+		mu                   sync.Mutex
+		segmentsWithoutIndex []UniqueID
+	)
+
 	searchLabel := metrics.SealedSegmentLabel
 	if segType == commonpb.SegmentState_Growing {
 		searchLabel = metrics.GrowingSegmentLabel
 	}
 
 	// calling segment search in goroutines
-	var wg sync.WaitGroup
 	for i, segID := range segIDs {
 		wg.Add(1)
 		go func(segID UniqueID, i int) {
 			defer wg.Done()
+			ctx, span := otel.Tracer(typeutil.QueryNodeRole).Start(ctx, "Search-Segment")
+			span.SetAttributes(attribute.String("segmentType", searchLabel))
+			span.SetAttributes(attribute.Int64("segmentID", segID))
+			defer span.End()
+
 			seg, err := replica.getSegmentByID(segID, segType)
 			if err != nil {
 				if errors.Is(err, ErrSegmentNotFound) {
@@ -53,23 +71,41 @@ func searchOnSegments(ctx context.Context, replica ReplicaInterface, segType seg
 				log.Error(err.Error()) // should not happen but still ignore it since the result is still correct
 				return
 			}
+
+			if !seg.hasLoadIndexForIndexedField(searchReq.searchFieldID) {
+				mu.Lock()
+				segmentsWithoutIndex = append(segmentsWithoutIndex, segID)
+				mu.Unlock()
+			}
 			// record search time
 			tr := timerecord.NewTimeRecorder("searchOnSegments")
-			searchResult, err := seg.search(searchReq)
+			searchResult, err := seg.search(ctx, searchReq)
 			errs[i] = err
-			searchResults[i] = searchResult
+			resultCh <- searchResult
 			// update metrics
-			metrics.QueryNodeSQSegmentLatency.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID()),
+			metrics.QueryNodeSQSegmentLatency.WithLabelValues(fmt.Sprint(paramtable.GetNodeID()),
 				metrics.SearchLabel, searchLabel).Observe(float64(tr.ElapseSpan().Milliseconds()))
 		}(segID, i)
 	}
 	wg.Wait()
+	close(resultCh)
+
+	searchResults := make([]*SearchResult, 0, len(segIDs))
+	for result := range resultCh {
+		searchResults = append(searchResults, result)
+	}
+
 	for _, err := range errs {
 		if err != nil {
 			deleteSearchResults(searchResults)
 			return nil, err
 		}
 	}
+
+	if len(segmentsWithoutIndex) > 0 {
+		log.Ctx(ctx).Info("search growing/sealed segments without indexes", zap.Int64s("segmentIDs", segmentsWithoutIndex))
+	}
+
 	return searchResults, nil
 }
 
@@ -86,7 +122,7 @@ func searchHistorical(ctx context.Context, replica ReplicaInterface, searchReq *
 	if err != nil {
 		return searchResults, searchSegmentIDs, searchPartIDs, err
 	}
-	searchResults, err = searchOnSegments(ctx, replica, segmentTypeSealed, searchReq, searchSegmentIDs)
+	searchResults, err = searchSegments(ctx, replica, segmentTypeSealed, searchReq, searchSegmentIDs)
 	return searchResults, searchPartIDs, searchSegmentIDs, err
 }
 
@@ -102,6 +138,6 @@ func searchStreaming(ctx context.Context, replica ReplicaInterface, searchReq *s
 	if err != nil {
 		return searchResults, searchSegmentIDs, searchPartIDs, err
 	}
-	searchResults, err = searchOnSegments(ctx, replica, segmentTypeGrowing, searchReq, searchSegmentIDs)
+	searchResults, err = searchSegments(ctx, replica, segmentTypeGrowing, searchReq, searchSegmentIDs)
 	return searchResults, searchPartIDs, searchSegmentIDs, err
 }

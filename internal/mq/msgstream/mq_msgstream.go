@@ -33,9 +33,7 @@ import (
 	"github.com/milvus-io/milvus/internal/mq/msgstream/mqwrapper"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/util/retry"
-	"github.com/milvus-io/milvus/internal/util/trace"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	"github.com/opentracing/opentracing-go"
 )
 
 var _ MsgStream = (*mqMsgStream)(nil)
@@ -175,9 +173,6 @@ func (ms *mqMsgStream) SetRepackFunc(repackFunc RepackFunc) {
 	ms.repackFunc = repackFunc
 }
 
-func (ms *mqMsgStream) Start() {
-}
-
 func (ms *mqMsgStream) Close() {
 	log.Info("start to close mq msg stream",
 		zap.Int("producer num", len(ms.producers)),
@@ -200,12 +195,11 @@ func (ms *mqMsgStream) Close() {
 	}
 
 	ms.client.Close()
-
 	close(ms.receiveBuf)
 
 }
 
-func (ms *mqMsgStream) ComputeProduceChannelIndexes(tsMsgs []TsMsg) [][]int32 {
+func (ms *mqMsgStream) computeProduceChannelIndexes(tsMsgs []TsMsg) [][]int32 {
 	if len(tsMsgs) <= 0 {
 		return nil
 	}
@@ -239,7 +233,7 @@ func (ms *mqMsgStream) Produce(msgPack *MsgPack) error {
 		return errors.New("nil producer in msg stream")
 	}
 	tsMsgs := msgPack.Msgs
-	reBucketValues := ms.ComputeProduceChannelIndexes(msgPack.Msgs)
+	reBucketValues := ms.computeProduceChannelIndexes(msgPack.Msgs)
 	var result map[int32]*MsgPack
 	var err error
 	if ms.repackFunc != nil {
@@ -261,7 +255,7 @@ func (ms *mqMsgStream) Produce(msgPack *MsgPack) error {
 	for k, v := range result {
 		channel := ms.producerChannels[k]
 		for i := 0; i < len(v.Msgs); i++ {
-			sp, spanCtx := MsgSpanFromCtx(v.Msgs[i].TraceCtx(), v.Msgs[i])
+			spanCtx, sp := MsgSpanFromCtx(v.Msgs[i].TraceCtx(), v.Msgs[i])
 
 			mb, err := v.Msgs[i].Marshal(v.Msgs[i])
 			if err != nil {
@@ -275,144 +269,31 @@ func (ms *mqMsgStream) Produce(msgPack *MsgPack) error {
 
 			msg := &mqwrapper.ProducerMessage{Payload: m, Properties: map[string]string{}}
 
-			trace.InjectContextToPulsarMsgProperties(sp.Context(), msg.Properties)
+			InjectCtx(spanCtx, msg.Properties)
 
 			ms.producerLock.Lock()
-			if _, err := ms.producers[channel].Send(
-				spanCtx,
-				msg,
-			); err != nil {
+			if _, err := ms.producers[channel].Send(spanCtx, msg); err != nil {
 				ms.producerLock.Unlock()
-				trace.LogError(sp, err)
-				sp.Finish()
+				sp.RecordError(err)
+				sp.End()
 				return err
 			}
-			sp.Finish()
+			sp.End()
 			ms.producerLock.Unlock()
 		}
-	}
-	return nil
-}
-
-// ProduceMark send msg pack to all producers and returns corresponding msg id
-// the returned message id serves as marking
-func (ms *mqMsgStream) ProduceMark(msgPack *MsgPack) (map[string][]MessageID, error) {
-	ids := make(map[string][]MessageID)
-	if msgPack == nil || len(msgPack.Msgs) <= 0 {
-		return ids, errors.New("empty msgs")
-	}
-	if len(ms.producers) <= 0 {
-		return ids, errors.New("nil producer in msg stream")
-	}
-	tsMsgs := msgPack.Msgs
-	reBucketValues := ms.ComputeProduceChannelIndexes(msgPack.Msgs)
-	var result map[int32]*MsgPack
-	var err error
-	if ms.repackFunc != nil {
-		result, err = ms.repackFunc(tsMsgs, reBucketValues)
-	} else {
-		msgType := (tsMsgs[0]).Type()
-		switch msgType {
-		case commonpb.MsgType_Insert:
-			result, err = InsertRepackFunc(tsMsgs, reBucketValues)
-		case commonpb.MsgType_Delete:
-			result, err = DeleteRepackFunc(tsMsgs, reBucketValues)
-		default:
-			result, err = DefaultRepackFunc(tsMsgs, reBucketValues)
-		}
-	}
-	if err != nil {
-		return ids, err
-	}
-	for k, v := range result {
-		channel := ms.producerChannels[k]
-		for i, tsMsg := range v.Msgs {
-			sp, spanCtx := MsgSpanFromCtx(v.Msgs[i].TraceCtx(), tsMsg)
-
-			mb, err := tsMsg.Marshal(tsMsg)
-			if err != nil {
-				return ids, err
-			}
-
-			m, err := convertToByteArray(mb)
-			if err != nil {
-				return ids, err
-			}
-
-			msg := &mqwrapper.ProducerMessage{Payload: m, Properties: map[string]string{}}
-
-			trace.InjectContextToPulsarMsgProperties(sp.Context(), msg.Properties)
-
-			ms.producerLock.Lock()
-			id, err := ms.producers[channel].Send(
-				spanCtx,
-				msg,
-			)
-			if err != nil {
-				ms.producerLock.Unlock()
-				trace.LogError(sp, err)
-				sp.Finish()
-				return ids, err
-			}
-			ids[channel] = append(ids[channel], id)
-			sp.Finish()
-			ms.producerLock.Unlock()
-		}
-	}
-	return ids, nil
-}
-
-// Broadcast put msgPack to all producer in current msgstream
-// which ignores repackFunc logic
-func (ms *mqMsgStream) Broadcast(msgPack *MsgPack) error {
-	if msgPack == nil || len(msgPack.Msgs) <= 0 {
-		log.Debug("Warning: Receive empty msgPack")
-		return nil
-	}
-	for _, v := range msgPack.Msgs {
-		sp, spanCtx := MsgSpanFromCtx(v.TraceCtx(), v)
-
-		mb, err := v.Marshal(v)
-		if err != nil {
-			return err
-		}
-
-		m, err := convertToByteArray(mb)
-		if err != nil {
-			return err
-		}
-
-		msg := &mqwrapper.ProducerMessage{Payload: m, Properties: map[string]string{}}
-
-		trace.InjectContextToPulsarMsgProperties(sp.Context(), msg.Properties)
-
-		ms.producerLock.Lock()
-		for _, producer := range ms.producers {
-			if _, err := producer.Send(
-				spanCtx,
-				msg,
-			); err != nil {
-				ms.producerLock.Unlock()
-				trace.LogError(sp, err)
-				sp.Finish()
-				return err
-			}
-		}
-		ms.producerLock.Unlock()
-		sp.Finish()
 	}
 	return nil
 }
 
 // BroadcastMark broadcast msg pack to all producers and returns corresponding msg id
 // the returned message id serves as marking
-func (ms *mqMsgStream) BroadcastMark(msgPack *MsgPack) (map[string][]MessageID, error) {
+func (ms *mqMsgStream) Broadcast(msgPack *MsgPack) (map[string][]MessageID, error) {
 	ids := make(map[string][]MessageID)
 	if msgPack == nil || len(msgPack.Msgs) <= 0 {
 		return ids, errors.New("empty msgs")
 	}
 	for _, v := range msgPack.Msgs {
-		sp, spanCtx := MsgSpanFromCtx(v.TraceCtx(), v)
+		spanCtx, sp := MsgSpanFromCtx(v.TraceCtx(), v)
 
 		mb, err := v.Marshal(v)
 		if err != nil {
@@ -426,21 +307,21 @@ func (ms *mqMsgStream) BroadcastMark(msgPack *MsgPack) (map[string][]MessageID, 
 
 		msg := &mqwrapper.ProducerMessage{Payload: m, Properties: map[string]string{}}
 
-		trace.InjectContextToPulsarMsgProperties(sp.Context(), msg.Properties)
+		InjectCtx(spanCtx, msg.Properties)
 
 		ms.producerLock.Lock()
 		for channel, producer := range ms.producers {
 			id, err := producer.Send(spanCtx, msg)
 			if err != nil {
 				ms.producerLock.Unlock()
-				trace.LogError(sp, err)
-				sp.Finish()
+				sp.RecordError(err)
+				sp.End()
 				return ids, err
 			}
 			ids[channel] = append(ids[channel], id)
 		}
 		ms.producerLock.Unlock()
-		sp.Finish()
+		sp.End()
 	}
 	return ids, nil
 }
@@ -504,9 +385,9 @@ func (ms *mqMsgStream) receiveMsg(consumer mqwrapper.Consumer) {
 				Timestamp:   tsMsg.BeginTs(),
 			})
 
-			sp, ok := ExtractFromPulsarMsgProperties(tsMsg, msg.Properties())
-			if ok {
-				tsMsg.SetTraceCtx(opentracing.ContextWithSpan(context.Background(), sp))
+			ctx, sp := ExtractCtx(tsMsg, msg.Properties())
+			if ctx != nil {
+				tsMsg.SetTraceCtx(ctx)
 			}
 
 			msgPack := MsgPack{
@@ -520,7 +401,7 @@ func (ms *mqMsgStream) receiveMsg(consumer mqwrapper.Consumer) {
 				return
 			}
 
-			sp.Finish()
+			sp.End()
 		}
 	}
 }
@@ -652,9 +533,6 @@ func (ms *MqTtMsgStream) AsConsumer(channels []string, subName string, position 
 		}
 	}
 }
-
-// Start will start a goroutine which keep carrying msg from pulsar/rocksmq to golang chan
-func (ms *MqTtMsgStream) Start() {}
 
 // Close will stop goroutine and free internal producers and consumers
 func (ms *MqTtMsgStream) Close() {
@@ -810,9 +688,9 @@ func (ms *MqTtMsgStream) consumeToTtMsg(consumer mqwrapper.Consumer) {
 				continue
 			}
 
-			sp, ok := ExtractFromPulsarMsgProperties(tsMsg, msg.Properties())
-			if ok {
-				tsMsg.SetTraceCtx(opentracing.ContextWithSpan(context.Background(), sp))
+			ctx, sp := ExtractCtx(tsMsg, msg.Properties())
+			if ctx != nil {
+				tsMsg.SetTraceCtx(ctx)
 			}
 
 			ms.chanMsgBufMutex.Lock()
@@ -823,10 +701,10 @@ func (ms *MqTtMsgStream) consumeToTtMsg(consumer mqwrapper.Consumer) {
 				ms.chanTtMsgTimeMutex.Lock()
 				ms.chanTtMsgTime[consumer] = tsMsg.(*TimeTickMsg).Base.Timestamp
 				ms.chanTtMsgTimeMutex.Unlock()
-				sp.Finish()
+				sp.End()
 				return
 			}
-			sp.Finish()
+			sp.End()
 		}
 	}
 }

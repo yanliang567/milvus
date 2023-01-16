@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/config"
+
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 
 	"github.com/milvus-io/milvus/internal/common"
@@ -23,7 +25,7 @@ import (
 var Params paramtable.BaseTable
 
 func TestMain(m *testing.M) {
-	Params.Init()
+	Params.Init(0)
 	mockCluster, err := kafka.NewMockCluster(1)
 	defer mockCluster.Close()
 	if err != nil {
@@ -102,7 +104,7 @@ func Consume2(ctx context.Context, t *testing.T, kc *kafkaClient, topic string, 
 		Topic:                       topic,
 		SubscriptionName:            subName,
 		BufSize:                     1024,
-		SubscriptionInitialPosition: mqwrapper.SubscriptionPositionEarliest,
+		SubscriptionInitialPosition: mqwrapper.SubscriptionPositionUnknown,
 	})
 	assert.Nil(t, err)
 	assert.NotNil(t, consumer)
@@ -170,7 +172,9 @@ func TestKafkaClient_ConsumeWithAck(t *testing.T) {
 	rand.Seed(time.Now().UnixNano())
 	topic := fmt.Sprintf("test-topic-%d", rand.Int())
 	subName := fmt.Sprintf("test-subname-%d", rand.Int())
-	arr := []int{111, 222, 333, 444, 555, 666, 777}
+	arr1 := []int{111, 222, 333, 444, 555, 666, 777}
+	arr2 := []string{"111", "222", "333", "444", "555", "666", "777"}
+
 	c := make(chan mqwrapper.MessageID, 1)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -181,7 +185,7 @@ func TestKafkaClient_ConsumeWithAck(t *testing.T) {
 
 	producer := createProducer(t, kc, topic)
 	defer producer.Close()
-	produceData(ctx, t, producer, arr)
+	produceData(ctx, t, producer, arr1, arr2)
 	time.Sleep(100 * time.Millisecond)
 
 	ctx1, cancel1 := context.WithTimeout(ctx, 5*time.Second)
@@ -201,9 +205,9 @@ func TestKafkaClient_ConsumeWithAck(t *testing.T) {
 	cancel3()
 
 	cancel()
-	assert.Equal(t, len(arr), total1+total2)
+	assert.Equal(t, len(arr1), total1+total2)
 
-	assert.Equal(t, len(arr), total3)
+	assert.Equal(t, len(arr1), total3)
 }
 
 func TestKafkaClient_SeekPosition(t *testing.T) {
@@ -218,10 +222,11 @@ func TestKafkaClient_SeekPosition(t *testing.T) {
 	producer := createProducer(t, kc, topic)
 	defer producer.Close()
 
-	data := []int{1, 2, 3}
-	ids := produceData(ctx, t, producer, data)
+	data1 := []int{1, 2, 3}
+	data2 := []string{"1", "2", "3"}
+	ids := produceData(ctx, t, producer, data1, data2)
 
-	consumer := createConsumer(t, kc, topic, subName, mqwrapper.SubscriptionPositionLatest)
+	consumer := createConsumer(t, kc, topic, subName, mqwrapper.SubscriptionPositionUnknown)
 	defer consumer.Close()
 
 	err := consumer.Seek(ids[2], true)
@@ -231,6 +236,7 @@ func TestKafkaClient_SeekPosition(t *testing.T) {
 	case msg := <-consumer.Chan():
 		consumer.Ack(msg)
 		assert.Equal(t, 3, BytesToInt(msg.Payload()))
+		assert.Equal(t, "3", msg.Properties()[common.TraceIDKey])
 	case <-time.After(10 * time.Second):
 		assert.FailNow(t, "should not wait")
 	}
@@ -248,22 +254,25 @@ func TestKafkaClient_ConsumeFromLatest(t *testing.T) {
 	producer := createProducer(t, kc, topic)
 	defer producer.Close()
 
-	data := []int{1, 2}
-	produceData(ctx, t, producer, data)
+	data1 := []int{1, 2}
+	data2 := []string{"1", "2"}
+	produceData(ctx, t, producer, data1, data2)
 
 	consumer := createConsumer(t, kc, topic, subName, mqwrapper.SubscriptionPositionLatest)
 	defer consumer.Close()
 
 	go func() {
 		time.Sleep(time.Second * 2)
-		data := []int{3}
-		produceData(ctx, t, producer, data)
+		data1 := []int{3}
+		data2 := []string{"3"}
+		produceData(ctx, t, producer, data1, data2)
 	}()
 
 	select {
 	case msg := <-consumer.Chan():
 		consumer.Ack(msg)
 		assert.Equal(t, 3, BytesToInt(msg.Payload()))
+		assert.Equal(t, "3", msg.Properties()[common.TraceIDKey])
 	case <-time.After(5 * time.Second):
 		assert.FailNow(t, "should not wait")
 	}
@@ -297,40 +306,56 @@ func TestKafkaClient_MsgSerializAndDeserialize(t *testing.T) {
 	assert.Nil(t, msgID)
 }
 
+func createParamItem(v string) paramtable.ParamItem {
+	item := paramtable.ParamItem{
+		Formatter: func(originValue string) string { return v },
+	}
+	item.Init(&config.Manager{})
+	return item
+}
+
 func TestKafkaClient_NewKafkaClientInstanceWithConfig(t *testing.T) {
-	config1 := &paramtable.KafkaConfig{Address: "addr", SaslPassword: "password"}
+	config1 := &paramtable.KafkaConfig{
+		Address:      createParamItem("addr"),
+		SaslPassword: createParamItem("password"),
+	}
 	assert.Panics(t, func() { NewKafkaClientInstanceWithConfig(config1) })
 
-	config2 := &paramtable.KafkaConfig{Address: "addr", SaslUsername: "username"}
+	config2 := &paramtable.KafkaConfig{
+		Address:      createParamItem("addr"),
+		SaslUsername: createParamItem("username"),
+	}
 	assert.Panics(t, func() { NewKafkaClientInstanceWithConfig(config2) })
 
-	config3 := &paramtable.KafkaConfig{Address: "addr", SaslUsername: "username", SaslPassword: "password"}
-	client := NewKafkaClientInstanceWithConfig(config3)
+	producerConfig := make(map[string]string)
+	producerConfig["client.id"] = "dc1"
+	consumerConfig := make(map[string]string)
+	consumerConfig["client.id"] = "dc"
+
+	config := &paramtable.KafkaConfig{
+		Address:             createParamItem("addr"),
+		SaslUsername:        createParamItem("username"),
+		SaslPassword:        createParamItem("password"),
+		SaslMechanisms:      createParamItem("sasl"),
+		SecurityProtocol:    createParamItem("plain"),
+		ConsumerExtraConfig: paramtable.ParamGroup{GetFunc: func() map[string]string { return consumerConfig }},
+		ProducerExtraConfig: paramtable.ParamGroup{GetFunc: func() map[string]string { return producerConfig }},
+	}
+	client := NewKafkaClientInstanceWithConfig(config)
 	assert.NotNil(t, client)
 	assert.NotNil(t, client.basicConfig)
 
-	consumerConfig := make(map[string]string)
-	consumerConfig["client.id"] = "dc"
-	config4 := &paramtable.KafkaConfig{Address: "addr", SaslUsername: "username", SaslPassword: "password", ConsumerExtraConfig: consumerConfig}
-	client4 := NewKafkaClientInstanceWithConfig(config4)
-	assert.Equal(t, "dc", client4.consumerConfig["client.id"])
-
-	newConsumerConfig := client4.newConsumerConfig("test", 0)
+	assert.Equal(t, "dc", client.consumerConfig["client.id"])
+	newConsumerConfig := client.newConsumerConfig("test", 0)
 	clientID, err := newConsumerConfig.Get("client.id", "")
 	assert.Nil(t, err)
 	assert.Equal(t, "dc", clientID)
 
-	producerConfig := make(map[string]string)
-	producerConfig["client.id"] = "dc1"
-	config5 := &paramtable.KafkaConfig{Address: "addr", SaslUsername: "username", SaslPassword: "password", ProducerExtraConfig: producerConfig}
-	client5 := NewKafkaClientInstanceWithConfig(config5)
-	assert.Equal(t, "dc1", client5.producerConfig["client.id"])
-
-	newProducerConfig := client5.newProducerConfig()
+	assert.Equal(t, "dc1", client.producerConfig["client.id"])
+	newProducerConfig := client.newProducerConfig()
 	pClientID, err := newProducerConfig.Get("client.id", "")
 	assert.Nil(t, err)
 	assert.Equal(t, pClientID, "dc1")
-
 }
 
 func createKafkaClient(t *testing.T) *kafkaClient {
@@ -362,12 +387,14 @@ func createProducer(t *testing.T, kc *kafkaClient, topic string) mqwrapper.Produ
 	return producer
 }
 
-func produceData(ctx context.Context, t *testing.T, producer mqwrapper.Producer, arr []int) []mqwrapper.MessageID {
+func produceData(ctx context.Context, t *testing.T, producer mqwrapper.Producer, arr []int, pArr []string) []mqwrapper.MessageID {
 	var msgIDs []mqwrapper.MessageID
-	for _, v := range arr {
+	for k, v := range arr {
 		msg := &mqwrapper.ProducerMessage{
-			Payload:    IntToBytes(v),
-			Properties: map[string]string{},
+			Payload: IntToBytes(v),
+			Properties: map[string]string{
+				common.TraceIDKey: pArr[k],
+			},
 		}
 		msgID, err := producer.Send(ctx, msg)
 		msgIDs = append(msgIDs, msgID)

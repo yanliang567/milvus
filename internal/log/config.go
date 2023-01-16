@@ -79,7 +79,7 @@ type ZapProperties struct {
 }
 
 func newZapTextEncoder(cfg *Config) zapcore.Encoder {
-	return NewTextEncoder(cfg)
+	return NewTextEncoderByConfig(cfg)
 }
 
 func (cfg *Config) buildOptions(errSink zapcore.WriteSyncer) []zap.Option {

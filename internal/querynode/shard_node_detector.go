@@ -18,11 +18,13 @@ package querynode
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/golang/protobuf/proto"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	v3rpc "go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -101,7 +103,7 @@ func (nd *etcdShardNodeDetector) watchNodes(collectionID int64, replicaID int64,
 				nodeID:    nodeID,
 				nodeAddr:  addr,
 				eventType: nodeAdd,
-				isLeader:  nodeID == Params.QueryNodeCfg.GetNodeID(),
+				isLeader:  nodeID == paramtable.GetNodeID(),
 			})
 		}
 	}
@@ -176,6 +178,11 @@ func (nd *etcdShardNodeDetector) handlePutEvent(e *clientv3.Event, collectionID,
 
 	idAddr, err := nd.idAddr()
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			// session canceled, query node is stopping.
+			log.Warn("EtcdNodeDetector id resolve failed", zap.Error(err))
+			return
+		}
 		log.Error("Etcd NodeDetector session map failed", zap.Error(err))
 		panic(err)
 	}
@@ -252,6 +259,11 @@ func (nd *etcdShardNodeDetector) handleDelEvent(e *clientv3.Event, collectionID,
 	}
 	idAddr, err := nd.idAddr()
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			// session canceled, query node is stopping.
+			log.Warn("EtcdNodeDetector id resolve failed", zap.Error(err))
+			return
+		}
 		log.Error("Etcd NodeDetector session map failed", zap.Error(err))
 		panic(err)
 	}

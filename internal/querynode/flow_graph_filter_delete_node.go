@@ -20,14 +20,15 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/opentracing/opentracing-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
-	"github.com/milvus-io/milvus/internal/util/trace"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
 // filterDeleteNode is one of the nodes in delta flow graph
@@ -35,37 +36,47 @@ type filterDeleteNode struct {
 	baseNode
 	collectionID UniqueID
 	metaReplica  ReplicaInterface
-	channel      Channel
+	vchannel     Channel
 }
 
 // Name returns the name of filterDeleteNode
 func (fddNode *filterDeleteNode) Name() string {
-	return fmt.Sprintf("fdNode-%s", fddNode.channel)
+	return fmt.Sprintf("fdNode-%s", fddNode.vchannel)
+}
+
+func (fddNode *filterDeleteNode) IsValidInMsg(in []Msg) bool {
+	if !fddNode.baseNode.IsValidInMsg(in) {
+		return false
+	}
+	_, ok := in[0].(*MsgStreamMsg)
+	if !ok {
+		log.Warn("type assertion failed for MsgStreamMsg", zap.String("msgType", reflect.TypeOf(in[0]).Name()), zap.String("name", fddNode.Name()))
+		return false
+	}
+	return true
 }
 
 // Operate handles input messages, to filter invalid delete messages
 func (fddNode *filterDeleteNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
-	if in == nil {
-		log.Debug("type assertion failed for MsgStreamMsg because it's nil", zap.String("name", fddNode.Name()))
-		return []Msg{}
-	}
+	msgStreamMsg := in[0].(*MsgStreamMsg)
 
-	if len(in) != 1 {
-		log.Warn("Invalid operate message input in filterDDNode", zap.Int("input length", len(in)), zap.String("name", fddNode.Name()))
-		return []Msg{}
-	}
-
-	msgStreamMsg, ok := in[0].(*MsgStreamMsg)
-	if !ok {
-		log.Warn("type assertion failed for MsgStreamMsg", zap.String("msgType", reflect.TypeOf(in[0]).Name()), zap.String("name", fddNode.Name()))
-		return []Msg{}
-	}
-
-	var spans []opentracing.Span
+	var spans []trace.Span
 	for _, msg := range msgStreamMsg.TsMessages() {
-		sp, ctx := trace.StartSpanFromContext(msg.TraceCtx())
+		ctx, sp := otel.Tracer(typeutil.QueryCoordRole).Start(msg.TraceCtx(), "FilterDelete_Node")
 		spans = append(spans, sp)
 		msg.SetTraceCtx(ctx)
+	}
+
+	defer func() {
+		for _, sp := range spans {
+			sp.End()
+		}
+	}()
+
+	if msgStreamMsg.IsCloseMsg() {
+		return []Msg{
+			&deleteMsg{BaseMsg: flowgraph.NewBaseMsg(true)},
+		}
 	}
 
 	var dMsg = deleteMsg{
@@ -79,7 +90,7 @@ func (fddNode *filterDeleteNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 	collection, err := fddNode.metaReplica.getCollectionByID(fddNode.collectionID)
 	if err != nil {
 		// QueryNode should add collection before start flow graph
-		panic(fmt.Errorf("%s getCollectionByID failed, collectionID = %d, channel = %s", fddNode.Name(), fddNode.collectionID, fddNode.channel))
+		panic(fmt.Errorf("%s getCollectionByID failed, collectionID = %d, channel = %s", fddNode.Name(), fddNode.collectionID, fddNode.vchannel))
 	}
 
 	for _, msg := range msgStreamMsg.TsMessages() {
@@ -88,7 +99,7 @@ func (fddNode *filterDeleteNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 			resMsg, err := fddNode.filterInvalidDeleteMessage(msg.(*msgstream.DeleteMsg), collection.getLoadType())
 			if err != nil {
 				// error occurs when missing meta info or data is misaligned, should not happen
-				err = fmt.Errorf("filterInvalidDeleteMessage failed, err = %s, collection = %d, channel = %s", err, fddNode.collectionID, fddNode.channel)
+				err = fmt.Errorf("filterInvalidDeleteMessage failed, err = %s, collection = %d, channel = %s", err, fddNode.collectionID, fddNode.vchannel)
 				log.Error(err.Error())
 				panic(err)
 			}
@@ -99,14 +110,11 @@ func (fddNode *filterDeleteNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 			log.Warn("invalid message type in filterDeleteNode",
 				zap.String("message type", msg.Type().String()),
 				zap.Int64("collection", fddNode.collectionID),
-				zap.String("channel", fddNode.channel))
+				zap.String("vchannel", fddNode.vchannel))
 		}
 	}
-	var res Msg = &dMsg
-	for _, sp := range spans {
-		sp.Finish()
-	}
-	return []Msg{res}
+
+	return []Msg{&dMsg}
 }
 
 // filterInvalidDeleteMessage would filter invalid delete messages
@@ -115,9 +123,9 @@ func (fddNode *filterDeleteNode) filterInvalidDeleteMessage(msg *msgstream.Delet
 		return nil, fmt.Errorf("CheckAligned failed, err = %s", err)
 	}
 
-	sp, ctx := trace.StartSpanFromContext(msg.TraceCtx())
+	ctx, sp := otel.Tracer(typeutil.QueryCoordRole).Start(msg.TraceCtx(), "FilterDelete_Node")
 	msg.SetTraceCtx(ctx)
-	defer sp.Finish()
+	defer sp.End()
 
 	if msg.CollectionID != fddNode.collectionID {
 		return nil, nil
@@ -125,9 +133,9 @@ func (fddNode *filterDeleteNode) filterInvalidDeleteMessage(msg *msgstream.Delet
 
 	if len(msg.Timestamps) <= 0 {
 		log.Debug("filter invalid delete message, no message",
-			zap.String("channel", fddNode.channel),
-			zap.Any("collectionID", msg.CollectionID),
-			zap.Any("partitionID", msg.PartitionID))
+			zap.String("vchannel", fddNode.vchannel),
+			zap.Int64("collectionID", msg.CollectionID),
+			zap.Int64("partitionID", msg.PartitionID))
 		return nil, nil
 	}
 
@@ -141,10 +149,9 @@ func (fddNode *filterDeleteNode) filterInvalidDeleteMessage(msg *msgstream.Delet
 }
 
 // newFilteredDeleteNode returns a new filterDeleteNode
-func newFilteredDeleteNode(metaReplica ReplicaInterface, collectionID UniqueID, channel Channel) *filterDeleteNode {
-
-	maxQueueLength := Params.QueryNodeCfg.FlowGraphMaxQueueLength
-	maxParallelism := Params.QueryNodeCfg.FlowGraphMaxParallelism
+func newFilteredDeleteNode(metaReplica ReplicaInterface, collectionID UniqueID, vchannel Channel) *filterDeleteNode {
+	maxQueueLength := Params.QueryNodeCfg.FlowGraphMaxQueueLength.GetAsInt32()
+	maxParallelism := Params.QueryNodeCfg.FlowGraphMaxParallelism.GetAsInt32()
 
 	baseNode := baseNode{}
 	baseNode.SetMaxQueueLength(maxQueueLength)
@@ -154,6 +161,6 @@ func newFilteredDeleteNode(metaReplica ReplicaInterface, collectionID UniqueID, 
 		baseNode:     baseNode,
 		collectionID: collectionID,
 		metaReplica:  metaReplica,
-		channel:      channel,
+		vchannel:     vchannel,
 	}
 }

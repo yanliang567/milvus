@@ -41,6 +41,7 @@ var (
 	timeTickSyncTtInterval = 2 * time.Minute
 	ttCheckerName          = "rootTtChecker"
 	ttCheckerWarnMsg       = fmt.Sprintf("RootCoord haven't synchronized the time tick for %f minutes", timeTickSyncTtInterval.Minutes())
+	ddlSourceID            = UniqueID(-1)
 )
 
 type ttHistogram struct {
@@ -109,12 +110,12 @@ func (c *chanTsMsg) getTimetick(channelName string) typeutil.Timestamp {
 
 func newTimeTickSync(ctx context.Context, sourceID int64, factory msgstream.Factory, chanMap map[typeutil.UniqueID][]string) *timetickSync {
 	// initialize dml channels used for insert
-	dmlChannels := newDmlChannels(ctx, factory, Params.CommonCfg.RootCoordDml, Params.RootCoordCfg.DmlChannelNum)
+	dmlChannels := newDmlChannels(ctx, factory, Params.CommonCfg.RootCoordDml.GetValue(), Params.RootCoordCfg.DmlChannelNum.GetAsInt64())
 
 	// recover physical channels for all collections
 	for collID, chanNames := range chanMap {
 		dmlChannels.addChannels(chanNames...)
-		log.Debug("recover physical channels", zap.Int64("collID", collID), zap.Strings("physical channels", chanNames))
+		log.Info("recover physical channels", zap.Int64("collID", collID), zap.Strings("physical channels", chanNames))
 	}
 
 	return &timetickSync{
@@ -133,9 +134,9 @@ func newTimeTickSync(ctx context.Context, sourceID int64, factory msgstream.Fact
 
 // sendToChannel send all channels' timetick to sendChan
 // lock is needed by the invoker
-func (t *timetickSync) sendToChannel() {
+func (t *timetickSync) sendToChannel() bool {
 	if len(t.sess2ChanTsMap) == 0 {
-		return
+		return false
 	}
 
 	// detect whether rootcoord receives ttMsg from all source sessions
@@ -155,9 +156,9 @@ func (t *timetickSync) sendToChannel() {
 		// give warning every 2 second if not get ttMsg from source sessions
 		if maxCnt%10 == 0 {
 			log.Warn("session idle for long time", zap.Any("idle list", idleSessionList),
-				zap.Any("idle time", Params.ProxyCfg.TimeTickInterval.Milliseconds()*maxCnt))
+				zap.Any("idle time", Params.ProxyCfg.TimeTickInterval.GetAsInt64()*time.Millisecond.Milliseconds()*maxCnt))
 		}
-		return
+		return false
 	}
 
 	// clear sess2ChanTsMap and send a clone
@@ -167,6 +168,7 @@ func (t *timetickSync) sendToChannel() {
 		t.sess2ChanTsMap[k] = nil
 	}
 	t.sendChan <- ptt
+	return true
 }
 
 // UpdateTimeTick check msg validation and send it to local channel
@@ -185,16 +187,6 @@ func (t *timetickSync) updateTimeTick(in *internalpb.ChannelTimeTickMsg, reason 
 		return fmt.Errorf("skip ChannelTimeTickMsg from un-recognized session %d", in.Base.SourceID)
 	}
 
-	if in.Base.SourceID == t.sourceID {
-		if prev != nil && in.DefaultTimestamp <= prev.defaultTs {
-			log.Warn("timestamp go back", zap.Int64("source id", in.Base.SourceID),
-				zap.Uint64("curr ts", in.DefaultTimestamp),
-				zap.Uint64("prev ts", prev.defaultTs),
-				zap.String("reason", reason))
-			return nil
-		}
-	}
-
 	if prev == nil {
 		t.sess2ChanTsMap[in.Base.SourceID] = newChanTsMsg(in, 1)
 	} else {
@@ -208,7 +200,7 @@ func (t *timetickSync) addSession(sess *sessionutil.Session) {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 	t.sess2ChanTsMap[sess.ServerID] = nil
-	log.Debug("Add session for timeticksync", zap.Int64("serverID", sess.ServerID))
+	log.Info("Add session for timeticksync", zap.Int64("serverID", sess.ServerID))
 }
 
 func (t *timetickSync) delSession(sess *sessionutil.Session) {
@@ -216,7 +208,7 @@ func (t *timetickSync) delSession(sess *sessionutil.Session) {
 	defer t.lock.Unlock()
 	if _, ok := t.sess2ChanTsMap[sess.ServerID]; ok {
 		delete(t.sess2ChanTsMap, sess.ServerID)
-		log.Debug("Remove session from timeticksync", zap.Int64("serverID", sess.ServerID))
+		log.Info("Remove session from timeticksync", zap.Int64("serverID", sess.ServerID))
 		t.sendToChannel()
 	}
 }
@@ -225,10 +217,11 @@ func (t *timetickSync) initSessions(sess []*sessionutil.Session) {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 	t.sess2ChanTsMap = make(map[typeutil.UniqueID]*chanTsMsg)
-	t.sess2ChanTsMap[t.sourceID] = nil
+	// Init DDL source
+	t.sess2ChanTsMap[ddlSourceID] = nil
 	for _, s := range sess {
 		t.sess2ChanTsMap[s.ServerID] = nil
-		log.Debug("Init proxy sessions for timeticksync", zap.Int64("serverID", s.ServerID))
+		log.Info("Init proxy sessions for timeticksync", zap.Int64("serverID", s.ServerID))
 	}
 }
 
@@ -246,18 +239,18 @@ func (t *timetickSync) startWatch(wg *sync.WaitGroup) {
 	for {
 		select {
 		case <-t.ctx.Done():
-			log.Debug("rootcoord context done", zap.Error(t.ctx.Err()))
+			log.Info("rootcoord context done", zap.Error(t.ctx.Err()))
 			return
 		case sessTimetick, ok := <-t.sendChan:
 			if !ok {
-				log.Debug("timetickSync sendChan closed")
+				log.Info("timetickSync sendChan closed")
 				return
 			}
 			if enableTtChecker {
 				checker.Check()
 			}
 			// reduce each channel to get min timestamp
-			local := sessTimetick[t.sourceID]
+			local := sessTimetick[ddlSourceID]
 			if len(local.chanTsMap) == 0 {
 				continue
 			}
@@ -285,7 +278,7 @@ func (t *timetickSync) startWatch(wg *sync.WaitGroup) {
 			span := tr.ElapseSpan()
 			metrics.RootCoordSyncTimeTickLatency.Observe(float64(span.Milliseconds()))
 			// rootcoord send tt msg to all channels every 200ms by default
-			if span > Params.ProxyCfg.TimeTickInterval {
+			if span > Params.ProxyCfg.TimeTickInterval.GetAsDuration(time.Millisecond) {
 				log.Warn("rootcoord send tt to all channels too slowly",
 					zap.Int("chanNum", len(local.chanTsMap)), zap.Int64("span", span.Milliseconds()))
 			}
@@ -318,9 +311,9 @@ func (t *timetickSync) sendTimeTickToChannel(chanNames []string, ts typeutil.Tim
 		return err
 	}
 
-	physicalTs, _ := tsoutil.ParseHybridTs(ts)
+	sub := tsoutil.SubByNow(ts)
 	for _, chanName := range chanNames {
-		metrics.RootCoordInsertChannelTimeTick.WithLabelValues(chanName).Set(float64(physicalTs))
+		metrics.RootCoordInsertChannelTimeTick.WithLabelValues(chanName).Set(float64(sub))
 	}
 	return nil
 }

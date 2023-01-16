@@ -27,10 +27,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/samber/lo"
-	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.uber.org/zap"
-	"golang.org/x/sync/errgroup"
+	"github.com/milvus-io/milvus/internal/metrics"
+	"github.com/milvus-io/milvus/internal/util/timerecord"
 
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
@@ -39,7 +37,6 @@ import (
 	"github.com/milvus-io/milvus/internal/kv"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/querycoordv2/balance"
 	"github.com/milvus-io/milvus/internal/querycoordv2/checkers"
 	"github.com/milvus-io/milvus/internal/querycoordv2/dist"
@@ -49,18 +46,19 @@ import (
 	"github.com/milvus-io/milvus/internal/querycoordv2/params"
 	"github.com/milvus-io/milvus/internal/querycoordv2/session"
 	"github.com/milvus-io/milvus/internal/querycoordv2/task"
-	"github.com/milvus-io/milvus/internal/querycoordv2/utils"
 	"github.com/milvus-io/milvus/internal/types"
-	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 )
 
 var (
 	// Only for re-export
-	Params = &params.Params
+	Params = params.Params
 )
 
 type Server struct {
@@ -69,16 +67,15 @@ type Server struct {
 	wg                  sync.WaitGroup
 	status              atomic.Value
 	etcdCli             *clientv3.Client
+	address             string
 	session             *sessionutil.Session
 	kv                  kv.MetaKv
 	idAllocator         func() (int64, error)
-	factory             dependency.Factory
 	metricsCacheManager *metricsinfo.MetricsCacheManager
 
 	// Coordinators
-	dataCoord  types.DataCoord
-	rootCoord  types.RootCoord
-	indexCoord types.IndexCoord
+	dataCoord types.DataCoord
+	rootCoord types.RootCoord
 
 	// Meta
 	store     meta.Store
@@ -88,8 +85,9 @@ type Server struct {
 	broker    meta.Broker
 
 	// Session
-	cluster session.Cluster
-	nodeMgr *session.NodeManager
+	cluster          session.Cluster
+	nodeMgr          *session.NodeManager
+	queryNodeCreator session.QueryNodeCreator
 
 	// Schedulers
 	jobScheduler  *job.Scheduler
@@ -104,7 +102,7 @@ type Server struct {
 	// Observers
 	collectionObserver *observers.CollectionObserver
 	leaderObserver     *observers.LeaderObserver
-	handoffObserver    *observers.HandoffObserver
+	targetObserver     *observers.TargetObserver
 
 	balancer balance.Balance
 
@@ -113,14 +111,14 @@ type Server struct {
 	activateFunc        func()
 }
 
-func NewQueryCoord(ctx context.Context, factory dependency.Factory) (*Server, error) {
+func NewQueryCoord(ctx context.Context) (*Server, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	server := &Server{
-		ctx:     ctx,
-		cancel:  cancel,
-		factory: factory,
+		ctx:    ctx,
+		cancel: cancel,
 	}
 	server.UpdateStateCode(commonpb.StateCode_Abnormal)
+	server.queryNodeCreator = session.DefaultQueryNodeCreator
 	return server, nil
 }
 
@@ -146,28 +144,25 @@ func (s *Server) Register() error {
 
 func (s *Server) Init() error {
 	log.Info("QueryCoord start init",
-		zap.String("meta-root-path", Params.EtcdCfg.MetaRootPath),
-		zap.String("address", Params.QueryCoordCfg.Address))
+		zap.String("meta-root-path", Params.EtcdCfg.MetaRootPath.GetValue()),
+		zap.String("address", s.address))
 
 	// Init QueryCoord session
-	s.session = sessionutil.NewSession(s.ctx, Params.EtcdCfg.MetaRootPath, s.etcdCli)
+	s.session = sessionutil.NewSession(s.ctx, Params.EtcdCfg.MetaRootPath.GetValue(), s.etcdCli)
 	if s.session == nil {
 		return fmt.Errorf("failed to create session")
 	}
-	s.session.Init(typeutil.QueryCoordRole, Params.QueryCoordCfg.Address, true, true)
-	s.enableActiveStandBy = Params.QueryCoordCfg.EnableActiveStandby
+	s.session.Init(typeutil.QueryCoordRole, s.address, true, true)
+	s.enableActiveStandBy = Params.QueryCoordCfg.EnableActiveStandby.GetAsBool()
 	s.session.SetEnableActiveStandBy(s.enableActiveStandBy)
-	Params.QueryCoordCfg.SetNodeID(s.session.ServerID)
-	Params.SetLogger(s.session.ServerID)
-	s.factory.Init(Params)
 
 	// Init KV
-	etcdKV := etcdkv.NewEtcdKV(s.etcdCli, Params.EtcdCfg.MetaRootPath)
+	etcdKV := etcdkv.NewEtcdKV(s.etcdCli, Params.EtcdCfg.MetaRootPath.GetValue())
 	s.kv = etcdKV
 	log.Info("query coordinator try to connect etcd success")
 
 	// Init ID allocator
-	idAllocatorKV := tsoutil.NewTSOKVBase(s.etcdCli, Params.EtcdCfg.KvRootPath, "querycoord-id-allocator")
+	idAllocatorKV := tsoutil.NewTSOKVBase(s.etcdCli, Params.EtcdCfg.KvRootPath.GetValue(), "querycoord-id-allocator")
 	idAllocator := allocator.NewGlobalIDAllocator("idTimestamp", idAllocatorKV)
 	err := idAllocator.Initialize()
 	if err != nil {
@@ -189,7 +184,7 @@ func (s *Server) Init() error {
 	// Init session
 	log.Info("init session")
 	s.nodeMgr = session.NewNodeManager()
-	s.cluster = session.NewCluster(s.nodeMgr)
+	s.cluster = session.NewCluster(s.nodeMgr, s.queryNodeCreator)
 
 	// Init schedulers
 	log.Info("init schedulers")
@@ -221,6 +216,7 @@ func (s *Server) Init() error {
 		s.nodeMgr,
 		s.dist,
 		s.meta,
+		s.targetMgr,
 	)
 
 	// Init checker controller
@@ -236,11 +232,16 @@ func (s *Server) Init() error {
 	// Init observers
 	s.initObserver()
 
+	// Init load status cache
+	meta.GlobalFailedLoadCache = meta.NewFailedLoadCache()
+
 	log.Info("QueryCoord init success")
 	return err
 }
 
 func (s *Server) initMeta() error {
+	record := timerecord.NewTimeRecorder("querycoord")
+
 	log.Info("init meta")
 	s.store = meta.NewMetaStore(s.kv)
 	s.meta = meta.NewMeta(s.idAllocator, s.store)
@@ -251,7 +252,11 @@ func (s *Server) initMeta() error {
 		log.Error("failed to recover collections")
 		return err
 	}
-	err = s.meta.ReplicaManager.Recover()
+	collections := s.meta.GetAll()
+	log.Info("recovering collections...", zap.Int64s("collections", collections))
+	metrics.QueryCoordNumCollections.WithLabelValues().Set(float64(len(collections)))
+
+	err = s.meta.ReplicaManager.Recover(collections)
 	if err != nil {
 		log.Error("failed to recover replicas")
 		return err
@@ -262,12 +267,13 @@ func (s *Server) initMeta() error {
 		ChannelDistManager: meta.NewChannelDistManager(),
 		LeaderViewManager:  meta.NewLeaderViewManager(),
 	}
-	s.targetMgr = meta.NewTargetManager()
 	s.broker = meta.NewCoordinatorBroker(
 		s.dataCoord,
 		s.rootCoord,
-		s.indexCoord,
 	)
+	s.targetMgr = meta.NewTargetManager(s.broker, s.meta)
+
+	record.Record("Server initMeta")
 	return nil
 }
 
@@ -284,12 +290,15 @@ func (s *Server) initObserver() {
 		s.targetMgr,
 		s.cluster,
 	)
-	s.handoffObserver = observers.NewHandoffObserver(
-		s.store,
+	s.targetObserver = observers.NewTargetObserver(
 		s.meta,
-		s.dist,
 		s.targetMgr,
+		s.dist,
+		s.broker,
 	)
+}
+
+func (s *Server) afterStart() {
 }
 
 func (s *Server) Start() error {
@@ -300,6 +309,7 @@ func (s *Server) Start() error {
 	}
 	for _, node := range sessions {
 		s.nodeMgr.Add(session.NewNodeInfo(node.ServerID, node.Address))
+		s.taskScheduler.AddExecutor(node.ServerID)
 	}
 	s.checkReplicas()
 	for _, node := range sessions {
@@ -308,18 +318,31 @@ func (s *Server) Start() error {
 	s.wg.Add(1)
 	go s.watchNodes(revision)
 
-	// handoff master start before recover collection, to clean all outdated handoff event.
-	if err := s.handoffObserver.Start(s.ctx); err != nil {
-		log.Error("start handoff observer failed, exit...", zap.Error(err))
-		panic(err.Error())
-	}
-
 	log.Info("start recovering dist and target")
 	err = s.recover()
 	if err != nil {
 		return err
 	}
 
+	if s.enableActiveStandBy {
+		s.activateFunc = func() {
+			log.Info("querycoord switch from standby to active, activating")
+			s.startServerLoop()
+			s.UpdateStateCode(commonpb.StateCode_Healthy)
+		}
+		s.UpdateStateCode(commonpb.StateCode_StandBy)
+	} else {
+		s.startServerLoop()
+		s.UpdateStateCode(commonpb.StateCode_Healthy)
+	}
+	log.Info("QueryCoord started")
+
+	s.afterStart()
+
+	return nil
+}
+
+func (s *Server) startServerLoop() {
 	log.Info("start cluster...")
 	s.cluster.Start(s.ctx)
 
@@ -335,21 +358,7 @@ func (s *Server) Start() error {
 	log.Info("start observers...")
 	s.collectionObserver.Start(s.ctx)
 	s.leaderObserver.Start(s.ctx)
-
-	if s.enableActiveStandBy {
-		s.activateFunc = func() {
-			// todo to complete
-			log.Info("querycoord switch from standby to active, activating")
-			s.initMeta()
-			s.UpdateStateCode(commonpb.StateCode_Healthy)
-		}
-		s.UpdateStateCode(commonpb.StateCode_StandBy)
-	} else {
-		s.UpdateStateCode(commonpb.StateCode_Healthy)
-	}
-	log.Info("QueryCoord started")
-
-	return nil
+	s.targetObserver.Start(s.ctx)
 }
 
 func (s *Server) Stop() error {
@@ -390,8 +399,8 @@ func (s *Server) Stop() error {
 	if s.leaderObserver != nil {
 		s.leaderObserver.Stop()
 	}
-	if s.handoffObserver != nil {
-		s.handoffObserver.Stop()
+	if s.targetObserver != nil {
+		s.targetObserver.Stop()
 	}
 
 	s.wg.Wait()
@@ -439,8 +448,12 @@ func (s *Server) GetTimeTickChannel(ctx context.Context) (*milvuspb.StringRespon
 			ErrorCode: commonpb.ErrorCode_Success,
 			Reason:    "",
 		},
-		Value: Params.CommonCfg.QueryCoordTimeTick,
+		Value: Params.CommonCfg.QueryCoordTimeTick.GetValue(),
 	}, nil
+}
+
+func (s *Server) SetAddress(address string) {
+	s.address = address
 }
 
 // SetEtcdClient sets etcd's client
@@ -468,14 +481,8 @@ func (s *Server) SetDataCoord(dataCoord types.DataCoord) error {
 	return nil
 }
 
-// SetIndexCoord sets index coordinator's client
-func (s *Server) SetIndexCoord(indexCoord types.IndexCoord) error {
-	if indexCoord == nil {
-		return errors.New("null IndexCoord interface")
-	}
-
-	s.indexCoord = indexCoord
-	return nil
+func (s *Server) SetQueryNodeCreator(f func(ctx context.Context, addr string) (types.QueryNode, error)) {
+	s.queryNodeCreator = f
 }
 
 func (s *Server) recover() error {
@@ -499,35 +506,15 @@ func (s *Server) recover() error {
 }
 
 func (s *Server) recoverCollectionTargets(ctx context.Context, collection int64) error {
-	var (
-		partitions []int64
-		err        error
-	)
-	if s.meta.GetLoadType(collection) == querypb.LoadType_LoadCollection {
-		partitions, err = s.broker.GetPartitions(ctx, collection)
-		if err != nil {
-			msg := "failed to get partitions from RootCoord"
-			log.Error(msg, zap.Error(err))
-			return utils.WrapError(msg, err)
-		}
-	} else {
-		partitions = lo.Map(s.meta.GetPartitionsByCollection(collection), func(partition *meta.Partition, _ int) int64 {
-			return partition.GetPartitionID()
-		})
-	}
-
-	s.handoffObserver.Register(collection)
-	err = utils.RegisterTargets(
-		ctx,
-		s.targetMgr,
-		s.broker,
-		collection,
-		partitions,
-	)
+	err := s.targetMgr.UpdateCollectionNextTarget(collection)
 	if err != nil {
-		return err
+		s.meta.CollectionManager.RemoveCollection(collection)
+		s.meta.ReplicaManager.RemoveCollection(collection)
+		log.Error("failed to recover collection due to update next target failed",
+			zap.Int64("collectionID", collection),
+			zap.Error(err),
+		)
 	}
-	s.handoffObserver.StartHandoff(collection)
 	return nil
 }
 
@@ -566,6 +553,16 @@ func (s *Server) watchNodes(revision int64) {
 				s.handleNodeUp(nodeID)
 				s.metricsCacheManager.InvalidateSystemInfoMetrics()
 
+			case sessionutil.SessionUpdateEvent:
+				nodeID := event.Session.ServerID
+				addr := event.Session.Address
+				log.Info("stopping the node",
+					zap.Int64("nodeID", nodeID),
+					zap.String("nodeAddr", addr),
+				)
+				s.nodeMgr.Stopping(nodeID)
+				s.checkerController.Check()
+
 			case sessionutil.SessionDelEvent:
 				nodeID := event.Session.ServerID
 				log.Info("a node down, remove it", zap.Int64("nodeID", nodeID))
@@ -579,6 +576,7 @@ func (s *Server) watchNodes(revision int64) {
 
 func (s *Server) handleNodeUp(node int64) {
 	log := log.With(zap.Int64("nodeID", node))
+	s.taskScheduler.AddExecutor(node)
 	s.distController.StartDistInstance(s.ctx, node)
 
 	for _, collection := range s.meta.CollectionManager.GetAll() {
@@ -606,6 +604,7 @@ func (s *Server) handleNodeUp(node int64) {
 
 func (s *Server) handleNodeDown(node int64) {
 	log := log.With(zap.Int64("nodeID", node))
+	s.taskScheduler.RemoveExecutor(node)
 	s.distController.Remove(node)
 
 	// Refresh the targets, to avoid consuming messages too early from channel
@@ -613,23 +612,12 @@ func (s *Server) handleNodeDown(node int64) {
 	// are missed, it will recover for a while.
 	channels := s.dist.ChannelDistManager.GetByNode(node)
 	for _, channel := range channels {
-		partitions, err := utils.GetPartitions(s.meta.CollectionManager,
-			s.broker,
-			channel.GetCollectionID())
+		_, err := s.targetObserver.UpdateNextTarget(channel.GetCollectionID())
 		if err != nil {
-			log.Warn("failed to refresh targets of collection",
-				zap.Int64("collectionID", channel.GetCollectionID()),
+			msg := "failed to update next targets for collection"
+			log.Error(msg,
 				zap.Error(err))
-		}
-		err = utils.RegisterTargets(s.ctx,
-			s.targetMgr,
-			s.broker,
-			channel.GetCollectionID(),
-			partitions)
-		if err != nil {
-			log.Warn("failed to refresh targets of collection",
-				zap.Int64("collectionID", channel.GetCollectionID()),
-				zap.Error(err))
+			continue
 		}
 	}
 

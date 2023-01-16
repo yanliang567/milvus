@@ -17,15 +17,15 @@
 package querynode
 
 import (
-	"runtime"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
-	"github.com/milvus-io/milvus/internal/util/concurrency"
 )
 
 func TestMetaReplica_collection(t *testing.T) {
@@ -147,7 +147,7 @@ func TestMetaReplica_segment(t *testing.T) {
 
 		const segmentNum = 3
 		for i := 0; i < segmentNum; i++ {
-			err := replica.addSegment(UniqueID(i), defaultPartitionID, defaultCollectionID, "", defaultSegmentVersion, segmentTypeGrowing)
+			err := replica.addSegment(UniqueID(i), defaultPartitionID, defaultCollectionID, "", defaultSegmentVersion, defaultSegmentStartPosition, segmentTypeGrowing)
 			assert.NoError(t, err)
 			targetSeg, err := replica.getSegmentByID(UniqueID(i), segmentTypeGrowing)
 			assert.NoError(t, err)
@@ -162,13 +162,49 @@ func TestMetaReplica_segment(t *testing.T) {
 
 		const segmentNum = 3
 		for i := 0; i < segmentNum; i++ {
-			err := replica.addSegment(UniqueID(i), defaultPartitionID, defaultCollectionID, "", defaultSegmentVersion, segmentTypeGrowing)
+			err := replica.addSegment(UniqueID(i), defaultPartitionID, defaultCollectionID, "", defaultSegmentVersion, defaultSegmentStartPosition, segmentTypeGrowing)
 			assert.NoError(t, err)
 			targetSeg, err := replica.getSegmentByID(UniqueID(i), segmentTypeGrowing)
 			assert.NoError(t, err)
 			assert.Equal(t, UniqueID(i), targetSeg.segmentID)
 			replica.removeSegment(UniqueID(i), segmentTypeGrowing)
 		}
+	})
+
+	t.Run("test getNoSegmentChan", func(t *testing.T) {
+		replica, err := genSimpleReplica()
+		assert.NoError(t, err)
+		defer replica.freeAll()
+
+		select {
+		case <-replica.getNoSegmentChan():
+		default:
+			assert.FailNow(t, "fail to assert getNoSegmentChan")
+		}
+
+		const segmentNum = 3
+		c := replica.getNoSegmentChan()
+		w := sync.WaitGroup{}
+		w.Add(1)
+		go func() {
+			defer w.Done()
+			select {
+			case <-c:
+			case <-time.After(5 * time.Second):
+				assert.FailNow(t, "timeout getNoSegmentChan")
+			}
+		}()
+		for i := 0; i < segmentNum; i++ {
+			err := replica.addSegment(UniqueID(i), defaultPartitionID, defaultCollectionID, "", defaultSegmentVersion, defaultSegmentStartPosition, segmentTypeGrowing)
+			assert.NoError(t, err)
+			targetSeg, err := replica.getSegmentByID(UniqueID(i), segmentTypeGrowing)
+			assert.NoError(t, err)
+			assert.Equal(t, UniqueID(i), targetSeg.segmentID)
+		}
+		for i := 0; i < segmentNum; i++ {
+			replica.removeSegment(UniqueID(i), segmentTypeGrowing)
+		}
+		w.Wait()
 	})
 
 	t.Run("test hasSegment", func(t *testing.T) {
@@ -178,7 +214,7 @@ func TestMetaReplica_segment(t *testing.T) {
 
 		const segmentNum = 3
 		for i := 0; i < segmentNum; i++ {
-			err := replica.addSegment(UniqueID(i), defaultPartitionID, defaultCollectionID, "", defaultSegmentVersion, segmentTypeGrowing)
+			err := replica.addSegment(UniqueID(i), defaultPartitionID, defaultCollectionID, "", defaultSegmentVersion, defaultSegmentStartPosition, segmentTypeGrowing)
 			assert.NoError(t, err)
 			targetSeg, err := replica.getSegmentByID(UniqueID(i), segmentTypeGrowing)
 			assert.NoError(t, err)
@@ -197,10 +233,10 @@ func TestMetaReplica_segment(t *testing.T) {
 		assert.NoError(t, err)
 		defer replica.freeAll()
 
-		err = replica.addSegment(defaultSegmentID, defaultPartitionID, defaultCollectionID, "", defaultSegmentVersion, segmentTypeGrowing)
+		err = replica.addSegment(defaultSegmentID, defaultPartitionID, defaultCollectionID, "", defaultSegmentVersion, defaultSegmentStartPosition, segmentTypeGrowing)
 		assert.NoError(t, err)
 
-		err = replica.addSegment(defaultSegmentID, defaultPartitionID, defaultCollectionID, "", defaultSegmentVersion, segmentTypeGrowing)
+		err = replica.addSegment(defaultSegmentID, defaultPartitionID, defaultCollectionID, "", defaultSegmentVersion, defaultSegmentStartPosition, segmentTypeGrowing)
 		assert.Error(t, err)
 	})
 
@@ -210,7 +246,7 @@ func TestMetaReplica_segment(t *testing.T) {
 		defer replica.freeAll()
 
 		invalidType := commonpb.SegmentState_NotExist
-		err = replica.addSegment(defaultSegmentID, defaultPartitionID, defaultCollectionID, "", defaultSegmentVersion, invalidType)
+		err = replica.addSegment(defaultSegmentID, defaultPartitionID, defaultCollectionID, "", defaultSegmentVersion, defaultSegmentStartPosition, invalidType)
 		assert.Error(t, err)
 		_, err = replica.getSegmentByID(defaultSegmentID, invalidType)
 		assert.Error(t, err)
@@ -227,9 +263,6 @@ func TestMetaReplica_segment(t *testing.T) {
 		replica, err := genSimpleReplica()
 		assert.NoError(t, err)
 		defer replica.freeAll()
-
-		pool, err := concurrency.NewPool(runtime.GOMAXPROCS(0))
-		require.NoError(t, err)
 
 		schema := genTestCollectionSchema()
 		collection := replica.addCollection(defaultCollectionID, schema)
@@ -250,12 +283,12 @@ func TestMetaReplica_segment(t *testing.T) {
 			},
 		}
 
-		segment1, err := newSegment(collection, UniqueID(1), defaultPartitionID, defaultCollectionID, "", segmentTypeGrowing, defaultSegmentVersion, pool)
+		segment1, err := newSegment(collection, UniqueID(1), defaultPartitionID, defaultCollectionID, "", segmentTypeGrowing, defaultSegmentVersion, defaultSegmentStartPosition)
 		assert.NoError(t, err)
 		err = replica.setSegment(segment1)
 		assert.NoError(t, err)
 
-		segment2, err := newSegment(collection, UniqueID(2), defaultPartitionID, defaultCollectionID, "", segmentTypeSealed, defaultSegmentVersion, pool)
+		segment2, err := newSegment(collection, UniqueID(2), defaultPartitionID, defaultCollectionID, "", segmentTypeSealed, defaultSegmentVersion, defaultSegmentStartPosition)
 		assert.NoError(t, err)
 		segment2.setIndexedFieldInfo(fieldID, indexInfo)
 		err = replica.setSegment(segment2)
@@ -277,30 +310,27 @@ func TestMetaReplica_segment(t *testing.T) {
 		assert.NoError(t, err)
 		defer replica.freeAll()
 
-		pool, err := concurrency.NewPool(runtime.GOMAXPROCS(0))
-		require.NoError(t, err)
-
 		schema := genTestCollectionSchema()
 		collection := replica.addCollection(defaultCollectionID, schema)
 		replica.addPartition(defaultCollectionID, defaultPartitionID)
 		replica.addPartition(defaultCollectionID, defaultPartitionID+1)
 
-		segment1, err := newSegment(collection, UniqueID(1), defaultPartitionID, defaultCollectionID, "channel1", segmentTypeGrowing, defaultSegmentVersion, pool)
+		segment1, err := newSegment(collection, UniqueID(1), defaultPartitionID, defaultCollectionID, "channel1", segmentTypeGrowing, defaultSegmentVersion, defaultSegmentStartPosition)
 		assert.NoError(t, err)
 		err = replica.setSegment(segment1)
 		assert.NoError(t, err)
 
-		segment2, err := newSegment(collection, UniqueID(2), defaultPartitionID+1, defaultCollectionID, "channel2", segmentTypeGrowing, defaultSegmentVersion, pool)
+		segment2, err := newSegment(collection, UniqueID(2), defaultPartitionID+1, defaultCollectionID, "channel2", segmentTypeGrowing, defaultSegmentVersion, defaultSegmentStartPosition)
 		assert.NoError(t, err)
 		err = replica.setSegment(segment2)
 		assert.NoError(t, err)
 
-		segment3, err := newSegment(collection, UniqueID(3), defaultPartitionID+1, defaultCollectionID, "channel2", segmentTypeGrowing, defaultSegmentVersion, pool)
+		segment3, err := newSegment(collection, UniqueID(3), defaultPartitionID+1, defaultCollectionID, "channel2", segmentTypeGrowing, defaultSegmentVersion, defaultSegmentStartPosition)
 		assert.NoError(t, err)
 		err = replica.setSegment(segment3)
 		assert.NoError(t, err)
 
-		segment4, err := newSegment(collection, UniqueID(4), defaultPartitionID, defaultCollectionID, "channel1", segmentTypeSealed, defaultSegmentVersion, pool)
+		segment4, err := newSegment(collection, UniqueID(4), defaultPartitionID, defaultCollectionID, "channel1", segmentTypeSealed, defaultSegmentVersion, defaultSegmentStartPosition)
 		assert.NoError(t, err)
 		err = replica.setSegment(segment4)
 		assert.NoError(t, err)
@@ -352,16 +382,13 @@ func TestMetaReplica_BlackList(t *testing.T) {
 	replica.addPartition(defaultCollectionID, defaultPartitionID)
 	replica.addPartition(defaultCollectionID, defaultPartitionID+1)
 
-	pool, err := concurrency.NewPool(runtime.GOMAXPROCS(0))
-	require.NoError(t, err)
-
-	segment1, err := newSegment(collection, UniqueID(1), defaultPartitionID, defaultCollectionID, "channel1", segmentTypeSealed, defaultSegmentVersion, pool)
+	segment1, err := newSegment(collection, UniqueID(1), defaultPartitionID, defaultCollectionID, "channel1", segmentTypeSealed, defaultSegmentVersion, defaultSegmentStartPosition)
 	assert.NoError(t, err)
 
-	segment2, err := newSegment(collection, UniqueID(2), defaultPartitionID, defaultCollectionID, "channel2", segmentTypeSealed, defaultSegmentVersion, pool)
+	segment2, err := newSegment(collection, UniqueID(2), defaultPartitionID, defaultCollectionID, "channel2", segmentTypeSealed, defaultSegmentVersion, defaultSegmentStartPosition)
 	assert.NoError(t, err)
 
-	segment3, err := newSegment(collection, UniqueID(3), defaultPartitionID, defaultCollectionID, "channel2", segmentTypeGrowing, defaultSegmentVersion, pool)
+	segment3, err := newSegment(collection, UniqueID(3), defaultPartitionID, defaultCollectionID, "channel2", segmentTypeGrowing, defaultSegmentVersion, defaultSegmentStartPosition)
 	assert.NoError(t, err)
 
 	replica.addSegmentsLoadingList([]UniqueID{1, 2, 3})

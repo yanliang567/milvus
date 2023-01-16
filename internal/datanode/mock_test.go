@@ -37,6 +37,7 @@ import (
 	s "github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/dependency"
+	"github.com/milvus-io/milvus/internal/util/sessionutil"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 
@@ -79,6 +80,7 @@ var emptyFlushAndDropFunc flushAndDropFunc = func(_ []*segmentFlushPack) {}
 func newIDLEDataNodeMock(ctx context.Context, pkType schemapb.DataType) *DataNode {
 	factory := dependency.NewDefaultFactory(true)
 	node := NewDataNode(ctx, factory)
+	node.SetSession(&sessionutil.Session{ServerID: 1})
 
 	rc := &RootCoordFactory{
 		ID:             0,
@@ -134,7 +136,14 @@ func makeNewChannelNames(names []string, suffix string) []string {
 }
 
 func clearEtcd(rootPath string) error {
-	client, err := etcd.GetEtcdClient(&Params.EtcdCfg)
+	client, err := etcd.GetEtcdClient(
+		Params.EtcdCfg.UseEmbedEtcd.GetAsBool(),
+		Params.EtcdCfg.EtcdUseSSL.GetAsBool(),
+		Params.EtcdCfg.Endpoints.GetAsStrings(),
+		Params.EtcdCfg.EtcdTLSCert.GetValue(),
+		Params.EtcdCfg.EtcdTLSKey.GetValue(),
+		Params.EtcdCfg.EtcdTLSCACert.GetValue(),
+		Params.EtcdCfg.EtcdTLSMinVersion.GetValue())
 	if err != nil {
 		return err
 	}
@@ -200,6 +209,7 @@ type DataCoordFactory struct {
 
 	GetSegmentInfosError      bool
 	GetSegmentInfosNotSuccess bool
+	UserSegmentInfo           map[int64]*datapb.SegmentInfo
 
 	AddSegmentError      bool
 	AddSegmentNotSuccess bool
@@ -253,6 +263,12 @@ func (ds *DataCoordFactory) UpdateSegmentStatistics(ctx context.Context, req *da
 	}, nil
 }
 
+func (ds *DataCoordFactory) UpdateChannelCheckpoint(ctx context.Context, req *datapb.UpdateChannelCheckpointRequest) (*commonpb.Status, error) {
+	return &commonpb.Status{
+		ErrorCode: commonpb.ErrorCode_Success,
+	}, nil
+}
+
 func (ds *DataCoordFactory) SaveImportSegment(ctx context.Context, req *datapb.SaveImportSegmentRequest) (*commonpb.Status, error) {
 	return &commonpb.Status{
 		ErrorCode: commonpb.ErrorCode_Success,
@@ -271,7 +287,7 @@ func (ds *DataCoordFactory) MarkSegmentsDropped(context.Context, *datapb.MarkSeg
 	}, nil
 }
 
-func (ds *DataCoordFactory) BroadcastAlteredCollection(ctx context.Context, req *milvuspb.AlterCollectionRequest) (*commonpb.Status, error) {
+func (ds *DataCoordFactory) BroadcastAlteredCollection(ctx context.Context, req *datapb.AlterCollectionRequest) (*commonpb.Status, error) {
 	return &commonpb.Status{
 		ErrorCode: commonpb.ErrorCode_Success,
 	}, nil
@@ -297,7 +313,9 @@ func (ds *DataCoordFactory) GetSegmentInfo(ctx context.Context, req *datapb.GetS
 	}
 	var segmentInfos []*datapb.SegmentInfo
 	for _, segmentID := range req.SegmentIDs {
-		if segInfo, ok := segID2SegInfo[segmentID]; ok {
+		if segInfo, ok := ds.UserSegmentInfo[segmentID]; ok {
+			segmentInfos = append(segmentInfos, segInfo)
+		} else if segInfo, ok := segID2SegInfo[segmentID]; ok {
 			segmentInfos = append(segmentInfos, segInfo)
 		} else {
 			segmentInfos = append(segmentInfos, &datapb.SegmentInfo{
@@ -767,9 +785,39 @@ func (df *DataFactory) GenMsgStreamInsertMsg(idx int, chanName string) *msgstrea
 	return msg
 }
 
-func (df *DataFactory) GetMsgStreamTsInsertMsgs(n int, chanName string) (inMsgs []msgstream.TsMsg) {
+func (df *DataFactory) GenMsgStreamInsertMsgWithTs(idx int, chanName string, ts Timestamp) *msgstream.InsertMsg {
+	var msg = &msgstream.InsertMsg{
+		BaseMsg: msgstream.BaseMsg{
+			HashValues:     []uint32{uint32(idx)},
+			BeginTimestamp: ts,
+			EndTimestamp:   ts,
+		},
+		InsertRequest: internalpb.InsertRequest{
+			Base: &commonpb.MsgBase{
+				MsgType:   commonpb.MsgType_Insert,
+				MsgID:     0,
+				Timestamp: ts,
+				SourceID:  0,
+			},
+			CollectionName: "col1",
+			PartitionName:  "default",
+			SegmentID:      1,
+			CollectionID:   UniqueID(0),
+			ShardName:      chanName,
+			Timestamps:     []Timestamp{ts},
+			RowIDs:         []UniqueID{UniqueID(idx)},
+			// RowData:        []*commonpb.Blob{{Value: df.rawData}},
+			FieldsData: df.columnData,
+			Version:    internalpb.InsertDataVersion_ColumnBased,
+			NumRows:    1,
+		},
+	}
+	return msg
+}
+
+func (df *DataFactory) GetMsgStreamTsInsertMsgs(n int, chanName string, ts Timestamp) (inMsgs []msgstream.TsMsg) {
 	for i := 0; i < n; i++ {
-		var msg = df.GenMsgStreamInsertMsg(i, chanName)
+		var msg = df.GenMsgStreamInsertMsgWithTs(i, chanName, ts)
 		var tsMsg msgstream.TsMsg = msg
 		inMsgs = append(inMsgs, tsMsg)
 	}
@@ -803,9 +851,37 @@ func (df *DataFactory) GenMsgStreamDeleteMsg(pks []primaryKey, chanName string) 
 			},
 			CollectionName: "col1",
 			PartitionName:  "default",
+			PartitionID:    1,
 			ShardName:      chanName,
 			PrimaryKeys:    s.ParsePrimaryKeys2IDs(pks),
 			Timestamps:     timestamps,
+			NumRows:        int64(len(pks)),
+		},
+	}
+	return msg
+}
+
+func (df *DataFactory) GenMsgStreamDeleteMsgWithTs(idx int, pks []primaryKey, chanName string, ts Timestamp) *msgstream.DeleteMsg {
+	var msg = &msgstream.DeleteMsg{
+		BaseMsg: msgstream.BaseMsg{
+			HashValues:     []uint32{uint32(idx)},
+			BeginTimestamp: ts,
+			EndTimestamp:   ts,
+		},
+		DeleteRequest: internalpb.DeleteRequest{
+			Base: &commonpb.MsgBase{
+				MsgType:   commonpb.MsgType_Delete,
+				MsgID:     1,
+				Timestamp: ts,
+				SourceID:  0,
+			},
+			CollectionName: "col1",
+			PartitionName:  "default",
+			PartitionID:    1,
+			CollectionID:   UniqueID(0),
+			ShardName:      chanName,
+			PrimaryKeys:    s.ParsePrimaryKeys2IDs(pks),
+			Timestamps:     []Timestamp{ts},
 			NumRows:        int64(len(pks)),
 		},
 	}
@@ -988,7 +1064,7 @@ func (m *RootCoordFactory) ShowCollections(ctx context.Context, in *milvuspb.Sho
 
 }
 
-func (m *RootCoordFactory) DescribeCollection(ctx context.Context, in *milvuspb.DescribeCollectionRequest) (*milvuspb.DescribeCollectionResponse, error) {
+func (m *RootCoordFactory) DescribeCollectionInternal(ctx context.Context, in *milvuspb.DescribeCollectionRequest) (*milvuspb.DescribeCollectionResponse, error) {
 	f := MetaFactory{}
 	meta := f.GetCollectionMeta(m.collectionID, m.collectionName, m.pkType)
 	resp := &milvuspb.DescribeCollectionResponse{

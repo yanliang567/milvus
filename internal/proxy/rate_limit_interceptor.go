@@ -34,19 +34,14 @@ import (
 func RateLimitInterceptor(limiter types.Limiter) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		rt, n, err := getRequestInfo(req)
-		if err == nil {
-			limit, rate := limiter.Limit(rt, n)
-			if rate == 0 {
-				res, err1 := getFailedResponse(req, commonpb.ErrorCode_ForceDeny, fmt.Sprintf("force to deny %s.", info.FullMethod))
-				if err1 == nil {
-					return res, nil
-				}
-			}
-			if limit {
-				res, err2 := getFailedResponse(req, commonpb.ErrorCode_RateLimit, fmt.Sprintf("%s is rejected by grpc RateLimiter middleware, please retry later.", info.FullMethod))
-				if err2 == nil {
-					return res, nil
-				}
+		if err != nil {
+			return handler(ctx, req)
+		}
+		code := limiter.Check(rt, n)
+		if code != commonpb.ErrorCode_Success {
+			rsp := getFailedResponse(req, rt, code, info.FullMethod)
+			if rsp != nil {
+				return rsp, nil
 			}
 		}
 		return handler(ctx, req)
@@ -111,41 +106,54 @@ func failedBoolResponse(code commonpb.ErrorCode, reason string) *milvuspb.BoolRe
 	}
 }
 
+func wrapQuotaError(rt internalpb.RateType, errCode commonpb.ErrorCode, fullMethod string) error {
+	if errCode == commonpb.ErrorCode_RateLimit {
+		return fmt.Errorf("request is rejected by grpc RateLimiter middleware, please retry later, req: %s", fullMethod)
+	}
+
+	// deny to write/read
+	var op string
+	switch rt {
+	case internalpb.RateType_DMLInsert, internalpb.RateType_DMLDelete, internalpb.RateType_DMLBulkLoad:
+		op = "write"
+	case internalpb.RateType_DQLSearch, internalpb.RateType_DQLQuery:
+		op = "read"
+	}
+	return fmt.Errorf("deny to %s, reason: %s, req: %s", op, GetQuotaErrorString(errCode), fullMethod)
+}
+
 // getFailedResponse returns failed response.
-func getFailedResponse(req interface{}, code commonpb.ErrorCode, reason string) (interface{}, error) {
+func getFailedResponse(req interface{}, rt internalpb.RateType, errCode commonpb.ErrorCode, fullMethod string) interface{} {
+	err := wrapQuotaError(rt, errCode, fullMethod)
 	switch req.(type) {
 	case *milvuspb.InsertRequest, *milvuspb.DeleteRequest:
-		return failedMutationResult(code, reason), nil
+		return failedMutationResult(errCode, err.Error())
 	case *milvuspb.ImportRequest:
 		return &milvuspb.ImportResponse{
-			Status: failedStatus(code, reason),
-		}, nil
+			Status: failedStatus(errCode, err.Error()),
+		}
 	case *milvuspb.SearchRequest:
 		return &milvuspb.SearchResults{
-			Status: failedStatus(code, reason),
-		}, nil
+			Status: failedStatus(errCode, err.Error()),
+		}
 	case *milvuspb.QueryRequest:
 		return &milvuspb.QueryResults{
-			Status: failedStatus(code, reason),
-		}, nil
+			Status: failedStatus(errCode, err.Error()),
+		}
 	case *milvuspb.CreateCollectionRequest, *milvuspb.DropCollectionRequest,
 		*milvuspb.LoadCollectionRequest, *milvuspb.ReleaseCollectionRequest,
 		*milvuspb.CreatePartitionRequest, *milvuspb.DropPartitionRequest,
 		*milvuspb.LoadPartitionsRequest, *milvuspb.ReleasePartitionsRequest,
 		*milvuspb.CreateIndexRequest, *milvuspb.DropIndexRequest:
-		return failedStatus(code, reason), nil
+		return failedStatus(errCode, err.Error())
 	case *milvuspb.FlushRequest:
 		return &milvuspb.FlushResponse{
-			Status: failedStatus(code, reason),
-		}, nil
+			Status: failedStatus(errCode, err.Error()),
+		}
 	case *milvuspb.ManualCompactionRequest:
 		return &milvuspb.ManualCompactionResponse{
-			Status: failedStatus(code, reason),
-		}, nil
-		// TODO: support more request
+			Status: failedStatus(errCode, err.Error()),
+		}
 	}
-	if req == nil {
-		return nil, fmt.Errorf("null request")
-	}
-	return nil, fmt.Errorf("unsupported request type %s", reflect.TypeOf(req).Name())
+	return nil
 }

@@ -20,11 +20,12 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"strconv"
 	"sync/atomic"
 
+	"github.com/milvus-io/milvus/internal/util/timerecord"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/golang/protobuf/proto"
-	"github.com/opentracing/opentracing-go"
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
@@ -38,8 +39,8 @@ import (
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/retry"
-	"github.com/milvus-io/milvus/internal/util/trace"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
 )
 
@@ -84,29 +85,40 @@ func (ddn *ddNode) Name() string {
 	return fmt.Sprintf("ddNode-%d-%s", ddn.collectionID, ddn.vChannelName)
 }
 
+func (ddn *ddNode) IsValidInMsg(in []Msg) bool {
+	if !ddn.BaseNode.IsValidInMsg(in) {
+		return false
+	}
+	_, ok := in[0].(*MsgStreamMsg)
+	if !ok {
+		log.Warn("type assertion failed for MsgStreamMsg", zap.String("name", reflect.TypeOf(in[0]).Name()))
+		return false
+	}
+	return true
+}
+
 // Operate handles input messages, implementing flowgrpah.Node
 func (ddn *ddNode) Operate(in []Msg) []Msg {
-	if in == nil {
-		log.Debug("type assertion failed for MsgStreamMsg because it's nil")
-		return []Msg{}
-	}
-
-	if len(in) != 1 {
-		log.Warn("Invalid operate message input in ddNode", zap.Int("input length", len(in)))
-		return []Msg{}
-	}
-
 	msMsg, ok := in[0].(*MsgStreamMsg)
 	if !ok {
 		log.Warn("type assertion failed for MsgStreamMsg", zap.String("name", reflect.TypeOf(in[0]).Name()))
 		return []Msg{}
 	}
 
-	var spans []opentracing.Span
-	for _, msg := range msMsg.TsMessages() {
-		sp, ctx := trace.StartSpanFromContext(msg.TraceCtx())
-		spans = append(spans, sp)
-		msg.SetTraceCtx(ctx)
+	if msMsg.IsCloseMsg() {
+		var fgMsg = flowGraphMsg{
+			BaseMsg:        flowgraph.NewBaseMsg(true),
+			insertMessages: make([]*msgstream.InsertMsg, 0),
+			timeRange: TimeRange{
+				timestampMin: msMsg.TimestampMin(),
+				timestampMax: msMsg.TimestampMax(),
+			},
+			startPositions: msMsg.StartPositions(),
+			endPositions:   msMsg.EndPositions(),
+			dropCollection: false,
+		}
+		log.Warn("MsgStream closed", zap.Any("ddNode node", ddn.Name()), zap.Int64("collection", ddn.collectionID), zap.String("channel", ddn.vChannelName))
+		return []Msg{&fgMsg}
 	}
 
 	if load := ddn.dropMode.Load(); load != nil && load.(bool) {
@@ -115,6 +127,18 @@ func (ddn *ddNode) Operate(in []Msg) []Msg {
 			zap.Int64("collection ID", ddn.collectionID))
 		return []Msg{}
 	}
+
+	var spans []trace.Span
+	for _, msg := range msMsg.TsMessages() {
+		ctx, sp := startTracer(msg, "DDNode-Operate")
+		spans = append(spans, sp)
+		msg.SetTraceCtx(ctx)
+	}
+	defer func() {
+		for _, sp := range spans {
+			sp.End()
+		}
+	}()
 
 	var fgMsg = flowGraphMsg{
 		insertMessages: make([]*msgstream.InsertMsg, 0),
@@ -140,6 +164,9 @@ func (ddn *ddNode) Operate(in []Msg) []Msg {
 				log.Info("Stop compaction of vChannel", zap.String("vChannelName", ddn.vChannelName))
 				ddn.compactionExecutor.stopExecutingtaskByVChannelName(ddn.vChannelName)
 				fgMsg.dropCollection = true
+
+				pChan := funcutil.ToPhysicalChannel(ddn.vChannelName)
+				metrics.CleanupDataNodeCollectionMetrics(paramtable.GetNodeID(), ddn.collectionID, pChan)
 			}
 
 		case commonpb.MsgType_DropPartition:
@@ -171,7 +198,14 @@ func (ddn *ddNode) Operate(in []Msg) []Msg {
 			}
 
 			rateCol.Add(metricsinfo.InsertConsumeThroughput, float64(proto.Size(&imsg.InsertRequest)))
-			metrics.DataNodeConsumeCounter.WithLabelValues(strconv.FormatInt(Params.DataNodeCfg.GetNodeID(), 10), metrics.InsertLabel).Add(float64(proto.Size(&imsg.InsertRequest)))
+
+			metrics.DataNodeConsumeBytesCount.
+				WithLabelValues(fmt.Sprint(paramtable.GetNodeID()), metrics.InsertLabel).
+				Add(float64(proto.Size(&imsg.InsertRequest)))
+
+			metrics.DataNodeConsumeMsgCount.
+				WithLabelValues(fmt.Sprint(paramtable.GetNodeID()), metrics.InsertLabel, fmt.Sprint(ddn.collectionID)).
+				Inc()
 
 			log.Debug("DDNode receive insert messages",
 				zap.Int("numRows", len(imsg.GetRowIDs())),
@@ -181,7 +215,7 @@ func (ddn *ddNode) Operate(in []Msg) []Msg {
 		case commonpb.MsgType_Delete:
 			dmsg := msg.(*msgstream.DeleteMsg)
 			log.Debug("DDNode receive delete messages",
-				zap.Int64("num", dmsg.NumRows),
+				zap.Int64("numRows", dmsg.NumRows),
 				zap.String("vChannelName", ddn.vChannelName))
 			for i := int64(0); i < dmsg.NumRows; i++ {
 				dmsg.HashValues = append(dmsg.HashValues, uint32(0))
@@ -194,7 +228,14 @@ func (ddn *ddNode) Operate(in []Msg) []Msg {
 				continue
 			}
 			rateCol.Add(metricsinfo.DeleteConsumeThroughput, float64(proto.Size(&dmsg.DeleteRequest)))
-			metrics.DataNodeConsumeCounter.WithLabelValues(strconv.FormatInt(Params.DataNodeCfg.GetNodeID(), 10), metrics.DeleteLabel).Add(float64(proto.Size(&dmsg.DeleteRequest)))
+
+			metrics.DataNodeConsumeBytesCount.
+				WithLabelValues(fmt.Sprint(paramtable.GetNodeID()), metrics.DeleteLabel).
+				Add(float64(proto.Size(&dmsg.DeleteRequest)))
+
+			metrics.DataNodeConsumeMsgCount.
+				WithLabelValues(fmt.Sprint(paramtable.GetNodeID()), metrics.DeleteLabel, fmt.Sprint(ddn.collectionID)).
+				Inc()
 			fgMsg.deleteMessages = append(fgMsg.deleteMessages, dmsg)
 		}
 	}
@@ -211,10 +252,6 @@ func (ddn *ddNode) Operate(in []Msg) []Msg {
 
 	fgMsg.startPositions = append(fgMsg.startPositions, msMsg.StartPositions()...)
 	fgMsg.endPositions = append(fgMsg.endPositions, msMsg.EndPositions()...)
-
-	for _, sp := range spans {
-		sp.Finish()
-	}
 
 	return []Msg{&fgMsg}
 }
@@ -261,6 +298,8 @@ func (ddn *ddNode) isDropped(segID UniqueID) bool {
 }
 
 func (ddn *ddNode) forwardDeleteMsg(msgs []msgstream.TsMsg, minTs Timestamp, maxTs Timestamp) error {
+	tr := timerecord.NewTimeRecorder("forwardDeleteMsg")
+
 	if len(msgs) != 0 {
 		var msgPack = msgstream.MsgPack{
 			Msgs:    msgs,
@@ -274,6 +313,10 @@ func (ddn *ddNode) forwardDeleteMsg(msgs []msgstream.TsMsg, minTs Timestamp, max
 	if err := ddn.sendDeltaTimeTick(maxTs); err != nil {
 		return err
 	}
+
+	metrics.DataNodeForwardDeleteMsgTimeTaken.
+		WithLabelValues(fmt.Sprint(paramtable.GetNodeID())).
+		Observe(float64(tr.ElapseSpan().Milliseconds()))
 	return nil
 }
 
@@ -289,7 +332,7 @@ func (ddn *ddNode) sendDeltaTimeTick(ts Timestamp) error {
 			commonpbutil.WithMsgType(commonpb.MsgType_TimeTick),
 			commonpbutil.WithMsgID(0),
 			commonpbutil.WithTimeStamp(ts),
-			commonpbutil.WithSourceID(Params.DataNodeCfg.GetNodeID()),
+			commonpbutil.WithSourceID(paramtable.GetNodeID()),
 		),
 	}
 	timeTickMsg := &msgstream.TimeTickMsg{
@@ -322,8 +365,8 @@ func newDDNode(ctx context.Context, collID UniqueID, vChannelName string, droppe
 	msFactory msgstream.Factory, compactor *compactionExecutor) (*ddNode, error) {
 
 	baseNode := BaseNode{}
-	baseNode.SetMaxQueueLength(Params.DataNodeCfg.FlowGraphMaxQueueLength)
-	baseNode.SetMaxParallelism(Params.DataNodeCfg.FlowGraphMaxParallelism)
+	baseNode.SetMaxQueueLength(Params.DataNodeCfg.FlowGraphMaxQueueLength.GetAsInt32())
+	baseNode.SetMaxParallelism(Params.DataNodeCfg.FlowGraphMaxParallelism.GetAsInt32())
 
 	deltaStream, err := msFactory.NewMsgStream(ctx)
 	if err != nil {
@@ -335,16 +378,15 @@ func newDDNode(ctx context.Context, collID UniqueID, vChannelName string, droppe
 		zap.String("pChannelName", pChannelName),
 	)
 
-	deltaChannelName, err := funcutil.ConvertChannelName(pChannelName, Params.CommonCfg.RootCoordDml, Params.CommonCfg.RootCoordDelta)
+	deltaChannelName, err := funcutil.ConvertChannelName(pChannelName, Params.CommonCfg.RootCoordDml.GetValue(), Params.CommonCfg.RootCoordDelta.GetValue())
 	if err != nil {
 		return nil, err
 	}
 	deltaStream.SetRepackFunc(msgstream.DefaultRepackFunc)
 	deltaStream.AsProducer([]string{deltaChannelName})
-	metrics.DataNodeNumProducers.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID())).Inc()
+	metrics.DataNodeNumProducers.WithLabelValues(fmt.Sprint(paramtable.GetNodeID())).Inc()
 	log.Info("datanode AsProducer", zap.String("DeltaChannelName", deltaChannelName))
 	var deltaMsgStream msgstream.MsgStream = deltaStream
-	deltaMsgStream.Start()
 
 	dd := &ddNode{
 		ctx:                ctx,

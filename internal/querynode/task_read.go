@@ -75,9 +75,9 @@ func (b *baseReadTask) SetStep(step TaskStep) {
 	switch step {
 	case TaskStepEnqueue:
 		b.queueDur = 0
-		b.tr.Record("enqueueStart")
+		b.tr.Record("enqueue done")
 	case TaskStepPreExecute:
-		b.queueDur = b.tr.Record("enqueueEnd")
+		b.queueDur = b.tr.Record("start to process")
 	}
 }
 
@@ -109,6 +109,8 @@ func (b *baseReadTask) Notify(err error) {
 	switch b.step {
 	case TaskStepEnqueue:
 		b.queueDur = b.tr.Record("enqueueEnd")
+	case TaskStepPostExecute:
+		b.tr.Record("execute task done")
 	}
 	b.baseTask.Notify(err)
 }
@@ -166,15 +168,26 @@ func (b *baseReadTask) Ready() (bool, error) {
 	gt, _ := tsoutil.ParseTS(guaranteeTs)
 	st, _ := tsoutil.ParseTS(serviceTime)
 	if guaranteeTs > serviceTime {
+		lag := gt.Sub(st)
+		maxLag := Params.QueryNodeCfg.MaxTimestampLag.GetAsDuration(time.Second)
+		if serviceTime != 0 && lag > maxLag {
+			log.Warn("guarantee and servicable ts larger than MaxLag",
+				zap.Time("guaranteeTime", gt),
+				zap.Time("serviceableTime", st),
+				zap.Duration("lag", lag),
+				zap.Duration("maxTsLag", maxLag),
+			)
+			return false, WrapErrTsLagTooLarge(lag, maxLag)
+		}
 		return false, nil
 	}
 	log.Debug("query msg can do",
-		zap.Any("collectionID", b.CollectionID),
-		zap.Any("sm.GuaranteeTimestamp", gt),
-		zap.Any("serviceTime", st),
-		zap.Any("delta milliseconds", gt.Sub(st).Milliseconds()),
-		zap.Any("channel", channel),
-		zap.Any("msgID", b.ID()))
-	b.waitTsDur = b.waitTSafeTr.ElapseSpan()
+		zap.Int64("collectionID", b.CollectionID),
+		zap.Time("sm.GuaranteeTimestamp", gt),
+		zap.Time("serviceTime", st),
+		zap.Int64("delta milliseconds", gt.Sub(st).Milliseconds()),
+		zap.String("channel", channel),
+		zap.Int64("msgID", b.ID()))
+	b.waitTsDur = b.waitTSafeTr.Elapse("wait for tsafe done")
 	return true, nil
 }

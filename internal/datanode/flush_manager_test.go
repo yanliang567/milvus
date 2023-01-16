@@ -150,7 +150,7 @@ func TestRendezvousFlushManager(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cm := storage.NewLocalChunkManager(storage.RootPath(flushTestDir))
-	defer cm.RemoveWithPrefix(ctx, "")
+	defer cm.RemoveWithPrefix(ctx, cm.RootPath())
 
 	size := 1000
 	var counter atomic.Int64
@@ -189,7 +189,7 @@ func TestRendezvousFlushManager_Inject(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cm := storage.NewLocalChunkManager(storage.RootPath(flushTestDir))
-	defer cm.RemoveWithPrefix(ctx, "")
+	defer cm.RemoveWithPrefix(ctx, cm.RootPath())
 
 	size := 1000
 	var counter atomic.Int64
@@ -288,7 +288,11 @@ func TestRendezvousFlushManager_Inject(t *testing.T) {
 }
 
 func TestRendezvousFlushManager_getSegmentMeta(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	cm := storage.NewLocalChunkManager(storage.RootPath(flushTestDir))
+	defer cm.RemoveWithPrefix(ctx, cm.RootPath())
+
 	channel := newTestChannel()
 	channel.collSchema = &schemapb.CollectionSchema{}
 	fm := NewRendezvousFlushManager(NewAllocatorFactory(), cm, channel, func(*segmentFlushPack) {
@@ -315,7 +319,10 @@ func TestRendezvousFlushManager_getSegmentMeta(t *testing.T) {
 }
 
 func TestRendezvousFlushManager_waitForAllFlushQueue(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	cm := storage.NewLocalChunkManager(storage.RootPath(flushTestDir))
+	defer cm.RemoveWithPrefix(ctx, cm.RootPath())
 
 	size := 1000
 	var counter atomic.Int64
@@ -384,8 +391,11 @@ func TestRendezvousFlushManager_waitForAllFlushQueue(t *testing.T) {
 }
 
 func TestRendezvousFlushManager_dropMode(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	t.Run("test drop mode", func(t *testing.T) {
 		cm := storage.NewLocalChunkManager(storage.RootPath(flushTestDir))
+		defer cm.RemoveWithPrefix(ctx, cm.RootPath())
 
 		var mut sync.Mutex
 		var result []*segmentFlushPack
@@ -414,11 +424,12 @@ func TestRendezvousFlushManager_dropMode(t *testing.T) {
 		for i := 1; i < 11; i++ {
 			target[int64(i)] = struct{}{}
 			m.flushBufferData(nil, int64(i), true, false, &internalpb.MsgPosition{
-				MsgID: []byte{1},
+				MsgID: []byte{byte(i)},
 			})
 			m.flushDelData(nil, int64(i), &internalpb.MsgPosition{
-				MsgID: []byte{1},
+				MsgID: []byte{byte(i)},
 			})
+			t.Log(i)
 		}
 
 		m.notifyAllFlushed()
@@ -438,6 +449,7 @@ func TestRendezvousFlushManager_dropMode(t *testing.T) {
 	})
 	t.Run("test drop mode with injection", func(t *testing.T) {
 		cm := storage.NewLocalChunkManager(storage.RootPath(flushTestDir))
+		defer cm.RemoveWithPrefix(ctx, cm.RootPath())
 
 		var mut sync.Mutex
 		var result []*segmentFlushPack
@@ -474,10 +486,10 @@ func TestRendezvousFlushManager_dropMode(t *testing.T) {
 
 		for i := 1; i < 11; i++ {
 			m.flushBufferData(nil, int64(i), true, false, &internalpb.MsgPosition{
-				MsgID: []byte{1},
+				MsgID: []byte{byte(i)},
 			})
 			m.flushDelData(nil, int64(i), &internalpb.MsgPosition{
-				MsgID: []byte{1},
+				MsgID: []byte{byte(i)},
 			})
 		}
 
@@ -496,7 +508,10 @@ func TestRendezvousFlushManager_dropMode(t *testing.T) {
 }
 
 func TestRendezvousFlushManager_close(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	cm := storage.NewLocalChunkManager(storage.RootPath(flushTestDir))
+	defer cm.RemoveWithPrefix(ctx, cm.RootPath())
 
 	size := 1000
 	var counter atomic.Int64
@@ -536,7 +551,10 @@ func TestFlushNotifyFunc(t *testing.T) {
 	rcf := &RootCoordFactory{
 		pkType: schemapb.DataType_Int64,
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	cm := storage.NewLocalChunkManager(storage.RootPath(flushTestDir))
+	defer cm.RemoveWithPrefix(ctx, cm.RootPath())
 
 	channel := newChannel("channel", 1, nil, rcf, cm)
 
@@ -583,13 +601,6 @@ func TestFlushNotifyFunc(t *testing.T) {
 		})
 	})
 
-	t.Run("stale segment not found", func(t *testing.T) {
-		dataCoord.SaveBinlogPathStatus = commonpb.ErrorCode_SegmentNotFound
-		assert.NotPanics(t, func() {
-			notifyFunc(&segmentFlushPack{flushed: false})
-		})
-	})
-
 	// issue https://github.com/milvus-io/milvus/issues/17097
 	// meta error, datanode shall not panic, just drop the virtual channel
 	t.Run("datacoord found meta error", func(t *testing.T) {
@@ -613,7 +624,11 @@ func TestDropVirtualChannelFunc(t *testing.T) {
 	}
 	vchanName := "vchan_01"
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	cm := storage.NewLocalChunkManager(storage.RootPath(flushTestDir))
+	defer cm.RemoveWithPrefix(ctx, cm.RootPath())
+
 	channel := newChannel(vchanName, 1, nil, rcf, cm)
 
 	dataCoord := &DataCoordFactory{}

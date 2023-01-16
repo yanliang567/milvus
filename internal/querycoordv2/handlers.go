@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/samber/lo"
 	"go.uber.org/zap"
@@ -36,6 +37,7 @@ import (
 	"github.com/milvus-io/milvus/internal/querycoordv2/utils"
 	"github.com/milvus-io/milvus/internal/util/hardware"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 	"github.com/milvus-io/milvus/internal/util/uniquegenerator"
 )
@@ -61,8 +63,20 @@ func (s *Server) checkAnyReplicaAvailable(collectionID int64) bool {
 
 func (s *Server) getCollectionSegmentInfo(collection int64) []*querypb.SegmentInfo {
 	segments := s.dist.SegmentDistManager.GetByCollection(collection)
+	currentTargetSegmentsMap := s.targetMgr.GetHistoricalSegmentsByCollection(collection, meta.CurrentTarget)
 	infos := make(map[int64]*querypb.SegmentInfo)
 	for _, segment := range segments {
+		if _, existCurrentTarget := currentTargetSegmentsMap[segment.GetID()]; !existCurrentTarget {
+			//if one segment exists in distMap but doesn't exist in currentTargetMap
+			//in order to guarantee that get segment request launched by sdk could get
+			//consistent result, for example
+			//sdk insert three segments:A, B, D, then A + B----compact--> C
+			//In this scenario, we promise that clients see either 2 segments(C,D) or 3 segments(A, B, D)
+			//rather than 4 segments(A, B, C, D), in which query nodes are loading C but have completed loading process
+			log.Info("filtered segment being in the intermediate status",
+				zap.Int64("segmentID", segment.GetID()))
+			continue
+		}
 		info, ok := infos[segment.GetID()]
 		if !ok {
 			info = &querypb.SegmentInfo{}
@@ -85,7 +99,11 @@ func (s *Server) balanceSegments(ctx context.Context, req *querypb.LoadBalanceRe
 	dstNodeSet.Remove(srcNode)
 
 	toBalance := typeutil.NewSet[*meta.Segment]()
-	segments := s.dist.SegmentDistManager.GetByNode(srcNode)
+	// Only balance segments in targets
+	segments := s.dist.SegmentDistManager.GetByCollectionAndNode(req.GetCollectionID(), srcNode)
+	segments = lo.Filter(segments, func(segment *meta.Segment, _ int) bool {
+		return s.targetMgr.GetHistoricalSegment(segment.GetCollectionID(), segment.GetID(), meta.CurrentTarget) != nil
+	})
 	allSegments := make(map[int64]*meta.Segment)
 	for _, segment := range segments {
 		allSegments[segment.GetID()] = segment
@@ -116,7 +134,7 @@ func (s *Server) balanceSegments(ctx context.Context, req *querypb.LoadBalanceRe
 			zap.Int64("segmentID", plan.Segment.GetID()),
 		)
 		task, err := task.NewSegmentTask(ctx,
-			Params.QueryCoordCfg.SegmentTaskTimeout,
+			Params.QueryCoordCfg.SegmentTaskTimeout.GetAsDuration(time.Millisecond),
 			req.GetBase().GetMsgID(),
 			req.GetCollectionID(),
 			replica.GetID(),
@@ -142,7 +160,7 @@ func (s *Server) balanceSegments(ctx context.Context, req *querypb.LoadBalanceRe
 		}
 		tasks = append(tasks, task)
 	}
-	return task.Wait(ctx, Params.QueryCoordCfg.SegmentTaskTimeout, tasks...)
+	return task.Wait(ctx, Params.QueryCoordCfg.SegmentTaskTimeout.GetAsDuration(time.Millisecond), tasks...)
 }
 
 // TODO(dragondriver): add more detail metrics
@@ -153,7 +171,7 @@ func (s *Server) getSystemInfoMetrics(
 	clusterTopology := metricsinfo.QueryClusterTopology{
 		Self: metricsinfo.QueryCoordInfos{
 			BaseComponentInfos: metricsinfo.BaseComponentInfos{
-				Name: metricsinfo.ConstructComponentName(typeutil.QueryCoordRole, Params.QueryCoordCfg.GetNodeID()),
+				Name: metricsinfo.ConstructComponentName(typeutil.QueryCoordRole, paramtable.GetNodeID()),
 				HardwareInfos: metricsinfo.HardwareMetrics{
 					IP:           s.session.Address,
 					CPUCoreCount: hardware.GetCPUNum(),
@@ -164,14 +182,14 @@ func (s *Server) getSystemInfoMetrics(
 					DiskUsage:    hardware.GetDiskUsage(),
 				},
 				SystemInfo:  metricsinfo.DeployMetrics{},
-				CreatedTime: Params.QueryCoordCfg.CreatedTime.String(),
-				UpdatedTime: Params.QueryCoordCfg.UpdatedTime.String(),
+				CreatedTime: paramtable.GetCreateTime().String(),
+				UpdatedTime: paramtable.GetUpdateTime().String(),
 				Type:        typeutil.QueryCoordRole,
 				ID:          s.session.ServerID,
 			},
 			SystemConfigurations: metricsinfo.QueryCoordConfiguration{
-				SearchChannelPrefix:       Params.CommonCfg.QueryCoordSearch,
-				SearchResultChannelPrefix: Params.CommonCfg.QueryCoordSearchResult,
+				SearchChannelPrefix:       Params.CommonCfg.QueryCoordSearch.GetValue(),
+				SearchResultChannelPrefix: Params.CommonCfg.QueryCoordSearchResult.GetValue(),
 			},
 		},
 		ConnectedNodes: make([]metricsinfo.QueryNodeInfos, 0),
@@ -183,7 +201,7 @@ func (s *Server) getSystemInfoMetrics(
 	coordTopology := metricsinfo.QueryCoordTopology{
 		Cluster: clusterTopology,
 		Connections: metricsinfo.ConnTopology{
-			Name: metricsinfo.ConstructComponentName(typeutil.QueryCoordRole, Params.QueryCoordCfg.GetNodeID()),
+			Name: metricsinfo.ConstructComponentName(typeutil.QueryCoordRole, paramtable.GetNodeID()),
 			// TODO(dragondriver): fill ConnectedComponents if necessary
 			ConnectedComponents: []metricsinfo.ConnectionInfo{},
 		},
@@ -286,7 +304,7 @@ func (s *Server) tryGetNodesMetrics(ctx context.Context, req *milvuspb.GetMetric
 func (s *Server) fillReplicaInfo(replica *meta.Replica, withShardNodes bool) (*milvuspb.ReplicaInfo, error) {
 	info := utils.Replica2ReplicaInfo(replica.Replica)
 
-	channels := s.targetMgr.GetDmChannelsByCollection(replica.GetCollectionID())
+	channels := s.targetMgr.GetDmChannelsByCollection(replica.GetCollectionID(), meta.CurrentTarget)
 	if len(channels) == 0 {
 		msg := "failed to get channels, collection not loaded"
 		log.Warn(msg)
@@ -334,4 +352,13 @@ func errCode(err error) commonpb.ErrorCode {
 		return commonpb.ErrorCode_IllegalArgument
 	}
 	return commonpb.ErrorCode_UnexpectedError
+}
+
+func checkNodeAvailable(nodeID int64, info *session.NodeInfo) error {
+	if info == nil {
+		return WrapErrNodeOffline(nodeID)
+	} else if time.Since(info.LastHeartbeat()) > Params.QueryCoordCfg.HeartbeatAvailableInterval.GetAsDuration(time.Millisecond) {
+		return WrapErrNodeHeartbeatOutdated(nodeID, info.LastHeartbeat())
+	}
+	return nil
 }

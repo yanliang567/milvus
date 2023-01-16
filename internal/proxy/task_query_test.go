@@ -23,11 +23,11 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 
 	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
 func TestQueryTask_all(t *testing.T) {
-	Params.Init()
 
 	var (
 		err error
@@ -100,7 +100,7 @@ func TestQueryTask_all(t *testing.T) {
 	status, err := qc.LoadCollection(ctx, &querypb.LoadCollectionRequest{
 		Base: &commonpb.MsgBase{
 			MsgType:  commonpb.MsgType_LoadCollection,
-			SourceID: Params.ProxyCfg.GetNodeID(),
+			SourceID: paramtable.GetNodeID(),
 		},
 		CollectionID: collectionID,
 	})
@@ -113,7 +113,7 @@ func TestQueryTask_all(t *testing.T) {
 		RetrieveRequest: &internalpb.RetrieveRequest{
 			Base: &commonpb.MsgBase{
 				MsgType:  commonpb.MsgType_Retrieve,
-				SourceID: Params.ProxyCfg.GetNodeID(),
+				SourceID: paramtable.GetNodeID(),
 			},
 			CollectionID:   collectionID,
 			OutputFieldsId: make([]int64, len(fieldName2Types)),
@@ -123,11 +123,12 @@ func TestQueryTask_all(t *testing.T) {
 			Status: &commonpb.Status{
 				ErrorCode: commonpb.ErrorCode_Success,
 			},
+			FieldsData: []*schemapb.FieldData{},
 		},
 		request: &milvuspb.QueryRequest{
 			Base: &commonpb.MsgBase{
 				MsgType:  commonpb.MsgType_Retrieve,
-				SourceID: Params.ProxyCfg.GetNodeID(),
+				SourceID: paramtable.GetNodeID(),
 			},
 			CollectionName: collectionName,
 			Expr:           expr,
@@ -173,7 +174,8 @@ func TestQueryTask_all(t *testing.T) {
 	for fieldName, dataType := range fieldName2Types {
 		result1.FieldsData = append(result1.FieldsData, generateFieldData(dataType, fieldName, hitNum))
 	}
-
+	result1.FieldsData = append(result1.FieldsData, generateFieldData(schemapb.DataType_Int64, common.TimeStampFieldName, hitNum))
+	task.RetrieveRequest.OutputFieldsId = append(task.RetrieveRequest.OutputFieldsId, common.TimeStampField)
 	task.ctx = ctx
 	qn.queryError = fmt.Errorf("mock error")
 	assert.Error(t, task.Execute(ctx))
@@ -198,7 +200,15 @@ func TestQueryTask_all(t *testing.T) {
 
 	assert.NoError(t, task.Execute(ctx))
 
+	task.queryParams = &queryParams{
+		limit:  100,
+		offset: 100,
+	}
 	assert.NoError(t, task.PostExecute(ctx))
+
+	for i := 0; i < len(task.result.FieldsData); i++ {
+		assert.NotEqual(t, task.result.FieldsData[i].FieldId, common.TimeStampField)
+	}
 }
 
 func Test_translateToOutputFieldIDs(t *testing.T) {
@@ -650,4 +660,10 @@ func getFieldData(fieldName string, fieldID int64, fieldType schemapb.DataType, 
 	}
 
 	return fieldData
+}
+
+func Test_filterSystemFields(t *testing.T) {
+	outputFieldIDs := []UniqueID{common.RowIDField, common.TimeStampField, common.StartOfUserFieldID}
+	filtered := filterSystemFields(outputFieldIDs)
+	assert.ElementsMatch(t, []UniqueID{common.StartOfUserFieldID}, filtered)
 }

@@ -23,19 +23,19 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 
-	grpcopentracing "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
 	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/tracer"
 	"github.com/milvus-io/milvus/internal/util"
 	"github.com/milvus-io/milvus/internal/util/crypto"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/generic"
-	"github.com/milvus-io/milvus/internal/util/trace"
 )
 
 // GrpcClient abstracts client of grpc
@@ -65,6 +65,7 @@ type ClientBase[T any] struct {
 	role                   string
 	ClientMaxSendSize      int
 	ClientMaxRecvSize      int
+	CompressionEnabled     bool
 	RetryServiceNameConfig string
 
 	DialTimeout      time.Duration
@@ -146,13 +147,12 @@ func (c *ClientBase[T]) resetConnection(client T) {
 func (c *ClientBase[T]) connect(ctx context.Context) error {
 	addr, err := c.getAddrFunc()
 	if err != nil {
-		log.Error("failed to get client address", zap.Error(err))
+		log.Warn("failed to get client address", zap.Error(err))
 		return err
 	}
 
-	opts := trace.GetInterceptorOpts()
+	opts := tracer.GetInterceptorOpts()
 	dialContext, cancel := context.WithTimeout(ctx, c.DialTimeout)
-
 	// refer to https://github.com/grpc/grpc-proto/blob/master/grpc/service_config/service_config.proto
 	retryPolicy := fmt.Sprintf(`{
 		"methodConfig": [{
@@ -167,6 +167,10 @@ func (c *ClientBase[T]) connect(ctx context.Context) error {
 		}]}`, c.RetryServiceNameConfig, c.MaxAttempts, c.InitialBackoff, c.MaxBackoff, c.BackoffMultiplier)
 
 	var conn *grpc.ClientConn
+	compress := None
+	if c.CompressionEnabled {
+		compress = Zstd
+	}
 	if c.encryption {
 		conn, err = grpc.DialContext(
 			dialContext,
@@ -178,9 +182,10 @@ func (c *ClientBase[T]) connect(ctx context.Context) error {
 			grpc.WithDefaultCallOptions(
 				grpc.MaxCallRecvMsgSize(c.ClientMaxRecvSize),
 				grpc.MaxCallSendMsgSize(c.ClientMaxSendSize),
+				grpc.UseCompressor(compress),
 			),
-			grpc.WithUnaryInterceptor(grpcopentracing.UnaryClientInterceptor(opts...)),
-			grpc.WithStreamInterceptor(grpcopentracing.StreamClientInterceptor(opts...)),
+			grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor(opts...)),
+			grpc.WithStreamInterceptor(otelgrpc.StreamClientInterceptor(opts...)),
 			grpc.WithDefaultServiceConfig(retryPolicy),
 			grpc.WithKeepaliveParams(keepalive.ClientParameters{
 				Time:                c.KeepAliveTime,
@@ -208,9 +213,10 @@ func (c *ClientBase[T]) connect(ctx context.Context) error {
 			grpc.WithDefaultCallOptions(
 				grpc.MaxCallRecvMsgSize(c.ClientMaxRecvSize),
 				grpc.MaxCallSendMsgSize(c.ClientMaxSendSize),
+				grpc.UseCompressor(compress),
 			),
-			grpc.WithUnaryInterceptor(grpcopentracing.UnaryClientInterceptor(opts...)),
-			grpc.WithStreamInterceptor(grpcopentracing.StreamClientInterceptor(opts...)),
+			grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor(opts...)),
+			grpc.WithStreamInterceptor(otelgrpc.StreamClientInterceptor(opts...)),
 			grpc.WithDefaultServiceConfig(retryPolicy),
 			grpc.WithKeepaliveParams(keepalive.ClientParameters{
 				Time:                c.KeepAliveTime,
@@ -274,8 +280,8 @@ func (c *ClientBase[T]) Call(ctx context.Context, caller func(client T) (any, er
 
 	ret, err := c.callOnce(ctx, caller)
 	if err != nil {
-		traceErr := fmt.Errorf("err: %w\n, %s", err, trace.StackTrace())
-		log.Error("ClientBase Call grpc first call get error", zap.String("role", c.GetRole()), zap.Error(traceErr))
+		traceErr := fmt.Errorf("err: %w\n, %s", err, tracer.StackTrace())
+		log.Warn("ClientBase Call grpc first call get error", zap.String("role", c.GetRole()), zap.Error(traceErr))
 		return generic.Zero[T](), traceErr
 	}
 	return ret, err
@@ -292,8 +298,8 @@ func (c *ClientBase[T]) ReCall(ctx context.Context, caller func(client T) (any, 
 		return ret, nil
 	}
 
-	traceErr := fmt.Errorf("err: %w\n, %s", err, trace.StackTrace())
-	log.Warn(c.GetRole()+" ClientBase ReCall grpc first call get error ", zap.Error(traceErr))
+	traceErr := fmt.Errorf("err: %w\n, %s", err, tracer.StackTrace())
+	log.Warn("ClientBase ReCall grpc first call get error ", zap.String("role", c.GetRole()), zap.Error(traceErr))
 
 	if !funcutil.CheckCtxValid(ctx) {
 		return generic.Zero[T](), ctx.Err()
@@ -301,8 +307,8 @@ func (c *ClientBase[T]) ReCall(ctx context.Context, caller func(client T) (any, 
 
 	ret, err = c.callOnce(ctx, caller)
 	if err != nil {
-		traceErr = fmt.Errorf("err: %w\n, %s", err, trace.StackTrace())
-		log.Error("ClientBase ReCall grpc second call get error", zap.String("role", c.GetRole()), zap.Error(traceErr))
+		traceErr = fmt.Errorf("err: %w\n, %s", err, tracer.StackTrace())
+		log.Warn("ClientBase ReCall grpc second call get error", zap.String("role", c.GetRole()), zap.Error(traceErr))
 		return generic.Zero[T](), traceErr
 	}
 	return ret, err

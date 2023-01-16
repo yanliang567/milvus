@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/util/typeutil"
+
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/log"
@@ -30,17 +32,25 @@ import (
 	"github.com/milvus-io/milvus/internal/mq/msgstream/mqwrapper"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
+)
+
+type (
+	// baseNode is type flowgraph.BaseNode
+	baseNode = flowgraph.BaseNode
+
+	// node is type flowgraph.Node
+	node = flowgraph.Node
 )
 
 // queryNodeFlowGraph is a TimeTickedFlowGraph in query node
 type queryNodeFlowGraph struct {
-	ctx          context.Context
-	cancel       context.CancelFunc
 	collectionID UniqueID
-	channel      Channel
+	vchannel     Channel
 	flowGraph    *flowgraph.TimeTickedFlowGraph
 	dmlStream    msgstream.MsgStream
+	tSafeReplica TSafeReplicaInterface
 	consumerCnt  int
 }
 
@@ -49,26 +59,23 @@ func newQueryNodeFlowGraph(ctx context.Context,
 	collectionID UniqueID,
 	metaReplica ReplicaInterface,
 	tSafeReplica TSafeReplicaInterface,
-	channel Channel,
+	vchannel Channel,
 	factory msgstream.Factory) (*queryNodeFlowGraph, error) {
 
-	ctx1, cancel := context.WithCancel(ctx)
-
 	q := &queryNodeFlowGraph{
-		ctx:          ctx1,
-		cancel:       cancel,
 		collectionID: collectionID,
-		channel:      channel,
-		flowGraph:    flowgraph.NewTimeTickedFlowGraph(ctx1),
+		vchannel:     vchannel,
+		tSafeReplica: tSafeReplica,
+		flowGraph:    flowgraph.NewTimeTickedFlowGraph(ctx),
 	}
 
-	dmStreamNode, err := q.newDmInputNode(ctx1, factory, collectionID, channel)
+	dmStreamNode, err := q.newDmInputNode(ctx, factory, collectionID, vchannel, metrics.InsertLabel)
 	if err != nil {
 		return nil, err
 	}
-	var filterDmNode node = newFilteredDmNode(metaReplica, collectionID, channel)
-	var insertNode node = newInsertNode(metaReplica, collectionID, channel)
-	var serviceTimeNode node = newServiceTimeNode(tSafeReplica, collectionID, channel)
+	var filterDmNode node = newFilteredDmNode(metaReplica, collectionID, vchannel)
+	var insertNode node = newInsertNode(metaReplica, collectionID, vchannel)
+	var serviceTimeNode node = newServiceTimeNode(tSafeReplica, collectionID, vchannel)
 
 	q.flowGraph.AddNode(dmStreamNode)
 	q.flowGraph.AddNode(filterDmNode)
@@ -115,26 +122,26 @@ func newQueryNodeDeltaFlowGraph(ctx context.Context,
 	collectionID UniqueID,
 	metaReplica ReplicaInterface,
 	tSafeReplica TSafeReplicaInterface,
-	channel Channel,
+	vchannel Channel,
 	factory msgstream.Factory) (*queryNodeFlowGraph, error) {
 
-	ctx1, cancel := context.WithCancel(ctx)
-
 	q := &queryNodeFlowGraph{
-		ctx:          ctx1,
-		cancel:       cancel,
 		collectionID: collectionID,
-		channel:      channel,
-		flowGraph:    flowgraph.NewTimeTickedFlowGraph(ctx1),
+		vchannel:     vchannel,
+		tSafeReplica: tSafeReplica,
+		flowGraph:    flowgraph.NewTimeTickedFlowGraph(ctx),
 	}
 
-	dmStreamNode, err := q.newDmInputNode(ctx1, factory, collectionID, channel)
+	dmStreamNode, err := q.newDmInputNode(ctx, factory, collectionID, vchannel, metrics.DeleteLabel)
 	if err != nil {
 		return nil, err
 	}
-	var filterDeleteNode node = newFilteredDeleteNode(metaReplica, collectionID, channel)
-	var deleteNode node = newDeleteNode(metaReplica, collectionID, channel)
-	var serviceTimeNode node = newServiceTimeNode(tSafeReplica, collectionID, channel)
+	var filterDeleteNode node = newFilteredDeleteNode(metaReplica, collectionID, vchannel)
+	deleteNode, err := newDeleteNode(metaReplica, collectionID, vchannel)
+	if err != nil {
+		return nil, err
+	}
+	var serviceTimeNode node = newServiceTimeNode(tSafeReplica, collectionID, vchannel)
 
 	q.flowGraph.AddNode(dmStreamNode)
 	q.flowGraph.AddNode(filterDeleteNode)
@@ -177,7 +184,8 @@ func newQueryNodeDeltaFlowGraph(ctx context.Context,
 }
 
 // newDmInputNode returns a new inputNode
-func (q *queryNodeFlowGraph) newDmInputNode(ctx context.Context, factory msgstream.Factory, collectionID UniqueID, channel Channel) (*flowgraph.InputNode, error) {
+
+func (q *queryNodeFlowGraph) newDmInputNode(ctx context.Context, factory msgstream.Factory, collectionID UniqueID, vchannel Channel, dataType string) (*flowgraph.InputNode, error) {
 	insertStream, err := factory.NewTtMsgStream(ctx)
 	if err != nil {
 		return nil, err
@@ -185,10 +193,11 @@ func (q *queryNodeFlowGraph) newDmInputNode(ctx context.Context, factory msgstre
 
 	q.dmlStream = insertStream
 
-	maxQueueLength := Params.QueryNodeCfg.FlowGraphMaxQueueLength
-	maxParallelism := Params.QueryNodeCfg.FlowGraphMaxParallelism
-	name := fmt.Sprintf("dmInputNode-query-%d-%s", collectionID, channel)
-	node := flowgraph.NewInputNode(insertStream, name, maxQueueLength, maxParallelism)
+	maxQueueLength := Params.QueryNodeCfg.FlowGraphMaxQueueLength.GetAsInt32()
+	maxParallelism := Params.QueryNodeCfg.FlowGraphMaxParallelism.GetAsInt32()
+	name := fmt.Sprintf("dmInputNode-query-%d-%s", collectionID, vchannel)
+	node := flowgraph.NewInputNode(insertStream, name, maxQueueLength, maxParallelism, typeutil.QueryNodeRole,
+		paramtable.GetNodeID(), collectionID, dataType)
 	return node, nil
 }
 
@@ -198,13 +207,14 @@ func (q *queryNodeFlowGraph) consumeFlowGraph(channel Channel, subName ConsumeSu
 		return errors.New("null dml message stream in flow graph")
 	}
 	q.dmlStream.AsConsumer([]string{channel}, subName, mqwrapper.SubscriptionPositionUnknown)
-	log.Info("query node flow graph consumes from pChannel",
-		zap.Any("collectionID", q.collectionID),
-		zap.Any("channel", channel),
-		zap.Any("subName", subName),
+	log.Info("query node flow graph consumes from PositionUnknown",
+		zap.Int64("collectionID", q.collectionID),
+		zap.String("pchannel", channel),
+		zap.String("vchannel", q.vchannel),
+		zap.String("subName", subName),
 	)
 	q.consumerCnt++
-	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID())).Inc()
+	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(paramtable.GetNodeID())).Inc()
 	return nil
 }
 
@@ -214,42 +224,50 @@ func (q *queryNodeFlowGraph) consumeFlowGraphFromLatest(channel Channel, subName
 		return errors.New("null dml message stream in flow graph")
 	}
 	q.dmlStream.AsConsumer([]string{channel}, subName, mqwrapper.SubscriptionPositionLatest)
-	log.Info("query node flow graph consumes from pChannel",
-		zap.Any("collectionID", q.collectionID),
-		zap.Any("channel", channel),
-		zap.Any("subName", subName),
+	log.Info("query node flow graph consumes from latest",
+		zap.Int64("collectionID", q.collectionID),
+		zap.String("pchannel", channel),
+		zap.String("vchannel", q.vchannel),
+		zap.String("subName", subName),
 	)
 	q.consumerCnt++
-	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID())).Inc()
+	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(paramtable.GetNodeID())).Inc()
 	return nil
 }
 
 // seekQueryNodeFlowGraph would seek by position
 func (q *queryNodeFlowGraph) consumeFlowGraphFromPosition(position *internalpb.MsgPosition) error {
 	q.dmlStream.AsConsumer([]string{position.ChannelName}, position.MsgGroup, mqwrapper.SubscriptionPositionUnknown)
+
+	start := time.Now()
 	err := q.dmlStream.Seek([]*internalpb.MsgPosition{position})
+	// setup first ts
+	q.tSafeReplica.setTSafe(q.vchannel, position.GetTimestamp())
 
 	ts, _ := tsoutil.ParseTS(position.GetTimestamp())
-	log.Info("query node flow graph seeks from pChannel",
+	log.Info("query node flow graph seeks from position",
 		zap.Int64("collectionID", q.collectionID),
-		zap.String("channel", position.ChannelName),
+		zap.String("pchannel", position.ChannelName),
+		zap.String("vchannel", q.vchannel),
 		zap.Time("checkpointTs", ts),
 		zap.Duration("tsLag", time.Since(ts)),
+		zap.Duration("elapse", time.Since(start)),
 	)
 	q.consumerCnt++
-	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID())).Inc()
+	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(paramtable.GetNodeID())).Inc()
 	return err
 }
 
 // close would close queryNodeFlowGraph
 func (q *queryNodeFlowGraph) close() {
-	q.cancel()
 	q.flowGraph.Close()
 	if q.dmlStream != nil && q.consumerCnt > 0 {
-		metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID())).Sub(float64(q.consumerCnt))
+		metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(paramtable.GetNodeID())).Sub(float64(q.consumerCnt))
 	}
 	log.Info("stop query node flow graph",
-		zap.Any("collectionID", q.collectionID),
-		zap.Any("channel", q.channel),
+		zap.Int64("collectionID", q.collectionID),
+		zap.String("vchannel", q.vchannel),
 	)
+
+	metrics.CleanupQueryNodeCollectionMetrics(paramtable.GetNodeID(), q.collectionID)
 }

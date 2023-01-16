@@ -18,6 +18,7 @@ package querycoordv2
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -34,11 +35,11 @@ import (
 	"github.com/milvus-io/milvus/internal/querycoordv2/dist"
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	"github.com/milvus-io/milvus/internal/querycoordv2/mocks"
-	"github.com/milvus-io/milvus/internal/querycoordv2/observers"
 	"github.com/milvus-io/milvus/internal/querycoordv2/params"
+	"github.com/milvus-io/milvus/internal/querycoordv2/session"
 	"github.com/milvus-io/milvus/internal/querycoordv2/task"
-	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/etcd"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 )
 
 type ServerSuite struct {
@@ -61,7 +62,7 @@ type ServerSuite struct {
 
 func (suite *ServerSuite) SetupSuite() {
 	Params.Init()
-	Params.EtcdCfg = params.GenerateEtcdConfig()
+	params.GenerateEtcdConfig()
 
 	suite.collections = []int64{1000, 1001}
 	suite.partitions = map[int64][]int64{
@@ -103,7 +104,7 @@ func (suite *ServerSuite) SetupTest() {
 	suite.NoError(err)
 
 	for i := range suite.nodes {
-		suite.nodes[i] = mocks.NewMockQueryNode(suite.T(), suite.server.etcdCli)
+		suite.nodes[i] = mocks.NewMockQueryNode(suite.T(), suite.server.etcdCli, int64(i))
 		err := suite.nodes[i].Start()
 		suite.Require().NoError(err)
 		ok := suite.waitNodeUp(suite.nodes[i], 5*time.Second)
@@ -142,8 +143,28 @@ func (suite *ServerSuite) TestRecover() {
 	}
 }
 
+func (suite *ServerSuite) TestRecoverFailed() {
+	err := suite.server.Stop()
+	suite.NoError(err)
+
+	suite.server, err = newQueryCoord()
+	suite.NoError(err)
+
+	broker := meta.NewMockBroker(suite.T())
+	broker.EXPECT().GetPartitions(context.TODO(), int64(1000)).Return(nil, errors.New("CollectionNotExist"))
+	broker.EXPECT().GetRecoveryInfo(context.TODO(), int64(1001), mock.Anything).Return(nil, nil, errors.New("CollectionNotExist"))
+	suite.server.targetMgr = meta.NewTargetManager(broker, suite.server.meta)
+	err = suite.server.Start()
+	suite.NoError(err)
+
+	for _, collection := range suite.collections {
+		suite.False(suite.server.meta.Exist(collection))
+		suite.Nil(suite.server.targetMgr.GetDmChannelsByCollection(collection, meta.NextTarget))
+	}
+}
+
 func (suite *ServerSuite) TestNodeUp() {
-	newNode := mocks.NewMockQueryNode(suite.T(), suite.server.etcdCli)
+	newNode := mocks.NewMockQueryNode(suite.T(), suite.server.etcdCli, 100)
 	newNode.EXPECT().GetDataDistribution(mock.Anything, mock.Anything).Return(&querypb.GetDataDistributionResponse{}, nil)
 	err := newNode.Start()
 	suite.NoError(err)
@@ -163,6 +184,16 @@ func (suite *ServerSuite) TestNodeUp() {
 		return true
 	}, 5*time.Second, time.Second)
 
+}
+
+func (suite *ServerSuite) TestNodeUpdate() {
+	downNode := suite.nodes[0]
+	downNode.Stopping()
+
+	suite.Eventually(func() bool {
+		node := suite.server.nodeMgr.Get(downNode.ID)
+		return node.IsStoppingState()
+	}, 5*time.Second, time.Second)
 }
 
 func (suite *ServerSuite) TestNodeDown() {
@@ -186,7 +217,7 @@ func (suite *ServerSuite) TestNodeDown() {
 }
 
 func (suite *ServerSuite) TestDisableActiveStandby() {
-	Params.QueryCoordCfg.EnableActiveStandby = false
+	paramtable.Get().Save(Params.QueryCoordCfg.EnableActiveStandby.Key, "false")
 
 	err := suite.server.Stop()
 	suite.NoError(err)
@@ -205,7 +236,7 @@ func (suite *ServerSuite) TestDisableActiveStandby() {
 }
 
 func (suite *ServerSuite) TestEnableActiveStandby() {
-	Params.QueryCoordCfg.EnableActiveStandby = true
+	paramtable.Get().Save(Params.QueryCoordCfg.EnableActiveStandby.Key, "true")
 
 	err := suite.server.Stop()
 	suite.NoError(err)
@@ -225,7 +256,7 @@ func (suite *ServerSuite) TestEnableActiveStandby() {
 	suite.NoError(err)
 	suite.Equal(commonpb.StateCode_Healthy, states2.GetState().GetStateCode())
 
-	Params.QueryCoordCfg.EnableActiveStandby = false
+	paramtable.Get().Save(Params.QueryCoordCfg.EnableActiveStandby.Key, "false")
 }
 
 func (suite *ServerSuite) TestStop() {
@@ -272,11 +303,11 @@ func (suite *ServerSuite) loadAll() {
 func (suite *ServerSuite) assertLoaded(collection int64) {
 	suite.True(suite.server.meta.Exist(collection))
 	for _, channel := range suite.channels[collection] {
-		suite.NotNil(suite.server.targetMgr.GetDmChannel(channel))
+		suite.NotNil(suite.server.targetMgr.GetDmChannel(collection, channel, meta.NextTarget))
 	}
 	for _, partitions := range suite.segments[collection] {
 		for _, segment := range partitions {
-			suite.NotNil(suite.server.targetMgr.GetSegment(segment))
+			suite.NotNil(suite.server.targetMgr.GetHistoricalSegment(collection, segment, meta.NextTarget))
 		}
 	}
 }
@@ -346,6 +377,7 @@ func (suite *ServerSuite) updateCollectionStatus(collectionID int64, status quer
 func (suite *ServerSuite) hackServer() {
 	suite.broker = meta.NewMockBroker(suite.T())
 	suite.server.broker = suite.broker
+	suite.server.targetMgr = meta.NewTargetManager(suite.broker, suite.server.meta)
 	suite.server.taskScheduler = task.NewScheduler(
 		suite.server.ctx,
 		suite.server.meta,
@@ -354,12 +386,6 @@ func (suite *ServerSuite) hackServer() {
 		suite.broker,
 		suite.server.cluster,
 		suite.server.nodeMgr,
-	)
-	suite.server.handoffObserver = observers.NewHandoffObserver(
-		suite.server.store,
-		suite.server.meta,
-		suite.server.dist,
-		suite.server.targetMgr,
 	)
 	suite.server.distController = dist.NewDistController(
 		suite.server.cluster,
@@ -387,17 +413,24 @@ func (suite *ServerSuite) hackServer() {
 }
 
 func newQueryCoord() (*Server, error) {
-	server, err := NewQueryCoord(context.Background(), dependency.NewDefaultFactory(true))
+	server, err := NewQueryCoord(context.Background())
 	if err != nil {
 		return nil, err
 	}
 
-	etcdCli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
+	etcdCli, err := etcd.GetEtcdClient(
+		Params.EtcdCfg.UseEmbedEtcd.GetAsBool(),
+		Params.EtcdCfg.EtcdUseSSL.GetAsBool(),
+		Params.EtcdCfg.Endpoints.GetAsStrings(),
+		Params.EtcdCfg.EtcdTLSCert.GetValue(),
+		Params.EtcdCfg.EtcdTLSKey.GetValue(),
+		Params.EtcdCfg.EtcdTLSCACert.GetValue(),
+		Params.EtcdCfg.EtcdTLSMinVersion.GetValue())
 	if err != nil {
 		return nil, err
 	}
 	server.SetEtcdClient(etcdCli)
-
+	server.SetQueryNodeCreator(session.DefaultQueryNodeCreator)
 	err = server.Init()
 	return server, err
 }

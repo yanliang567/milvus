@@ -18,6 +18,9 @@ package storage
 
 import (
 	"context"
+	"errors"
+	"io"
+	"math/rand"
 	"path"
 	"strconv"
 	"strings"
@@ -44,6 +47,7 @@ func newMinIOChunkManager(ctx context.Context, bucketName string, rootPath strin
 		UseSSL(useSSL),
 		BucketName(bucketName),
 		UseIAM(false),
+		CloudProvider("aws"),
 		IAMEndpoint(""),
 		CreateBucket(true),
 	)
@@ -51,11 +55,11 @@ func newMinIOChunkManager(ctx context.Context, bucketName string, rootPath strin
 }
 
 func getMinioAddress() string {
-	minioHost := Params.LoadWithDefault("minio.address", paramtable.DefaultMinioHost)
+	minioHost := Params.GetWithDefault("minio.address", paramtable.DefaultMinioHost)
 	if strings.Contains(minioHost, ":") {
 		return minioHost
 	}
-	port := Params.LoadWithDefault("minio.port", paramtable.DefaultMinioPort)
+	port := Params.GetWithDefault("minio.port", paramtable.DefaultMinioPort)
 	return minioHost + ":" + port
 }
 
@@ -80,7 +84,7 @@ func TestMinIOCMFail(t *testing.T) {
 }
 
 func TestMinIOCM(t *testing.T) {
-	Params.Init()
+	Params.Init(0)
 	testBucket, err := Params.Load("minio.bucketName")
 	require.NoError(t, err)
 
@@ -507,6 +511,26 @@ func TestMinIOCM(t *testing.T) {
 		_, _, err = testCM.ListWithPrefix(ctx, pathWrong, true)
 		assert.Error(t, err)
 	})
+
+	t.Run("test NoSuchKey", func(t *testing.T) {
+		testPrefix := path.Join(testMinIOKVRoot, "nokey")
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		testCM, err := newMinIOChunkManager(ctx, testBucket, testPrefix)
+		require.NoError(t, err)
+		defer testCM.RemoveWithPrefix(ctx, testPrefix)
+
+		key := "a"
+
+		_, err = testCM.Read(ctx, key)
+		assert.Error(t, err)
+		assert.True(t, errors.Is(err, ErrNoSuchKey))
+
+		_, err = testCM.ReadAt(ctx, key, 100, 1)
+		assert.Error(t, err)
+		assert.True(t, errors.Is(err, ErrNoSuchKey))
+	})
 }
 
 func TestMinioChunkManager_normalizeRootPath(t *testing.T) {
@@ -548,4 +572,64 @@ func TestMinioChunkManager_normalizeRootPath(t *testing.T) {
 			assert.Equal(t, test.expected, mcm.normalizeRootPath(test.input))
 		})
 	}
+}
+
+func TestMinioChunkManager_Read(t *testing.T) {
+	var reader MockReader
+	reader.offset = new(int)
+	reader.value = make([]byte, 10)
+	reader.lastEOF = true
+	for i := 0; i < 10; i++ {
+		reader.value[i] = byte(i)
+	}
+	value, err := Read(reader, 10)
+	assert.Equal(t, len(value), 10)
+	for i := 0; i < 10; i++ {
+		assert.Equal(t, value[i], byte(i))
+	}
+
+	assert.Nil(t, err)
+}
+
+func TestMinioChunkManager_ReadEOF(t *testing.T) {
+	var reader MockReader
+	reader.offset = new(int)
+	reader.value = make([]byte, 10)
+	reader.lastEOF = false
+	for i := 0; i < 10; i++ {
+		reader.value[i] = byte(i)
+	}
+	value, err := Read(reader, 10)
+	assert.Equal(t, len(value), 10)
+	for i := 0; i < 10; i++ {
+		assert.Equal(t, value[i], byte(i))
+	}
+	assert.Nil(t, err)
+}
+
+type MockReader struct {
+	value   []byte
+	offset  *int
+	lastEOF bool
+}
+
+func (r MockReader) Read(p []byte) (n int, err error) {
+	if len(r.value) == *r.offset {
+		return 0, io.EOF
+	}
+
+	cap := len(r.value) - *r.offset
+	if cap < 5 {
+		copy(p, r.value[*r.offset:])
+		*r.offset = len(r.value)
+		if r.lastEOF {
+			return cap, io.EOF
+		}
+		return cap, nil
+	}
+
+	n = rand.Intn(5)
+	copy(p, r.value[*r.offset:(*r.offset+n)])
+	*r.offset += n
+	return n, nil
 }

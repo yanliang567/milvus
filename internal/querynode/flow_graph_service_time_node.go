@@ -19,6 +19,7 @@ package querynode
 import (
 	"fmt"
 	"reflect"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -40,22 +41,28 @@ func (stNode *serviceTimeNode) Name() string {
 	return fmt.Sprintf("stNode-%s", stNode.vChannel)
 }
 
-// Operate handles input messages, to execute insert operations
-func (stNode *serviceTimeNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
-	if in == nil {
-		log.Debug("type assertion failed for serviceTimeMsg because it's nil", zap.String("name", stNode.Name()))
-		return []Msg{}
+func (stNode *serviceTimeNode) IsValidInMsg(in []Msg) bool {
+	if !stNode.baseNode.IsValidInMsg(in) {
+		return false
 	}
-
-	if len(in) != 1 {
-		log.Warn("Invalid operate message input in serviceTimeNode, input length = ", zap.Int("input node", len(in)), zap.String("name", stNode.Name()))
-		return []Msg{}
-	}
-
-	serviceTimeMsg, ok := in[0].(*serviceTimeMsg)
+	_, ok := in[0].(*serviceTimeMsg)
 	if !ok {
 		log.Warn("type assertion failed for serviceTimeMsg", zap.String("msgType", reflect.TypeOf(in[0]).Name()), zap.String("name", stNode.Name()))
-		return []Msg{}
+		return false
+	}
+	return true
+}
+
+// Operate handles input messages, to execute insert operations
+func (stNode *serviceTimeNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
+	serviceTimeMsg := in[0].(*serviceTimeMsg)
+	if serviceTimeMsg.IsCloseMsg() {
+		log.Info("service node hit close msg",
+			zap.Int64("collectionID", stNode.collectionID),
+			zap.Uint64("tSafe", serviceTimeMsg.timeRange.timestampMax),
+			zap.String("channel", stNode.vChannel),
+		)
+		return in
 	}
 
 	// update service time
@@ -67,10 +74,11 @@ func (stNode *serviceTimeNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 	rateCol.updateTSafe(stNode.vChannel, serviceTimeMsg.timeRange.timestampMax)
 	p, _ := tsoutil.ParseTS(serviceTimeMsg.timeRange.timestampMax)
 	log.RatedDebug(10.0, "update tSafe:",
-		zap.Any("collectionID", stNode.collectionID),
-		zap.Any("tSafe", serviceTimeMsg.timeRange.timestampMax),
-		zap.Any("tSafe_p", p),
-		zap.Any("channel", stNode.vChannel),
+		zap.Int64("collectionID", stNode.collectionID),
+		zap.Uint64("tSafe", serviceTimeMsg.timeRange.timestampMax),
+		zap.Time("tSafe_p", p),
+		zap.Duration("tsLag", time.Since(p)),
+		zap.String("channel", stNode.vChannel),
 	)
 
 	return in
@@ -79,10 +87,10 @@ func (stNode *serviceTimeNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 // newServiceTimeNode returns a new serviceTimeNode
 func newServiceTimeNode(tSafeReplica TSafeReplicaInterface,
 	collectionID UniqueID,
-	channel Channel) *serviceTimeNode {
+	vchannel Channel) *serviceTimeNode {
 
-	maxQueueLength := Params.QueryNodeCfg.FlowGraphMaxQueueLength
-	maxParallelism := Params.QueryNodeCfg.FlowGraphMaxParallelism
+	maxQueueLength := Params.QueryNodeCfg.FlowGraphMaxQueueLength.GetAsInt32()
+	maxParallelism := Params.QueryNodeCfg.FlowGraphMaxParallelism.GetAsInt32()
 
 	baseNode := baseNode{}
 	baseNode.SetMaxQueueLength(maxQueueLength)
@@ -91,7 +99,7 @@ func newServiceTimeNode(tSafeReplica TSafeReplicaInterface,
 	return &serviceTimeNode{
 		baseNode:     baseNode,
 		collectionID: collectionID,
-		vChannel:     channel,
+		vChannel:     vchannel,
 		tSafeReplica: tSafeReplica,
 	}
 }

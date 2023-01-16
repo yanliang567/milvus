@@ -19,20 +19,26 @@ package balance
 import (
 	"testing"
 
+	"github.com/milvus-io/milvus/internal/querycoordv2/task"
+
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
+	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	. "github.com/milvus-io/milvus/internal/querycoordv2/params"
 	"github.com/milvus-io/milvus/internal/querycoordv2/session"
 	"github.com/milvus-io/milvus/internal/querycoordv2/utils"
 	"github.com/milvus-io/milvus/internal/util/etcd"
+	mock "github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 )
 
 type RowCountBasedBalancerTestSuite struct {
 	suite.Suite
-	balancer *RowCountBasedBalancer
-	kv       *etcdkv.EtcdKV
+	balancer      *RowCountBasedBalancer
+	kv            *etcdkv.EtcdKV
+	broker        *meta.MockBroker
+	mockScheduler *task.MockScheduler
 }
 
 func (suite *RowCountBasedBalancerTestSuite) SetupSuite() {
@@ -42,17 +48,27 @@ func (suite *RowCountBasedBalancerTestSuite) SetupSuite() {
 func (suite *RowCountBasedBalancerTestSuite) SetupTest() {
 	var err error
 	config := GenerateEtcdConfig()
-	cli, err := etcd.GetEtcdClient(&config)
+	cli, err := etcd.GetEtcdClient(
+		config.UseEmbedEtcd.GetAsBool(),
+		config.EtcdUseSSL.GetAsBool(),
+		config.Endpoints.GetAsStrings(),
+		config.EtcdTLSCert.GetValue(),
+		config.EtcdTLSKey.GetValue(),
+		config.EtcdTLSCACert.GetValue(),
+		config.EtcdTLSMinVersion.GetValue())
 	suite.Require().NoError(err)
-	suite.kv = etcdkv.NewEtcdKV(cli, config.MetaRootPath)
+	suite.kv = etcdkv.NewEtcdKV(cli, config.MetaRootPath.GetValue())
+	suite.broker = meta.NewMockBroker(suite.T())
 
 	store := meta.NewMetaStore(suite.kv)
 	idAllocator := RandomIncrementIDAllocator()
 	testMeta := meta.NewMeta(idAllocator, store)
+	testTarget := meta.NewTargetManager(suite.broker, testMeta)
 
 	distManager := meta.NewDistributionManager()
 	nodeManager := session.NewNodeManager()
-	suite.balancer = NewRowCountBasedBalancer(nil, nodeManager, distManager, testMeta)
+	suite.mockScheduler = task.NewMockScheduler(suite.T())
+	suite.balancer = NewRowCountBasedBalancer(suite.mockScheduler, nodeManager, distManager, testMeta, testTarget)
 }
 
 func (suite *RowCountBasedBalancerTestSuite) TearDownTest() {
@@ -65,6 +81,8 @@ func (suite *RowCountBasedBalancerTestSuite) TestAssignSegment() {
 		distributions map[int64][]*meta.Segment
 		assignments   []*meta.Segment
 		nodes         []int64
+		segmentCnts   []int
+		states        []session.State
 		expectPlans   []SegmentAssignPlan
 	}{
 		{
@@ -78,7 +96,9 @@ func (suite *RowCountBasedBalancerTestSuite) TestAssignSegment() {
 				{SegmentInfo: &datapb.SegmentInfo{ID: 4, NumOfRows: 10}},
 				{SegmentInfo: &datapb.SegmentInfo{ID: 5, NumOfRows: 15}},
 			},
-			nodes: []int64{1, 2, 3},
+			nodes:       []int64{1, 2, 3, 4},
+			states:      []session.State{session.NodeStateNormal, session.NodeStateNormal, session.NodeStateNormal, session.NodeStateStopping},
+			segmentCnts: []int{0, 1, 1, 0},
 			expectPlans: []SegmentAssignPlan{
 				{Segment: &meta.Segment{SegmentInfo: &datapb.SegmentInfo{ID: 3, NumOfRows: 5}}, From: -1, To: 2},
 				{Segment: &meta.Segment{SegmentInfo: &datapb.SegmentInfo{ID: 4, NumOfRows: 10}}, From: -1, To: 1},
@@ -98,6 +118,12 @@ func (suite *RowCountBasedBalancerTestSuite) TestAssignSegment() {
 			for node, s := range c.distributions {
 				balancer.dist.SegmentDistManager.Update(node, s...)
 			}
+			for i := range c.nodes {
+				nodeInfo := session.NewNodeInfo(c.nodes[i], "127.0.0.1:0")
+				nodeInfo.UpdateStats(session.WithSegmentCnt(c.segmentCnts[i]))
+				nodeInfo.SetState(c.states[i])
+				suite.balancer.nodeManager.Add(nodeInfo)
+			}
 			plans := balancer.AssignSegment(c.assignments, c.nodes)
 			suite.ElementsMatch(c.expectPlans, plans)
 		})
@@ -105,6 +131,159 @@ func (suite *RowCountBasedBalancerTestSuite) TestAssignSegment() {
 }
 
 func (suite *RowCountBasedBalancerTestSuite) TestBalance() {
+	cases := []struct {
+		name                 string
+		nodes                []int64
+		notExistedNodes      []int64
+		segmentCnts          []int
+		states               []session.State
+		shouldMock           bool
+		distributions        map[int64][]*meta.Segment
+		distributionChannels map[int64][]*meta.DmChannel
+		expectPlans          []SegmentAssignPlan
+		expectChannelPlans   []ChannelAssignPlan
+	}{
+		{
+			name:        "normal balance",
+			nodes:       []int64{1, 2},
+			segmentCnts: []int{1, 2},
+			states:      []session.State{session.NodeStateNormal, session.NodeStateNormal},
+			distributions: map[int64][]*meta.Segment{
+				1: {{SegmentInfo: &datapb.SegmentInfo{ID: 1, CollectionID: 1, NumOfRows: 10}, Node: 1}},
+				2: {
+					{SegmentInfo: &datapb.SegmentInfo{ID: 2, CollectionID: 1, NumOfRows: 20}, Node: 2},
+					{SegmentInfo: &datapb.SegmentInfo{ID: 3, CollectionID: 1, NumOfRows: 30}, Node: 2},
+				},
+			},
+			expectPlans: []SegmentAssignPlan{
+				{Segment: &meta.Segment{SegmentInfo: &datapb.SegmentInfo{ID: 2, CollectionID: 1, NumOfRows: 20}, Node: 2}, From: 2, To: 1, ReplicaID: 1},
+			},
+			expectChannelPlans: []ChannelAssignPlan{},
+		},
+		{
+			name:        "all stopping balance",
+			nodes:       []int64{1, 2},
+			segmentCnts: []int{1, 2},
+			states:      []session.State{session.NodeStateStopping, session.NodeStateStopping},
+			distributions: map[int64][]*meta.Segment{
+				1: {{SegmentInfo: &datapb.SegmentInfo{ID: 1, CollectionID: 1, NumOfRows: 10}, Node: 1}},
+				2: {
+					{SegmentInfo: &datapb.SegmentInfo{ID: 2, CollectionID: 1, NumOfRows: 20}, Node: 2},
+					{SegmentInfo: &datapb.SegmentInfo{ID: 3, CollectionID: 1, NumOfRows: 30}, Node: 2},
+				},
+			},
+			expectPlans: []SegmentAssignPlan{
+				{Segment: &meta.Segment{SegmentInfo: &datapb.SegmentInfo{ID: 2, CollectionID: 1, NumOfRows: 20}, Node: 2}, From: 2, To: -1, ReplicaID: 1, Weight: weightHigh},
+				{Segment: &meta.Segment{SegmentInfo: &datapb.SegmentInfo{ID: 3, CollectionID: 1, NumOfRows: 30}, Node: 2}, From: 2, To: -1, ReplicaID: 1, Weight: weightHigh},
+				{Segment: &meta.Segment{SegmentInfo: &datapb.SegmentInfo{ID: 1, CollectionID: 1, NumOfRows: 10}, Node: 1}, From: 1, To: -1, ReplicaID: 1, Weight: weightHigh},
+			},
+			expectChannelPlans: []ChannelAssignPlan{},
+		},
+		{
+			name:        "part stopping balance",
+			nodes:       []int64{1, 2, 3},
+			segmentCnts: []int{1, 2, 2},
+			states:      []session.State{session.NodeStateNormal, session.NodeStateNormal, session.NodeStateStopping},
+			shouldMock:  true,
+			distributions: map[int64][]*meta.Segment{
+				1: {{SegmentInfo: &datapb.SegmentInfo{ID: 1, CollectionID: 1, NumOfRows: 10}, Node: 1}},
+				2: {
+					{SegmentInfo: &datapb.SegmentInfo{ID: 2, CollectionID: 1, NumOfRows: 20}, Node: 2},
+					{SegmentInfo: &datapb.SegmentInfo{ID: 3, CollectionID: 1, NumOfRows: 30}, Node: 2},
+				},
+				3: {
+					{SegmentInfo: &datapb.SegmentInfo{ID: 4, CollectionID: 1, NumOfRows: 10}, Node: 3},
+					{SegmentInfo: &datapb.SegmentInfo{ID: 5, CollectionID: 1, NumOfRows: 10}, Node: 3},
+				},
+			},
+			distributionChannels: map[int64][]*meta.DmChannel{
+				2: {
+					{VchannelInfo: &datapb.VchannelInfo{CollectionID: 1, ChannelName: "v2"}, Node: 2},
+				},
+				3: {
+					{VchannelInfo: &datapb.VchannelInfo{CollectionID: 1, ChannelName: "v3"}, Node: 3},
+				},
+			},
+			expectPlans: []SegmentAssignPlan{
+				{Segment: &meta.Segment{SegmentInfo: &datapb.SegmentInfo{ID: 4, CollectionID: 1, NumOfRows: 10}, Node: 3}, From: 3, To: 1, ReplicaID: 1, Weight: weightHigh},
+				{Segment: &meta.Segment{SegmentInfo: &datapb.SegmentInfo{ID: 5, CollectionID: 1, NumOfRows: 10}, Node: 3}, From: 3, To: 1, ReplicaID: 1, Weight: weightHigh},
+			},
+			expectChannelPlans: []ChannelAssignPlan{
+				{Channel: &meta.DmChannel{VchannelInfo: &datapb.VchannelInfo{CollectionID: 1, ChannelName: "v3"}, Node: 3}, From: 3, To: 1, ReplicaID: 1, Weight: weightHigh},
+			},
+		},
+		{
+			name:            "already balanced",
+			nodes:           []int64{1, 2},
+			notExistedNodes: []int64{10},
+			segmentCnts:     []int{1, 2},
+			states:          []session.State{session.NodeStateNormal, session.NodeStateNormal},
+			distributions: map[int64][]*meta.Segment{
+				1: {{SegmentInfo: &datapb.SegmentInfo{ID: 1, CollectionID: 1, NumOfRows: 30}, Node: 1}},
+				2: {
+					{SegmentInfo: &datapb.SegmentInfo{ID: 2, CollectionID: 1, NumOfRows: 20}, Node: 2},
+					{SegmentInfo: &datapb.SegmentInfo{ID: 3, CollectionID: 1, NumOfRows: 30}, Node: 2},
+				},
+				10: {{SegmentInfo: &datapb.SegmentInfo{ID: 4, CollectionID: 1, NumOfRows: 30}, Node: 10}},
+			},
+			expectPlans:        []SegmentAssignPlan{},
+			expectChannelPlans: []ChannelAssignPlan{},
+		},
+	}
+
+	suite.mockScheduler.Mock.On("GetNodeChannelDelta", mock.Anything).Return(0)
+	for _, c := range cases {
+		suite.Run(c.name, func() {
+			suite.SetupSuite()
+			defer suite.TearDownTest()
+			balancer := suite.balancer
+			collection := utils.CreateTestCollection(1, 1)
+			segments := []*datapb.SegmentBinlogs{
+				{
+					SegmentID: 1,
+				},
+				{
+					SegmentID: 2,
+				},
+				{
+					SegmentID: 3,
+				},
+				{
+					SegmentID: 4,
+				},
+				{
+					SegmentID: 5,
+				},
+			}
+			suite.broker.EXPECT().GetRecoveryInfo(mock.Anything, int64(1), int64(1)).Return(
+				nil, segments, nil)
+			balancer.targetMgr.UpdateCollectionNextTargetWithPartitions(int64(1), int64(1))
+			balancer.targetMgr.UpdateCollectionCurrentTarget(1, 1)
+			collection.LoadPercentage = 100
+			collection.Status = querypb.LoadStatus_Loaded
+			balancer.meta.CollectionManager.PutCollection(collection)
+			balancer.meta.ReplicaManager.Put(utils.CreateTestReplica(1, 1, append(c.nodes, c.notExistedNodes...)))
+			for node, s := range c.distributions {
+				balancer.dist.SegmentDistManager.Update(node, s...)
+			}
+			for node, v := range c.distributionChannels {
+				balancer.dist.ChannelDistManager.Update(node, v...)
+			}
+			for i := range c.nodes {
+				nodeInfo := session.NewNodeInfo(c.nodes[i], "127.0.0.1:0")
+				nodeInfo.UpdateStats(session.WithSegmentCnt(c.segmentCnts[i]))
+				nodeInfo.SetState(c.states[i])
+				suite.balancer.nodeManager.Add(nodeInfo)
+			}
+			segmentPlans, channelPlans := balancer.Balance()
+			suite.ElementsMatch(c.expectChannelPlans, channelPlans)
+			suite.ElementsMatch(c.expectPlans, segmentPlans)
+		})
+	}
+
+}
+
+func (suite *RowCountBasedBalancerTestSuite) TestBalanceOnLoadingCollection() {
 	cases := []struct {
 		name          string
 		nodes         []int64
@@ -121,20 +300,6 @@ func (suite *RowCountBasedBalancerTestSuite) TestBalance() {
 					{SegmentInfo: &datapb.SegmentInfo{ID: 3, CollectionID: 1, NumOfRows: 30}, Node: 2},
 				},
 			},
-			expectPlans: []SegmentAssignPlan{
-				{Segment: &meta.Segment{SegmentInfo: &datapb.SegmentInfo{ID: 2, CollectionID: 1, NumOfRows: 20}, Node: 2}, From: 2, To: 1, ReplicaID: 1},
-			},
-		},
-		{
-			name:  "already balanced",
-			nodes: []int64{1, 2},
-			distributions: map[int64][]*meta.Segment{
-				1: {{SegmentInfo: &datapb.SegmentInfo{ID: 1, CollectionID: 1, NumOfRows: 30}, Node: 1}},
-				2: {
-					{SegmentInfo: &datapb.SegmentInfo{ID: 2, CollectionID: 1, NumOfRows: 20}, Node: 2},
-					{SegmentInfo: &datapb.SegmentInfo{ID: 3, CollectionID: 1, NumOfRows: 30}, Node: 2},
-				},
-			},
 			expectPlans: []SegmentAssignPlan{},
 		},
 	}
@@ -144,7 +309,10 @@ func (suite *RowCountBasedBalancerTestSuite) TestBalance() {
 			suite.SetupSuite()
 			defer suite.TearDownTest()
 			balancer := suite.balancer
-			balancer.meta.CollectionManager.PutCollection(utils.CreateTestCollection(1, 1))
+			collection := utils.CreateTestCollection(1, 1)
+			collection.LoadPercentage = 100
+			collection.Status = querypb.LoadStatus_Loading
+			balancer.meta.CollectionManager.PutCollection(collection)
 			balancer.meta.ReplicaManager.Put(utils.CreateTestReplica(1, 1, c.nodes))
 			for node, s := range c.distributions {
 				balancer.dist.SegmentDistManager.Update(node, s...)

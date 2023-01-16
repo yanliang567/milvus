@@ -21,12 +21,14 @@ import (
 	"errors"
 	"sync"
 
+	"go.uber.org/zap"
+
 	"github.com/milvus-io/milvus/internal/kv"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/util/retry"
-	"go.uber.org/zap"
+	"github.com/milvus-io/milvus/internal/util/tsoutil"
 )
 
 // errStart used for retry start
@@ -134,6 +136,7 @@ func (t *flushTaskRunner) runFlushInsert(task flushInsertTask,
 			zap.Bool("flushed", flushed),
 			zap.Bool("dropped", dropped),
 			zap.Any("position", pos),
+			zap.Time("PosTime", tsoutil.PhysicalTime(pos.GetTimestamp())),
 		)
 		go func() {
 			err := retry.Do(context.Background(), func() error {
@@ -215,7 +218,14 @@ func (t *flushTaskRunner) getFlushPack() *segmentFlushPack {
 		dropped:    t.dropped,
 	}
 	log.Debug("flush pack composed",
-		zap.Any("pack", pack))
+		zap.Int64("segmentID", t.segmentID),
+		zap.Int("insertLogs", len(t.insertLogs)),
+		zap.Int("statsLogs", len(t.statsLogs)),
+		zap.Int("deleteLogs", len(t.deltaLogs)),
+		zap.Bool("flushed", t.flushed),
+		zap.Bool("dropped", t.dropped),
+	)
+
 	if t.insertErr != nil || t.deleteErr != nil {
 		log.Warn("flush task error detected", zap.Error(t.insertErr), zap.Error(t.deleteErr))
 		pack.err = errors.New("execution failed")

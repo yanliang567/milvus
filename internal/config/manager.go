@@ -26,22 +26,71 @@ import (
 )
 
 const (
-	TombValue        = "TOMB_VALUE"
-	CustomSourceName = "CustomSource"
+	TombValue = "TOMB_VAULE"
 )
+
+type Filter func(key string) (string, bool)
+
+func WithSubstr(substring string) Filter {
+	substring = strings.ToLower(substring)
+	return func(key string) (string, bool) {
+		return key, strings.Contains(key, substring)
+	}
+}
+
+func WithPrefix(prefix string) Filter {
+	prefix = strings.ToLower(prefix)
+	return func(key string) (string, bool) {
+		return key, strings.HasPrefix(key, prefix)
+	}
+}
+
+func WithOneOfPrefixs(prefixs ...string) Filter {
+	for id, prefix := range prefixs {
+		prefixs[id] = strings.ToLower(prefix)
+	}
+	return func(key string) (string, bool) {
+		for _, prefix := range prefixs {
+			if strings.HasPrefix(key, prefix) {
+				return key, true
+			}
+		}
+		return key, false
+	}
+}
+
+func RemovePrefix(prefix string) Filter {
+	prefix = strings.ToLower(prefix)
+	return func(key string) (string, bool) {
+		return strings.Replace(key, prefix, "", 1), true
+	}
+}
+
+func filterate(key string, filters ...Filter) (string, bool) {
+	var ok bool
+	for _, filter := range filters {
+		key, ok = filter(key)
+		if !ok {
+			return key, ok
+		}
+	}
+	return key, ok
+}
 
 type Manager struct {
 	sync.RWMutex
-	sources        map[string]Source
-	keySourceMap   map[string]string
-	overlayConfigs map[string]string // store the configs setted or deleted by user
+	Dispatcher   *EventDispatcher
+	sources      map[string]Source
+	keySourceMap map[string]string // store the key to config source, example: key is A.B.C and source is file which means the A.B.C's value is from file
+	overlays     map[string]string // store the highest priority configs which modified at runtime
 }
 
 func NewManager() *Manager {
 	return &Manager{
-		sources:        make(map[string]Source),
-		keySourceMap:   make(map[string]string),
-		overlayConfigs: make(map[string]string),
+		Dispatcher:   NewEventDispatcher(),
+		sources:      make(map[string]Source),
+		keySourceMap: make(map[string]string),
+		overlays:     make(map[string]string),
 	}
 }
 
@@ -49,10 +98,10 @@ func (m *Manager) GetConfig(key string) (string, error) {
 	m.RLock()
 	defer m.RUnlock()
 	realKey := formatKey(key)
-	v, ok := m.overlayConfigs[realKey]
+	v, ok := m.overlays[realKey]
 	if ok {
 		if v == TombValue {
-			return "", fmt.Errorf("key not found: %s", key)
+			return "", fmt.Errorf("key not found %s", key)
 		}
 		return v, nil
 	}
@@ -63,45 +112,14 @@ func (m *Manager) GetConfig(key string) (string, error) {
 	return m.getConfigValueBySource(realKey, sourceName)
 }
 
-//GetConfigsByPattern returns key values that matched pattern
-// withPrefix : whether key include the prefix of pattern
-func (m *Manager) GetConfigsByPattern(pattern string, withPrefix bool) map[string]string {
-
-	m.RLock()
-	defer m.RUnlock()
-	matchedConfig := make(map[string]string)
-	pattern = strings.ToLower(pattern)
-	for key, value := range m.keySourceMap {
-		result := strings.HasPrefix(key, pattern)
-
-		if result {
-			sValue, err := m.getConfigValueBySource(key, value)
-			if err != nil {
-				continue
-			}
-
-			checkAndCutOffKey := func() string {
-				if withPrefix {
-					return key
-				}
-				return strings.Replace(key, pattern, "", 1)
-			}
-
-			finalKey := checkAndCutOffKey()
-			matchedConfig[finalKey] = sValue
-		}
-	}
-	return matchedConfig
-}
-
-// Configs returns all the key values
-func (m *Manager) Configs() map[string]string {
+// GetConfigs returns all the key values
+func (m *Manager) GetConfigs() map[string]string {
 	m.RLock()
 	defer m.RUnlock()
 	config := make(map[string]string)
 
-	for key, value := range m.keySourceMap {
-		sValue, err := m.getConfigValueBySource(key, value)
+	for key := range m.keySourceMap {
+		sValue, err := m.GetConfig(key)
 		if err != nil {
 			continue
 		}
@@ -111,22 +129,19 @@ func (m *Manager) Configs() map[string]string {
 	return config
 }
 
-// For compatible reason, only visiable for Test
-func (m *Manager) SetConfig(key, value string) {
-	m.Lock()
-	defer m.Unlock()
-	realKey := formatKey(key)
-	m.overlayConfigs[realKey] = value
-	m.updateEvent(newEvent(CustomSourceName, CreateType, realKey, value))
-}
+func (m *Manager) GetBy(filters ...Filter) map[string]string {
+	m.RLock()
+	defer m.RUnlock()
+	matchedConfig := make(map[string]string)
 
-// For compatible reason, only visiable for Test
-func (m *Manager) DeleteConfig(key string) {
-	m.Lock()
-	defer m.Unlock()
-	realKey := formatKey(key)
-	m.overlayConfigs[realKey] = TombValue
-	m.updateEvent(newEvent(realKey, DeleteType, realKey, ""))
+	for key, value := range m.GetConfigs() {
+		newkey, ok := filterate(key, filters...)
+		if ok {
+			matchedConfig[newkey] = value
+		}
+	}
+
+	return matchedConfig
 }
 
 func (m *Manager) Close() {
@@ -153,7 +168,27 @@ func (m *Manager) AddSource(source Source) error {
 		return err
 	}
 
+	source.SetEventHandler(m)
+
 	return nil
+}
+
+func (m *Manager) SetConfig(key, value string) {
+	m.Lock()
+	defer m.Unlock()
+	m.overlays[formatKey(key)] = value
+}
+
+func (m *Manager) DeleteConfig(key string) {
+	m.Lock()
+	defer m.Unlock()
+	m.overlays[formatKey(key)] = TombValue
+}
+
+func (m *Manager) ResetConfig(key string) {
+	m.Lock()
+	defer m.Unlock()
+	delete(m.overlays, formatKey(key))
 }
 
 // Do not use it directly, only used when add source and unittests.
@@ -260,7 +295,11 @@ func (m *Manager) OnEvent(event *Event) {
 		return
 	}
 
-	// m.dispatcher.DispatchEvent(event)
+	m.Dispatcher.Dispatch(event)
+}
+
+func (m *Manager) GetIdentifier() string {
+	return "Manager"
 }
 
 func (m *Manager) findNextBestSource(key string, sourceName string) Source {

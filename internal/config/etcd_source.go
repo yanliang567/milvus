@@ -23,46 +23,45 @@ import (
 	"sync"
 	"time"
 
-	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/util/etcd"
 	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.uber.org/zap"
 )
 
 const (
-	ModeWatch = iota
-	ModeInterval
+	ReadConfigTimeout = 3 * time.Second
 )
 
 type EtcdSource struct {
 	sync.RWMutex
-	etcdCli          *clientv3.Client
-	ctx              context.Context
-	currentConfig    map[string]string
-	keyPrefix        string
-	refreshMode      int
-	refreshInterval  time.Duration
-	intervalDone     chan bool
-	intervalInitOnce sync.Once
-	eh               EventHandler
+	etcdCli       *clientv3.Client
+	ctx           context.Context
+	currentConfig map[string]string
+	keyPrefix     string
+
+	configRefresher refresher
+	eh              EventHandler
 }
 
-func NewEtcdSource(remoteInfo *EtcdInfo) (*EtcdSource, error) {
-	etcdCli, err := clientv3.New(clientv3.Config{
-		Endpoints:   remoteInfo.Endpoints,
-		DialTimeout: 5 * time.Second,
-	})
+func NewEtcdSource(etcdInfo *EtcdInfo) (*EtcdSource, error) {
+	etcdCli, err := etcd.GetEtcdClient(
+		etcdInfo.UseEmbed,
+		etcdInfo.UseSSL,
+		etcdInfo.Endpoints,
+		etcdInfo.CertFile,
+		etcdInfo.KeyFile,
+		etcdInfo.CaCertFile,
+		etcdInfo.MinVersion)
 	if err != nil {
 		return nil, err
 	}
-	return &EtcdSource{
-		etcdCli:         etcdCli,
-		ctx:             context.Background(),
-		currentConfig:   make(map[string]string),
-		keyPrefix:       remoteInfo.KeyPrefix,
-		refreshMode:     remoteInfo.RefreshMode,
-		refreshInterval: remoteInfo.RefreshInterval,
-		intervalDone:    make(chan bool, 1),
-	}, nil
+	es := &EtcdSource{
+		etcdCli:       etcdCli,
+		ctx:           context.Background(),
+		currentConfig: make(map[string]string),
+		keyPrefix:     etcdInfo.KeyPrefix,
+	}
+	es.configRefresher = newRefresher(etcdInfo.RefreshInterval, es.refreshConfigurations)
+	return es, nil
 }
 
 // GetConfigurationByKey implements ConfigSource
@@ -83,12 +82,7 @@ func (es *EtcdSource) GetConfigurations() (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if es.refreshMode == ModeInterval {
-		es.intervalInitOnce.Do(func() {
-			go es.refreshConfigurationsPeriodically()
-		})
-	}
-
+	es.configRefresher.start(es.GetSourceName())
 	es.RLock()
 	for key, value := range es.currentConfig {
 		configMap[key] = value
@@ -109,12 +103,19 @@ func (es *EtcdSource) GetSourceName() string {
 }
 
 func (es *EtcdSource) Close() {
-	es.intervalDone <- true
+	es.etcdCli.Close()
+	es.configRefresher.stop()
+}
+
+func (es *EtcdSource) SetEventHandler(eh EventHandler) {
+	es.configRefresher.eh = eh
 }
 
 func (es *EtcdSource) refreshConfigurations() error {
 	prefix := es.keyPrefix + "/config"
-	response, err := es.etcdCli.Get(es.ctx, prefix, clientv3.WithPrefix())
+	ctx, cancel := context.WithTimeout(es.ctx, ReadConfigTimeout)
+	defer cancel()
+	response, err := es.etcdCli.Get(ctx, prefix, clientv3.WithPrefix())
 	if err != nil {
 		return err
 	}
@@ -125,42 +126,12 @@ func (es *EtcdSource) refreshConfigurations() error {
 		newConfig[key] = string(kv.Value)
 		newConfig[formatKey(key)] = string(kv.Value)
 	}
-	return es.updateConfigurationAndFireEvent(newConfig)
-}
-
-func (es *EtcdSource) refreshConfigurationsPeriodically() {
-	ticker := time.NewTicker(es.refreshInterval)
-	log.Info("start refreshing configurations")
-	for {
-		select {
-		case <-ticker.C:
-			err := es.refreshConfigurations()
-			if err != nil {
-				log.Error("can not pull configs", zap.Error(err))
-				es.intervalDone <- true
-			}
-		case <-es.intervalDone:
-			log.Info("stop refreshing configurations")
-			return
-		}
-	}
-}
-
-func (es *EtcdSource) updateConfigurationAndFireEvent(config map[string]string) error {
 	es.Lock()
 	defer es.Unlock()
-	//Populate the events based on the changed value between current config and newly received Config
-	events, err := PopulateEvents(es.GetSourceName(), es.currentConfig, config)
+	err = es.configRefresher.fireEvents(es.GetSourceName(), es.currentConfig, newConfig)
 	if err != nil {
-		log.Warn("generating event error", zap.Error(err))
 		return err
 	}
-	es.currentConfig = config
-	//Generate OnEvent Callback based on the events created
-	if es.eh != nil {
-		for _, e := range events {
-			es.eh.OnEvent(e)
-		}
-	}
+	es.currentConfig = newConfig
 	return nil
 }

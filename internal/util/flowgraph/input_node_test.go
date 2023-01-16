@@ -33,7 +33,6 @@ func TestInputNode(t *testing.T) {
 	msgStream, _ := factory.NewMsgStream(context.TODO())
 	channels := []string{"cc"}
 	msgStream.AsConsumer(channels, "sub", mqwrapper.SubscriptionPositionEarliest)
-	msgStream.Start()
 
 	msgPack := generateMsgPack()
 	produceStream, _ := factory.NewMsgStream(context.TODO())
@@ -41,7 +40,7 @@ func TestInputNode(t *testing.T) {
 	produceStream.Produce(&msgPack)
 
 	nodeName := "input_node"
-	inputNode := NewInputNode(msgStream, nodeName, 100, 100)
+	inputNode := NewInputNode(msgStream, nodeName, 100, 100, "", 0, 0, "")
 	defer inputNode.Close()
 
 	isInputNode := inputNode.IsInputNode()
@@ -64,7 +63,7 @@ func Test_NewInputNode(t *testing.T) {
 	nodeName := "input_node"
 	var maxQueueLength int32
 	var maxParallelism int32 = 100
-	node := NewInputNode(nil, nodeName, maxQueueLength, maxParallelism)
+	node := NewInputNode(nil, nodeName, maxQueueLength, maxParallelism, "", 0, 0, "")
 	assert.NotNil(t, node)
 	assert.Equal(t, node.name, nodeName)
 	assert.Equal(t, node.maxQueueLength, maxQueueLength)

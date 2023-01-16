@@ -22,12 +22,13 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/proto/indexpb"
+
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
-	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/types"
 
@@ -45,24 +46,21 @@ type Broker interface {
 	GetCollectionSchema(ctx context.Context, collectionID UniqueID) (*schemapb.CollectionSchema, error)
 	GetPartitions(ctx context.Context, collectionID UniqueID) ([]UniqueID, error)
 	GetRecoveryInfo(ctx context.Context, collectionID UniqueID, partitionID UniqueID) ([]*datapb.VchannelInfo, []*datapb.SegmentBinlogs, error)
-	GetSegmentInfo(ctx context.Context, segmentID ...UniqueID) ([]*datapb.SegmentInfo, error)
+	GetSegmentInfo(ctx context.Context, segmentID ...UniqueID) (*datapb.GetSegmentInfoResponse, error)
 	GetIndexInfo(ctx context.Context, collectionID UniqueID, segmentID UniqueID) ([]*querypb.FieldIndexInfo, error)
 }
 
 type CoordinatorBroker struct {
-	dataCoord  types.DataCoord
-	rootCoord  types.RootCoord
-	indexCoord types.IndexCoord
+	dataCoord types.DataCoord
+	rootCoord types.RootCoord
 }
 
 func NewCoordinatorBroker(
 	dataCoord types.DataCoord,
-	rootCoord types.RootCoord,
-	indexCoord types.IndexCoord) *CoordinatorBroker {
+	rootCoord types.RootCoord) *CoordinatorBroker {
 	return &CoordinatorBroker{
 		dataCoord,
 		rootCoord,
-		indexCoord,
 	}
 }
 
@@ -76,7 +74,7 @@ func (broker *CoordinatorBroker) GetCollectionSchema(ctx context.Context, collec
 		),
 		CollectionID: collectionID,
 	}
-	resp, err := broker.rootCoord.DescribeCollection(ctx, req)
+	resp, err := broker.rootCoord.DescribeCollectionInternal(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -97,15 +95,15 @@ func (broker *CoordinatorBroker) GetPartitions(ctx context.Context, collectionID
 		),
 		CollectionID: collectionID,
 	}
-	resp, err := broker.rootCoord.ShowPartitions(ctx, req)
+	resp, err := broker.rootCoord.ShowPartitionsInternal(ctx, req)
 	if err != nil {
-		log.Error("showPartition failed", zap.Int64("collectionID", collectionID), zap.Error(err))
+		log.Warn("showPartition failed", zap.Int64("collectionID", collectionID), zap.Error(err))
 		return nil, err
 	}
 
 	if resp.Status.ErrorCode != commonpb.ErrorCode_Success {
 		err = errors.New(resp.Status.Reason)
-		log.Error("showPartition failed", zap.Int64("collectionID", collectionID), zap.Error(err))
+		log.Warn("showPartition failed", zap.Int64("collectionID", collectionID), zap.Error(err))
 		return nil, err
 	}
 
@@ -138,7 +136,7 @@ func (broker *CoordinatorBroker) GetRecoveryInfo(ctx context.Context, collection
 	return recoveryInfo.Channels, recoveryInfo.Binlogs, nil
 }
 
-func (broker *CoordinatorBroker) GetSegmentInfo(ctx context.Context, ids ...UniqueID) ([]*datapb.SegmentInfo, error) {
+func (broker *CoordinatorBroker) GetSegmentInfo(ctx context.Context, ids ...UniqueID) (*datapb.GetSegmentInfoResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, brokerRPCTimeout)
 	defer cancel()
 
@@ -160,14 +158,14 @@ func (broker *CoordinatorBroker) GetSegmentInfo(ctx context.Context, ids ...Uniq
 		return nil, fmt.Errorf("no such segment in DataCoord")
 	}
 
-	return resp.GetInfos(), nil
+	return resp, nil
 }
 
 func (broker *CoordinatorBroker) GetIndexInfo(ctx context.Context, collectionID UniqueID, segmentID UniqueID) ([]*querypb.FieldIndexInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, brokerRPCTimeout)
 	defer cancel()
 
-	resp, err := broker.indexCoord.GetIndexInfos(ctx, &indexpb.GetIndexInfoRequest{
+	resp, err := broker.dataCoord.GetIndexInfos(ctx, &indexpb.GetIndexInfoRequest{
 		CollectionID: collectionID,
 		SegmentIDs:   []int64{segmentID},
 	})

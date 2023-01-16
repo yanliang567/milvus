@@ -100,26 +100,26 @@ type compactionPlanHandler struct {
 	quit             chan struct{}
 	wg               sync.WaitGroup
 	flushCh          chan UniqueID
-	segRefer         *SegmentReferenceManager
-	parallelCh       map[int64]chan struct{}
+	//segRefer         *SegmentReferenceManager
+	parallelCh map[int64]chan struct{}
 }
 
 func newCompactionPlanHandler(sessions *SessionManager, cm *ChannelManager, meta *meta,
-	allocator allocator, flush chan UniqueID, segRefer *SegmentReferenceManager) *compactionPlanHandler {
+	allocator allocator, flush chan UniqueID) *compactionPlanHandler {
 	return &compactionPlanHandler{
-		plans:      make(map[int64]*compactionTask),
-		chManager:  cm,
-		meta:       meta,
-		sessions:   sessions,
-		allocator:  allocator,
-		flushCh:    flush,
-		segRefer:   segRefer,
+		plans:     make(map[int64]*compactionTask),
+		chManager: cm,
+		meta:      meta,
+		sessions:  sessions,
+		allocator: allocator,
+		flushCh:   flush,
+		//segRefer:   segRefer,
 		parallelCh: make(map[int64]chan struct{}),
 	}
 }
 
 func (c *compactionPlanHandler) start() {
-	interval := time.Duration(Params.DataCoordCfg.CompactionCheckIntervalInSeconds) * time.Second
+	interval := Params.DataCoordCfg.CompactionCheckIntervalInSeconds.GetAsDuration(time.Second)
 	ticker := time.NewTicker(interval)
 	c.quit = make(chan struct{})
 	c.wg.Add(1)
@@ -159,6 +159,9 @@ func (c *compactionPlanHandler) execCompactionPlan(signal *compactionSignal, pla
 
 	nodeID, err := c.chManager.FindWatcher(plan.GetChannel())
 	if err != nil {
+		log.Error("failed to find watcher",
+			zap.Int64("plan ID", plan.GetPlanID()),
+			zap.Error(err))
 		return err
 	}
 
@@ -191,12 +194,12 @@ func (c *compactionPlanHandler) execCompactionPlan(signal *compactionSignal, pla
 
 		err = c.sessions.Compaction(nodeID, plan)
 		if err != nil {
-			log.Warn("Try to Compaction but DataNode rejected", zap.Any("TargetNodeId", nodeID), zap.Any("planId", plan.GetPlanID()))
-			c.mu.Lock()
-			delete(c.plans, plan.PlanID)
-			c.executingTaskNum--
-			c.releaseQueue(nodeID)
-			c.mu.Unlock()
+			log.Warn("try to Compaction but DataNode rejected",
+				zap.Int64("targetNodeID", nodeID),
+				zap.Int64("planID", plan.GetPlanID()),
+			)
+			// do nothing here, prevent double release, see issue#21014
+			// release queue will be done in `updateCompaction`
 			return
 		}
 
@@ -246,16 +249,15 @@ func (c *compactionPlanHandler) completeCompaction(result *datapb.CompactionResu
 }
 
 func (c *compactionPlanHandler) handleMergeCompactionResult(plan *datapb.CompactionPlan, result *datapb.CompactionResult) error {
-	oldSegments, modSegments, newSegment := c.meta.GetCompleteCompactionMeta(plan.GetSegmentBinlogs(), result)
+	// Also prepare metric updates.
+	oldSegments, modSegments, newSegment, metricMutation, err := c.meta.PrepareCompleteCompactionMutation(plan.GetSegmentBinlogs(), result)
+	if err != nil {
+		return err
+	}
 	log := log.With(zap.Int64("planID", plan.GetPlanID()))
 
-	modInfos := make([]*datapb.SegmentInfo, len(modSegments))
-	for i := range modSegments {
-		modInfos[i] = modSegments[i].SegmentInfo
-	}
-
 	log.Info("handleCompactionResult: altering metastore after compaction")
-	if err := c.meta.alterMetaStoreAfterCompaction(modInfos, newSegment.SegmentInfo); err != nil {
+	if err := c.meta.alterMetaStoreAfterCompaction(modSegments, newSegment); err != nil {
 		log.Warn("handleCompactionResult: fail to alter metastore after compaction", zap.Error(err))
 		return fmt.Errorf("fail to alter metastore after compaction, err=%w", err)
 	}
@@ -273,10 +275,11 @@ func (c *compactionPlanHandler) handleMergeCompactionResult(plan *datapb.Compact
 	if err := c.sessions.SyncSegments(nodeID, req); err != nil {
 		log.Warn("handleCompactionResult: fail to sync segments with node, reverting metastore",
 			zap.Int64("nodeID", nodeID), zap.String("reason", err.Error()))
-		return c.meta.revertAlterMetaStoreAfterCompaction(oldSegments, newSegment.SegmentInfo)
+		return c.meta.revertAlterMetaStoreAfterCompaction(oldSegments, newSegment)
 	}
+	// Apply metrics after successful meta update.
+	metricMutation.commit()
 
-	c.meta.alterInMemoryMetaAfterCompaction(newSegment, modSegments)
 	log.Info("handleCompactionResult: success to handle merge compaction result")
 	return nil
 }

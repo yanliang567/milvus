@@ -50,7 +50,7 @@ def trace(fmt=DEFAULT_FMT, prefix='chaos-test', flag=True):
                 log_str = f"[{prefix}]" + fmt.format(**locals())
                 # TODO: add report function in this place, like uploading to influxdb
                 # it is better a async way to do this, in case of blocking the request processing
-                log.debug(log_str)
+                log.info(log_str)
             if result:
                 self.rsp_times.append(elapsed)
                 self.average_time = (
@@ -88,7 +88,7 @@ class Checker:
        b. count operations and success rate
     """
 
-    def __init__(self, collection_name=None, shards_num=2):
+    def __init__(self, collection_name=None, shards_num=2, dim=ct.default_dim):
         self._succ = 0
         self._fail = 0
         self._keep_running = True
@@ -98,11 +98,12 @@ class Checker:
         c_name = collection_name if collection_name is not None else cf.gen_unique_str(
             'Checker_')
         self.c_wrap.init_collection(name=c_name,
-                                    schema=cf.gen_default_collection_schema(),
+                                    schema=cf.gen_default_collection_schema(dim=dim),
                                     shards_num=shards_num,
                                     timeout=timeout,
+                                    # active_trace=True,
                                     enable_traceback=enable_traceback)
-        self.c_wrap.insert(data=cf.gen_default_list_data(nb=constants.ENTITIES_FOR_SEARCH),
+        self.c_wrap.insert(data=cf.gen_default_list_data(nb=constants.ENTITIES_FOR_SEARCH, dim=dim),
                            timeout=timeout,
                            enable_traceback=enable_traceback)
         self.initial_entities = self.c_wrap.num_entities  # do as a flush
@@ -124,6 +125,7 @@ class Checker:
         checker_name = self.__class__.__name__
         checkers_result = f"{checker_name}, succ_rate: {succ_rate:.2f}, total: {total:03d}, average_time: {average_time:.4f}, max_time: {max_time:.4f}, min_time: {min_time:.4f}"
         log.info(checkers_result)
+        log.info(f"{checker_name} rsp times: {self.rsp_times}")
         return checkers_result
 
     def terminate(self):
@@ -146,7 +148,7 @@ class SearchChecker(Checker):
         super().__init__(collection_name=collection_name, shards_num=shards_num)
         self.c_wrap.create_index(ct.default_float_vec_field_name,
                                  constants.DEFAULT_INDEX_PARAM,
-                                 name=cf.gen_unique_str('index_'),
+                                 index_name=cf.gen_unique_str('index_'),
                                  timeout=timeout,
                                  enable_traceback=enable_traceback,
                                  check_task=CheckTasks.check_nothing)        
@@ -318,6 +320,7 @@ class IndexChecker(Checker):
         if collection_name is None:
             collection_name = cf.gen_unique_str("IndexChecker_")
         super().__init__(collection_name=collection_name)
+        self.index_name = cf.gen_unique_str('index_')
         self.c_wrap.insert(data=cf.gen_default_list_data(nb=5 * constants.ENTITIES_FOR_SEARCH),
                            timeout=timeout, enable_traceback=enable_traceback)
         # do as a flush before indexing
@@ -327,8 +330,7 @@ class IndexChecker(Checker):
     def create_index(self):
         res, result = self.c_wrap.create_index(ct.default_float_vec_field_name,
                                                constants.DEFAULT_INDEX_PARAM,
-                                               name=cf.gen_unique_str(
-                                                   'index_'),
+                                               index_name=self.index_name,
                                                timeout=timeout,
                                                enable_traceback=enable_traceback,
                                                check_task=CheckTasks.check_nothing)
@@ -356,7 +358,7 @@ class QueryChecker(Checker):
         super().__init__(collection_name=collection_name, shards_num=shards_num)
         res, result = self.c_wrap.create_index(ct.default_float_vec_field_name,
                                                constants.DEFAULT_INDEX_PARAM,
-                                               name=cf.gen_unique_str(
+                                               index_name=cf.gen_unique_str(
                                                    'index_'),
                                                timeout=timeout,
                                                enable_traceback=enable_traceback,
@@ -395,7 +397,7 @@ class LoadChecker(Checker):
         self.replica_number = replica_number
         res, result = self.c_wrap.create_index(ct.default_float_vec_field_name,
                                                constants.DEFAULT_INDEX_PARAM,
-                                               name=cf.gen_unique_str(
+                                               index_name=cf.gen_unique_str(
                                                    'index_'),
                                                timeout=timeout,
                                                enable_traceback=enable_traceback,
@@ -428,7 +430,7 @@ class DeleteChecker(Checker):
         super().__init__(collection_name=collection_name)
         res, result = self.c_wrap.create_index(ct.default_float_vec_field_name,
                                                constants.DEFAULT_INDEX_PARAM,
-                                               name=cf.gen_unique_str(
+                                               index_name=cf.gen_unique_str(
                                                    'index_'),
                                                timeout=timeout,
                                                enable_traceback=enable_traceback,
@@ -468,7 +470,7 @@ class CompactChecker(Checker):
         self.ut = ApiUtilityWrapper()
         res, result = self.c_wrap.create_index(ct.default_float_vec_field_name,
                                                constants.DEFAULT_INDEX_PARAM,
-                                               name=cf.gen_unique_str(
+                                               index_name=cf.gen_unique_str(
                                                    'index_'),
                                                timeout=timeout,
                                                enable_traceback=enable_traceback,
@@ -532,7 +534,7 @@ class LoadBalanceChecker(Checker):
         self.utility_wrap = ApiUtilityWrapper()
         res, result = self.c_wrap.create_index(ct.default_float_vec_field_name,
                                                constants.DEFAULT_INDEX_PARAM,
-                                               name=cf.gen_unique_str(
+                                               index_name=cf.gen_unique_str(
                                                    'index_'),
                                                timeout=timeout,
                                                enable_traceback=enable_traceback,
@@ -578,16 +580,26 @@ class LoadBalanceChecker(Checker):
 class BulkInsertChecker(Checker):
     """check bulk load operations in a dependent thread"""
 
-    def __init__(self, collection_name=None, files=[]):
+    def __init__(self, collection_name=None, files=[], use_one_collection=False, dim=ct.default_dim, create_index=True):
         if collection_name is None:
-            collection_name = cf.gen_unique_str("BulkLoadChecker_")
-        super().__init__(collection_name=collection_name)
+            collection_name = cf.gen_unique_str("BulkInsertChecker_")
+        super().__init__(collection_name=collection_name, dim=dim)
+        self.create_index = create_index
+        if self.create_index:
+            res, result = self.c_wrap.create_index(ct.default_float_vec_field_name,
+                                                   constants.DEFAULT_INDEX_PARAM,
+                                                   index_name=cf.gen_unique_str(
+                                                       'index_'),
+                                                   timeout=timeout,
+                                                   enable_traceback=enable_traceback,
+                                                   check_task=CheckTasks.check_nothing)
         self.utility_wrap = ApiUtilityWrapper()
         self.schema = cf.gen_default_collection_schema()
         self.files = files
         self.recheck_failed_task = False
         self.failed_tasks = []
-        self.c_name = None
+        self.use_one_collection = use_one_collection  # if True, all tasks will use one collection to bulk insert
+        self.c_name = collection_name
 
     def update(self, files=None, schema=None):
         if files is not None:
@@ -597,20 +609,30 @@ class BulkInsertChecker(Checker):
 
     @trace()
     def bulk_insert(self):
-        task_ids, result = self.utility_wrap.bulk_insert(collection_name=self.c_name,
-                                                       files=self.files)
-        completed, result = self.utility_wrap.wait_for_bulk_insert_tasks_completed(task_ids=task_ids, timeout=60)
+        log.info(f"bulk insert collection name: {self.c_name}")
+        task_ids, result = self.utility_wrap.do_bulk_insert(collection_name=self.c_name,
+                                                            files=self.files)
+        completed, result = self.utility_wrap.wait_for_bulk_insert_tasks_completed(task_ids=[task_ids], timeout=120)
         return task_ids, completed
 
     @exception_handler()
     def run_task(self):
-        if self.recheck_failed_task and self.failed_tasks:
-            self.c_name = self.failed_tasks.pop(0)
-            log.debug(f"check failed task: {self.c_name}")
-        else:
-            self.c_name = cf.gen_unique_str("BulkLoadChecker_")
+        if not self.use_one_collection:
+            if self.recheck_failed_task and self.failed_tasks:
+                self.c_name = self.failed_tasks.pop(0)
+                log.debug(f"check failed task: {self.c_name}")
+            else:
+                self.c_name = cf.gen_unique_str("BulkInsertChecker_")
         self.c_wrap.init_collection(name=self.c_name, schema=self.schema)
-        # import data
+        if self.create_index:
+            res, result = self.c_wrap.create_index(ct.default_float_vec_field_name,
+                                                   constants.DEFAULT_INDEX_PARAM,
+                                                   index_name=cf.gen_unique_str(
+                                                       'index_'),
+                                                   timeout=timeout,
+                                                   enable_traceback=enable_traceback,
+                                                   check_task=CheckTasks.check_nothing)
+        # bulk insert data
         task_ids, completed = self.bulk_insert()
         if not completed:
             self.failed_tasks.append(self.c_name)

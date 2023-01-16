@@ -17,22 +17,33 @@
 package flowgraph
 
 import (
+	"context"
+	"fmt"
 	"sync"
 
+	"github.com/milvus-io/milvus/internal/util/tsoutil"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/milvus-io/milvus/internal/util/typeutil"
+
 	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
-	"github.com/milvus-io/milvus/internal/util/trace"
-	"github.com/opentracing/opentracing-go"
-	oplog "github.com/opentracing/opentracing-go/log"
 	"go.uber.org/zap"
 )
 
 // InputNode is the entry point of flowgragh
 type InputNode struct {
 	BaseNode
-	inStream  msgstream.MsgStream
-	name      string
-	closeOnce sync.Once
+	inStream     msgstream.MsgStream
+	lastMsg      *msgstream.MsgPack
+	name         string
+	role         string
+	nodeID       int64
+	collectionID int64
+	dataType     string
+	closeOnce    sync.Once
 }
 
 // IsInputNode returns whether Node is InputNode
@@ -42,7 +53,6 @@ func (inNode *InputNode) IsInputNode() bool {
 
 // Start is used to start input msgstream
 func (inNode *InputNode) Start() {
-	inNode.inStream.Start()
 }
 
 // Close implements node
@@ -50,6 +60,10 @@ func (inNode *InputNode) Close() {
 	inNode.closeOnce.Do(func() {
 		inNode.inStream.Close()
 	})
+}
+
+func (inNode *InputNode) IsValidInMsg(in []Msg) bool {
+	return true
 }
 
 // Name returns node name
@@ -67,8 +81,19 @@ func (inNode *InputNode) Operate(in []Msg) []Msg {
 	msgPack, ok := <-inNode.inStream.Chan()
 	if !ok {
 		log.Warn("MsgStream closed", zap.Any("input node", inNode.Name()))
+		if inNode.lastMsg != nil {
+			log.Info("trigger force sync", zap.Int64("collection", inNode.collectionID), zap.Any("position", inNode.lastMsg))
+			return []Msg{&MsgStreamMsg{
+				BaseMsg:        NewBaseMsg(true),
+				tsMessages:     []msgstream.TsMsg{},
+				timestampMin:   inNode.lastMsg.BeginTs,
+				timestampMax:   inNode.lastMsg.EndTs,
+				startPositions: inNode.lastMsg.StartPositions,
+				endPositions:   inNode.lastMsg.EndPositions,
+			}}
+		}
 		return []Msg{&MsgStreamMsg{
-			isCloseMsg: true,
+			BaseMsg: NewBaseMsg(true),
 		}}
 	}
 
@@ -76,10 +101,37 @@ func (inNode *InputNode) Operate(in []Msg) []Msg {
 	if msgPack == nil {
 		return []Msg{}
 	}
-	var spans []opentracing.Span
+
+	inNode.lastMsg = msgPack
+	sub := tsoutil.SubByNow(msgPack.EndTs)
+	if inNode.role == typeutil.QueryNodeRole {
+		metrics.QueryNodeConsumerMsgCount.
+			WithLabelValues(fmt.Sprint(inNode.nodeID), inNode.dataType, fmt.Sprint(inNode.collectionID)).
+			Inc()
+
+		metrics.QueryNodeConsumeTimeTickLag.
+			WithLabelValues(fmt.Sprint(inNode.nodeID), inNode.dataType, fmt.Sprint(inNode.collectionID)).
+			Set(float64(sub))
+	}
+
+	if inNode.role == typeutil.DataNodeRole {
+		metrics.DataNodeConsumeMsgCount.
+			WithLabelValues(fmt.Sprint(inNode.nodeID), inNode.dataType, fmt.Sprint(inNode.collectionID)).
+			Inc()
+
+		metrics.DataNodeConsumeTimeTickLag.
+			WithLabelValues(fmt.Sprint(inNode.nodeID), inNode.dataType, fmt.Sprint(inNode.collectionID)).
+			Set(float64(sub))
+	}
+
+	var spans []trace.Span
 	for _, msg := range msgPack.Msgs {
-		sp, ctx := trace.StartSpanFromContext(msg.TraceCtx())
-		sp.LogFields(oplog.String("input_node name", inNode.Name()))
+		ctx := msg.TraceCtx()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		ctx, sp := otel.Tracer(inNode.role).Start(ctx, "Operate")
+		sp.AddEvent("input_node name" + inNode.Name())
 		spans = append(spans, sp)
 		msg.SetTraceCtx(ctx)
 	}
@@ -93,22 +145,25 @@ func (inNode *InputNode) Operate(in []Msg) []Msg {
 	}
 
 	for _, span := range spans {
-		span.Finish()
+		span.End()
 	}
 
-	// TODO batch operate msg
 	return []Msg{msgStreamMsg}
 }
 
 // NewInputNode composes an InputNode with provided MsgStream, name and parameters
-func NewInputNode(inStream msgstream.MsgStream, nodeName string, maxQueueLength int32, maxParallelism int32) *InputNode {
+func NewInputNode(inStream msgstream.MsgStream, nodeName string, maxQueueLength int32, maxParallelism int32, role string, nodeID int64, collectionID int64, dataType string) *InputNode {
 	baseNode := BaseNode{}
 	baseNode.SetMaxQueueLength(maxQueueLength)
 	baseNode.SetMaxParallelism(maxParallelism)
 
 	return &InputNode{
-		BaseNode: baseNode,
-		inStream: inStream,
-		name:     nodeName,
+		BaseNode:     baseNode,
+		inStream:     inStream,
+		name:         nodeName,
+		role:         role,
+		nodeID:       nodeID,
+		collectionID: collectionID,
+		dataType:     dataType,
 	}
 }

@@ -33,7 +33,6 @@ import (
 )
 
 func getMetaKv(t *testing.T) kv.MetaKv {
-	Params.Init()
 	rootPath := "/etcd/test/root/" + t.Name()
 	metakv, err := etcdkv.NewMetaKvFactory(rootPath, &Params.EtcdCfg)
 	require.NoError(t, err)
@@ -86,7 +85,7 @@ func TestClusterCreate(t *testing.T) {
 		}
 		info1Data, err := proto.Marshal(info1)
 		assert.Nil(t, err)
-		err = kv.Save(Params.DataCoordCfg.ChannelWatchSubPath+"/1/channel1", string(info1Data))
+		err = kv.Save(Params.CommonCfg.DataCoordWatchSubPath.GetValue()+"/1/channel1", string(info1Data))
 		assert.Nil(t, err)
 
 		sessionManager := NewSessionManager()
@@ -535,21 +534,19 @@ func TestCluster_Flush(t *testing.T) {
 
 	// flush empty should impact nothing
 	assert.NotPanics(t, func() {
-		err := cluster.Flush(context.Background(), 1, "chan-1", []*datapb.SegmentInfo{}, []*datapb.SegmentInfo{})
+		err := cluster.Flush(context.Background(), 1, "chan-1", []*datapb.SegmentInfo{})
 		assert.NoError(t, err)
 	})
 
 	// flush not watched channel
 	assert.NotPanics(t, func() {
-		err := cluster.Flush(context.Background(), 1, "chan-2", []*datapb.SegmentInfo{{ID: 1}},
-			[]*datapb.SegmentInfo{{ID: 2}})
+		err := cluster.Flush(context.Background(), 1, "chan-2", []*datapb.SegmentInfo{{ID: 1}})
 		assert.Error(t, err)
 	})
 
 	// flush from wrong datanode
 	assert.NotPanics(t, func() {
-		err := cluster.Flush(context.Background(), 2, "chan-1", []*datapb.SegmentInfo{{ID: 1}},
-			[]*datapb.SegmentInfo{{ID: 3}})
+		err := cluster.Flush(context.Background(), 2, "chan-1", []*datapb.SegmentInfo{{ID: 1}})
 		assert.Error(t, err)
 	})
 

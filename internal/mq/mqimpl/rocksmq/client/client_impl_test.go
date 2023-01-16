@@ -17,10 +17,17 @@ import (
 	"time"
 
 	"github.com/milvus-io/milvus/internal/mq/msgstream/mqwrapper"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/stretchr/testify/assert"
 )
 
 var rmqPath = "/tmp/rocksmq_client"
+
+func TestMain(m *testing.M) {
+	paramtable.Init()
+	code := m.Run()
+	os.Exit(code)
+}
 
 func TestClient(t *testing.T) {
 	client, err := NewClient(Options{})
@@ -154,7 +161,8 @@ func TestClient_SeekLatest(t *testing.T) {
 	assert.NotNil(t, producer)
 	assert.NoError(t, err)
 	msg := &ProducerMessage{
-		Payload: make([]byte, 10),
+		Payload:    make([]byte, 10),
+		Properties: map[string]string{},
 	}
 	id, err := producer.Send(msg)
 	assert.Nil(t, err)

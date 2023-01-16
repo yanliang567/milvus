@@ -9,25 +9,27 @@ minio="false"
 pulsar="false"
 kafka="false"
 since_args=""
+operator="false"
 #-n namespace: The namespace that Milvus is installed in.
 #-i milvus_instance: The name of milvus instance.
-#-p log_path: Log storage path.
+#-d log_path: Log storage path.
 #-e export etcd logs
 #-m export minio logs
-#-u export pulsar logs
+#-p export pulsar logs
 #-k export kafka logs
 #-s 24h: export logs since 24h
-while getopts "n:i:p:s:emuk" opt_name
+while getopts "n:i:d:s:empko" opt_name
 do
     case $opt_name in
     	n) namespace=$OPTARG;;
     	i) instance_name=$OPTARG;;
-    	p) log_path=$OPTARG;;
+    	d) log_path=$OPTARG;;
     	e) etcd="true";;
     	m) minio="true";;
-    	u) pulsar="true";;
+    	p) pulsar="true";;
     	k) kafka="true";;
-      s) since=$OPTARG;;
+        o) operator="true";;
+        s) since=$OPTARG;;
     	*) echo "Unkonwen parameters";;
     esac
 done
@@ -38,9 +40,11 @@ then
 	exit 1
 fi
 
-if [ ! -d $log_path ];
+if [ ! -d $log_path/pod_log ] || [ ! -d $log_dir/pod_log_previous ] || [ ! -d $log_dir/pod_describe ];
 then
-	mkdir -p $log_path
+    mkdir -p $log_path/pod_log
+    mkdir -p $log_path/pod_log_previous
+    mkdir -p $log_path/pod_describe
 fi
 
 if [ $since ];
@@ -48,7 +52,7 @@ then
   since_args="--since=$since"
 fi
 
-echo "The log files will be stored $(readlink -f $log_path)"
+echo "The log files will be stored in $(readlink -f $log_path)"
 
 
 function export_log(){
@@ -59,12 +63,14 @@ function export_log(){
 		if [ $(kubectl get pod $pod -n $namespace --output=jsonpath={.status.containerStatuses[0].restartCount}) == 0 ];
 		then
 			echo "Export log of $pod"
-			kubectl logs $pod -n $namespace ${since_args}> $log_path/$pod.log
+			kubectl logs $pod -n $namespace ${since_args}> $log_path/pod_log/$pod.log
 		else
 			echo "Export log of $pod"
-			kubectl logs $pod -n $namespace -p ${since_args}> $log_path/$pod-pre.log
-			kubectl logs $pod -n $namespace ${since_args}> $log_path/$pod.log
+			kubectl logs $pod -n $namespace -p ${since_args}> $log_path/pod_log_previous/$pod.log
+			kubectl logs $pod -n $namespace ${since_args}> $log_path/pod_log/$pod.log
 		fi
+		echo "Export describe of $pod"
+		kubectl describe pod $pod -n $namespace > $log_path/pod_describe/$pod.log
 	done
 }
 
@@ -80,7 +86,12 @@ fi
 # export etcd component log
 if $etcd;
 then
-	etcd_pods=$(kubectl get pod -n $namespace -l app.kubernetes.io/instance=$instance_name,app.kubernetes.io/name=etcd --output=jsonpath={.items..metadata.name})
+	if $operator
+	then
+		etcd_pods=$(kubectl get pod -n $namespace -l app.kubernetes.io/instance=$instance_name-etcd,app.kubernetes.io/name=etcd --output=jsonpath={.items..metadata.name})
+	else
+		etcd_pods=$(kubectl get pod -n $namespace -l app.kubernetes.io/instance=$instance_name,app.kubernetes.io/name=etcd --output=jsonpath={.items..metadata.name})
+	fi
 	if [ ${#etcd_pods} == 0 ];
 	then
 		echo "There is no etcd component for Milvus instance $instance_name in the namespace $namespace"
@@ -92,7 +103,12 @@ fi
 # export minio component log
 if $minio;
 then
-	minio_pods=$(kubectl get pod -n $namespace -l release=$instance_name,app=minio --output=jsonpath={.items..metadata.name})
+	if $operator
+	then
+		minio_pods=$(kubectl get pod -n $namespace -l release=${instance_name}-minio,app=minio --output=jsonpath={.items..metadata.name})
+	else
+		minio_pods=$(kubectl get pod -n $namespace -l release=$instance_name,app=minio --output=jsonpath={.items..metadata.name})
+	fi
 	if [ ${#minio_pods} == 0 ];
 	then
 		echo "There is no minio component for Milvus instance $instance_name in the namespace $namespace"
@@ -104,7 +120,18 @@ fi
 # export pulsar component log
 if $pulsar;
 then
-	pulsar_pods=$(kubectl get pod -n $namespace -l cluster=$instance_name-pulsar,app=pulsar --output=jsonpath={.items..metadata.name})
+	if $operator
+	then
+		pulsar_pods=$(kubectl get pod -n $namespace -l cluster=${instance_name}-pulsar,app=pulsar --output=jsonpath={.items..metadata.name})
+	else
+		if [[ $instance_name =~ "pulsar" ]]
+		then
+			pulsar_pods=$(kubectl get pod -n $namespace -l cluster=$instance_name,app=pulsar --output=jsonpath={.items..metadata.name})
+		else
+			pulsar_pods=$(kubectl get pod -n $namespace -l cluster=${instance_name}-pulsar,app=pulsar --output=jsonpath={.items..metadata.name})
+		fi
+	fi
+	
 	if [ ${#pulsar_pods} == 0 ];
 	then
 		echo "There is no pulsar component for Milvus instance $instance_name in the namespace $namespace"
@@ -116,7 +143,13 @@ fi
 # export kafka component log
 if $kafka;
 then
-	kafka_pods=$(kubectl get pod -n $namespace -l app.kubernetes.io/instance=$instance_name,app.kubernetes.io/component=kafka --output=jsonpath={.items..metadata.name})
+	if $operator
+	then
+		kafka_pods=$(kubectl get pod -n $namespace -l app.kubernetes.io/instance=${instance_name}-kafka,app.kubernetes.io/component=kafka --output=jsonpath={.items..metadata.name})
+	else
+		kafka_pods=$(kubectl get pod -n $namespace -l app.kubernetes.io/instance=${instance_name},app.kubernetes.io/component=kafka --output=jsonpath={.items..metadata.name})
+	fi
+	
 	if [ ${#kafka_pods} == 0 ];
 	then
 		echo "There is no kafka component for Milvus instance $instance_name in the namespace $namespace"

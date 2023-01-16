@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -35,6 +36,7 @@ import (
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 	"github.com/samber/lo"
@@ -64,13 +66,13 @@ func TestFlowGraphInsertBufferNodeCreate(t *testing.T) {
 	defer cancel()
 
 	cm := storage.NewLocalChunkManager(storage.RootPath(insertNodeTestDir))
-	defer cm.RemoveWithPrefix(ctx, "")
+	defer cm.RemoveWithPrefix(ctx, cm.RootPath())
 	insertChannelName := "datanode-01-test-flowgraphinsertbuffernode-create"
 
 	testPath := "/test/datanode/root/meta"
 	err := clearEtcd(testPath)
 	require.NoError(t, err)
-	Params.EtcdCfg.MetaRootPath = testPath
+	Params.BaseTable.Save("etcd.rootPath", "/test/datanode/root")
 
 	Factory := &MetaFactory{}
 	collMeta := Factory.GetCollectionMeta(UniqueID(0), "coll1", schemapb.DataType_Int64)
@@ -103,8 +105,13 @@ func TestFlowGraphInsertBufferNodeCreate(t *testing.T) {
 		allocator:    NewAllocatorFactory(),
 		vChannelName: "string",
 	}
+	delBufManager := &DelBufferManager{
+		channel:       channel,
+		delMemorySize: 0,
+		delBufHeap:    &PriorityQueue{},
+	}
 
-	iBNode, err := newInsertBufferNode(ctx, collMeta.ID, flushChan, resendTTChan, fm, newCache(), c)
+	iBNode, err := newInsertBufferNode(ctx, collMeta.ID, delBufManager, flushChan, resendTTChan, fm, newCache(), c)
 	assert.NotNil(t, iBNode)
 	require.NoError(t, err)
 
@@ -118,14 +125,20 @@ func TestFlowGraphInsertBufferNodeCreate(t *testing.T) {
 		cd:      0,
 	}
 
-	_, err = newInsertBufferNode(ctx, collMeta.ID, flushChan, resendTTChan, fm, newCache(), c)
+	_, err = newInsertBufferNode(ctx, collMeta.ID, delBufManager, flushChan, resendTTChan, fm, newCache(), c)
 	assert.Error(t, err)
 }
 
-type mockMsg struct{}
+type mockMsg struct {
+	BaseMsg
+}
 
 func (*mockMsg) TimeTick() Timestamp {
 	return 0
+}
+
+func (*mockMsg) IsClose() bool {
+	return false
 }
 
 func TestFlowGraphInsertBufferNode_Operate(t *testing.T) {
@@ -147,8 +160,7 @@ func TestFlowGraphInsertBufferNode_Operate(t *testing.T) {
 				ibn := &insertBufferNode{
 					ttMerger: newMergedTimeTickerSender(func(Timestamp, []int64) error { return nil }),
 				}
-				rt := ibn.Operate(test.in)
-				assert.Empty(t0, rt)
+				assert.False(t0, ibn.IsValidInMsg(test.in))
 			})
 		}
 	})
@@ -159,11 +171,11 @@ func TestFlowGraphInsertBufferNode_Operate(t *testing.T) {
 	insertChannelName := "datanode-01-test-flowgraphinsertbuffernode-operate"
 
 	cm := storage.NewLocalChunkManager(storage.RootPath(insertNodeTestDir))
-	defer cm.RemoveWithPrefix(ctx, "")
+	defer cm.RemoveWithPrefix(ctx, cm.RootPath())
 	testPath := "/test/datanode/root/meta"
 	err := clearEtcd(testPath)
 	require.NoError(t, err)
-	Params.EtcdCfg.MetaRootPath = testPath
+	Params.BaseTable.Save("etcd.rootPath", "/test/datanode/root")
 
 	Factory := &MetaFactory{}
 	collMeta := Factory.GetCollectionMeta(UniqueID(0), "coll1", schemapb.DataType_Int64)
@@ -196,8 +208,13 @@ func TestFlowGraphInsertBufferNode_Operate(t *testing.T) {
 		allocator:    NewAllocatorFactory(),
 		vChannelName: "string",
 	}
+	delBufManager := &DelBufferManager{
+		channel:       channel,
+		delMemorySize: 0,
+		delBufHeap:    &PriorityQueue{},
+	}
 
-	iBNode, err := newInsertBufferNode(ctx, collMeta.ID, flushChan, resendTTChan, fm, newCache(), c)
+	iBNode, err := newInsertBufferNode(ctx, collMeta.ID, delBufManager, flushChan, resendTTChan, fm, newCache(), c)
 	require.NoError(t, err)
 
 	// trigger log ts
@@ -249,7 +266,7 @@ func TestFlowGraphInsertBufferNode_Operate(t *testing.T) {
 	setFlowGraphRetryOpt(retry.Attempts(1))
 	inMsg = genFlowGraphInsertMsg(insertChannelName)
 	iBNode.flushManager = &mockFlushManager{returnError: true}
-	iBNode.insertBuffer.Store(inMsg.insertMessages[0].SegmentID, &BufferData{})
+	iBNode.channel.setCurInsertBuffer(inMsg.insertMessages[0].SegmentID, &BufferData{})
 	assert.Panics(t, func() { iBNode.Operate([]flowgraph.Msg{&inMsg}) })
 	iBNode.flushManager = fm
 }
@@ -312,7 +329,7 @@ func TestFlowGraphInsertBufferNode_AutoFlush(t *testing.T) {
 	testPath := "/test/datanode/root/meta"
 	err := clearEtcd(testPath)
 	require.NoError(t, err)
-	Params.EtcdCfg.MetaRootPath = testPath
+	Params.BaseTable.Save("etcd.rootPath", "/test/datanode/root")
 
 	Factory := &MetaFactory{}
 	collMeta := Factory.GetCollectionMeta(UniqueID(0), "coll1", schemapb.DataType_Int64)
@@ -336,7 +353,7 @@ func TestFlowGraphInsertBufferNode_AutoFlush(t *testing.T) {
 	wg := sync.WaitGroup{}
 
 	cm := storage.NewLocalChunkManager(storage.RootPath(insertNodeTestDir))
-	defer cm.RemoveWithPrefix(ctx, "")
+	defer cm.RemoveWithPrefix(ctx, cm.RootPath())
 	fm := NewRendezvousFlushManager(NewAllocatorFactory(), cm, channel, func(pack *segmentFlushPack) {
 		fpMut.Lock()
 		flushPacks = append(flushPacks, pack)
@@ -359,7 +376,12 @@ func TestFlowGraphInsertBufferNode_AutoFlush(t *testing.T) {
 		allocator:    NewAllocatorFactory(),
 		vChannelName: "string",
 	}
-	iBNode, err := newInsertBufferNode(ctx, collMeta.ID, flushChan, resendTTChan, fm, newCache(), c)
+	delBufManager := &DelBufferManager{
+		channel:       channel,
+		delMemorySize: 0,
+		delBufHeap:    &PriorityQueue{},
+	}
+	iBNode, err := newInsertBufferNode(ctx, collMeta.ID, delBufManager, flushChan, resendTTChan, fm, newCache(), c)
 	require.NoError(t, err)
 
 	// Auto flush number of rows set to 2
@@ -371,7 +393,7 @@ func TestFlowGraphInsertBufferNode_AutoFlush(t *testing.T) {
 	t.Run("Pure auto flush", func(t *testing.T) {
 		// iBNode.insertBuffer.maxSize = 2
 		tmp := Params.DataNodeCfg.FlushInsertBufferSize
-		Params.DataNodeCfg.FlushInsertBufferSize = 4 * 4
+		paramtable.Get().Save(Params.DataNodeCfg.FlushInsertBufferSize.Key, "200")
 		defer func() {
 			Params.DataNodeCfg.FlushInsertBufferSize = tmp
 		}()
@@ -463,7 +485,7 @@ func TestFlowGraphInsertBufferNode_AutoFlush(t *testing.T) {
 
 	t.Run("Auto with manual flush", func(t *testing.T) {
 		tmp := Params.DataNodeCfg.FlushInsertBufferSize
-		Params.DataNodeCfg.FlushInsertBufferSize = 4 * 4
+		paramtable.Get().Save(Params.DataNodeCfg.FlushInsertBufferSize.Key, "200")
 		defer func() {
 			Params.DataNodeCfg.FlushInsertBufferSize = tmp
 		}()
@@ -515,10 +537,7 @@ func TestFlowGraphInsertBufferNode_AutoFlush(t *testing.T) {
 		inMsg.endPositions = []*internalpb.MsgPosition{{Timestamp: 434}}
 
 		// trigger manual flush
-		flushChan <- flushMsg{
-			segmentID: 10,
-			flushed:   true,
-		}
+		flushChan <- flushMsg{segmentID: 10}
 
 		// trigger auto flush since buffer full
 		output := iBNode.Operate([]flowgraph.Msg{iMsg})
@@ -550,7 +569,7 @@ func TestRollBF(t *testing.T) {
 	testPath := "/test/datanode/root/meta"
 	err := clearEtcd(testPath)
 	require.NoError(t, err)
-	Params.EtcdCfg.MetaRootPath = testPath
+	Params.BaseTable.Save("etcd.rootPath", "/test/datanode/root")
 
 	Factory := &MetaFactory{}
 	collMeta := Factory.GetCollectionMeta(UniqueID(0), "coll1", schemapb.DataType_Int64)
@@ -574,7 +593,7 @@ func TestRollBF(t *testing.T) {
 	wg := sync.WaitGroup{}
 
 	cm := storage.NewLocalChunkManager(storage.RootPath(insertNodeTestDir))
-	defer cm.RemoveWithPrefix(ctx, "")
+	defer cm.RemoveWithPrefix(ctx, cm.RootPath())
 	fm := NewRendezvousFlushManager(NewAllocatorFactory(), cm, channel, func(pack *segmentFlushPack) {
 		fpMut.Lock()
 		flushPacks = append(flushPacks, pack)
@@ -597,7 +616,12 @@ func TestRollBF(t *testing.T) {
 		allocator:    NewAllocatorFactory(),
 		vChannelName: "string",
 	}
-	iBNode, err := newInsertBufferNode(ctx, collMeta.ID, flushChan, resendTTChan, fm, newCache(), c)
+	delBufManager := &DelBufferManager{
+		channel:       channel,
+		delMemorySize: 0,
+		delBufHeap:    &PriorityQueue{},
+	}
+	iBNode, err := newInsertBufferNode(ctx, collMeta.ID, delBufManager, flushChan, resendTTChan, fm, newCache(), c)
 	require.NoError(t, err)
 
 	// Auto flush number of rows set to 2
@@ -608,7 +632,7 @@ func TestRollBF(t *testing.T) {
 
 	t.Run("Pure roll BF", func(t *testing.T) {
 		tmp := Params.DataNodeCfg.FlushInsertBufferSize
-		Params.DataNodeCfg.FlushInsertBufferSize = 4 * 4
+		paramtable.Get().Save(Params.DataNodeCfg.FlushInsertBufferSize.Key, "200")
 		defer func() {
 			Params.DataNodeCfg.FlushInsertBufferSize = tmp
 		}()
@@ -637,7 +661,6 @@ func TestRollBF(t *testing.T) {
 		assert.Equal(t, datapb.SegmentType_New, seg.getType())
 		assert.Equal(t, int64(1), seg.numRows)
 		assert.Equal(t, uint64(100), seg.startPos.GetTimestamp())
-		assert.Equal(t, uint64(123), seg.endPos.GetTimestamp())
 		// because this is the origincal
 		assert.True(t, seg.currentStat.PkFilter.Cap() > uint(1000000))
 
@@ -666,7 +689,6 @@ func TestRollBF(t *testing.T) {
 		assert.Equal(t, datapb.SegmentType_Normal, seg.getType())
 		assert.Equal(t, int64(2), seg.numRows)
 		assert.Equal(t, uint64(100), seg.startPos.GetTimestamp())
-		assert.Equal(t, uint64(234), seg.endPos.GetTimestamp())
 		// filter should be rolled
 
 		assert.Nil(t, seg.currentStat)
@@ -675,10 +697,11 @@ func TestRollBF(t *testing.T) {
 	})
 }
 
-type InsertBufferNodeSuit struct {
+type InsertBufferNodeSuite struct {
 	suite.Suite
 
-	channel *ChannelMeta
+	channel       *ChannelMeta
+	delBufManager *DelBufferManager
 
 	collID UniqueID
 	partID UniqueID
@@ -687,7 +710,7 @@ type InsertBufferNodeSuit struct {
 	originalConfig int64
 }
 
-func (s *InsertBufferNodeSuit) SetupSuite() {
+func (s *InsertBufferNodeSuite) SetupSuite() {
 	insertBufferNodeTestDir := "/tmp/milvus_test/insert_buffer_node"
 	rc := &RootCoordFactory{
 		pkType: schemapb.DataType_Int64,
@@ -696,19 +719,25 @@ func (s *InsertBufferNodeSuit) SetupSuite() {
 	s.collID = 1
 	s.partID = 10
 	s.channel = newChannel("channel", s.collID, nil, rc, s.cm)
+
+	s.delBufManager = &DelBufferManager{
+		channel:       s.channel,
+		delMemorySize: 0,
+		delBufHeap:    &PriorityQueue{},
+	}
 	s.cm = storage.NewLocalChunkManager(storage.RootPath(insertBufferNodeTestDir))
 
-	s.originalConfig = Params.DataNodeCfg.FlushInsertBufferSize
+	s.originalConfig = Params.DataNodeCfg.FlushInsertBufferSize.GetAsInt64()
 	// change flushing size to 2
-	Params.DataNodeCfg.FlushInsertBufferSize = 4 * 4
+	paramtable.Get().Save(Params.DataNodeCfg.FlushInsertBufferSize.Key, "200")
 }
 
-func (s *InsertBufferNodeSuit) TearDownSuite() {
-	s.cm.RemoveWithPrefix(context.Background(), "")
-	Params.DataNodeCfg.FlushInsertBufferSize = s.originalConfig
+func (s *InsertBufferNodeSuite) TearDownSuite() {
+	s.cm.RemoveWithPrefix(context.Background(), s.cm.RootPath())
+	paramtable.Get().Save(Params.DataNodeCfg.FlushInsertBufferSize.Key, strconv.FormatInt(s.originalConfig, 10))
 }
 
-func (s *InsertBufferNodeSuit) SetupTest() {
+func (s *InsertBufferNodeSuite) SetupTest() {
 	segs := []struct {
 		segID UniqueID
 		sType datapb.SegmentType
@@ -731,18 +760,19 @@ func (s *InsertBufferNodeSuit) SetupTest() {
 	}
 }
 
-func (s *InsertBufferNodeSuit) TearDownTest() {
+func (s *InsertBufferNodeSuite) TearDownTest() {
 	s.channel.removeSegments(1, 2, 3)
 }
 
-func (s *InsertBufferNodeSuit) TestFillInSyncTasks() {
+func (s *InsertBufferNodeSuite) TestFillInSyncTasks() {
 	s.Run("drop collection", func() {
 		fgMsg := &flowGraphMsg{dropCollection: true}
 
 		node := &insertBufferNode{
-			channelName: s.channel.channelName,
-			channel:     s.channel,
-			flushChan:   make(chan flushMsg, 100),
+			channelName:      s.channel.channelName,
+			channel:          s.channel,
+			delBufferManager: s.delBufManager,
+			flushChan:        make(chan flushMsg, 100),
 		}
 
 		syncTasks := node.FillInSyncTasks(fgMsg, nil)
@@ -759,9 +789,10 @@ func (s *InsertBufferNodeSuit) TestFillInSyncTasks() {
 		segToFlush := []UniqueID{1, 2}
 
 		node := &insertBufferNode{
-			channelName: s.channel.channelName,
-			channel:     s.channel,
-			flushChan:   make(chan flushMsg, 100),
+			channelName:      s.channel.channelName,
+			channel:          s.channel,
+			delBufferManager: s.delBufManager,
+			flushChan:        make(chan flushMsg, 100),
 		}
 
 		buffer := BufferData{
@@ -769,9 +800,9 @@ func (s *InsertBufferNodeSuit) TestFillInSyncTasks() {
 			size:   2,
 			limit:  2,
 		}
-		node.insertBuffer.Store(UniqueID(1), &buffer)
+		node.channel.setCurInsertBuffer(UniqueID(1), &buffer)
 
-		syncTasks := node.FillInSyncTasks(new(flowGraphMsg), segToFlush)
+		syncTasks := node.FillInSyncTasks(&flowGraphMsg{endPositions: []*internalpb.MsgPosition{{Timestamp: 100}}}, segToFlush)
 		s.Assert().NotEmpty(syncTasks)
 		s.Assert().Equal(1, len(syncTasks))
 
@@ -784,11 +815,12 @@ func (s *InsertBufferNodeSuit) TestFillInSyncTasks() {
 	})
 
 	s.Run("drop partition", func() {
-		fgMsg := flowGraphMsg{dropPartitions: []UniqueID{s.partID}}
+		fgMsg := flowGraphMsg{dropPartitions: []UniqueID{s.partID}, endPositions: []*internalpb.MsgPosition{{Timestamp: 100}}}
 		node := &insertBufferNode{
-			channelName: s.channel.channelName,
-			channel:     s.channel,
-			flushChan:   make(chan flushMsg, 100),
+			channelName:      s.channel.channelName,
+			channel:          s.channel,
+			delBufferManager: s.delBufManager,
+			flushChan:        make(chan flushMsg, 100),
 		}
 
 		syncTasks := node.FillInSyncTasks(&fgMsg, nil)
@@ -805,31 +837,26 @@ func (s *InsertBufferNodeSuit) TestFillInSyncTasks() {
 	s.Run("manual sync", func() {
 		flushCh := make(chan flushMsg, 100)
 		node := &insertBufferNode{
-			channelName: s.channel.channelName,
-			channel:     s.channel,
-			flushChan:   flushCh,
+			channelName:      s.channel.channelName,
+			channel:          s.channel,
+			delBufferManager: s.delBufManager,
+			flushChan:        flushCh,
 		}
 
 		for i := 1; i <= 3; i++ {
 			msg := flushMsg{
 				segmentID:    UniqueID(i),
 				collectionID: s.collID,
-				flushed:      i%2 == 0, // segID=2, flushed = true
 			}
 
 			flushCh <- msg
 		}
 
-		syncTasks := node.FillInSyncTasks(new(flowGraphMsg), nil)
+		syncTasks := node.FillInSyncTasks(&flowGraphMsg{endPositions: []*internalpb.MsgPosition{{Timestamp: 100}}}, nil)
 		s.Assert().NotEmpty(syncTasks)
 
-		for segID, task := range syncTasks {
-			if segID == UniqueID(2) {
-				s.Assert().True(task.flushed)
-			} else {
-				s.Assert().False(task.flushed)
-			}
-
+		for _, task := range syncTasks {
+			s.Assert().True(task.flushed)
 			s.Assert().False(task.auto)
 			s.Assert().False(task.dropped)
 		}
@@ -838,45 +865,56 @@ func (s *InsertBufferNodeSuit) TestFillInSyncTasks() {
 	s.Run("manual sync over load", func() {
 		flushCh := make(chan flushMsg, 100)
 		node := &insertBufferNode{
-			channelName: s.channel.channelName,
-			channel:     s.channel,
-			flushChan:   flushCh,
+			channelName:      s.channel.channelName,
+			channel:          s.channel,
+			delBufferManager: s.delBufManager,
+			flushChan:        flushCh,
 		}
 
 		for i := 1; i <= 100; i++ {
 			msg := flushMsg{
 				segmentID:    UniqueID(i),
 				collectionID: s.collID,
-				flushed:      false,
-			}
-
-			if i == 2 {
-				msg.flushed = true
 			}
 
 			flushCh <- msg
 		}
 
-		syncTasks := node.FillInSyncTasks(new(flowGraphMsg), nil)
+		syncTasks := node.FillInSyncTasks(&flowGraphMsg{endPositions: []*internalpb.MsgPosition{{Timestamp: 100}}}, nil)
 		s.Assert().NotEmpty(syncTasks)
 		s.Assert().Equal(10, len(syncTasks)) // 10 is max batch
 
-		for segID, task := range syncTasks {
-			if segID == UniqueID(2) {
-				s.Assert().True(task.flushed)
-			} else {
-				s.Assert().False(task.flushed)
-			}
-
+		for _, task := range syncTasks {
+			s.Assert().True(task.flushed)
 			s.Assert().False(task.auto)
 			s.Assert().False(task.dropped)
 		}
-
 	})
+
+	s.Run("test close", func() {
+		fgMsg := &flowGraphMsg{BaseMsg: flowgraph.NewBaseMsg(true)}
+
+		node := &insertBufferNode{
+			channelName:      s.channel.channelName,
+			channel:          s.channel,
+			delBufferManager: s.delBufManager,
+			flushChan:        make(chan flushMsg, 100),
+		}
+
+		syncTasks := node.FillInSyncTasks(fgMsg, nil)
+		s.Assert().Equal(1, len(syncTasks))
+		for _, task := range syncTasks {
+			s.Assert().Equal(task.segmentID, int64(1))
+			s.Assert().False(task.dropped)
+			s.Assert().False(task.flushed)
+			s.Assert().True(task.auto)
+		}
+	})
+
 }
 
 func TestInsertBufferNodeSuite(t *testing.T) {
-	suite.Run(t, new(InsertBufferNodeSuit))
+	suite.Run(t, new(InsertBufferNodeSuite))
 }
 
 // CompactedRootCoord has meta info compacted at ts
@@ -906,7 +944,7 @@ func TestInsertBufferNode_bufferInsertMsg(t *testing.T) {
 	testPath := "/test/datanode/root/meta"
 	err := clearEtcd(testPath)
 	require.NoError(t, err)
-	Params.EtcdCfg.MetaRootPath = testPath
+	Params.BaseTable.Save("etcd.rootPath", "/test/datanode/root")
 
 	Factory := &MetaFactory{}
 	tests := []struct {
@@ -919,7 +957,7 @@ func TestInsertBufferNode_bufferInsertMsg(t *testing.T) {
 	}
 
 	cm := storage.NewLocalChunkManager(storage.RootPath(insertNodeTestDir))
-	defer cm.RemoveWithPrefix(ctx, "")
+	defer cm.RemoveWithPrefix(ctx, cm.RootPath())
 	for _, test := range tests {
 		collMeta := Factory.GetCollectionMeta(test.collID, "collection", test.pkType)
 		rcf := &RootCoordFactory{
@@ -954,20 +992,25 @@ func TestInsertBufferNode_bufferInsertMsg(t *testing.T) {
 			allocator:    NewAllocatorFactory(),
 			vChannelName: "string",
 		}
-		iBNode, err := newInsertBufferNode(ctx, collMeta.ID, flushChan, resendTTChan, fm, newCache(), c)
+		delBufManager := &DelBufferManager{
+			channel:       channel,
+			delMemorySize: 0,
+			delBufHeap:    &PriorityQueue{},
+		}
+		iBNode, err := newInsertBufferNode(ctx, collMeta.ID, delBufManager, flushChan, resendTTChan, fm, newCache(), c)
 		require.NoError(t, err)
 
 		inMsg := genFlowGraphInsertMsg(insertChannelName)
 		for _, msg := range inMsg.insertMessages {
 			msg.EndTimestamp = 101 // ts valid
-			err = iBNode.bufferInsertMsg(msg, &internalpb.MsgPosition{})
+			err = iBNode.bufferInsertMsg(msg, &internalpb.MsgPosition{}, &internalpb.MsgPosition{})
 			assert.Nil(t, err)
 		}
 
 		for _, msg := range inMsg.insertMessages {
 			msg.EndTimestamp = 101 // ts valid
 			msg.RowIDs = []int64{} //misaligned data
-			err = iBNode.bufferInsertMsg(msg, &internalpb.MsgPosition{})
+			err = iBNode.bufferInsertMsg(msg, &internalpb.MsgPosition{}, &internalpb.MsgPosition{})
 			assert.NotNil(t, err)
 		}
 	}
@@ -977,7 +1020,7 @@ func TestInsertBufferNode_updateSegmentStates(te *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cm := storage.NewLocalChunkManager(storage.RootPath(insertNodeTestDir))
-	defer cm.RemoveWithPrefix(ctx, "")
+	defer cm.RemoveWithPrefix(ctx, cm.RootPath())
 	invalideTests := []struct {
 		channelCollID UniqueID
 
@@ -1076,14 +1119,11 @@ func TestInsertBufferNode_collectSegmentsToSync(t *testing.T) {
 			}
 
 			for i := 0; i < test.inFlushMsgNum; i++ {
-				flushCh <- flushMsg{
-					segmentID: UniqueID(i),
-					flushed:   i%2 == 0,
-				}
+				flushCh <- flushMsg{segmentID: UniqueID(i)}
 			}
 
-			flushedSegs, staleSegs := node.CollectSegmentsToSync()
-			assert.Equal(t, test.expectedOutNum, len(flushedSegs)+len(staleSegs))
+			flushedSegs := node.CollectSegmentsToSync()
+			assert.Equal(t, test.expectedOutNum, len(flushedSegs))
 		})
 	}
 }

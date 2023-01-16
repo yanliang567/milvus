@@ -27,7 +27,7 @@ func (t *dropPartitionTask) Prepare(ctx context.Context) error {
 	if err := CheckMsgType(t.Req.GetBase().GetMsgType(), commonpb.MsgType_DropPartition); err != nil {
 		return err
 	}
-	if t.Req.GetPartitionName() == Params.CommonCfg.DefaultPartitionName {
+	if t.Req.GetPartitionName() == Params.CommonCfg.DefaultPartitionName.GetValue() {
 		return fmt.Errorf("default partition cannot be deleted")
 	}
 	collMeta, err := t.core.meta.GetCollectionByName(ctx, t.Req.GetCollectionName(), t.GetTs())
@@ -69,12 +69,6 @@ func (t *dropPartitionTask) Execute(ctx context.Context) error {
 		ts:           t.GetTs(),
 	})
 
-	redoTask.AddAsyncStep(&dropIndexStep{
-		baseStep: baseStep{core: t.core},
-		collID:   t.collMeta.CollectionID,
-		partIDs:  []UniqueID{partID},
-	})
-
 	// TODO: release partition when query coord is ready.
 	redoTask.AddAsyncStep(&deletePartitionDataStep{
 		baseStep: baseStep{core: t.core},
@@ -85,6 +79,7 @@ func (t *dropPartitionTask) Execute(ctx context.Context) error {
 			CollectionID:  t.collMeta.CollectionID,
 		},
 	})
+	redoTask.AddAsyncStep(newConfirmGCStep(t.core, t.collMeta.CollectionID, partID))
 	redoTask.AddAsyncStep(&removePartitionMetaStep{
 		baseStep:     baseStep{core: t.core},
 		collectionID: t.collMeta.CollectionID,

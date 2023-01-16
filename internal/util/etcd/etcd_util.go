@@ -21,27 +21,36 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io/ioutil"
+	"net/url"
+	"os"
 	"time"
 
 	"github.com/pkg/errors"
 
-	"github.com/milvus-io/milvus/internal/util/paramtable"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/server/v3/embed"
 )
 
 var (
-	maxTxnNum = 64
+	maxTxnNum = 128
 )
 
 // GetEtcdClient returns etcd client
-func GetEtcdClient(cfg *paramtable.EtcdConfig) (*clientv3.Client, error) {
-	if cfg.UseEmbedEtcd {
+func GetEtcdClient(
+	useEmbedEtcd bool,
+	useSSL bool,
+	endpoints []string,
+	certFile string,
+	keyFile string,
+	caCertFile string,
+	minVersion string) (*clientv3.Client, error) {
+	if useEmbedEtcd {
 		return GetEmbedEtcdClient()
 	}
-	if cfg.EtcdUseSSL {
-		return GetRemoteEtcdSSLClient(cfg.Endpoints, cfg.EtcdTLSCert, cfg.EtcdTLSKey, cfg.EtcdTLSCACert, cfg.EtcdTLSMinVersion)
+	if useSSL {
+		return GetRemoteEtcdSSLClient(endpoints, certFile, keyFile, caCertFile, minVersion)
 	}
-	return GetRemoteEtcdClient(cfg.Endpoints)
+	return GetRemoteEtcdClient(endpoints)
 }
 
 // GetRemoteEtcdClient returns client of remote etcd by given endpoints
@@ -101,8 +110,8 @@ func min(a, b int) int {
 	return b
 }
 
-//SaveByBatch there will not guarantee atomicity
-func SaveByBatch(kvs map[string]string, op func(partialKvs map[string]string) error) error {
+// SaveByBatchWithLimit is SaveByBatch with customized limit.
+func SaveByBatchWithLimit(kvs map[string]string, limit int, op func(partialKvs map[string]string) error) error {
 	if len(kvs) == 0 {
 		return nil
 	}
@@ -115,8 +124,8 @@ func SaveByBatch(kvs map[string]string, op func(partialKvs map[string]string) er
 		values = append(values, v)
 	}
 
-	for i := 0; i < len(kvs); i = i + maxTxnNum {
-		end := min(i+maxTxnNum, len(keys))
+	for i := 0; i < len(kvs); i = i + limit {
+		end := min(i+limit, len(keys))
 		batch, err := buildKvGroup(keys[i:end], values[i:end])
 		if err != nil {
 			return err
@@ -127,6 +136,11 @@ func SaveByBatch(kvs map[string]string, op func(partialKvs map[string]string) er
 		}
 	}
 	return nil
+}
+
+// SaveByBatch there will not guarantee atomicity.
+func SaveByBatch(kvs map[string]string, op func(partialKvs map[string]string) error) error {
+	return SaveByBatchWithLimit(kvs, maxTxnNum, op)
 }
 
 func RemoveByBatch(removals []string, op func(partialKeys []string) error) error {
@@ -157,4 +171,40 @@ func buildKvGroup(keys, values []string) (map[string]string, error) {
 		ret[k] = values[i]
 	}
 	return ret, nil
+}
+
+// StartTestEmbedEtcdServer returns a newly created embed etcd server.
+// ### USED FOR UNIT TEST ONLY ###
+func StartTestEmbedEtcdServer() (*embed.Etcd, string, error) {
+	dir, err := ioutil.TempDir(os.TempDir(), "milvus_datanode_ut")
+	if err != nil {
+		return nil, "", err
+	}
+	config := embed.NewConfig()
+
+	config.Dir = dir
+	config.LogLevel = "warn"
+	config.LogOutputs = []string{"default"}
+	u, err := url.Parse("http://localhost:0")
+	if err != nil {
+		return nil, "", err
+	}
+	config.LCUrls = []url.URL{*u}
+	u, err = url.Parse("http://localhost:0")
+	if err != nil {
+		return nil, "", err
+	}
+	config.LPUrls = []url.URL{*u}
+
+	server, err := embed.StartEtcd(config)
+	return server, dir, err
+}
+
+// GetEmbedEtcdEndpoints returns etcd listener address for endpoint config.
+func GetEmbedEtcdEndpoints(server *embed.Etcd) []string {
+	addrs := make([]string, 0, len(server.Clients))
+	for _, l := range server.Clients {
+		addrs = append(addrs, l.Addr().String())
+	}
+	return addrs
 }

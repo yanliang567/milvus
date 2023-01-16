@@ -34,7 +34,9 @@ func Init(opts ...Option) (*Manager, error) {
 	}
 	sourceManager := NewManager()
 	if o.File != nil {
-		sourceManager.AddSource(NewFileSource(*o.File))
+		s := NewFileSource(o.File)
+		sourceManager.AddSource(s)
+
 	}
 	if o.EnvKeyFormatter != nil {
 		sourceManager.AddSource(NewEnvSource(o.EnvKeyFormatter))
@@ -44,7 +46,6 @@ func Init(opts ...Option) (*Manager, error) {
 		if err != nil {
 			return nil, err
 		}
-		s.eh = sourceManager
 		sourceManager.AddSource(s)
 	}
 	return sourceManager, nil

@@ -27,6 +27,7 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
+	grpcproxyclient "github.com/milvus-io/milvus/internal/distributed/proxy/client"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/proxypb"
 	"github.com/milvus-io/milvus/internal/types"
@@ -34,7 +35,21 @@ import (
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 )
 
-type proxyCreator func(sess *sessionutil.Session) (types.Proxy, error)
+type proxyCreator func(ctx context.Context, addr string) (types.Proxy, error)
+
+func DefaultProxyCreator(ctx context.Context, addr string) (types.Proxy, error) {
+	cli, err := grpcproxyclient.NewClient(ctx, addr)
+	if err != nil {
+		return nil, err
+	}
+	if err := cli.Init(); err != nil {
+		return nil, err
+	}
+	if err := cli.Start(); err != nil {
+		return nil, err
+	}
+	return cli, nil
+}
 
 type proxyClientManager struct {
 	creator     proxyCreator
@@ -76,8 +91,8 @@ func (p *proxyClientManager) AddProxyClient(session *sessionutil.Session) {
 	go p.connect(session)
 }
 
-// GetProxyNumber returns number of proxy clients.
-func (p *proxyClientManager) GetProxyNumber() int {
+// GetProxyCount returns number of proxy clients.
+func (p *proxyClientManager) GetProxyCount() int {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
@@ -85,7 +100,7 @@ func (p *proxyClientManager) GetProxyNumber() int {
 }
 
 func (p *proxyClientManager) connect(session *sessionutil.Session) {
-	pc, err := p.creator(session)
+	pc, err := p.creator(context.Background(), session.Address)
 	if err != nil {
 		log.Warn("failed to create proxy client", zap.String("address", session.Address), zap.Int64("serverID", session.ServerID), zap.Error(err))
 		return
@@ -100,7 +115,7 @@ func (p *proxyClientManager) connect(session *sessionutil.Session) {
 		return
 	}
 	p.proxyClient[session.ServerID] = pc
-	log.Debug("succeed to create proxy client", zap.String("address", session.Address), zap.Int64("serverID", session.ServerID))
+	log.Info("succeed to create proxy client", zap.String("address", session.Address), zap.Int64("serverID", session.ServerID))
 	p.helper.afterConnect()
 }
 
@@ -114,7 +129,7 @@ func (p *proxyClientManager) DelProxyClient(s *sessionutil.Session) {
 	}
 
 	delete(p.proxyClient, s.ServerID)
-	log.Debug("remove proxy client", zap.String("proxy address", s.Address), zap.Int64("proxy id", s.ServerID))
+	log.Info("remove proxy client", zap.String("proxy address", s.Address), zap.Int64("proxy id", s.ServerID))
 }
 
 func (p *proxyClientManager) InvalidateCollectionMetaCache(ctx context.Context, request *proxypb.InvalidateCollMetaCacheRequest, opts ...expireCacheOpt) error {

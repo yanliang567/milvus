@@ -52,15 +52,16 @@ type MockQueryNode struct {
 	segmentVersion map[int64]int64
 }
 
-func NewMockQueryNode(t *testing.T, etcdCli *clientv3.Client) *MockQueryNode {
+func NewMockQueryNode(t *testing.T, etcdCli *clientv3.Client, nodeID int64) *MockQueryNode {
 	ctx, cancel := context.WithCancel(context.Background())
 	node := &MockQueryNode{
 		MockQueryNodeServer: NewMockQueryNodeServer(t),
 		ctx:                 ctx,
 		cancel:              cancel,
-		session:             sessionutil.NewSession(ctx, Params.EtcdCfg.MetaRootPath, etcdCli),
+		session:             sessionutil.NewSession(ctx, Params.EtcdCfg.MetaRootPath.GetValue(), etcdCli),
 		channels:            make(map[int64][]string),
 		segments:            make(map[int64]map[string][]int64),
+		ID:                  nodeID,
 	}
 
 	return node
@@ -111,15 +112,19 @@ func (node *MockQueryNode) Start() error {
 		node.segmentVersion[segment.GetSegmentID()] = req.GetVersion()
 	}).Return(successStatus, nil).Maybe()
 
-	// Regiser
+	// Register
 	node.session.Init(typeutil.QueryNodeRole, node.addr, false, true)
-	node.ID = node.session.ServerID
+	node.session.ServerID = node.ID
 	node.session.Register()
 	log.Debug("mock QueryNode started",
 		zap.Int64("nodeID", node.ID),
 		zap.String("nodeAddr", node.addr))
 
 	return err
+}
+
+func (node *MockQueryNode) Stopping() {
+	node.session.GoingStop()
 }
 
 func (node *MockQueryNode) Stop() {

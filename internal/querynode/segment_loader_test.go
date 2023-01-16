@@ -39,7 +39,6 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/storage"
-	"github.com/milvus-io/milvus/internal/util/concurrency"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 )
 
@@ -53,7 +52,8 @@ func TestSegmentLoader_loadSegment(t *testing.T) {
 
 	t.Run("test load segment", func(t *testing.T) {
 		node, err := genSimpleQueryNode(ctx)
-		assert.NoError(t, err)
+		require.NoError(t, err)
+		defer node.Stop()
 
 		node.metaReplica.removeSegment(defaultSegmentID, segmentTypeSealed)
 		loader := node.loader
@@ -61,7 +61,7 @@ func TestSegmentLoader_loadSegment(t *testing.T) {
 
 		req := &querypb.LoadSegmentsRequest{
 			Base: &commonpb.MsgBase{
-				MsgType: commonpb.MsgType_WatchQueryChannels,
+				MsgType: commonpb.MsgType_LoadSegments,
 				MsgID:   rand.Int63(),
 			},
 			DstNodeID: 0,
@@ -77,13 +77,60 @@ func TestSegmentLoader_loadSegment(t *testing.T) {
 			},
 		}
 
-		err = loader.LoadSegment(ctx, req, segmentTypeSealed)
+		_, err = loader.LoadSegment(ctx, req, segmentTypeSealed)
 		assert.NoError(t, err)
+	})
+
+	t.Run("test load segment error due to partial success", func(t *testing.T) {
+		node, err := genSimpleQueryNode(ctx)
+		assert.NoError(t, err)
+
+		loader := node.loader
+		assert.NotNil(t, loader)
+
+		existPatitionID := defaultPartitionID
+		notExistPartitionID := defaultPartitionID + 1
+		segmentID1 := defaultSegmentID + 1
+		segmentID2 := defaultSegmentID + 2
+		req := &querypb.LoadSegmentsRequest{
+			Base: &commonpb.MsgBase{
+				MsgType: commonpb.MsgType_LoadSegments,
+				MsgID:   rand.Int63(),
+			},
+			DstNodeID: 0,
+			Schema:    schema,
+			Infos: []*querypb.SegmentLoadInfo{
+				{
+					SegmentID:    segmentID1,
+					PartitionID:  existPatitionID,
+					CollectionID: defaultCollectionID,
+					BinlogPaths:  fieldBinlog,
+				},
+				{
+					SegmentID:    segmentID2,
+					PartitionID:  notExistPartitionID,
+					CollectionID: defaultCollectionID,
+					BinlogPaths:  fieldBinlog,
+				},
+			},
+		}
+
+		loadDoneSegmentIDs, err := loader.LoadSegment(ctx, req, segmentTypeSealed)
+		assert.Error(t, err)
+		assert.Equal(t, 1, len(loadDoneSegmentIDs))
+		assert.Equal(t, segmentID1, loadDoneSegmentIDs[0])
+		exist, err := node.metaReplica.hasSegment(segmentID1, segmentTypeSealed)
+		assert.NoError(t, err)
+		assert.True(t, exist)
+		exist, err = node.metaReplica.hasSegment(segmentID2, segmentTypeSealed)
+		assert.NoError(t, err)
+		assert.False(t, exist)
 	})
 
 	t.Run("test set segment error due to without partition", func(t *testing.T) {
 		node, err := genSimpleQueryNode(ctx)
-		assert.NoError(t, err)
+		require.NoError(t, err)
+		defer node.Stop()
 
 		err = node.metaReplica.removePartition(defaultPartitionID)
 		assert.NoError(t, err)
@@ -91,16 +138,17 @@ func TestSegmentLoader_loadSegment(t *testing.T) {
 		loader := node.loader
 		assert.NotNil(t, loader)
 
+		segmentID := defaultSegmentID + 3
 		req := &querypb.LoadSegmentsRequest{
 			Base: &commonpb.MsgBase{
-				MsgType: commonpb.MsgType_WatchQueryChannels,
+				MsgType: commonpb.MsgType_LoadSegments,
 				MsgID:   rand.Int63(),
 			},
 			DstNodeID: 0,
 			Schema:    schema,
 			Infos: []*querypb.SegmentLoadInfo{
 				{
-					SegmentID:    defaultSegmentID,
+					SegmentID:    segmentID,
 					PartitionID:  defaultPartitionID,
 					CollectionID: defaultCollectionID,
 					BinlogPaths:  fieldBinlog,
@@ -108,20 +156,20 @@ func TestSegmentLoader_loadSegment(t *testing.T) {
 			},
 		}
 
-		err = loader.LoadSegment(ctx, req, segmentTypeSealed)
+		_, err = loader.LoadSegment(ctx, req, segmentTypeSealed)
 		assert.Error(t, err)
 	})
 
 	t.Run("test load segment with nil base message", func(t *testing.T) {
 		node, err := genSimpleQueryNode(ctx)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		loader := node.loader
 		assert.NotNil(t, loader)
 
 		req := &querypb.LoadSegmentsRequest{}
 
-		err = loader.LoadSegment(ctx, req, segmentTypeSealed)
+		_, err = loader.LoadSegment(ctx, req, segmentTypeSealed)
 		assert.Error(t, err)
 	})
 }
@@ -132,12 +180,11 @@ func TestSegmentLoader_loadSegmentFieldsData(t *testing.T) {
 
 	runLoadSegmentFieldData := func(dataType schemapb.DataType, pkType schemapb.DataType) {
 		node, err := genSimpleQueryNode(ctx)
-		assert.NoError(t, err)
+		require.NoError(t, err)
+		defer node.Stop()
+
 		loader := node.loader
 		assert.NotNil(t, loader)
-
-		pool, err := concurrency.NewPool(runtime.GOMAXPROCS(0))
-		require.NoError(t, err)
 
 		var fieldPk *schemapb.FieldSchema
 		switch pkType {
@@ -148,6 +195,8 @@ func TestSegmentLoader_loadSegmentFieldsData(t *testing.T) {
 		default:
 			panic("unsupported pk type")
 		}
+
+		fieldPk.FieldID = common.StartOfUserFieldID
 		schema := &schemapb.CollectionSchema{
 			Name:   defaultCollectionName,
 			AutoID: true,
@@ -177,6 +226,8 @@ func TestSegmentLoader_loadSegmentFieldsData(t *testing.T) {
 			schema.Fields = append(schema.Fields, genVectorFieldSchema(simpleBinVecField))
 		}
 
+		schema.Fields[1].FieldID = common.StartOfUserFieldID + 1
+
 		loader.metaReplica.removeSegment(defaultSegmentID, segmentTypeSealed)
 
 		col := newCollection(defaultCollectionID, schema)
@@ -188,7 +239,7 @@ func TestSegmentLoader_loadSegmentFieldsData(t *testing.T) {
 			defaultDMLChannel,
 			segmentTypeSealed,
 			defaultSegmentVersion,
-			pool)
+			defaultSegmentStartPosition)
 		assert.Nil(t, err)
 
 		binlog, _, err := saveBinLog(ctx, defaultCollectionID, defaultPartitionID, defaultSegmentID, defaultMsgLength, schema)
@@ -225,7 +276,9 @@ func TestSegmentLoader_invalid(t *testing.T) {
 
 	t.Run("test no collection", func(t *testing.T) {
 		node, err := genSimpleQueryNode(ctx)
-		assert.NoError(t, err)
+		require.NoError(t, err)
+		defer node.Stop()
+
 		loader := node.loader
 		assert.NotNil(t, loader)
 
@@ -234,7 +287,7 @@ func TestSegmentLoader_invalid(t *testing.T) {
 
 		req := &querypb.LoadSegmentsRequest{
 			Base: &commonpb.MsgBase{
-				MsgType: commonpb.MsgType_WatchQueryChannels,
+				MsgType: commonpb.MsgType_LoadSegments,
 				MsgID:   rand.Int63(),
 			},
 			DstNodeID: 0,
@@ -247,13 +300,15 @@ func TestSegmentLoader_invalid(t *testing.T) {
 			},
 		}
 
-		err = loader.LoadSegment(ctx, req, segmentTypeSealed)
+		_, err = loader.LoadSegment(ctx, req, segmentTypeSealed)
 		assert.Error(t, err)
 	})
 
 	t.Run("test no vec field 2", func(t *testing.T) {
 		node, err := genSimpleQueryNode(ctx)
-		assert.NoError(t, err)
+		require.NoError(t, err)
+		defer node.Stop()
+
 		loader := node.loader
 		assert.NotNil(t, loader)
 
@@ -272,7 +327,7 @@ func TestSegmentLoader_invalid(t *testing.T) {
 
 		req := &querypb.LoadSegmentsRequest{
 			Base: &commonpb.MsgBase{
-				MsgType: commonpb.MsgType_WatchQueryChannels,
+				MsgType: commonpb.MsgType_LoadSegments,
 				MsgID:   rand.Int63(),
 			},
 			DstNodeID: 0,
@@ -285,19 +340,20 @@ func TestSegmentLoader_invalid(t *testing.T) {
 				},
 			},
 		}
-		err = loader.LoadSegment(ctx, req, segmentTypeSealed)
+		_, err = loader.LoadSegment(ctx, req, segmentTypeSealed)
 		assert.Error(t, err)
 	})
 
 	t.Run("Test Invalid SegmentType", func(t *testing.T) {
 		node, err := genSimpleQueryNode(ctx)
-		assert.NoError(t, err)
+		require.NoError(t, err)
+		defer node.Stop()
 		loader := node.loader
 		assert.NotNil(t, loader)
 
 		req := &querypb.LoadSegmentsRequest{
 			Base: &commonpb.MsgBase{
-				MsgType: commonpb.MsgType_WatchQueryChannels,
+				MsgType: commonpb.MsgType_LoadSegments,
 				MsgID:   rand.Int63(),
 			},
 			DstNodeID: 0,
@@ -310,18 +366,17 @@ func TestSegmentLoader_invalid(t *testing.T) {
 			},
 		}
 
-		err = loader.LoadSegment(ctx, req, commonpb.SegmentState_Dropped)
+		_, err = loader.LoadSegment(ctx, req, commonpb.SegmentState_Dropped)
 		assert.Error(t, err)
 	})
 
 	t.Run("Test load file failed", func(t *testing.T) {
 		node, err := genSimpleQueryNode(ctx)
-		assert.NoError(t, err)
+		require.NoError(t, err)
+		defer node.Stop()
+
 		loader := node.loader
 		assert.NotNil(t, loader)
-
-		pool, err := concurrency.NewPool(runtime.GOMAXPROCS(0))
-		require.NoError(t, err)
 
 		cm := &mocks.ChunkManager{}
 		cm.EXPECT().Read(mock.Anything, mock.AnythingOfType("string")).Return(nil, errors.New("mocked"))
@@ -346,7 +401,7 @@ func TestSegmentLoader_invalid(t *testing.T) {
 			defaultDMLChannel,
 			segmentTypeSealed,
 			defaultSegmentVersion,
-			pool)
+			defaultSegmentStartPosition)
 		assert.Nil(t, err)
 
 		binlog, _, err := saveBinLog(ctx, defaultCollectionID, defaultPartitionID, defaultSegmentID, defaultMsgLength, schema)
@@ -357,14 +412,12 @@ func TestSegmentLoader_invalid(t *testing.T) {
 	})
 
 	t.Run("Test load index failed", func(t *testing.T) {
-
 		node, err := genSimpleQueryNode(ctx)
-		assert.NoError(t, err)
+		require.NoError(t, err)
+		defer node.Stop()
+
 		loader := node.loader
 		assert.NotNil(t, loader)
-
-		pool, err := concurrency.NewPool(runtime.GOMAXPROCS(0))
-		require.NoError(t, err)
 
 		cm := &mocks.ChunkManager{}
 		cm.EXPECT().Read(mock.Anything, mock.AnythingOfType("string")).Return(nil, errors.New("mocked"))
@@ -389,7 +442,7 @@ func TestSegmentLoader_invalid(t *testing.T) {
 			defaultDMLChannel,
 			segmentTypeSealed,
 			defaultSegmentVersion,
-			pool)
+			defaultSegmentStartPosition)
 		assert.Nil(t, err)
 
 		err = loader.loadFieldIndexData(ctx, segment, &querypb.FieldIndexInfo{
@@ -408,7 +461,9 @@ func TestSegmentLoader_checkSegmentSize(t *testing.T) {
 	defer cancel()
 
 	node, err := genSimpleQueryNode(ctx)
-	assert.NoError(t, err)
+	require.NoError(t, err)
+	defer node.Stop()
+
 	loader := node.loader
 	assert.NotNil(t, loader)
 
@@ -422,14 +477,16 @@ func TestSegmentLoader_testLoadGrowing(t *testing.T) {
 
 	t.Run("test load growing segments", func(t *testing.T) {
 		node, err := genSimpleQueryNode(ctx)
-		assert.NoError(t, err)
+		require.NoError(t, err)
+		defer node.Stop()
+
 		loader := node.loader
 		assert.NotNil(t, loader)
 
 		collection, err := node.metaReplica.getCollectionByID(defaultCollectionID)
 		assert.NoError(t, err)
 
-		segment, err := newSegment(collection, defaultSegmentID+1, defaultPartitionID, defaultCollectionID, defaultDMLChannel, segmentTypeGrowing, defaultSegmentVersion, loader.cgoPool)
+		segment, err := newSegment(collection, defaultSegmentID+1, defaultPartitionID, defaultCollectionID, defaultDMLChannel, segmentTypeGrowing, defaultSegmentVersion, defaultSegmentStartPosition)
 		assert.Nil(t, err)
 
 		insertData, err := genInsertData(defaultMsgLength, collection.schema)
@@ -451,14 +508,16 @@ func TestSegmentLoader_testLoadGrowing(t *testing.T) {
 
 	t.Run("test invalid insert data", func(t *testing.T) {
 		node, err := genSimpleQueryNode(ctx)
-		assert.NoError(t, err)
+		require.NoError(t, err)
+		defer node.Stop()
+
 		loader := node.loader
 		assert.NotNil(t, loader)
 
 		collection, err := node.metaReplica.getCollectionByID(defaultCollectionID)
 		assert.NoError(t, err)
 
-		segment, err := newSegment(collection, defaultSegmentID+1, defaultPartitionID, defaultCollectionID, defaultDMLChannel, segmentTypeGrowing, defaultSegmentVersion, node.loader.cgoPool)
+		segment, err := newSegment(collection, defaultSegmentID+1, defaultPartitionID, defaultCollectionID, defaultDMLChannel, segmentTypeGrowing, defaultSegmentVersion, defaultSegmentStartPosition)
 		assert.Nil(t, err)
 
 		insertData, err := genInsertData(defaultMsgLength, collection.schema)
@@ -492,7 +551,8 @@ func TestSegmentLoader_testLoadGrowingAndSealed(t *testing.T) {
 
 	t.Run("test load sealed segments", func(t *testing.T) {
 		node, err := genSimpleQueryNode(ctx)
-		assert.NoError(t, err)
+		require.NoError(t, err)
+		defer node.Stop()
 
 		loader := node.loader
 		assert.NotNil(t, loader)
@@ -500,7 +560,7 @@ func TestSegmentLoader_testLoadGrowingAndSealed(t *testing.T) {
 		segmentID1 := UniqueID(100)
 		req1 := &querypb.LoadSegmentsRequest{
 			Base: &commonpb.MsgBase{
-				MsgType: commonpb.MsgType_WatchQueryChannels,
+				MsgType: commonpb.MsgType_LoadSegments,
 				MsgID:   rand.Int63(),
 			},
 			DstNodeID: 0,
@@ -516,7 +576,7 @@ func TestSegmentLoader_testLoadGrowingAndSealed(t *testing.T) {
 			},
 		}
 
-		err = loader.LoadSegment(ctx, req1, segmentTypeSealed)
+		_, err = loader.LoadSegment(ctx, req1, segmentTypeSealed)
 		assert.NoError(t, err)
 
 		segment1, err := loader.metaReplica.getSegmentByID(segmentID1, segmentTypeSealed)
@@ -526,7 +586,7 @@ func TestSegmentLoader_testLoadGrowingAndSealed(t *testing.T) {
 		segmentID2 := UniqueID(101)
 		req2 := &querypb.LoadSegmentsRequest{
 			Base: &commonpb.MsgBase{
-				MsgType: commonpb.MsgType_WatchQueryChannels,
+				MsgType: commonpb.MsgType_LoadSegments,
 				MsgID:   rand.Int63(),
 			},
 			DstNodeID: 0,
@@ -542,7 +602,7 @@ func TestSegmentLoader_testLoadGrowingAndSealed(t *testing.T) {
 			},
 		}
 
-		err = loader.LoadSegment(ctx, req2, segmentTypeSealed)
+		_, err = loader.LoadSegment(ctx, req2, segmentTypeSealed)
 		assert.NoError(t, err)
 
 		segment2, err := loader.metaReplica.getSegmentByID(segmentID2, segmentTypeSealed)
@@ -553,7 +613,8 @@ func TestSegmentLoader_testLoadGrowingAndSealed(t *testing.T) {
 
 	t.Run("test load growing segments", func(t *testing.T) {
 		node, err := genSimpleQueryNode(ctx)
-		assert.NoError(t, err)
+		require.NoError(t, err)
+		defer node.Stop()
 
 		loader := node.loader
 		assert.NotNil(t, loader)
@@ -561,7 +622,7 @@ func TestSegmentLoader_testLoadGrowingAndSealed(t *testing.T) {
 		segmentID1 := UniqueID(100)
 		req1 := &querypb.LoadSegmentsRequest{
 			Base: &commonpb.MsgBase{
-				MsgType: commonpb.MsgType_WatchQueryChannels,
+				MsgType: commonpb.MsgType_LoadSegments,
 				MsgID:   rand.Int63(),
 			},
 			DstNodeID: 0,
@@ -576,7 +637,7 @@ func TestSegmentLoader_testLoadGrowingAndSealed(t *testing.T) {
 			},
 		}
 
-		err = loader.LoadSegment(ctx, req1, segmentTypeGrowing)
+		_, err = loader.LoadSegment(ctx, req1, segmentTypeGrowing)
 		assert.NoError(t, err)
 
 		segment1, err := loader.metaReplica.getSegmentByID(segmentID1, segmentTypeGrowing)
@@ -586,7 +647,7 @@ func TestSegmentLoader_testLoadGrowingAndSealed(t *testing.T) {
 		segmentID2 := UniqueID(101)
 		req2 := &querypb.LoadSegmentsRequest{
 			Base: &commonpb.MsgBase{
-				MsgType: commonpb.MsgType_WatchQueryChannels,
+				MsgType: commonpb.MsgType_LoadSegments,
 				MsgID:   rand.Int63(),
 			},
 			DstNodeID: 0,
@@ -602,7 +663,7 @@ func TestSegmentLoader_testLoadGrowingAndSealed(t *testing.T) {
 			},
 		}
 
-		err = loader.LoadSegment(ctx, req2, segmentTypeGrowing)
+		_, err = loader.LoadSegment(ctx, req2, segmentTypeGrowing)
 		assert.NoError(t, err)
 
 		segment2, err := loader.metaReplica.getSegmentByID(segmentID2, segmentTypeGrowing)
@@ -639,13 +700,15 @@ func TestSegmentLoader_testLoadSealedSegmentWithIndex(t *testing.T) {
 
 	// generate segmentLoader
 	node, err := genSimpleQueryNode(ctx)
-	assert.NoError(t, err)
+	require.NoError(t, err)
+	defer node.Stop()
+
 	loader := node.loader
 	assert.NotNil(t, loader)
 
 	req := &querypb.LoadSegmentsRequest{
 		Base: &commonpb.MsgBase{
-			MsgType: commonpb.MsgType_WatchQueryChannels,
+			MsgType: commonpb.MsgType_LoadSegments,
 			MsgID:   rand.Int63(),
 		},
 		DstNodeID: 0,
@@ -662,7 +725,7 @@ func TestSegmentLoader_testLoadSealedSegmentWithIndex(t *testing.T) {
 		},
 	}
 
-	err = loader.LoadSegment(ctx, req, segmentTypeSealed)
+	_, err = loader.LoadSegment(ctx, req, segmentTypeSealed)
 	assert.NoError(t, err)
 
 	segment, err := node.metaReplica.getSegmentByID(segmentID, segmentTypeSealed)
@@ -760,11 +823,13 @@ func testSeekFailWhenConsumingDeltaMsg(ctx context.Context, t *testing.T, positi
 
 	factory := &mockMsgStreamFactory{mockMqStream: msgStream}
 	node, err := genSimpleQueryNodeWithMQFactory(ctx, factory)
-	assert.NoError(t, err)
+	require.NoError(t, err)
+	defer node.Stop()
+
 	loader := node.loader
 	assert.NotNil(t, loader)
 
-	ret := loader.FromDmlCPLoadDelete(ctx, defaultCollectionID, position)
+	ret := loader.FromDmlCPLoadDelete(ctx, defaultCollectionID, position, []int64{})
 	assert.EqualError(t, ret, errMsg)
 }
 
@@ -784,7 +849,9 @@ func testConsumingDeltaMsg(ctx context.Context, t *testing.T, position *msgstrea
 		msgChan <- nil
 		deleteMsg1 := genDeleteMsg(defaultCollectionID+1, schemapb.DataType_Int64, defaultDelLength)
 		deleteMsg2 := genDeleteMsg(defaultCollectionID, schemapb.DataType_Int64, defaultDelLength)
-		msgChan <- &msgstream.MsgPack{Msgs: []msgstream.TsMsg{deleteMsg1, deleteMsg2}}
+		msgChan <- &msgstream.MsgPack{Msgs: []msgstream.TsMsg{deleteMsg1, deleteMsg2},
+			StartPositions: []*internalpb.MsgPosition{genMsgStreamBaseMsg().MsgPosition},
+			EndPositions:   []*internalpb.MsgPosition{genMsgStreamBaseMsg().MsgPosition}}
 	}
 	if closedStream {
 		close(msgChan)
@@ -793,12 +860,13 @@ func testConsumingDeltaMsg(ctx context.Context, t *testing.T, position *msgstrea
 	msgStream.On("Chan").Return(msgChan)
 	factory := &mockMsgStreamFactory{mockMqStream: msgStream}
 	node, err := genSimpleQueryNodeWithMQFactory(ctx, factory)
-	assert.NoError(t, err)
+	require.NoError(t, err)
+	defer node.Stop()
 
 	loader := node.loader
 	assert.NotNil(t, loader)
 
-	return loader.FromDmlCPLoadDelete(ctx, defaultCollectionID, position)
+	return loader.FromDmlCPLoadDelete(ctx, defaultCollectionID, position, []int64{})
 }
 
 type mockMsgID struct {
@@ -871,8 +939,6 @@ func (ms *LoadDeleteMsgStream) GetLatestMsgID(channel string) (msgstream.Message
 
 	return msg.(msgstream.MessageID), err.(error)
 }
-
-func (ms *LoadDeleteMsgStream) Start() {}
 
 type getCollectionByIDFunc func(collectionID UniqueID) (*Collection, error)
 

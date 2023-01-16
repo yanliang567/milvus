@@ -19,11 +19,18 @@ func (b etcdBasedBackend) CleanWithPrefix(prefix string) error {
 }
 
 func newEtcdBasedBackend(cfg *configs.MilvusConfig) (*etcdBasedBackend, error) {
-	etcdCli, err := etcd.GetEtcdClient(cfg.EtcdCfg)
+	etcdCli, err := etcd.GetEtcdClient(
+		cfg.EtcdCfg.UseEmbedEtcd.GetAsBool(),
+		cfg.EtcdCfg.EtcdUseSSL.GetAsBool(),
+		cfg.EtcdCfg.Endpoints.GetAsStrings(),
+		cfg.EtcdCfg.EtcdTLSCert.GetValue(),
+		cfg.EtcdCfg.EtcdTLSKey.GetValue(),
+		cfg.EtcdCfg.EtcdTLSCACert.GetValue(),
+		cfg.EtcdCfg.EtcdTLSMinVersion.GetValue())
 	if err != nil {
 		return nil, err
 	}
-	txn := etcdkv.NewEtcdKV(etcdCli, cfg.EtcdCfg.MetaRootPath)
+	txn := etcdkv.NewEtcdKV(etcdCli, cfg.EtcdCfg.MetaRootPath.GetValue())
 	b := &etcdBasedBackend{cfg: cfg, etcdCli: etcdCli, txn: txn}
 	return b, nil
 }

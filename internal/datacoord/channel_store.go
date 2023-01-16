@@ -23,6 +23,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/milvus-io/milvus/internal/util/timerecord"
+
 	"github.com/golang/protobuf/proto"
 	"github.com/milvus-io/milvus/internal/kv"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
@@ -131,7 +133,8 @@ func NewChannelStore(kv kv.TxnKV) *ChannelStore {
 
 // Reload restores the buffer channels and node-channels mapping from kv.
 func (c *ChannelStore) Reload() error {
-	keys, values, err := c.store.LoadWithPrefix(Params.DataCoordCfg.ChannelWatchSubPath)
+	record := timerecord.NewTimeRecorder("datacoord")
+	keys, values, err := c.store.LoadWithPrefix(Params.CommonCfg.DataCoordWatchSubPath.GetValue())
 	if err != nil {
 		return err
 	}
@@ -153,9 +156,11 @@ func (c *ChannelStore) Reload() error {
 		channel := &channel{
 			Name:         cw.GetVchan().GetChannelName(),
 			CollectionID: cw.GetVchan().GetCollectionID(),
+			Schema:       cw.GetSchema(),
 		}
 		c.channelsInfo[nodeID].Channels = append(c.channelsInfo[nodeID].Channels, channel)
 	}
+	record.Record("ChannelStore reload")
 	return nil
 }
 
@@ -364,12 +369,12 @@ func (c *ChannelStore) txn(opSet ChannelOpSet) error {
 
 // buildNodeChannelKey generates a key for kv store, where the key is a concatenation of ChannelWatchSubPath, nodeID and channel name.
 func buildNodeChannelKey(nodeID int64, chName string) string {
-	return fmt.Sprintf("%s%s%d%s%s", Params.DataCoordCfg.ChannelWatchSubPath, delimiter, nodeID, delimiter, chName)
+	return fmt.Sprintf("%s%s%d%s%s", Params.CommonCfg.DataCoordWatchSubPath.GetValue(), delimiter, nodeID, delimiter, chName)
 }
 
 // buildKeyPrefix generates a key *prefix* for kv store, where the key prefix is a concatenation of ChannelWatchSubPath and nodeID.
 func buildKeyPrefix(nodeID int64) string {
-	return fmt.Sprintf("%s%s%d", Params.DataCoordCfg.ChannelWatchSubPath, delimiter, nodeID)
+	return fmt.Sprintf("%s%s%d", Params.CommonCfg.DataCoordWatchSubPath.GetValue(), delimiter, nodeID)
 }
 
 // parseNodeKey validates a given node key, then extracts and returns the corresponding node id on success.

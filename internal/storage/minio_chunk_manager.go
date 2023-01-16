@@ -23,11 +23,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"strings"
 	"time"
 
 	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/storage/gcp"
 	"github.com/milvus-io/milvus/internal/util/errorutil"
 	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/minio/minio-go/v7"
@@ -38,6 +38,11 @@ import (
 
 var (
 	ErrNoSuchKey = errors.New("NoSuchKey")
+)
+
+const (
+	CloudProviderGCP = "gcp"
+	CloudProviderAWS = "aws"
 )
 
 func WrapErrNoSuchKey(key string) error {
@@ -70,15 +75,26 @@ func NewMinioChunkManager(ctx context.Context, opts ...Option) (*MinioChunkManag
 
 func newMinioChunkManagerWithConfig(ctx context.Context, c *config) (*MinioChunkManager, error) {
 	var creds *credentials.Credentials
-	if c.useIAM {
-		creds = credentials.NewIAM(c.iamEndpoint)
-	} else {
-		creds = credentials.NewStaticV4(c.accessKeyID, c.secretAccessKeyID, "")
+	var newMinioFn = minio.New
+
+	switch c.cloudProvider {
+	case CloudProviderGCP:
+		newMinioFn = gcp.NewMinioClient
+		if !c.useIAM {
+			creds = credentials.NewStaticV2(c.accessKeyID, c.secretAccessKeyID, "")
+		}
+	default: // aws, minio
+		if c.useIAM {
+			creds = credentials.NewIAM("")
+		} else {
+			creds = credentials.NewStaticV4(c.accessKeyID, c.secretAccessKeyID, "")
+		}
 	}
-	minIOClient, err := minio.New(c.address, &minio.Options{
+	minioOpts := &minio.Options{
 		Creds:  creds,
 		Secure: c.useSSL,
-	})
+	}
+	minIOClient, err := newMinioFn(c.address, minioOpts)
 	// options nil or invalid formatted endpoint, don't need to retry
 	if err != nil {
 		return nil, err
@@ -219,7 +235,17 @@ func (mcm *MinioChunkManager) Read(ctx context.Context, filePath string) ([]byte
 	}
 	defer object.Close()
 
-	data, err := ioutil.ReadAll(object)
+	objectInfo, err := object.Stat()
+	if err != nil {
+		log.Warn("failed to stat object", zap.String("path", filePath), zap.Error(err))
+		errResponse := minio.ToErrorResponse(err)
+		if errResponse.Code == "NoSuchKey" {
+			return nil, WrapErrNoSuchKey(filePath)
+		}
+		return nil, err
+	}
+
+	data, err := Read(object, objectInfo.Size)
 	if err != nil {
 		errResponse := minio.ToErrorResponse(err)
 		if errResponse.Code == "NoSuchKey" {
@@ -284,8 +310,13 @@ func (mcm *MinioChunkManager) ReadAt(ctx context.Context, filePath string, off i
 		return nil, err
 	}
 	defer object.Close()
-	data, err := ioutil.ReadAll(object)
+
+	data, err := Read(object, length)
 	if err != nil {
+		errResponse := minio.ToErrorResponse(err)
+		if errResponse.Code == "NoSuchKey" {
+			return nil, WrapErrNoSuchKey(filePath)
+		}
 		log.Warn("failed to read object", zap.String("path", filePath), zap.Error(err))
 		return nil, err
 	}
@@ -362,9 +393,9 @@ func (mcm *MinioChunkManager) ListWithPrefix(ctx context.Context, prefix string,
 			}
 
 			// with tailing "/", object is a "directory"
-			if strings.HasSuffix(object.Key, "/") {
+			if strings.HasSuffix(object.Key, "/") && recursive {
 				// enqueue when recursive is true
-				if recursive && object.Key != pre {
+				if object.Key != pre {
 					tasks.PushBack(object.Key)
 				}
 				continue
@@ -375,4 +406,22 @@ func (mcm *MinioChunkManager) ListWithPrefix(ctx context.Context, prefix string,
 	}
 
 	return objectsKeys, modTimes, nil
+}
+
+// Learn from file.ReadFile
+func Read(r io.Reader, size int64) ([]byte, error) {
+	data := make([]byte, 0, size)
+	for {
+		n, err := r.Read(data[len(data):cap(data)])
+		data = data[:len(data)+n]
+		if err != nil {
+			if err == io.EOF {
+				err = nil
+			}
+			return data, err
+		}
+		if len(data) == cap(data) {
+			return data, nil
+		}
+	}
 }

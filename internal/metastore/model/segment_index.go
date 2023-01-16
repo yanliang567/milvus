@@ -21,7 +21,8 @@ type SegmentIndex struct {
 	CreateTime    uint64
 	IndexFileKeys []string
 	IndexSize     uint64
-	WriteHandoff  bool
+	// deprecated
+	WriteHandoff bool
 }
 
 func UnmarshalSegmentIndexModel(segIndex *indexpb.SegmentIndex) *SegmentIndex {

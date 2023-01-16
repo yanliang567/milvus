@@ -12,6 +12,7 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path"
@@ -26,6 +27,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/allocator"
+	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/kv"
 	rocksdbkv "github.com/milvus-io/milvus/internal/kv/rocksdb"
 	"github.com/milvus-io/milvus/internal/log"
@@ -43,7 +45,6 @@ type UniqueID = typeutil.UniqueID
 type RmqState = int64
 
 // RocksmqPageSize is the size of a message page, default 256MB
-var RocksmqPageSize int64 = 256 << 20
 
 // RocksDB cache size limitation(TODO config it)
 var RocksDBLRUCacheMinCapacity = uint64(1 << 29)
@@ -106,7 +107,8 @@ func parsePageID(key string) (int64, error) {
 }
 
 func checkRetention() bool {
-	return RocksmqRetentionTimeInSecs != -1 || RocksmqRetentionSizeInMB != -1
+	params := paramtable.Get()
+	return params.RocksmqCfg.RetentionSizeInMB.GetAsInt64() != -1 || params.RocksmqCfg.RetentionTimeInMinutes.GetAsInt64() != -1
 }
 
 var topicMu = sync.Map{}
@@ -128,7 +130,7 @@ type rocksmq struct {
 // 1. New rocksmq instance based on rocksdb with name and rocksdbkv with kvname
 // 2. Init retention info, load retention info to memory
 // 3. Start retention goroutine
-func NewRocksMQ(params paramtable.BaseTable, name string, idAllocator allocator.Interface) (*rocksmq, error) {
+func NewRocksMQ(name string, idAllocator allocator.Interface) (*rocksmq, error) {
 	// TODO we should use same rocksdb instance with different cfs
 	maxProcs := runtime.GOMAXPROCS(0)
 	parallelism := 1
@@ -141,7 +143,8 @@ func NewRocksMQ(params paramtable.BaseTable, name string, idAllocator allocator.
 	// default rocks db cache is set with memory
 	rocksDBLRUCacheCapacity := RocksDBLRUCacheMinCapacity
 	if memoryCount > 0 {
-		ratio := params.ParseFloatWithDefault("rocksmq.lrucacheratio", 0.06)
+		params := paramtable.Get()
+		ratio := params.RocksmqCfg.LRUCacheRatio.GetAsFloat()
 		calculatedCapacity := uint64(float64(memoryCount) * ratio)
 		if calculatedCapacity < RocksDBLRUCacheMinCapacity {
 			rocksDBLRUCacheCapacity = RocksDBLRUCacheMinCapacity
@@ -209,7 +212,7 @@ func NewRocksMQ(params paramtable.BaseTable, name string, idAllocator allocator.
 		readers:     sync.Map{},
 	}
 
-	ri, err := initRetentionInfo(params, kv, db)
+	ri, err := initRetentionInfo(kv, db)
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +277,7 @@ func (rmq *rocksmq) Close() {
 	log.Info("Successfully close rocksmq")
 }
 
-//print rmq consumer Info
+// print rmq consumer Info
 func (rmq *rocksmq) Info() bool {
 	rtn := true
 	rmq.consumers.Range(func(key, vals interface{}) bool {
@@ -594,6 +597,16 @@ func (rmq *rocksmq) Produce(topicName string, messages []ProducerMessage) ([]Uni
 		msgID := idStart + UniqueID(i)
 		key := path.Join(topicName, strconv.FormatInt(msgID, 10))
 		batch.Put([]byte(key), messages[i].Payload)
+		properties, err := json.Marshal(messages[i].Properties)
+		if err != nil {
+			log.Warn("properties marshal failed",
+				zap.Int64("msgID", msgID),
+				zap.String("topicName", topicName),
+				zap.Error(err))
+			return nil, err
+		}
+		pKey := path.Join(common.PropertiesKey, topicName, strconv.FormatInt(msgID, 10))
+		batch.Put([]byte(pKey), properties)
 		msgIDs[i] = msgID
 		msgSizes[msgID] = int64(len(messages[i].Payload))
 	}
@@ -637,6 +650,7 @@ func (rmq *rocksmq) Produce(topicName string, messages []ProducerMessage) ([]Uni
 }
 
 func (rmq *rocksmq) updatePageInfo(topicName string, msgIDs []UniqueID, msgSizes map[UniqueID]int64) error {
+	params := paramtable.Get()
 	msgSizeKey := MessageSizeTitle + topicName
 	msgSizeVal, err := rmq.kv.Load(msgSizeKey)
 	if err != nil {
@@ -652,7 +666,7 @@ func (rmq *rocksmq) updatePageInfo(topicName string, msgIDs []UniqueID, msgSizes
 	mutateBuffer := make(map[string]string)
 	for _, id := range msgIDs {
 		msgSize := msgSizes[id]
-		if curMsgSize+msgSize > RocksmqPageSize {
+		if curMsgSize+msgSize > params.RocksmqCfg.PageSize.GetAsInt64() {
 			// Current page is full
 			newPageSize := curMsgSize + msgSize
 			pageEndID := id
@@ -724,6 +738,21 @@ func (rmq *rocksmq) Consume(topicName string, groupName string, n int) ([]Consum
 			val.Free()
 			return nil, err
 		}
+		askedProperties := path.Join(common.PropertiesKey, topicName, strconv.FormatInt(msgID, 10))
+		opts := gorocksdb.NewDefaultReadOptions()
+		defer opts.Destroy()
+		propertiesValue, err := rmq.store.GetBytes(opts, []byte(askedProperties))
+		if err != nil {
+			return nil, err
+		}
+		properties := make(map[string]string)
+		if len(propertiesValue) != 0 {
+			// before 2.2.0, there have no properties in ProducerMessage and ConsumerMessage in rocksmq
+			// when produce before 2.2.0, but consume in 2.2.0, propertiesValue will be []
+			if err = json.Unmarshal(propertiesValue, &properties); err != nil {
+				return nil, err
+			}
+		}
 		msg := ConsumerMessage{
 			MsgID: msgID,
 		}
@@ -731,8 +760,10 @@ func (rmq *rocksmq) Consume(topicName string, groupName string, n int) ([]Consum
 		dataLen := len(origData)
 		if dataLen == 0 {
 			msg.Payload = nil
+			msg.Properties = nil
 		} else {
 			msg.Payload = make([]byte, dataLen)
+			msg.Properties = properties
 			copy(msg.Payload, origData)
 		}
 		consumerMessage = append(consumerMessage, msg)
@@ -850,7 +881,7 @@ func (rmq *rocksmq) Seek(topicName string, groupName string, msgID UniqueID) err
 	return nil
 }
 
-//Only for test
+// Only for test
 func (rmq *rocksmq) ForceSeek(topicName string, groupName string, msgID UniqueID) error {
 	log.Warn("Use method ForceSeek that only for test")
 	if rmq.isClosed() {

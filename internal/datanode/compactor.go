@@ -21,17 +21,22 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"path"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/milvus-io/milvus-proto/go-api/schemapb"
+	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/etcdpb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/metautil"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
@@ -76,8 +81,9 @@ type compactionTask struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	wg sync.WaitGroup
-	tr *timerecord.TimeRecorder
+	wg           sync.WaitGroup
+	tr           *timerecord.TimeRecorder
+	chunkManager storage.ChunkManager
 }
 
 // check if compactionTask implements compactor
@@ -90,7 +96,8 @@ func newCompactionTask(
 	channel Channel,
 	fm flushManager,
 	alloc allocatorInterface,
-	plan *datapb.CompactionPlan) *compactionTask {
+	plan *datapb.CompactionPlan,
+	chunkManager storage.ChunkManager) *compactionTask {
 
 	ctx1, cancel := context.WithCancel(ctx)
 	return &compactionTask{
@@ -104,6 +111,7 @@ func newCompactionTask(
 		allocatorInterface: alloc,
 		plan:               plan,
 		tr:                 timerecord.NewTimeRecorder("compactionTask"),
+		chunkManager:       chunkManager,
 	}
 }
 
@@ -128,7 +136,8 @@ func (t *compactionTask) getChannelName() string {
 	return t.plan.GetChannel()
 }
 
-func (t *compactionTask) mergeDeltalogs(dBlobs map[UniqueID][]*Blob, timetravelTs Timestamp) (map[interface{}]Timestamp, *DelDataBuf, error) {
+func (t *compactionTask) mergeDeltalogs(dBlobs map[UniqueID][]*Blob, timetravelTs Timestamp) (
+	map[interface{}]Timestamp, *DelDataBuf, error) {
 	log := log.With(zap.Int64("planID", t.getPlanID()))
 	mergeStart := time.Now()
 	dCodec := storage.NewDeleteCodec()
@@ -174,7 +183,7 @@ func (t *compactionTask) mergeDeltalogs(dBlobs map[UniqueID][]*Blob, timetravelT
 		}
 	}
 
-	dbuff.updateSize(dbuff.delData.RowCount)
+	dbuff.accumulateEntriesNum(dbuff.delData.RowCount)
 	log.Info("mergeDeltalogs end",
 		zap.Int("number of pks to compact in insert logs", len(pk2ts)),
 		zap.Float64("elapse in ms", nano2Milli(time.Since(mergeStart))))
@@ -231,12 +240,10 @@ func (t *compactionTask) merge(
 	mergeStart := time.Now()
 
 	var (
-		dim              int   // dimension of float/binary vector field
 		maxRowsPerBinlog int   // maximum rows populating one binlog
 		numBinlogs       int   // binlog number
 		numRows          int64 // the number of rows uploaded
 		expired          int64 // the number of expired entity
-		err              error
 
 		// statslog generation
 		pkID   UniqueID
@@ -291,25 +298,25 @@ func (t *compactionTask) merge(
 			pkID = fs.GetFieldID()
 			pkType = fs.GetDataType()
 		}
-		if fs.GetDataType() == schemapb.DataType_FloatVector ||
-			fs.GetDataType() == schemapb.DataType_BinaryVector {
-			for _, t := range fs.GetTypeParams() {
-				if t.Key == "dim" {
-					if dim, err = strconv.Atoi(t.Value); err != nil {
-						log.Warn("strconv wrong on get dim", zap.Error(err))
-						return nil, nil, 0, err
-					}
-					break
-				}
-			}
-		}
+	}
+
+	// estimate Rows per binlog
+	// TODO should not convert size to row because we already know the size, this is especially important on varchar types.
+	size, err := typeutil.EstimateSizePerRecord(meta.GetSchema())
+	if err != nil {
+		log.Warn("failed to estimate size per record", zap.Error(err))
+		return nil, nil, 0, err
+	}
+
+	maxRowsPerBinlog = int(Params.DataNodeCfg.BinLogMaxSize.GetAsInt64() / int64(size))
+	if Params.DataNodeCfg.BinLogMaxSize.GetAsInt64()%int64(size) != 0 {
+		maxRowsPerBinlog++
 	}
 
 	expired = 0
 	numRows = 0
 	numBinlogs = 0
 	currentTs := t.GetCurrentTime()
-	maxRowsPerBinlog = int(Params.DataNodeCfg.FlushInsertBufferSize / (int64(dim) * 4))
 	currentRows := 0
 	downloadTimeCost := time.Duration(0)
 	uploadInsertTimeCost := time.Duration(0)
@@ -318,14 +325,14 @@ func (t *compactionTask) merge(
 		downloadStart := time.Now()
 		data, err := t.download(ctxTimeout, path)
 		if err != nil {
-			log.Warn("download insertlogs wrong")
+			log.Warn("download insertlogs wrong", zap.Error(err))
 			return nil, nil, 0, err
 		}
 		downloadTimeCost += time.Since(downloadStart)
 
 		iter, err := storage.NewInsertBinlogIterator(data, pkID, pkType)
 		if err != nil {
-			log.Warn("new insert binlogs Itr wrong")
+			log.Warn("new insert binlogs Itr wrong", zap.Error(err))
 			return nil, nil, 0, err
 		}
 		for iter.HasNext() {
@@ -361,11 +368,11 @@ func (t *compactionTask) merge(
 			}
 
 			currentRows++
-
-			if currentRows == maxRowsPerBinlog {
+			if currentRows >= maxRowsPerBinlog {
 				uploadInsertStart := time.Now()
 				inPaths, statsPaths, err := t.uploadSingleInsertLog(ctxTimeout, targetSegID, partID, meta, fID2Content, fID2Type)
 				if err != nil {
+					log.Warn("failed to upload single insert log", zap.Error(err))
 					return nil, nil, 0, err
 				}
 				uploadInsertTimeCost += time.Since(uploadInsertStart)
@@ -383,6 +390,7 @@ func (t *compactionTask) merge(
 		uploadInsertStart := time.Now()
 		inPaths, statsPaths, err := t.uploadSingleInsertLog(ctxTimeout, targetSegID, partID, meta, fID2Content, fID2Type)
 		if err != nil {
+			log.Warn("failed to upload single insert log", zap.Error(err))
 			return nil, nil, 0, err
 		}
 		uploadInsertTimeCost += time.Since(uploadInsertStart)
@@ -414,7 +422,7 @@ func (t *compactionTask) merge(
 func (t *compactionTask) compact() (*datapb.CompactionResult, error) {
 	compactStart := time.Now()
 	if ok := funcutil.CheckCtxValid(t.ctx); !ok {
-		log.Error("compact wrong, task context done or timeout")
+		log.Warn("compact wrong, task context done or timeout")
 		return nil, errContext
 	}
 
@@ -426,17 +434,17 @@ func (t *compactionTask) compact() (*datapb.CompactionResult, error) {
 	switch {
 
 	case t.plan.GetType() == datapb.CompactionType_UndefinedCompaction:
-		log.Error("compact wrong, compaction type undefined")
+		log.Warn("compact wrong, compaction type undefined")
 		return nil, errCompactionTypeUndifined
 
 	case len(t.plan.GetSegmentBinlogs()) < 1:
-		log.Error("compact wrong, there's no segments in segment binlogs")
+		log.Warn("compact wrong, there's no segments in segment binlogs")
 		return nil, errIllegalCompactionPlan
 
 	case t.plan.GetType() == datapb.CompactionType_MergeCompaction || t.plan.GetType() == datapb.CompactionType_MixCompaction:
 		targetSegID, err = t.allocID()
 		if err != nil {
-			log.Error("compact wrong", zap.Error(err))
+			log.Warn("compact wrong", zap.Error(err))
 			return nil, err
 		}
 	}
@@ -449,14 +457,103 @@ func (t *compactionTask) compact() (*datapb.CompactionResult, error) {
 
 	_, partID, meta, err := t.getSegmentMeta(segIDs[0])
 	if err != nil {
-		log.Error("compact wrong", zap.Int64("planID", t.plan.GetPlanID()), zap.Error(err))
+		log.Warn("compact wrong", zap.Int64("planID", t.plan.GetPlanID()), zap.Error(err))
 		return nil, err
 	}
 
 	// Inject to stop flush
 	injectStart := time.Now()
 	ti := newTaskInjection(len(segIDs), func(pack *segmentFlushPack) {
+		collectionID := meta.GetID()
 		pack.segmentID = targetSegID
+		for _, insertLog := range pack.insertLogs {
+			splits := strings.Split(insertLog.LogPath, "/")
+			if len(splits) < 2 {
+				pack.err = fmt.Errorf("bad insert log path: %s", insertLog.LogPath)
+				return
+			}
+			logID, err := strconv.ParseInt(splits[len(splits)-1], 10, 64)
+			if err != nil {
+				pack.err = err
+				return
+			}
+			fieldID, err := strconv.ParseInt(splits[len(splits)-2], 10, 64)
+			if err != nil {
+				pack.err = err
+				return
+			}
+			blobKey := metautil.JoinIDPath(collectionID, partID, targetSegID, fieldID, logID)
+			blobPath := path.Join(t.chunkManager.RootPath(), common.SegmentInsertLogPath, blobKey)
+			blob, err := t.chunkManager.Read(t.ctx, insertLog.LogPath)
+			if err != nil {
+				pack.err = err
+				return
+			}
+			err = t.chunkManager.Write(t.ctx, blobPath, blob)
+			if err != nil {
+				pack.err = err
+				return
+			}
+			insertLog.LogPath = blobPath
+		}
+
+		for _, deltaLog := range pack.deltaLogs {
+			splits := strings.Split(deltaLog.LogPath, "/")
+			if len(splits) < 1 {
+				pack.err = fmt.Errorf("delta stats log path: %s", deltaLog.LogPath)
+				return
+			}
+			logID, err := strconv.ParseInt(splits[len(splits)-1], 10, 64)
+			if err != nil {
+				pack.err = err
+				return
+			}
+			blobKey := metautil.JoinIDPath(collectionID, partID, targetSegID, logID)
+			blobPath := path.Join(t.chunkManager.RootPath(), common.SegmentDeltaLogPath, blobKey)
+			blob, err := t.chunkManager.Read(t.ctx, deltaLog.LogPath)
+			if err != nil {
+				pack.err = err
+				return
+			}
+			err = t.chunkManager.Write(t.ctx, blobPath, blob)
+			if err != nil {
+				pack.err = err
+				return
+			}
+			deltaLog.LogPath = blobPath
+		}
+
+		for _, statsLog := range pack.statsLogs {
+			splits := strings.Split(statsLog.LogPath, "/")
+			if len(splits) < 2 {
+				pack.err = fmt.Errorf("bad stats log path: %s", statsLog.LogPath)
+				return
+			}
+			logID, err := strconv.ParseInt(splits[len(splits)-1], 10, 64)
+			if err != nil {
+				pack.err = err
+				return
+			}
+			fieldID, err := strconv.ParseInt(splits[len(splits)-2], 10, 64)
+			if err != nil {
+				pack.err = err
+				return
+			}
+			blobKey := metautil.JoinIDPath(collectionID, partID, targetSegID, fieldID, logID)
+			blobPath := path.Join(t.chunkManager.RootPath(), common.SegmentStatslogPath, blobKey)
+
+			blob, err := t.chunkManager.Read(t.ctx, statsLog.LogPath)
+			if err != nil {
+				pack.err = err
+				return
+			}
+			err = t.chunkManager.Write(t.ctx, blobPath, blob)
+			if err != nil {
+				pack.err = err
+				return
+			}
+			statsLog.LogPath = blobPath
+		}
 	})
 	defer close(ti.injectOver)
 
@@ -489,7 +586,7 @@ func (t *compactionTask) compact() (*datapb.CompactionResult, error) {
 		}
 		// Unable to deal with all empty segments cases, so return error
 		if binlogNum == 0 {
-			log.Error("compact wrong, all segments' binlogs are empty", zap.Int64("planID", t.plan.GetPlanID()))
+			log.Warn("compact wrong, all segments' binlogs are empty", zap.Int64("planID", t.plan.GetPlanID()))
 			return nil, errIllegalCompactionPlan
 		}
 
@@ -529,7 +626,7 @@ func (t *compactionTask) compact() (*datapb.CompactionResult, error) {
 	}()
 
 	if err != nil {
-		log.Error("compaction IO wrong", zap.Int64("planID", t.plan.GetPlanID()), zap.Error(err))
+		log.Warn("compaction IO wrong", zap.Int64("planID", t.plan.GetPlanID()), zap.Error(err))
 		return nil, err
 	}
 
@@ -540,14 +637,14 @@ func (t *compactionTask) compact() (*datapb.CompactionResult, error) {
 
 	inPaths, statsPaths, numRows, err := t.merge(ctxTimeout, allPs, targetSegID, partID, meta, deltaPk2Ts)
 	if err != nil {
-		log.Error("compact wrong", zap.Int64("planID", t.plan.GetPlanID()), zap.Error(err))
+		log.Warn("compact wrong", zap.Int64("planID", t.plan.GetPlanID()), zap.Error(err))
 		return nil, err
 	}
 
 	uploadDeltaStart := time.Now()
 	deltaInfo, err := t.uploadDeltaLog(ctxTimeout, targetSegID, partID, deltaBuf.delData, meta)
 	if err != nil {
-		log.Error("compact wrong", zap.Int64("planID", t.plan.GetPlanID()), zap.Error(err))
+		log.Warn("compact wrong", zap.Int64("planID", t.plan.GetPlanID()), zap.Error(err))
 		return nil, err
 	}
 	log.Info("upload delta log elapse in ms", zap.Int64("planID", t.plan.GetPlanID()), zap.Float64("elapse", nano2Milli(time.Since(uploadDeltaStart))))
@@ -588,7 +685,7 @@ func (t *compactionTask) compact() (*datapb.CompactionResult, error) {
 	)
 
 	log.Info("overall elapse in ms", zap.Int64("planID", t.plan.GetPlanID()), zap.Float64("elapse", nano2Milli(time.Since(compactStart))))
-	metrics.DataNodeCompactionLatency.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID())).Observe(float64(t.tr.ElapseSpan().Milliseconds()))
+	metrics.DataNodeCompactionLatency.WithLabelValues(fmt.Sprint(paramtable.GetNodeID())).Observe(float64(t.tr.ElapseSpan().Milliseconds()))
 
 	return pack, nil
 }

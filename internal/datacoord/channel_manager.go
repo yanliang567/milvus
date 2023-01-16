@@ -37,10 +37,7 @@ import (
 	"stathat.com/c/consistent"
 )
 
-const (
-	bgCheckInterval  = 3 * time.Second
-	maxWatchDuration = 20 * time.Second
-)
+const bgCheckInterval = 3 * time.Second
 
 // ChannelManager manages the allocation and the balance between channels and data nodes.
 type ChannelManager struct {
@@ -240,7 +237,10 @@ func (c *ChannelManager) unwatchDroppedChannels() {
 				log.Warn("unable to remove channel", zap.String("channel", ch.Name), zap.Error(err))
 				continue
 			}
-			c.h.FinishDropChannel(ch.Name)
+			err = c.h.FinishDropChannel(ch.Name)
+			if err != nil {
+				log.Warn("FinishDropChannel failed when unwatchDroppedChannels", zap.String("channel", ch.Name), zap.Error(err))
+			}
 		}
 	}
 }
@@ -414,7 +414,7 @@ func (c *ChannelManager) unsubAttempt(ncInfo *NodeChannelInfo) {
 	nodeID := ncInfo.NodeID
 	for _, ch := range ncInfo.Channels {
 		// align to datanode subname, using vchannel name
-		subName := fmt.Sprintf("%s-%d-%s", Params.CommonCfg.DataNodeSubName, nodeID, ch.Name)
+		subName := fmt.Sprintf("%s-%d-%s", Params.CommonCfg.DataNodeSubName.GetValue(), nodeID, ch.Name)
 		pchannelName := funcutil.ToPhysicalChannel(ch.Name)
 		msgstream.UnsubscribeChannels(c.ctx, c.msgstreamFactory, subName, []string{pchannelName})
 	}
@@ -449,7 +449,7 @@ func (c *ChannelManager) fillChannelWatchInfo(op *ChannelOp) {
 			Vchan:     vcInfo,
 			StartTs:   time.Now().Unix(),
 			State:     datapb.ChannelWatchState_Uncomplete,
-			TimeoutTs: time.Now().Add(maxWatchDuration).UnixNano(),
+			TimeoutTs: time.Now().Add(Params.DataCoordCfg.MaxWatchDuration.GetAsDuration(time.Second)).UnixNano(),
 			Schema:    ch.Schema,
 		}
 		op.ChannelWatchInfos = append(op.ChannelWatchInfos, info)
@@ -460,7 +460,7 @@ func (c *ChannelManager) fillChannelWatchInfo(op *ChannelOp) {
 func (c *ChannelManager) fillChannelWatchInfoWithState(op *ChannelOp, state datapb.ChannelWatchState) []string {
 	var channelsWithTimer = []string{}
 	startTs := time.Now().Unix()
-	timeoutTs := time.Now().Add(maxWatchDuration).UnixNano()
+	timeoutTs := time.Now().Add(Params.DataCoordCfg.MaxWatchDuration.GetAsDuration(time.Second)).UnixNano()
 	for _, ch := range op.Channels {
 		vcInfo := c.h.GetDataVChanPositions(ch, allPartitionID)
 		info := &datapb.ChannelWatchInfo{
@@ -653,7 +653,7 @@ func (c *ChannelManager) watchChannelStatesLoop(ctx context.Context) {
 	defer logutil.LogPanic()
 
 	// REF MEP#7 watchInfo paths are orgnized as: [prefix]/channel/{node_id}/{channel_name}
-	watchPrefix := Params.DataCoordCfg.ChannelWatchSubPath
+	watchPrefix := Params.CommonCfg.DataCoordWatchSubPath.GetValue()
 	// TODO, this is risky, we'd better watch etcd with revision rather simply a path
 	etcdWatcher, timeoutWatcher := c.stateTimer.getWatchers(watchPrefix)
 
@@ -752,7 +752,9 @@ func (c *ChannelManager) Reassign(nodeID UniqueID, channelName string) error {
 		if err := c.remove(nodeID, ch); err != nil {
 			return fmt.Errorf("failed to remove watch info: %v,%s", ch, err.Error())
 		}
-		c.h.FinishDropChannel(channelName)
+		if err := c.h.FinishDropChannel(channelName); err != nil {
+			return fmt.Errorf("FinishDropChannel failed, err=%w", err)
+		}
 		log.Info("removed channel assignment", zap.String("channel name", channelName))
 		return nil
 	}
@@ -786,7 +788,7 @@ func (c *ChannelManager) CleanupAndReassign(nodeID UniqueID, channelName string)
 	if c.msgstreamFactory == nil {
 		log.Warn("msgstream factory is not set, unable to clean up topics")
 	} else {
-		subName := fmt.Sprintf("%s-%d-%d", Params.CommonCfg.DataNodeSubName, nodeID, chToCleanUp.CollectionID)
+		subName := fmt.Sprintf("%s-%d-%d", Params.CommonCfg.DataNodeSubName.GetValue(), nodeID, chToCleanUp.CollectionID)
 		pchannelName := funcutil.ToPhysicalChannel(channelName)
 		msgstream.UnsubscribeChannels(c.ctx, c.msgstreamFactory, subName, []string{pchannelName})
 	}
@@ -799,7 +801,9 @@ func (c *ChannelManager) CleanupAndReassign(nodeID UniqueID, channelName string)
 		}
 
 		log.Info("try to cleanup removal flag ", zap.String("channel name", channelName))
-		c.h.FinishDropChannel(channelName)
+		if err := c.h.FinishDropChannel(channelName); err != nil {
+			return fmt.Errorf("FinishDropChannel failed, err=%w", err)
+		}
 
 		log.Info("removed channel assignment", zap.Any("channel", chToCleanUp))
 		return nil

@@ -14,10 +14,11 @@ package timerecord
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/milvus-io/milvus/internal/log"
+	"go.opentelemetry.io/otel/trace"
+	"go.uber.org/zap"
 )
 
 // TimeRecorder provides methods to record time duration
@@ -25,13 +26,22 @@ type TimeRecorder struct {
 	header string
 	start  time.Time
 	last   time.Time
-	ctx    context.Context
 }
 
 // NewTimeRecorder creates a new TimeRecorder
 func NewTimeRecorder(header string) *TimeRecorder {
 	return &TimeRecorder{
 		header: header,
+		start:  time.Now(),
+		last:   time.Now(),
+	}
+}
+
+// NewTimeRecorderWithCtx creates a new TimeRecorder with context's traceID,
+func NewTimeRecorderWithTrace(ctx context.Context, header string) *TimeRecorder {
+	traceID := trace.SpanFromContext(ctx).SpanContext().TraceID()
+	return &TimeRecorder{
+		header: fmt.Sprintf("%s(%s)", header, traceID),
 		start:  time.Now(),
 		last:   time.Now(),
 	}
@@ -80,15 +90,13 @@ func (tr *TimeRecorder) CtxElapse(ctx context.Context, msg string) time.Duration
 }
 
 func (tr *TimeRecorder) printTimeRecord(ctx context.Context, msg string, span time.Duration) {
-	str := ""
-	if tr.header != "" {
-		str += tr.header + ": "
-	}
-	str += msg
-	str += " ("
-	str += strconv.Itoa(int(span.Milliseconds()))
-	str += "ms)"
-	log.Ctx(ctx).Debug(str)
+	ts := trace.SpanFromContext(ctx)
+	ts.AddEvent(fmt.Sprintf("%s, cost %s", msg, span.String()))
+	log.Ctx(ctx).WithOptions(zap.AddCallerSkip(2)).
+		Debug(fmt.Sprintf("tr/%s", tr.header),
+			zap.String("msg", msg),
+			zap.Duration("duration", span),
+		)
 }
 
 // LongTermChecker checks we receive at least one msg in d duration. If not, checker

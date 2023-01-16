@@ -17,7 +17,6 @@
 package metrics
 
 import (
-
 	// nolint:gosec
 	_ "net/http/pprof"
 
@@ -34,13 +33,15 @@ const (
 	FailLabel    = "fail"
 	TotalLabel   = "total"
 
-	InsertLabel = "insert"
-	DeleteLabel = "delete"
-	SearchLabel = "search"
-	QueryLabel  = "query"
-
+	InsertLabel    = "insert"
+	DeleteLabel    = "delete"
+	UpsertLabel    = "upsert"
+	SearchLabel    = "search"
+	QueryLabel     = "query"
 	CacheHitLabel  = "hit"
 	CacheMissLabel = "miss"
+	TimetickLabel  = "timetick"
+	AllLabel       = "all"
 
 	UnissuedIndexTaskLabel   = "unissued"
 	InProgressIndexTaskLabel = "in-progress"
@@ -48,26 +49,33 @@ const (
 	FailedIndexTaskLabel     = "failed"
 	RecycledIndexTaskLabel   = "recycled"
 
+	// Note: below must matchcommonpb.SegmentState_name fields.
 	SealedSegmentLabel   = "Sealed"
 	GrowingSegmentLabel  = "Growing"
 	FlushedSegmentLabel  = "Flushed"
 	FlushingSegmentLabel = "Flushing"
-	DropedSegmentLabel   = "Dropped"
+	DroppedSegmentLabel  = "Dropped"
+
+	Leader     = "OnLeader"
+	FromLeader = "FromLeader"
 
 	nodeIDLabelName          = "node_id"
 	statusLabelName          = "status"
 	indexTaskStatusLabelName = "index_task_status"
 	msgTypeLabelName         = "msg_type"
 	collectionIDLabelName    = "collection_id"
+	partitionIDLabelName     = "partition_id"
 	channelNameLabelName     = "channel_name"
 	functionLabelName        = "function_name"
 	queryTypeLabelName       = "query_type"
 	collectionName           = "collection_name"
 	segmentStateLabelName    = "segment_state"
 	usernameLabelName        = "username"
-	rolenameLabelName        = "role_name"
+	roleNameLabelName        = "role_name"
 	cacheNameLabelName       = "cache_name"
 	cacheStateLabelName      = "cache_state"
+	indexCountLabelName      = "indexed_field_count"
+	requestScope             = "scope"
 )
 
 var (
@@ -76,7 +84,7 @@ var (
 	buckets = prometheus.ExponentialBuckets(1, 2, 18)
 )
 
-//Register serves prometheus http service
+// Register serves prometheus http service
 func Register(r *prometheus.Registry) {
 	management.Register(&management.HTTPHandler{
 		Path:    "/metrics",

@@ -1,3 +1,19 @@
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package indexnode
 
 import (
@@ -8,26 +24,25 @@ import (
 	"testing"
 	"time"
 
-	"github.com/milvus-io/milvus/internal/util/metautil"
-
-	"github.com/stretchr/testify/assert"
-
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
+	"github.com/milvus-io/milvus/internal/proto/internalpb"
+	"github.com/milvus-io/milvus/internal/util/metautil"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
+	"github.com/stretchr/testify/assert"
 )
 
 func genStorageConfig() *indexpb.StorageConfig {
 	return &indexpb.StorageConfig{
-		Address:         Params.MinioCfg.Address,
-		AccessKeyID:     Params.MinioCfg.AccessKeyID,
-		SecretAccessKey: Params.MinioCfg.SecretAccessKey,
-		BucketName:      Params.MinioCfg.BucketName,
-		RootPath:        Params.MinioCfg.RootPath,
-		IAMEndpoint:     Params.MinioCfg.IAMEndpoint,
-		UseSSL:          Params.MinioCfg.UseSSL,
-		UseIAM:          Params.MinioCfg.UseIAM,
+		Address:         Params.MinioCfg.Address.GetValue(),
+		AccessKeyID:     Params.MinioCfg.AccessKeyID.GetValue(),
+		SecretAccessKey: Params.MinioCfg.SecretAccessKey.GetValue(),
+		BucketName:      Params.MinioCfg.BucketName.GetValue(),
+		RootPath:        Params.MinioCfg.RootPath.GetValue(),
+		IAMEndpoint:     Params.MinioCfg.IAMEndpoint.GetValue(),
+		UseSSL:          Params.MinioCfg.UseSSL.GetAsBool(),
+		UseIAM:          Params.MinioCfg.UseIAM.GetAsBool(),
 	}
 }
 
@@ -358,6 +373,10 @@ func TestAbnormalIndexNode(t *testing.T) {
 	metricsResp, err := in.GetMetrics(ctx, &milvuspb.GetMetricsRequest{})
 	assert.Nil(t, err)
 	assert.Equal(t, metricsResp.Status.ErrorCode, commonpb.ErrorCode_UnexpectedError)
+
+	configurationResp, err := in.ShowConfigurations(ctx, &internalpb.ShowConfigurationsRequest{})
+	assert.Nil(t, err)
+	assert.Equal(t, configurationResp.Status.ErrorCode, commonpb.ErrorCode_UnexpectedError)
 }
 
 func TestGetMetrics(t *testing.T) {

@@ -102,13 +102,13 @@ MinioChunkManager::MinioChunkManager(const StorageConfig& storage_config)
 
     if (storage_config.useIAM) {
         auto provider = std::make_shared<Aws::Auth::DefaultAWSCredentialsProviderChain>();
+        auto aws_credentials = provider->GetAWSCredentials();
+        AssertInfo(!aws_credentials.GetAWSAccessKeyId().empty(), "if use iam, access key id should not be empty");
+        AssertInfo(!aws_credentials.GetAWSSecretKey().empty(), "if use iam, secret key should not be empty");
+        AssertInfo(!aws_credentials.GetSessionToken().empty(), "if use iam, token should not be empty");
+
         client_ = std::make_shared<Aws::S3::S3Client>(provider, config,
                                                       Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy::Never, false);
-
-        LOG_SEGCORE_INFO_C << "use iam mode, credentials{ access_id:"
-                           << provider->GetAWSCredentials().GetAWSAccessKeyId()
-                           << " access_key:" << provider->GetAWSCredentials().GetAWSSecretKey()
-                           << " token:" << provider->GetAWSCredentials().GetSessionToken() << "}";
     } else {
         AssertInfo(!storage_config.access_key_id.empty(), "if not use iam, access key should not be empty");
         AssertInfo(!storage_config.access_key_value.empty(), "if not use iam, access value should not be empty");
@@ -122,14 +122,13 @@ MinioChunkManager::MinioChunkManager(const StorageConfig& storage_config)
     // TODO ::BucketExist and CreateBucket func not work, should be fixed
     // index node has already tried to create bucket when receive index task if bucket not exist
     // query node has already tried to create bucket during init stage if bucket not exist
-    //    if (!BucketExists(storage_config.bucket_name)) {
-    //        CreateBucket(storage_config.bucket_name);
-    //    }
+    // if (!BucketExists(storage_config.bucket_name)) {
+    //     CreateBucket(storage_config.bucket_name);
+    // }
 
     LOG_SEGCORE_INFO_C << "init MinioChunkManager with parameter[endpoint: '" << storage_config.address
-                       << "', access_key:'" << storage_config.access_key_id << "', access_value:'"
-                       << storage_config.access_key_value << "', default_bucket_name:'" << storage_config.bucket_name
-                       << "', use_secure:'" << std::boolalpha << storage_config.useSSL << "']";
+                       << "', default_bucket_name:'" << storage_config.bucket_name << "', use_secure:'"
+                       << std::boolalpha << storage_config.useSSL << "']";
 }
 
 MinioChunkManager::~MinioChunkManager() {

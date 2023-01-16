@@ -1,4 +1,6 @@
 import pytest
+import re
+import time
 import pymilvus
 from common import common_func as cf
 from common import common_type as ct
@@ -19,7 +21,7 @@ default_int64_field_name = ct.default_int64_field_name
 default_float_field_name = ct.default_float_field_name
 default_bool_field_name = ct.default_bool_field_name
 default_string_field_name = ct.default_string_field_name
-binary_field_name = default_binary_vec_field_name
+binary_field_name = ct.default_binary_vec_field_name
 default_search_exp = "int64 >= 0"
 default_term_expr = f'{ct.default_int64_field_name} in [0, 1]'
 
@@ -39,12 +41,21 @@ class TestActionSecondDeployment(TestDeployBase):
         log.info(("*" * 35) + " teardown " + ("*" * 35))
         log.info("[teardown_method] Start teardown test case %s..." %
                  method.__name__)
+        log.info("show collection info")
+        log.info(f"collection {self.collection_w.name} has entities: {self.collection_w.num_entities}")
+
+        res, _ = self.utility_wrap.get_query_segment_info(self.collection_w.name)
+        log.info(f"The segment info of collection {self.collection_w.name} is {res}")
+
+        index_infos = [index.to_dict() for index in self.collection_w.indexes]
+        log.info(f"collection {self.collection_w.name} index infos {index_infos}")
         log.info("skip drop collection")
 
     def create_index(self, collection_w, default_index_field, default_index_param):
+
         index_field_map = dict([(index.field_name, index.index_name) for index in collection_w.indexes])
         index_infos = [index.to_dict() for index in collection_w.indexes]
-        log.info(index_infos)
+        log.info(f"index info: {index_infos}")
         # log.info(f"{default_index_field:} {default_index_param:}")
         if len(index_infos) > 0:
             log.info(
@@ -68,6 +79,7 @@ class TestActionSecondDeployment(TestDeployBase):
         if "BIN" in name:
             is_binary = True
         collection_w, _ = self.collection_wrap.init_collection(name=name)
+        self.collection_w = collection_w
         schema = collection_w.schema
         data_type = [field.dtype for field in schema.fields]
         field_name = [field.name for field in schema.fields]
@@ -88,13 +100,23 @@ class TestActionSecondDeployment(TestDeployBase):
         vector_index_types = binary_vector_index_types + float_vector_index_types
         if len(vector_index_types) > 0:
             vector_index_type = vector_index_types[0]
-
         try:
-            replicas, _ = collection_w.get_replicas(enable_traceback=False)
+            t0 = time.time()
+            self.utility_wrap.wait_for_loading_complete(name)
+            log.info(f"wait for {name} loading complete cost {time.time() - t0}")
+        except Exception as e:
+            log.error(e)
+        # get replicas loaded
+        try:
+            replicas = collection_w.get_replicas(enable_traceback=False)
             replicas_loaded = len(replicas.groups)
         except Exception as e:
-            log.info("get replicas failed")
+            log.error(e)
             replicas_loaded = 0
+
+        log.info(f"collection {name} has {replicas_loaded} replicas")
+        actual_replicas = re.search(r'replica_number_(.*?)_', name).group(1)
+        assert replicas_loaded == int(actual_replicas)
         # params for search and query
         if is_binary:
             _, vectors_to_search = cf.gen_binary_vectors(
@@ -107,8 +129,16 @@ class TestActionSecondDeployment(TestDeployBase):
 
         # load if not loaded
         if replicas_loaded == 0:
-            default_index_param = gen_index_param(vector_index_type)
-            self.create_index(collection_w, default_index_field, default_index_param)
+            # create index for vector if not exist before load
+            is_vector_indexed = False
+            index_infos = [index.to_dict() for index in collection_w.indexes]
+            for index_info in index_infos:
+                if "metric_type" in index_info.keys():
+                    is_vector_indexed = True
+                    break
+            if is_vector_indexed is False:
+                default_index_param = gen_index_param(vector_index_type)
+                self.create_index(collection_w, default_index_field, default_index_param)
             collection_w.load()
 
         # search and query
@@ -199,10 +229,6 @@ class TestActionSecondDeployment(TestDeployBase):
                                              "limit": default_limit})
             collection_w.query(default_term_expr, output_fields=[ct.default_int64_field_name],
                                check_task=CheckTasks.check_query_not_empty)
-
-        # create index
-        default_index_param = gen_index_param(vector_index_type)
-        self.create_index(collection_w, default_index_field, default_index_param)
 
         # search and query
         collection_w.search(vectors_to_search[:default_nq], default_search_field,

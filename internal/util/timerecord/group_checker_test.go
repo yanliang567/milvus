@@ -26,7 +26,10 @@ import (
 func TestGroupChecker(t *testing.T) {
 	groupName := `test_group`
 	signal := make(chan []string, 1)
-	gc1 := GetGroupChecker(groupName, 10*time.Millisecond, func(list []string) {
+	// 10ms period which set before is too short
+	// change 10ms to 500ms to ensure the the group checker schedule after the second value stored
+	duration := 500 * time.Millisecond
+	gc1 := GetGroupChecker(groupName, duration, func(list []string) {
 		signal <- list
 	})
 	gc1.Check("1")
@@ -35,14 +38,16 @@ func TestGroupChecker(t *testing.T) {
 	})
 	gc2.Check("2")
 
-	assert.Equal(t, 10*time.Millisecond, gc2.d)
+	assert.Equal(t, duration, gc2.d)
 
-	list := <-signal
-	assert.ElementsMatch(t, []string{"1", "2"}, list)
+	assert.Eventually(t, func() bool {
+		list := <-signal
+		return len(list) == 2
+	}, duration*3, duration)
 
 	gc2.Remove("2")
 
-	list = <-signal
+	list := <-signal
 	assert.ElementsMatch(t, []string{"1"}, list)
 
 	assert.NotPanics(t, func() {

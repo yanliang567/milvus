@@ -24,7 +24,7 @@ import (
 	"math"
 	"math/rand"
 	"path"
-	"runtime"
+	"path/filepath"
 	"strconv"
 
 	"github.com/golang/protobuf/proto"
@@ -49,7 +49,7 @@ import (
 	"github.com/milvus-io/milvus/internal/util/etcd"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/indexcgowrapper"
-	"github.com/milvus-io/milvus/internal/util/lock"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 	"github.com/panjf2000/ants/v2"
 )
@@ -72,9 +72,10 @@ const (
 	defaultMetricType   = L2
 	defaultNQ           = 10
 
-	defaultDMLChannel   = "query-node-unittest-DML-0"
-	defaultDeltaChannel = "query-node-unittest-delta-channel-0"
+	defaultDMLChannel   = "by-dev-rootcoord-dml-DML-0"
+	defaultDeltaChannel = "by-dev-rootcoord-delta-channel-0"
 	defaultSubName      = "query-node-unittest-sub-name-0"
+	defaultVersion      = 1
 
 	defaultLocalStorage = "/tmp/milvus_test/querynode"
 
@@ -92,6 +93,12 @@ const (
 
 	defaultChannelName = "default-channel"
 )
+
+var defaultSegmentStartPosition = &internalpb.MsgPosition{
+	ChannelName: defaultChannelName,
+	MsgID:       []byte{},
+	Timestamp:   0,
+}
 
 const (
 	defaultMsgLength = 100
@@ -339,7 +346,7 @@ func loadIndexForSegment(ctx context.Context, node *QueryNode, segmentID UniqueI
 		},
 	}
 
-	err = loader.LoadSegment(ctx, req, segmentTypeSealed)
+	_, err = loader.LoadSegment(ctx, req, segmentTypeSealed)
 	if err != nil {
 		return err
 	}
@@ -407,9 +414,9 @@ func generateAndSaveIndex(segmentID UniqueID, msgLength int, indexType, metricTy
 
 	indexPaths := make([]string, 0)
 	for _, index := range serializedIndexBlobs {
-		p := strconv.Itoa(int(segmentID)) + "/" + index.Key
-		indexPaths = append(indexPaths, p)
-		err := cm.Write(context.Background(), p, index.Value)
+		indexPath := filepath.Join(defaultLocalStorage, strconv.Itoa(int(segmentID)), index.Key)
+		indexPaths = append(indexPaths, indexPath)
+		err := cm.Write(context.Background(), indexPath, index.Value)
 		if err != nil {
 			return nil, err
 		}
@@ -420,14 +427,14 @@ func generateAndSaveIndex(segmentID UniqueID, msgLength int, indexType, metricTy
 
 func genStorageConfig() *indexpb.StorageConfig {
 	return &indexpb.StorageConfig{
-		Address:         Params.MinioCfg.Address,
-		AccessKeyID:     Params.MinioCfg.AccessKeyID,
-		SecretAccessKey: Params.MinioCfg.SecretAccessKey,
-		BucketName:      Params.MinioCfg.BucketName,
-		RootPath:        Params.MinioCfg.RootPath,
-		IAMEndpoint:     Params.MinioCfg.IAMEndpoint,
-		UseSSL:          Params.MinioCfg.UseSSL,
-		UseIAM:          Params.MinioCfg.UseIAM,
+		Address:         Params.MinioCfg.Address.GetValue(),
+		AccessKeyID:     Params.MinioCfg.AccessKeyID.GetValue(),
+		SecretAccessKey: Params.MinioCfg.SecretAccessKey.GetValue(),
+		BucketName:      Params.MinioCfg.BucketName.GetValue(),
+		RootPath:        Params.MinioCfg.RootPath.GetValue(),
+		IAMEndpoint:     Params.MinioCfg.IAMEndpoint.GetValue(),
+		UseSSL:          Params.MinioCfg.UseSSL.GetAsBool(),
+		UseIAM:          Params.MinioCfg.UseIAM.GetAsBool(),
 	}
 }
 
@@ -522,11 +529,18 @@ func genCollectionMeta(collectionID UniqueID, schema *schemapb.CollectionSchema)
 // ---------- unittest util functions ----------
 // functions of third-party
 func genEtcdKV() (*etcdkv.EtcdKV, error) {
-	etcdCli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
+	etcdCli, err := etcd.GetEtcdClient(
+		Params.EtcdCfg.UseEmbedEtcd.GetAsBool(),
+		Params.EtcdCfg.EtcdUseSSL.GetAsBool(),
+		Params.EtcdCfg.Endpoints.GetAsStrings(),
+		Params.EtcdCfg.EtcdTLSCert.GetValue(),
+		Params.EtcdCfg.EtcdTLSKey.GetValue(),
+		Params.EtcdCfg.EtcdTLSCACert.GetValue(),
+		Params.EtcdCfg.EtcdTLSMinVersion.GetValue())
 	if err != nil {
 		return nil, err
 	}
-	etcdKV := etcdkv.NewEtcdKV(etcdCli, Params.EtcdCfg.MetaRootPath)
+	etcdKV := etcdkv.NewEtcdKV(etcdCli, Params.EtcdCfg.MetaRootPath.GetValue())
 	return etcdKV, nil
 }
 
@@ -545,7 +559,7 @@ func genQueryMsgStream(ctx context.Context) (msgstream.MsgStream, error) {
 }
 
 func genLocalChunkManager() (storage.ChunkManager, error) {
-	p := Params.LoadWithDefault("storage.path", "/tmp/milvus/data")
+	p := Params.GetWithDefault("storage.path", "/tmp/milvus_test/data")
 	lcm := storage.NewLocalChunkManager(storage.RootPath(p))
 	return lcm, nil
 }
@@ -553,25 +567,25 @@ func genLocalChunkManager() (storage.ChunkManager, error) {
 func genRemoteChunkManager(ctx context.Context) (storage.ChunkManager, error) {
 	return storage.NewMinioChunkManager(
 		ctx,
-		storage.Address(Params.MinioCfg.Address),
-		storage.AccessKeyID(Params.MinioCfg.AccessKeyID),
-		storage.SecretAccessKeyID(Params.MinioCfg.SecretAccessKey),
-		storage.UseSSL(Params.MinioCfg.UseSSL),
-		storage.BucketName(Params.MinioCfg.BucketName),
+		storage.Address(Params.MinioCfg.Address.GetValue()),
+		storage.AccessKeyID(Params.MinioCfg.AccessKeyID.GetValue()),
+		storage.SecretAccessKeyID(Params.MinioCfg.SecretAccessKey.GetValue()),
+		storage.UseSSL(Params.MinioCfg.UseSSL.GetAsBool()),
+		storage.BucketName(Params.MinioCfg.BucketName.GetValue()),
 		storage.CreateBucket(true))
 }
 
 func genVectorChunkManager(ctx context.Context, col *Collection) (*storage.VectorChunkManager, error) {
-	p := Params.LoadWithDefault("storage.path", "/tmp/milvus/data")
+	p := Params.GetWithDefault("storage.path", "/tmp/milvus_test/data")
 	lcm := storage.NewLocalChunkManager(storage.RootPath(p))
 
 	rcm, err := storage.NewMinioChunkManager(
 		ctx,
-		storage.Address(Params.MinioCfg.Address),
-		storage.AccessKeyID(Params.MinioCfg.AccessKeyID),
-		storage.SecretAccessKeyID(Params.MinioCfg.SecretAccessKey),
-		storage.UseSSL(Params.MinioCfg.UseSSL),
-		storage.BucketName(Params.MinioCfg.BucketName),
+		storage.Address(Params.MinioCfg.Address.GetValue()),
+		storage.AccessKeyID(Params.MinioCfg.AccessKeyID.GetValue()),
+		storage.SecretAccessKeyID(Params.MinioCfg.SecretAccessKey.GetValue()),
+		storage.UseSSL(Params.MinioCfg.UseSSL.GetAsBool()),
+		storage.BucketName(Params.MinioCfg.BucketName.GetValue()),
 		storage.CreateBucket(true))
 
 	if err != nil {
@@ -581,7 +595,7 @@ func genVectorChunkManager(ctx context.Context, col *Collection) (*storage.Vecto
 	vcm, err := storage.NewVectorChunkManager(ctx, lcm, rcm, &etcdpb.CollectionMeta{
 		ID:     col.id,
 		Schema: col.schema,
-	}, Params.QueryNodeCfg.CacheMemoryLimit, false)
+	}, Params.QueryNodeCfg.CacheMemoryLimit.GetAsInt64(), false)
 	if err != nil {
 		return nil, err
 	}
@@ -965,6 +979,54 @@ func genSimpleInsertMsg(schema *schemapb.CollectionSchema, numRows int) (*msgstr
 	}, nil
 }
 
+func getFakeBinLog(ctx context.Context,
+	collectionID UniqueID,
+	partitionID UniqueID,
+	segmentID UniqueID,
+	msgLength int,
+	schema *schemapb.CollectionSchema) ([]*datapb.FieldBinlog, []*datapb.FieldBinlog, error) {
+	binLogs, statsLogs, err := genStorageBlob(collectionID,
+		partitionID,
+		segmentID,
+		msgLength,
+		schema)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// gen fake insert binlog path, don't write data to minio
+	fieldBinlog := make([]*datapb.FieldBinlog, 0)
+	for _, blob := range binLogs {
+		fieldID, err := strconv.ParseInt(blob.GetKey(), 10, 64)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		k := JoinIDPath(collectionID, partitionID, segmentID, fieldID)
+		fieldBinlog = append(fieldBinlog, &datapb.FieldBinlog{
+			FieldID: fieldID,
+			Binlogs: []*datapb.Binlog{{LogPath: path.Join("insert-log", k, "notExistKey")}},
+		})
+	}
+
+	// gen fake stats binlog path, don't write data to minio
+	statsBinlog := make([]*datapb.FieldBinlog, 0)
+	for _, blob := range statsLogs {
+		fieldID, err := strconv.ParseInt(blob.GetKey(), 10, 64)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		k := JoinIDPath(collectionID, partitionID, segmentID, fieldID)
+		statsBinlog = append(statsBinlog, &datapb.FieldBinlog{
+			FieldID: fieldID,
+			Binlogs: []*datapb.Binlog{{LogPath: path.Join("delta-log", k, "notExistKey")}},
+		})
+	}
+
+	return fieldBinlog, statsBinlog, err
+}
+
 func saveBinLog(ctx context.Context,
 	collectionID UniqueID,
 	partitionID UniqueID,
@@ -993,7 +1055,7 @@ func saveBinLog(ctx context.Context,
 		}
 
 		k := JoinIDPath(collectionID, partitionID, segmentID, fieldID)
-		key := path.Join("insert-log", k)
+		key := path.Join(defaultLocalStorage, "insert-log", k)
 		kvs[key] = blob.Value[:]
 		fieldBinlog = append(fieldBinlog, &datapb.FieldBinlog{
 			FieldID: fieldID,
@@ -1012,7 +1074,7 @@ func saveBinLog(ctx context.Context,
 		}
 
 		k := JoinIDPath(collectionID, partitionID, segmentID, fieldID)
-		key := path.Join("delta-log", k)
+		key := path.Join(defaultLocalStorage, "delta-log", k)
 		kvs[key] = blob.Value[:]
 		statsBinlog = append(statsBinlog, &datapb.FieldBinlog{
 			FieldID: fieldID,
@@ -1063,10 +1125,11 @@ func saveDeltaLog(collectionID UniqueID,
 	log.Debug("[query node unittest] save delta log", zap.Int64("fieldID", pkFieldID))
 	key := JoinIDPath(collectionID, partitionID, segmentID, pkFieldID)
 	key += "delta" // append suffix 'delta' to avoid conflicts against binlog
-	kvs[key] = blob.Value[:]
+	keyPath := path.Join(defaultLocalStorage, key)
+	kvs[keyPath] = blob.Value[:]
 	fieldBinlog = append(fieldBinlog, &datapb.FieldBinlog{
 		FieldID: pkFieldID,
-		Binlogs: []*datapb.Binlog{{LogPath: key}},
+		Binlogs: []*datapb.Binlog{{LogPath: keyPath}},
 	})
 	log.Debug("[query node unittest] save delta log file to MinIO/S3")
 
@@ -1133,6 +1196,7 @@ func genSimpleDeleteID(dataType schemapb.DataType, numRows int) *schemapb.IDs {
 
 func genMsgStreamBaseMsg() msgstream.BaseMsg {
 	return msgstream.BaseMsg{
+		Ctx:            context.Background(),
 		BeginTimestamp: 0,
 		EndTimestamp:   0,
 		HashValues:     []uint32{0},
@@ -1178,10 +1242,6 @@ func genSealedSegment(schema *schemapb.CollectionSchema,
 	vChannel Channel,
 	msgLength int) (*Segment, error) {
 	col := newCollection(collectionID, schema)
-	pool, err := concurrency.NewPool(runtime.GOMAXPROCS(0))
-	if err != nil {
-		return nil, err
-	}
 
 	seg, err := newSegment(col,
 		segmentID,
@@ -1190,7 +1250,7 @@ func genSealedSegment(schema *schemapb.CollectionSchema,
 		vChannel,
 		segmentTypeSealed,
 		defaultSegmentVersion,
-		pool)
+		defaultSegmentStartPosition)
 	if err != nil {
 		return nil, err
 	}
@@ -1227,28 +1287,20 @@ func genSimpleSealedSegment(msgLength int) (*Segment, error) {
 }
 
 func genSimpleReplica() (ReplicaInterface, error) {
-	pool, err := concurrency.NewPool(runtime.GOMAXPROCS(0))
-	if err != nil {
-		return nil, err
-	}
-	r := newCollectionReplica(pool)
+	r := newCollectionReplica()
 	schema := genTestCollectionSchema()
 	r.addCollection(defaultCollectionID, schema)
-	err = r.addPartition(defaultCollectionID, defaultPartitionID)
+	err := r.addPartition(defaultCollectionID, defaultPartitionID)
 	return r, err
 }
 
 func genSimpleSegmentLoaderWithMqFactory(metaReplica ReplicaInterface, factory msgstream.Factory) (*segmentLoader, error) {
-	pool, err := concurrency.NewPool(runtime.GOMAXPROCS(1))
-	if err != nil {
-		return nil, err
-	}
 	kv, err := genEtcdKV()
 	if err != nil {
 		return nil, err
 	}
 	cm := storage.NewLocalChunkManager(storage.RootPath(defaultLocalStorage))
-	return newSegmentLoader(metaReplica, kv, cm, factory, pool), nil
+	return newSegmentLoader(metaReplica, kv, cm, factory), nil
 }
 
 func genSimpleReplicaWithSealSegment(ctx context.Context) (ReplicaInterface, error) {
@@ -1281,6 +1333,7 @@ func genSimpleReplicaWithGrowingSegment() (ReplicaInterface, error) {
 		defaultCollectionID,
 		defaultDMLChannel,
 		defaultSegmentVersion,
+		defaultSegmentStartPosition,
 		segmentTypeGrowing)
 	if err != nil {
 		return nil, err
@@ -1480,13 +1533,13 @@ func genSimpleRetrievePlanExpr(schema *schemapb.CollectionSchema) ([]byte, error
 }
 
 func genSimpleRetrievePlan(collection *Collection) (*RetrievePlan, error) {
-	retrieveMsg, err := genRetrieveMsg(collection.schema)
+	timestamp := Timestamp(1000)
+	planBytes, err := genSimpleRetrievePlanExpr(collection.schema)
 	if err != nil {
 		return nil, err
 	}
-	timestamp := retrieveMsg.RetrieveRequest.TravelTimestamp
 
-	plan, err2 := createRetrievePlanByExpr(collection, retrieveMsg.SerializedExprPlan, timestamp, 100)
+	plan, err2 := createRetrievePlanByExpr(collection, planBytes, timestamp, 100)
 	return plan, err2
 }
 
@@ -1544,20 +1597,6 @@ func genRetrieveRequest(schema *schemapb.CollectionSchema) (*internalpb.Retrieve
 		TravelTimestamp:    Timestamp(1000),
 		SerializedExprPlan: expr,
 	}, nil
-}
-
-func genRetrieveMsg(schema *schemapb.CollectionSchema) (*msgstream.RetrieveMsg, error) {
-	req, err := genRetrieveRequest(schema)
-	if err != nil {
-		return nil, err
-	}
-
-	msg := &msgstream.RetrieveMsg{
-		BaseMsg:         genMsgStreamBaseMsg(),
-		RetrieveRequest: *req,
-	}
-	msg.SetTimeRecorder()
-	return msg, nil
 }
 
 func genQueryResultChannel() Channel {
@@ -1624,11 +1663,11 @@ func genSimpleSegmentInfo() *querypb.SegmentInfo {
 
 func genSimpleChangeInfo() *querypb.SealedSegmentsChangeInfo {
 	changeInfo := &querypb.SegmentChangeInfo{
-		OnlineNodeID: Params.QueryNodeCfg.GetNodeID(),
+		OnlineNodeID: paramtable.GetNodeID(),
 		OnlineSegments: []*querypb.SegmentInfo{
 			genSimpleSegmentInfo(),
 		},
-		OfflineNodeID: Params.QueryNodeCfg.GetNodeID() + 1,
+		OfflineNodeID: paramtable.GetNodeID() + 1,
 		OfflineSegments: []*querypb.SegmentInfo{
 			genSimpleSegmentInfo(),
 		},
@@ -1653,7 +1692,14 @@ func saveChangeInfo(key string, value string) error {
 
 func genSimpleQueryNodeWithMQFactory(ctx context.Context, fac dependency.Factory) (*QueryNode, error) {
 	node := NewQueryNode(ctx, fac)
-	etcdCli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
+	etcdCli, err := etcd.GetEtcdClient(
+		Params.EtcdCfg.UseEmbedEtcd.GetAsBool(),
+		Params.EtcdCfg.EtcdUseSSL.GetAsBool(),
+		Params.EtcdCfg.Endpoints.GetAsStrings(),
+		Params.EtcdCfg.EtcdTLSCert.GetValue(),
+		Params.EtcdCfg.EtcdTLSKey.GetValue(),
+		Params.EtcdCfg.EtcdTLSCACert.GetValue(),
+		Params.EtcdCfg.EtcdTLSMinVersion.GetValue())
 	if err != nil {
 		return nil, err
 	}
@@ -1665,8 +1711,7 @@ func genSimpleQueryNodeWithMQFactory(ctx context.Context, fac dependency.Factory
 		log.Error("QueryNode init channel pool failed", zap.Error(err))
 		return nil, err
 	}
-	node.taskLock = lock.NewKeyLock()
-	etcdKV := etcdkv.NewEtcdKV(etcdCli, Params.EtcdCfg.MetaRootPath)
+	etcdKV := etcdkv.NewEtcdKV(etcdCli, Params.EtcdCfg.MetaRootPath.GetValue())
 	node.etcdKV = etcdKV
 
 	node.tSafeReplica = newTSafeReplica()
@@ -1696,7 +1741,7 @@ func genSimpleQueryNodeWithMQFactory(ctx context.Context, fac dependency.Factory
 	}
 
 	// init shard cluster service
-	node.ShardClusterService = newShardClusterService(node.etcdCli, node.session, node)
+	node.ShardClusterService = newShardClusterService(node.etcdCli, node.GetSession(), node)
 
 	node.queryShardService, err = newQueryShardService(node.queryNodeLoopCtx,
 		node.metaReplica, node.tSafeReplica,
@@ -1859,7 +1904,7 @@ func (mm *mockMsgStreamFactory) NewMsgStream(ctx context.Context) (msgstream.Msg
 }
 
 func (mm *mockMsgStreamFactory) NewTtMsgStream(ctx context.Context) (msgstream.MsgStream, error) {
-	return nil, nil
+	return mm.mockMqStream, nil
 }
 
 func (mm *mockMsgStreamFactory) NewQueryMsgStream(ctx context.Context) (msgstream.MsgStream, error) {

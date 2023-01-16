@@ -42,7 +42,7 @@ var channelMetaNodeTestDir = "/tmp/milvus_test/channel_meta"
 func TestNewChannel(t *testing.T) {
 	rc := &RootCoordFactory{}
 	cm := storage.NewLocalChunkManager(storage.RootPath(channelMetaNodeTestDir))
-	defer cm.RemoveWithPrefix(context.Background(), "")
+	defer cm.RemoveWithPrefix(context.Background(), cm.RootPath())
 	channel := newChannel("channel", 0, nil, rc, cm)
 	assert.NotNil(t, channel)
 }
@@ -114,7 +114,7 @@ func TestChannelMeta_InnerFunction(t *testing.T) {
 		cm      = storage.NewLocalChunkManager(storage.RootPath(channelMetaNodeTestDir))
 		channel = newChannel("insert-01", collID, nil, rc, cm)
 	)
-	defer cm.RemoveWithPrefix(ctx, "")
+	defer cm.RemoveWithPrefix(ctx, cm.RootPath())
 
 	require.False(t, channel.hasSegment(0, true))
 	require.False(t, channel.hasSegment(0, false))
@@ -142,7 +142,6 @@ func TestChannelMeta_InnerFunction(t *testing.T) {
 	assert.Equal(t, UniqueID(1), seg.collectionID)
 	assert.Equal(t, UniqueID(2), seg.partitionID)
 	assert.Equal(t, Timestamp(100), seg.startPos.Timestamp)
-	assert.Equal(t, Timestamp(200), seg.endPos.Timestamp)
 	assert.Equal(t, int64(0), seg.numRows)
 	assert.Equal(t, datapb.SegmentType_New, seg.getType())
 
@@ -215,7 +214,7 @@ func TestChannelMeta_segmentFlushed(t *testing.T) {
 	}
 	collID := UniqueID(1)
 	cm := storage.NewLocalChunkManager(storage.RootPath(channelMetaNodeTestDir))
-	defer cm.RemoveWithPrefix(ctx, "")
+	defer cm.RemoveWithPrefix(ctx, cm.RootPath())
 
 	t.Run("Test coll mot match", func(t *testing.T) {
 		channel := newChannel("channel", collID, nil, rc, cm)
@@ -282,7 +281,7 @@ func TestChannelMeta_InterfaceMethod(t *testing.T) {
 		pkType: schemapb.DataType_Int64,
 	}
 	cm := storage.NewLocalChunkManager(storage.RootPath(channelMetaNodeTestDir))
-	defer cm.RemoveWithPrefix(ctx, "")
+	defer cm.RemoveWithPrefix(ctx, cm.RootPath())
 
 	t.Run("Test addFlushedSegmentWithPKs", func(t *testing.T) {
 		tests := []struct {
@@ -423,41 +422,6 @@ func TestChannelMeta_InterfaceMethod(t *testing.T) {
 				})
 			assert.NoError(t, err)
 		})
-	})
-
-	t.Run("Test_updateSegmentEndPosition", func(t *testing.T) {
-		segs := []struct {
-			segID   UniqueID
-			segType datapb.SegmentType
-		}{
-			{100, datapb.SegmentType_New},
-			{200, datapb.SegmentType_Normal},
-			{300, datapb.SegmentType_Flushed},
-		}
-
-		channel := ChannelMeta{segments: make(map[UniqueID]*Segment)}
-		for _, seg := range segs {
-			s := Segment{segmentID: seg.segID}
-			s.setType(seg.segType)
-			channel.segMu.Lock()
-			channel.segments[seg.segID] = &s
-			channel.segMu.Unlock()
-		}
-
-		tests := []struct {
-			inSegID     UniqueID
-			description string
-		}{
-			{100, "seg 100 is type New"},
-			{200, "seg 200 is type Normal"},
-			{300, "seg 300 is type Flushed"},
-		}
-
-		for _, test := range tests {
-			t.Run(test.description, func(t *testing.T) {
-				channel.updateSegmentEndPosition(test.inSegID, new(internalpb.MsgPosition))
-			})
-		}
 	})
 
 	t.Run("Test_getCollectionSchema", func(t *testing.T) {
@@ -645,27 +609,29 @@ func TestChannelMeta_InterfaceMethod(t *testing.T) {
 			stored      bool
 
 			inCompactedFrom []UniqueID
+			expectedFrom    []UniqueID
 			inSeg           *Segment
 		}{
-			{"mismatch collection", false, false, []UniqueID{1, 2}, &Segment{
+			{"mismatch collection", false, false, []UniqueID{1, 2}, []UniqueID{1, 2}, &Segment{
 				segmentID:    3,
 				collectionID: -1,
 			}},
-			{"no match flushed segment", false, false, []UniqueID{1, 6}, &Segment{
-				segmentID:    3,
-				collectionID: 1,
-			}},
-			{"numRows==0", true, false, []UniqueID{1, 2}, &Segment{
-				segmentID:    3,
-				collectionID: 1,
-				numRows:      0,
-			}},
-			{"numRows>0", true, true, []UniqueID{1, 2}, &Segment{
+			{"no match flushed segment", true, true, []UniqueID{1, 6}, []UniqueID{1}, &Segment{
 				segmentID:    3,
 				collectionID: 1,
 				numRows:      15,
 			}},
-			{"segment exists but not flushed", false, false, []UniqueID{1, 4}, &Segment{
+			{"numRows==0", true, false, []UniqueID{1, 2}, []UniqueID{1, 2}, &Segment{
+				segmentID:    3,
+				collectionID: 1,
+				numRows:      0,
+			}},
+			{"numRows>0", true, true, []UniqueID{1, 2}, []UniqueID{1, 2}, &Segment{
+				segmentID:    3,
+				collectionID: 1,
+				numRows:      15,
+			}},
+			{"segment exists but not flushed", true, true, []UniqueID{1, 4}, []UniqueID{1}, &Segment{
 				segmentID:    3,
 				collectionID: 1,
 				numRows:      15,
@@ -718,7 +684,7 @@ func TestChannelMeta_InterfaceMethod(t *testing.T) {
 
 					from, ok := to2from[3]
 					assert.True(t, ok)
-					assert.ElementsMatch(t, []UniqueID{1, 2}, from)
+					assert.ElementsMatch(t, test.expectedFrom, from)
 				} else {
 					assert.False(t, channel.hasSegment(3, true))
 				}
@@ -741,7 +707,7 @@ func TestChannelMeta_UpdatePKRange(t *testing.T) {
 	endPos := &internalpb.MsgPosition{ChannelName: chanName, Timestamp: Timestamp(200)}
 
 	cm := storage.NewLocalChunkManager(storage.RootPath(channelMetaNodeTestDir))
-	defer cm.RemoveWithPrefix(ctx, "")
+	defer cm.RemoveWithPrefix(ctx, cm.RootPath())
 	channel := newChannel("chanName", collID, nil, rc, cm)
 	channel.chunkManager = &mockDataCM{}
 
@@ -787,6 +753,111 @@ func TestChannelMeta_UpdatePKRange(t *testing.T) {
 
 }
 
+func TestChannelMeta_ChannelCP(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rc := &RootCoordFactory{
+		pkType: schemapb.DataType_Int64,
+	}
+
+	mockVChannel := "fake-by-dev-rootcoord-dml-1-testchannelcp-v0"
+	mockPChannel := "fake-by-dev-rootcoord-dml-1"
+
+	collID := UniqueID(1)
+	cm := storage.NewLocalChunkManager(storage.RootPath(channelMetaNodeTestDir))
+	defer func() {
+		err := cm.RemoveWithPrefix(ctx, cm.RootPath())
+		assert.NoError(t, err)
+	}()
+
+	t.Run("get and set", func(t *testing.T) {
+		pos := &internalpb.MsgPosition{
+			ChannelName: mockPChannel,
+			Timestamp:   1000,
+		}
+		channel := newChannel(mockVChannel, collID, nil, rc, cm)
+		channel.chunkManager = &mockDataCM{}
+		position := channel.getChannelCheckpoint(pos)
+		assert.NotNil(t, position)
+		assert.True(t, position.ChannelName == pos.ChannelName)
+		assert.True(t, position.Timestamp == pos.Timestamp)
+	})
+
+	t.Run("set insertBuffer&deleteBuffer then get", func(t *testing.T) {
+		run := func(curInsertPos, curDeletePos *internalpb.MsgPosition,
+			hisInsertPoss, hisDeletePoss []*internalpb.MsgPosition,
+			ttPos, expectedPos *internalpb.MsgPosition) {
+			segmentID := UniqueID(1)
+			channel := newChannel(mockVChannel, collID, nil, rc, cm)
+			channel.chunkManager = &mockDataCM{}
+			err := channel.addSegment(
+				addSegmentReq{
+					segType: datapb.SegmentType_New,
+					segID:   segmentID,
+					collID:  collID,
+				})
+			assert.NoError(t, err)
+			// set history insert buffers
+			for _, pos := range hisInsertPoss {
+				pos.MsgID = []byte{1}
+				channel.setCurInsertBuffer(segmentID, &BufferData{
+					startPos: pos,
+				})
+				channel.rollInsertBuffer(segmentID)
+			}
+			// set history delete buffers
+			for _, pos := range hisDeletePoss {
+				pos.MsgID = []byte{1}
+				channel.setCurDeleteBuffer(segmentID, &DelDataBuf{
+					startPos: pos,
+				})
+				channel.rollDeleteBuffer(segmentID)
+			}
+			// set cur buffers
+			if curInsertPos != nil {
+				curInsertPos.MsgID = []byte{1}
+				channel.setCurInsertBuffer(segmentID, &BufferData{
+					startPos: curInsertPos,
+				})
+			}
+			if curDeletePos != nil {
+				curDeletePos.MsgID = []byte{1}
+				channel.setCurDeleteBuffer(segmentID, &DelDataBuf{
+					startPos: curDeletePos,
+				})
+			}
+			// set channelCP
+			resPos := channel.getChannelCheckpoint(ttPos)
+			assert.NotNil(t, resPos)
+			assert.True(t, resPos.ChannelName == expectedPos.ChannelName)
+			assert.True(t, resPos.Timestamp == expectedPos.Timestamp)
+		}
+
+		run(&internalpb.MsgPosition{Timestamp: 50}, &internalpb.MsgPosition{Timestamp: 60},
+			[]*internalpb.MsgPosition{{Timestamp: 70}}, []*internalpb.MsgPosition{{Timestamp: 120}},
+			&internalpb.MsgPosition{Timestamp: 120}, &internalpb.MsgPosition{Timestamp: 50})
+
+		run(&internalpb.MsgPosition{Timestamp: 50}, &internalpb.MsgPosition{Timestamp: 60},
+			[]*internalpb.MsgPosition{{Timestamp: 70}}, []*internalpb.MsgPosition{{Timestamp: 120}},
+			&internalpb.MsgPosition{Timestamp: 30}, &internalpb.MsgPosition{Timestamp: 50})
+
+		// nil cur buffer
+		run(nil, nil,
+			[]*internalpb.MsgPosition{{Timestamp: 120}}, []*internalpb.MsgPosition{{Timestamp: 110}},
+			&internalpb.MsgPosition{Timestamp: 130}, &internalpb.MsgPosition{Timestamp: 110})
+
+		// nil history buffer
+		run(&internalpb.MsgPosition{Timestamp: 50}, &internalpb.MsgPosition{Timestamp: 100},
+			nil, nil,
+			&internalpb.MsgPosition{Timestamp: 100}, &internalpb.MsgPosition{Timestamp: 50})
+
+		// nil buffer
+		run(nil, nil,
+			nil, nil,
+			&internalpb.MsgPosition{Timestamp: 100}, &internalpb.MsgPosition{Timestamp: 100})
+	})
+}
+
 // ChannelMetaSuite setup test suite for ChannelMeta
 type ChannelMetaSuite struct {
 	suite.Suite
@@ -809,7 +880,7 @@ func (s *ChannelMetaSuite) SetupSuite() {
 }
 
 func (s *ChannelMetaSuite) TearDownSuite() {
-	s.cm.RemoveWithPrefix(context.Background(), "")
+	s.cm.RemoveWithPrefix(context.Background(), s.cm.RootPath())
 }
 
 func (s *ChannelMetaSuite) SetupTest() {

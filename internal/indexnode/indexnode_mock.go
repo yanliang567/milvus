@@ -28,6 +28,7 @@ import (
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/hardware"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
@@ -42,6 +43,7 @@ type Mock struct {
 	CallGetStatisticsChannel func(ctx context.Context) (*milvuspb.StringResponse, error)
 	CallRegister             func() error
 
+	CallSetAddress      func(address string)
 	CallSetEtcdClient   func(etcdClient *clientv3.Client)
 	CallUpdateStateCode func(stateCode commonpb.StateCode)
 
@@ -68,6 +70,8 @@ func NewIndexNodeMock() *Mock {
 		CallStop: func() error {
 			return nil
 		},
+		CallSetAddress: func(address string) {
+		},
 		CallSetEtcdClient: func(etcdClient *clientv3.Client) {
 		},
 		CallUpdateStateCode: func(stateCode commonpb.StateCode) {
@@ -76,7 +80,7 @@ func NewIndexNodeMock() *Mock {
 			return &milvuspb.ComponentStates{
 				State: &milvuspb.ComponentInfo{
 					NodeID:    1,
-					Role:      typeutil.IndexCoordRole,
+					Role:      typeutil.IndexNodeRole,
 					StateCode: commonpb.StateCode_Healthy,
 				},
 				SubcomponentStates: nil,
@@ -176,6 +180,14 @@ func (m *Mock) Register() error {
 	return m.CallRegister()
 }
 
+func (m *Mock) SetAddress(address string) {
+	m.CallSetAddress(address)
+}
+
+func (m *Mock) GetAddress() string {
+	return ""
+}
+
 func (m *Mock) SetEtcdClient(etcdClient *clientv3.Client) {
 }
 
@@ -202,7 +214,7 @@ func (m *Mock) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) 
 	return m.CallGetMetrics(ctx, req)
 }
 
-//ShowConfigurations returns the configurations of Mock indexNode matching req.Pattern
+// ShowConfigurations returns the configurations of Mock indexNode matching req.Pattern
 func (m *Mock) ShowConfigurations(ctx context.Context, req *internalpb.ShowConfigurationsRequest) (*internalpb.ShowConfigurationsResponse, error) {
 	return m.CallShowConfigurations(ctx, req)
 }
@@ -215,7 +227,7 @@ func getMockSystemInfoMetrics(
 	// TODO(dragondriver): add more metrics
 	nodeInfos := metricsinfo.IndexNodeInfos{
 		BaseComponentInfos: metricsinfo.BaseComponentInfos{
-			Name: metricsinfo.ConstructComponentName(typeutil.IndexNodeRole, Params.IndexNodeCfg.GetNodeID()),
+			Name: metricsinfo.ConstructComponentName(typeutil.IndexNodeRole, paramtable.GetNodeID()),
 			HardwareInfos: metricsinfo.HardwareMetrics{
 				CPUCoreCount: hardware.GetCPUNum(),
 				CPUCoreUsage: hardware.GetCPUUsage(),
@@ -225,13 +237,13 @@ func getMockSystemInfoMetrics(
 				DiskUsage:    hardware.GetDiskUsage(),
 			},
 			SystemInfo:  metricsinfo.DeployMetrics{},
-			CreatedTime: Params.IndexNodeCfg.CreatedTime.String(),
-			UpdatedTime: Params.IndexNodeCfg.UpdatedTime.String(),
+			CreatedTime: paramtable.GetCreateTime().String(),
+			UpdatedTime: paramtable.GetUpdateTime().String(),
 			Type:        typeutil.IndexNodeRole,
 		},
 		SystemConfigurations: metricsinfo.IndexNodeConfiguration{
-			MinioBucketName: Params.MinioCfg.BucketName,
-			SimdType:        Params.CommonCfg.SimdType,
+			MinioBucketName: Params.MinioCfg.BucketName.GetValue(),
+			SimdType:        Params.CommonCfg.SimdType.GetValue(),
 		},
 	}
 
@@ -245,6 +257,6 @@ func getMockSystemInfoMetrics(
 			Reason:    "",
 		},
 		Response:      resp,
-		ComponentName: metricsinfo.ConstructComponentName(typeutil.IndexNodeRole, Params.IndexNodeCfg.GetNodeID()),
+		ComponentName: metricsinfo.ConstructComponentName(typeutil.IndexNodeRole, paramtable.GetNodeID()),
 	}, nil
 }

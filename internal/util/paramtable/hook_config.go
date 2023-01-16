@@ -2,25 +2,25 @@ package paramtable
 
 const hookYamlFile = "hook.yaml"
 
-type HookConfig struct {
-	Base     *BaseTable
-	SoPath   string
-	SoConfig map[string]string
+type hookConfig struct {
+	SoPath   ParamItem  `refreshable:"false"`
+	SoConfig ParamGroup `refreshable:"false"`
 }
 
-func (h *HookConfig) init() {
-	h.Base = &BaseTable{YamlFile: hookYamlFile}
-	h.Base.Init()
+func (h *hookConfig) init() {
+	base := &BaseTable{YamlFile: hookYamlFile}
+	base.Init(0)
 
-	h.initSoPath()
-	h.initSoConfig()
-}
+	h.SoPath = ParamItem{
+		Key:          "soPath",
+		Version:      "2.0.0",
+		DefaultValue: "",
+	}
+	h.SoPath.Init(base.mgr)
 
-func (h *HookConfig) initSoPath() {
-	h.SoPath = h.Base.LoadWithDefault("soPath", "")
-}
-
-func (h *HookConfig) initSoConfig() {
-	// all keys have been set lower
-	h.SoConfig = h.Base.Configs()
+	h.SoConfig = ParamGroup{
+		KeyPrefix: "",
+		Version:   "2.2.0",
+	}
+	h.SoConfig.Init(base.mgr)
 }

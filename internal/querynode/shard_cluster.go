@@ -151,14 +151,13 @@ type ShardCluster struct {
 	currentVersion *ShardClusterVersion // current serving segment state version
 	nextVersionID  *atomic.Int64
 	segmentCond    *sync.Cond // segment state change condition
-	rcCond         *sync.Cond // segment rc change condition
 
 	closeOnce sync.Once
 	closeCh   chan struct{}
 }
 
 // NewShardCluster create a ShardCluster with provided information.
-func NewShardCluster(collectionID int64, replicaID int64, vchannelName string,
+func NewShardCluster(collectionID int64, replicaID int64, vchannelName string, version int64,
 	nodeDetector ShardNodeDetector, segmentDetector ShardSegmentDetector, nodeBuilder ShardNodeBuilder) *ShardCluster {
 	sc := &ShardCluster{
 		state: atomic.NewInt32(int32(unavailable)),
@@ -166,6 +165,7 @@ func NewShardCluster(collectionID int64, replicaID int64, vchannelName string,
 		collectionID: collectionID,
 		replicaID:    replicaID,
 		vchannelName: vchannelName,
+		version:      version,
 
 		segmentDetector: segmentDetector,
 		nodeDetector:    nodeDetector,
@@ -180,8 +180,6 @@ func NewShardCluster(collectionID int64, replicaID int64, vchannelName string,
 
 	m := sync.Mutex{}
 	sc.segmentCond = sync.NewCond(&m)
-	m2 := sync.Mutex{}
-	sc.rcCond = sync.NewCond(&m2)
 
 	sc.init()
 
@@ -283,9 +281,7 @@ func (sc *ShardCluster) updateSegment(evt shardSegmentInfo) {
 	log.Info("ShardCluster update segment", zap.Int64("nodeID", evt.nodeID), zap.Int64("segmentID", evt.segmentID), zap.Int32("state", int32(evt.state)))
 	// notify handoff wait online if any
 	defer func() {
-		sc.segmentCond.L.Lock()
 		sc.segmentCond.Broadcast()
-		sc.segmentCond.L.Unlock()
 	}()
 
 	sc.mut.Lock()
@@ -361,9 +357,7 @@ func (sc *ShardCluster) SyncSegments(distribution []*querypb.ReplicaSegmentsInfo
 	sc.mut.Unlock()
 
 	// notify handoff wait online if any
-	sc.segmentCond.L.Lock()
 	sc.segmentCond.Broadcast()
-	sc.segmentCond.L.Unlock()
 
 	sc.mutVersion.Lock()
 	defer sc.mutVersion.Unlock()
@@ -610,17 +604,16 @@ func (sc *ShardCluster) segmentAllocations(partitionIDs []int64) (map[int64][]in
 
 // finishUsage decreases the inUse count of provided segments
 func (sc *ShardCluster) finishUsage(versionID int64) {
-	defer func() {
-		sc.rcCond.L.Lock()
-		sc.rcCond.Broadcast()
-		sc.rcCond.L.Unlock()
-	}()
-
 	v, ok := sc.versions.Load(versionID)
-	if ok {
-		version := v.(*ShardClusterVersion)
-		version.FinishUsage()
+	if !ok {
+		return
 	}
+
+	version := v.(*ShardClusterVersion)
+	version.FinishUsage()
+
+	// cleanup version if expired
+	sc.cleanupVersion(version)
 }
 
 // LoadSegments loads segments with shardCluster.
@@ -650,10 +643,17 @@ func (sc *ShardCluster) LoadSegments(ctx context.Context, req *querypb.LoadSegme
 		log.Warn("failed to dispatch load segment request", zap.Error(err))
 		return err
 	}
+	if resp.GetErrorCode() == commonpb.ErrorCode_InsufficientMemoryToLoad {
+		log.Warn("insufficient memory when follower load segment", zap.String("reason", resp.GetReason()))
+		return fmt.Errorf("%w, reason:%s", ErrInsufficientMemory, resp.GetReason())
+	}
 	if resp.GetErrorCode() != commonpb.ErrorCode_Success {
 		log.Warn("follower load segment failed", zap.String("reason", resp.GetReason()))
 		return fmt.Errorf("follower %d failed to load segment, reason %s", req.DstNodeID, resp.GetReason())
 	}
+	log.Debug("shardCluster has completed loading segments for:",
+		zap.Int64("collectionID:", req.CollectionID), zap.Int64("replicaID:", req.ReplicaID),
+		zap.Int64("sourceNodeId", req.SourceNodeID))
 
 	// update allocation
 	for _, info := range req.Infos {
@@ -667,9 +667,7 @@ func (sc *ShardCluster) LoadSegments(ctx context.Context, req *querypb.LoadSegme
 	}
 
 	// notify handoff wait online if any
-	sc.segmentCond.L.Lock()
 	sc.segmentCond.Broadcast()
-	sc.segmentCond.L.Unlock()
 
 	sc.mutVersion.Lock()
 	defer sc.mutVersion.Unlock()
@@ -680,9 +678,11 @@ func (sc *ShardCluster) LoadSegments(ctx context.Context, req *querypb.LoadSegme
 		allocations[info.SegmentID] = shardSegmentInfo{nodeID: req.DstNodeID, segmentID: info.SegmentID, partitionID: info.PartitionID, state: segmentStateLoaded}
 	}
 
+	lastVersion := sc.currentVersion
 	version := NewShardClusterVersion(sc.nextVersionID.Inc(), allocations, sc.currentVersion)
 	sc.versions.Store(version.versionID, version)
 	sc.currentVersion = version
+	sc.cleanupVersion(lastVersion)
 
 	return nil
 }
@@ -703,7 +703,7 @@ func (sc *ShardCluster) ReleaseSegments(ctx context.Context, req *querypb.Releas
 		offlineSegments.Insert(req.GetSegmentIDs()...)
 	}
 
-	var lastVersionID int64
+	var lastVersion *ShardClusterVersion
 	var err error
 	func() {
 		sc.mutVersion.Lock()
@@ -729,7 +729,7 @@ func (sc *ShardCluster) ReleaseSegments(ctx context.Context, req *querypb.Releas
 			if sc.currentVersion != nil {
 				// wait for last version search done
 				<-sc.currentVersion.Expire()
-				lastVersionID = sc.currentVersion.versionID
+				lastVersion = sc.currentVersion
 			}
 		}
 
@@ -762,7 +762,7 @@ func (sc *ShardCluster) ReleaseSegments(ctx context.Context, req *querypb.Releas
 			err = fmt.Errorf("follower %d failed to release segment, reason %s", req.NodeID, resp.GetReason())
 		}
 	}()
-	sc.cleanupVersion(lastVersionID)
+	sc.cleanupVersion(lastVersion)
 
 	sc.mut.Lock()
 	// do not delete segment if data scope is streaming
@@ -784,14 +784,18 @@ func (sc *ShardCluster) ReleaseSegments(ctx context.Context, req *querypb.Releas
 }
 
 // cleanupVersion clean up version from map
-func (sc *ShardCluster) cleanupVersion(versionID int64) {
-	sc.mutVersion.RLock()
-	defer sc.mutVersion.RUnlock()
-	// prevent clean up current version
-	if sc.currentVersion != nil && sc.currentVersion.versionID == versionID {
+func (sc *ShardCluster) cleanupVersion(version *ShardClusterVersion) {
+	// last version nil, just return
+	if version == nil {
 		return
 	}
-	sc.versions.Delete(versionID)
+
+	// if version is still current one or still in use, return
+	if version.current.Load() || version.inUse.Load() > 0 {
+		return
+	}
+
+	sc.versions.Delete(version.versionID)
 }
 
 // waitSegmentsOnline waits until all provided segments is loaded.
@@ -902,6 +906,7 @@ func (sc *ShardCluster) GetStatistics(ctx context.Context, req *querypb.GetStati
 
 // Search preforms search operation on shard cluster.
 func (sc *ShardCluster) Search(ctx context.Context, req *querypb.SearchRequest, withStreaming withStreaming) ([]*internalpb.SearchResults, error) {
+	log := log.Ctx(ctx)
 	if !sc.serviceable() {
 		err := WrapErrShardNotAvailable(sc.replicaID, sc.vchannelName)
 		log.Warn("failed to search on shard",
@@ -953,8 +958,10 @@ func (sc *ShardCluster) Search(ctx context.Context, req *querypb.SearchRequest, 
 
 	// dispatch request to followers
 	for nodeID, segments := range segAllocs {
+		internalReq := typeutil.Clone(req.GetReq())
+		internalReq.GetBase().TargetID = nodeID
 		nodeReq := &querypb.SearchRequest{
-			Req:             req.Req,
+			Req:             internalReq,
 			DmlChannels:     req.DmlChannels,
 			FromShardLeader: true,
 			Scope:           querypb.DataScope_Historical,
@@ -970,7 +977,17 @@ func (sc *ShardCluster) Search(ctx context.Context, req *querypb.SearchRequest, 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			partialResult, nodeErr := node.client.Search(reqCtx, nodeReq)
+
+			queryNode := GetQueryNode()
+			var partialResult *internalpb.SearchResults
+			var nodeErr error
+
+			if queryNode != nil && queryNode.IsStandAlone {
+				partialResult, nodeErr = queryNode.Search(reqCtx, nodeReq)
+			} else {
+				partialResult, nodeErr = node.client.Search(reqCtx, nodeReq)
+			}
+
 			resultMut.Lock()
 			defer resultMut.Unlock()
 			if nodeErr != nil || partialResult.GetStatus().GetErrorCode() != commonpb.ErrorCode_Success {
@@ -986,8 +1003,7 @@ func (sc *ShardCluster) Search(ctx context.Context, req *querypb.SearchRequest, 
 
 	wg.Wait()
 	if err != nil {
-		log.Error("failed to do search",
-			zap.Int64("msgID", req.GetReq().GetBase().GetMsgID()),
+		log.Warn("failed to do search",
 			zap.Int64("sourceID", req.GetReq().GetBase().GetSourceID()),
 			zap.Strings("channels", req.GetDmlChannels()),
 			zap.Int64s("segmentIDs", req.GetSegmentIDs()),
@@ -1038,8 +1054,10 @@ func (sc *ShardCluster) Query(ctx context.Context, req *querypb.QueryRequest, wi
 
 	// dispatch request to followers
 	for nodeID, segments := range segAllocs {
+		internalReq := typeutil.Clone(req.GetReq())
+		internalReq.GetBase().TargetID = nodeID
 		nodeReq := &querypb.QueryRequest{
-			Req:             req.Req,
+			Req:             internalReq,
 			FromShardLeader: true,
 			SegmentIDs:      segments,
 			Scope:           querypb.DataScope_Historical,
@@ -1084,7 +1102,5 @@ func (sc *ShardCluster) GetSegmentInfos() []shardSegmentInfo {
 }
 
 func (sc *ShardCluster) getVersion() int64 {
-	sc.mutVersion.RLock()
-	defer sc.mutVersion.RUnlock()
 	return sc.version
 }

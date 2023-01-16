@@ -79,6 +79,9 @@ func (scheduler *Scheduler) schedule(ctx context.Context) {
 
 			case <-scheduler.stopCh:
 				log.Info("JobManager stopped")
+				for _, queue := range scheduler.queues {
+					close(queue)
+				}
 				return
 
 			case job := <-scheduler.waitQueue:
@@ -96,6 +99,7 @@ func (scheduler *Scheduler) schedule(ctx context.Context) {
 						scheduler.startProcessor(collection, queue)
 					} else {
 						// Release resource if no job for the collection
+						close(queue)
 						delete(scheduler.queues, collection)
 					}
 				}
@@ -143,8 +147,7 @@ func (scheduler *Scheduler) processQueue(collection int64, queue jobQueue) {
 }
 
 func (scheduler *Scheduler) process(job Job) {
-	log := log.With(
-		zap.Int64("msgID", job.MsgID()),
+	log := log.Ctx(job.Context()).With(
 		zap.Int64("collectionID", job.CollectionID()))
 
 	defer func() {

@@ -19,9 +19,11 @@ package grpcquerynode
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 
 	"github.com/stretchr/testify/assert"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -32,7 +34,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 )
 
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 type MockQueryNode struct {
 	states     *milvuspb.ComponentStates
 	status     *commonpb.Status
@@ -123,6 +125,13 @@ func (m *MockQueryNode) SyncReplicaSegments(ctx context.Context, req *querypb.Sy
 	return m.status, m.err
 }
 
+func (m *MockQueryNode) SetAddress(address string) {
+}
+
+func (m *MockQueryNode) GetAddress() string {
+	return ""
+}
+
 func (m *MockQueryNode) SetEtcdClient(client *clientv3.Client) {
 }
 
@@ -130,10 +139,6 @@ func (m *MockQueryNode) UpdateStateCode(code commonpb.StateCode) {
 }
 
 func (m *MockQueryNode) SetRootCoord(rc types.RootCoord) error {
-	return m.err
-}
-
-func (m *MockQueryNode) SetIndexCoord(index types.IndexCoord) error {
 	return m.err
 }
 
@@ -187,42 +192,12 @@ func (m *MockRootCoord) GetComponentStates(ctx context.Context) (*milvuspb.Compo
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-type MockIndexCoord struct {
-	types.IndexCoord
-	initErr  error
-	startErr error
-	regErr   error
-	stopErr  error
-	stateErr commonpb.ErrorCode
+
+func TestMain(m *testing.M) {
+	paramtable.Init()
+	os.Exit(m.Run())
 }
 
-func (m *MockIndexCoord) Init() error {
-	return m.initErr
-}
-
-func (m *MockIndexCoord) Start() error {
-	return m.startErr
-}
-
-func (m *MockIndexCoord) Stop() error {
-	return m.stopErr
-}
-
-func (m *MockIndexCoord) Register() error {
-	return m.regErr
-}
-
-func (m *MockIndexCoord) SetEtcdClient(client *clientv3.Client) {
-}
-
-func (m *MockIndexCoord) GetComponentStates(ctx context.Context) (*milvuspb.ComponentStates, error) {
-	return &milvuspb.ComponentStates{
-		State:  &milvuspb.ComponentInfo{StateCode: commonpb.StateCode_Healthy},
-		Status: &commonpb.Status{ErrorCode: m.stateErr},
-	}, nil
-}
-
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 func Test_NewServer(t *testing.T) {
 	ctx := context.Background()
 	server, err := NewServer(ctx, nil)

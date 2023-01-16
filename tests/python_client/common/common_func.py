@@ -2,6 +2,8 @@ import os
 import random
 import math
 import string
+import json
+from functools import singledispatch
 import numpy as np
 import pandas as pd
 from sklearn import preprocessing
@@ -14,6 +16,17 @@ from customize.milvus_operator import MilvusOperator
 
 """" Methods of processing data """
 
+
+@singledispatch
+def to_serializable(val):
+    """Used by default."""
+    return str(val)
+
+
+@to_serializable.register(np.float32)
+def ts_float32(val):
+    """Used if *val* is an instance of numpy.float32."""
+    return np.float64(val)
 
 class ParamInfo:
     def __init__(self):
@@ -277,7 +290,7 @@ def gen_dataframe_all_data_type(nb=ct.default_nb, dim=ct.default_dim, start=0):
     int32_values = pd.Series(data=[np.int32(i) for i in range(start, start + nb)], dtype="int32")
     int16_values = pd.Series(data=[np.int16(i) for i in range(start, start + nb)], dtype="int16")
     int8_values = pd.Series(data=[np.int8(i) for i in range(start, start + nb)], dtype="int8")
-    bool_values = pd.Series(data=[np.bool(i) for i in range(start, start + nb)], dtype="bool")
+    bool_values = pd.Series(data=[np.bool_(i) for i in range(start, start + nb)], dtype="bool")
     float_values = pd.Series(data=[np.float32(i) for i in range(start, start + nb)], dtype="float32")
     double_values = pd.Series(data=[np.double(i) for i in range(start, start + nb)], dtype="double")
     string_values = pd.Series(data=[str(i) for i in range(start, start + nb)], dtype="string")
@@ -321,11 +334,39 @@ def gen_default_list_data(nb=ct.default_nb, dim=ct.default_dim):
 
 def gen_default_list_data_for_bulk_insert(nb=ct.default_nb, dim=ct.default_dim):
     int_values = [i for i in range(nb)]
-    float_values = [float(i) for i in range(nb)]
+    float_values = [np.float32(i) for i in range(nb)]
     string_values = [str(i) for i in range(nb)]
     float_vec_values = gen_vectors(nb, dim)
     data = [int_values, float_values, string_values, float_vec_values]
     return data
+
+
+def gen_json_files_for_bulk_insert(data, schema, data_dir):
+    nb = len(data[0])
+    fields_name = [field.name for field in schema.fields]
+    entities = []
+    for i in range(nb):
+        entity_value = [field_values[i] for field_values in data]
+        entity = dict(zip(fields_name, entity_value))
+        entities.append(entity)
+    data_dict = {"rows": entities}
+    file_name = "bulk_insert_data_source.json"
+    files = ["bulk_insert_data_source.json"]
+    data_source = os.path.join(data_dir, file_name)
+    with open(data_source, "w") as f:
+        f.write(json.dumps(data_dict, indent=4, default=to_serializable))
+    return files
+
+
+def gen_npy_files_for_bulk_insert(data, schema, data_dir):
+    fields_name = [field.name for field in schema.fields]
+    files = []
+    for field in fields_name:
+        files.append(f"{field}.npy")
+    for i, file in enumerate(files):
+        data_source = os.path.join(data_dir, file)
+        np.save(data_source, np.array(data[i]))
+    return files
 
 
 def gen_default_tuple_data(nb=ct.default_nb, dim=ct.default_dim):
@@ -340,7 +381,7 @@ def gen_default_tuple_data(nb=ct.default_nb, dim=ct.default_dim):
 def gen_numpy_data(nb=ct.default_nb, dim=ct.default_dim):
     int_values = np.arange(nb, dtype='int64')
     float_values = np.arange(nb, dtype='float32')
-    string_values = [np.str(i) for i in range(nb)]
+    string_values = [np.str_(i) for i in range(nb)]
     float_vec_values = gen_vectors(nb, dim)
     data = [int_values, float_values, string_values, float_vec_values]
     return data
@@ -400,6 +441,10 @@ def gen_invaild_search_params_type():
                     continue
                 annoy_search_param = {"index_type": index_type, "search_params": {"search_k": search_k}}
                 search_params.append(annoy_search_param)
+        elif index_type == "DISKANN":
+            for search_list in ct.get_invalid_ints:
+                diskann_search_param = {"index_type": index_type, "search_params": {"search_list": search_list}}
+                search_params.append(diskann_search_param)
     return search_params
 
 
@@ -425,6 +470,10 @@ def gen_search_param(index_type, metric_type="L2"):
         for search_k in [1000, 5000]:
             annoy_search_param = {"metric_type": metric_type, "params": {"search_k": search_k}}
             search_params.append(annoy_search_param)
+    elif index_type == "DISKANN":
+        for search_list in [20, 30]:
+            diskann_search_param = {"metric_type": metric_type, "params": {"search_list": search_list}}
+            search_params.append(diskann_search_param)
     else:
         log.error("Invalid index_type.")
         raise Exception("Invalid index_type.")
@@ -446,6 +495,11 @@ def gen_invalid_search_param(index_type, metric_type="L2"):
         for search_k in ["-1"]:
             annoy_search_param = {"metric_type": metric_type, "params": {"search_k": search_k}}
             search_params.append(annoy_search_param)
+    elif index_type == "DISKANN":
+        for search_list in ["-1"]:
+            diskann_search_param = {"metric_type": metric_type, "params": {"search_list": search_list}}
+            search_params.append(diskann_search_param)
+    
     else:
         log.error("Invalid index_type.")
         raise Exception("Invalid index_type.")
@@ -482,6 +536,7 @@ def gen_normal_expressions():
     ]
     return expressions
 
+
 def gen_field_compare_expressions():
     expressions = [
         "int64_1 | int64_2 == 1",
@@ -496,6 +551,7 @@ def gen_field_compare_expressions():
         "int64_1 + int64_2 >= 10"
     ]
     return expressions
+
 
 def gen_normal_string_expressions(field):
     expressions = [
@@ -549,20 +605,20 @@ def ip(x, y):
 
 
 def jaccard(x, y):
-    x = np.asarray(x, np.bool)
-    y = np.asarray(y, np.bool)
+    x = np.asarray(x, np.bool_)
+    y = np.asarray(y, np.bool_)
     return 1 - np.double(np.bitwise_and(x, y).sum()) / np.double(np.bitwise_or(x, y).sum())
 
 
 def hamming(x, y):
-    x = np.asarray(x, np.bool)
-    y = np.asarray(y, np.bool)
+    x = np.asarray(x, np.bool_)
+    y = np.asarray(y, np.bool_)
     return np.bitwise_xor(x, y).sum()
 
 
 def tanimoto(x, y):
-    x = np.asarray(x, np.bool)
-    y = np.asarray(y, np.bool)
+    x = np.asarray(x, np.bool_)
+    y = np.asarray(y, np.bool_)
     res = np.double(np.bitwise_and(x, y).sum()) / np.double(np.bitwise_or(x, y).sum())
     if res == 0:
         value = 0
@@ -572,20 +628,20 @@ def tanimoto(x, y):
 
 
 def tanimoto_calc(x, y):
-    x = np.asarray(x, np.bool)
-    y = np.asarray(y, np.bool)
+    x = np.asarray(x, np.bool_)
+    y = np.asarray(y, np.bool_)
     return np.double((len(x) - np.bitwise_xor(x, y).sum())) / (len(y) + np.bitwise_xor(x, y).sum())
 
 
 def substructure(x, y):
-    x = np.asarray(x, np.bool)
-    y = np.asarray(y, np.bool)
+    x = np.asarray(x, np.bool_)
+    y = np.asarray(y, np.bool_)
     return 1 - np.double(np.bitwise_and(x, y).sum()) / np.count_nonzero(y)
 
 
 def superstructure(x, y):
-    x = np.asarray(x, np.bool)
-    y = np.asarray(y, np.bool)
+    x = np.asarray(x, np.bool_)
+    y = np.asarray(y, np.bool_)
     return 1 - np.double(np.bitwise_and(x, y).sum()) / np.count_nonzero(x)
 
 

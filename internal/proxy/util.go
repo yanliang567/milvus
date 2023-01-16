@@ -24,6 +24,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/milvus-io/milvus/internal/util/commonpbutil"
+
+	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/types"
 
@@ -32,6 +35,7 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/util"
@@ -57,12 +61,6 @@ const (
 
 	// DefaultStringIndexType name of default index type for varChar/string field
 	DefaultStringIndexType = "Trie"
-
-	// Search limit, which applies on:
-	// maximum # of results to return (topK), and
-	// maximum # of search requests (nq).
-	// Check https://milvus.io/docs/limitations.md for more details.
-	searchCountLimit = 16384
 )
 
 var logger = log.L().WithOptions(zap.Fields(zap.String("role", typeutil.ProxyRole)))
@@ -84,9 +82,8 @@ func isNumber(c uint8) bool {
 }
 
 func validateLimit(limit int64) error {
-	// TODO make this configurable
-	if limit <= 0 || limit > searchCountLimit {
-		return fmt.Errorf("should be in range [1, %d], but got %d", searchCountLimit, limit)
+	if limit <= 0 || limit > Params.CommonCfg.TopKLimit.GetAsInt64() {
+		return fmt.Errorf("should be in range [1, %d], but got %d", Params.CommonCfg.TopKLimit.GetAsInt64(), limit)
 	}
 	return nil
 }
@@ -99,9 +96,8 @@ func validateCollectionNameOrAlias(entity, entityType string) error {
 	}
 
 	invalidMsg := fmt.Sprintf("Invalid collection %s: %s. ", entityType, entity)
-	if int64(len(entity)) > Params.ProxyCfg.MaxNameLength {
-		msg := invalidMsg + fmt.Sprintf("The length of a collection %s must be less than ", entityType) +
-			strconv.FormatInt(Params.ProxyCfg.MaxNameLength, 10) + " characters."
+	if len(entity) > Params.ProxyCfg.MaxNameLength.GetAsInt() {
+		msg := invalidMsg + fmt.Sprintf("The length of a collection %s must be less than ", entityType) + Params.ProxyCfg.MaxNameLength.GetValue() + " characters."
 		return errors.New(msg)
 	}
 
@@ -139,9 +135,8 @@ func validatePartitionTag(partitionTag string, strictCheck bool) error {
 		return errors.New(msg)
 	}
 
-	if int64(len(partitionTag)) > Params.ProxyCfg.MaxNameLength {
-		msg := invalidMsg + "The length of a partition name must be less than " +
-			strconv.FormatInt(Params.ProxyCfg.MaxNameLength, 10) + " characters."
+	if len(partitionTag) > Params.ProxyCfg.MaxNameLength.GetAsInt() {
+		msg := invalidMsg + "The length of a partition name must be less than " + Params.ProxyCfg.MaxNameLength.GetValue() + " characters."
 		return errors.New(msg)
 	}
 
@@ -173,9 +168,8 @@ func validateFieldName(fieldName string) error {
 	}
 
 	invalidMsg := "Invalid field name: " + fieldName + ". "
-	if int64(len(fieldName)) > Params.ProxyCfg.MaxNameLength {
-		msg := invalidMsg + "The length of a field name must be less than " +
-			strconv.FormatInt(Params.ProxyCfg.MaxNameLength, 10) + " characters."
+	if len(fieldName) > Params.ProxyCfg.MaxNameLength.GetAsInt() {
+		msg := invalidMsg + "The length of a field name must be less than " + Params.ProxyCfg.MaxNameLength.GetValue() + " characters."
 		return errors.New(msg)
 	}
 
@@ -214,8 +208,8 @@ func validateDimension(field *schemapb.FieldSchema) error {
 		return errors.New("dimension is not defined in field type params, check type param `dim` for vector field")
 	}
 
-	if dim <= 0 || dim > Params.ProxyCfg.MaxDimension {
-		return fmt.Errorf("invalid dimension: %d. should be in range 1 ~ %d", dim, Params.ProxyCfg.MaxDimension)
+	if dim <= 0 || dim > Params.ProxyCfg.MaxDimension.GetAsInt64() {
+		return fmt.Errorf("invalid dimension: %d. should be in range 1 ~ %d", dim, Params.ProxyCfg.MaxDimension.GetAsInt())
 	}
 	if field.DataType == schemapb.DataType_BinaryVector && dim%8 != 0 {
 		return fmt.Errorf("invalid dimension: %d. should be multiple of 8. ", dim)
@@ -566,9 +560,8 @@ func ValidateUsername(username string) error {
 	}
 
 	invalidMsg := "Invalid username: " + username + ". "
-	if int64(len(username)) > Params.ProxyCfg.MaxUsernameLength {
-		msg := invalidMsg + "The length of username must be less than " +
-			strconv.FormatInt(Params.ProxyCfg.MaxUsernameLength, 10) + " characters."
+	if len(username) > Params.ProxyCfg.MaxUsernameLength.GetAsInt() {
+		msg := invalidMsg + "The length of username must be less than " + Params.ProxyCfg.MaxUsernameLength.GetValue() + " characters."
 		return errors.New(msg)
 	}
 
@@ -590,9 +583,9 @@ func ValidateUsername(username string) error {
 }
 
 func ValidatePassword(password string) error {
-	if int64(len(password)) < Params.ProxyCfg.MinPasswordLength || int64(len(password)) > Params.ProxyCfg.MaxPasswordLength {
-		msg := "The length of password must be great than " + strconv.FormatInt(Params.ProxyCfg.MinPasswordLength, 10) +
-			" and less than " + strconv.FormatInt(Params.ProxyCfg.MaxPasswordLength, 10) + " characters."
+	if len(password) < Params.ProxyCfg.MinPasswordLength.GetAsInt() || len(password) > Params.ProxyCfg.MaxPasswordLength.GetAsInt() {
+		msg := "The length of password must be great than " + Params.ProxyCfg.MinPasswordLength.GetValue() +
+			" and less than " + Params.ProxyCfg.MaxPasswordLength.GetValue() + " characters."
 		return errors.New(msg)
 	}
 	return nil
@@ -600,10 +593,10 @@ func ValidatePassword(password string) error {
 
 func validateTravelTimestamp(travelTs, tMax typeutil.Timestamp) error {
 	durationSeconds := tsoutil.CalculateDuration(tMax, travelTs) / 1000
-	if durationSeconds > Params.CommonCfg.RetentionDuration {
+	if durationSeconds > Params.CommonCfg.RetentionDuration.GetAsInt64() {
 
 		durationIn := time.Second * time.Duration(durationSeconds)
-		durationSupport := time.Second * time.Duration(Params.CommonCfg.RetentionDuration)
+		durationSupport := time.Second * time.Duration(Params.CommonCfg.RetentionDuration.GetAsInt64())
 		return fmt.Errorf("only support to travel back to %v so far, but got %v", durationSupport, durationIn)
 	}
 	return nil
@@ -618,7 +611,7 @@ func parseGuaranteeTs(ts, tMax typeutil.Timestamp) typeutil.Timestamp {
 	case strongTS:
 		ts = tMax
 	case boundedTS:
-		ratio := time.Duration(-Params.CommonCfg.GracefulTime)
+		ratio := time.Duration(-Params.CommonCfg.GracefulTime.GetAsInt64())
 		ts = tsoutil.AddPhysicalDurationOnTs(tMax, ratio*time.Millisecond)
 	}
 	return ts
@@ -632,9 +625,8 @@ func validateName(entity string, nameType string) error {
 	}
 
 	invalidMsg := fmt.Sprintf("invalid %s: %s. ", nameType, entity)
-	if int64(len(entity)) > Params.ProxyCfg.MaxNameLength {
-		msg := invalidMsg + fmt.Sprintf("the length of %s must be less than ", nameType) +
-			strconv.FormatInt(Params.ProxyCfg.MaxNameLength, 10) + " characters."
+	if len(entity) > Params.ProxyCfg.MaxNameLength.GetAsInt() {
+		msg := invalidMsg + fmt.Sprintf("the length of %s must be less than ", nameType) + Params.ProxyCfg.MaxNameLength.GetValue() + " characters."
 		return errors.New(msg)
 	}
 
@@ -732,6 +724,15 @@ func passwordVerify(ctx context.Context, username, rawPwd string, globalMetaCach
 		return false
 	}
 
+	if currentUser, _ := GetCurUserFromContext(ctx); currentUser != "" {
+		log.Debug("simfg password", zap.Strings("super users", Params.CommonCfg.SuperUsers.GetAsStrings()))
+		for _, s := range Params.CommonCfg.SuperUsers.GetAsStrings() {
+			if s == currentUser {
+				return true
+			}
+		}
+	}
+
 	// hit cache
 	sha256Pwd := crypto.SHA256(rawPwd, credInfo.Username)
 	if credInfo.Sha256Password != "" {
@@ -813,9 +814,8 @@ func validateIndexName(indexName string) error {
 		return nil
 	}
 	invalidMsg := "Invalid index name: " + indexName + ". "
-	if int64(len(indexName)) > Params.ProxyCfg.MaxNameLength {
-		msg := invalidMsg + "The length of a index name must be less than " +
-			strconv.FormatInt(Params.ProxyCfg.MaxNameLength, 10) + " characters."
+	if len(indexName) > Params.ProxyCfg.MaxNameLength.GetAsInt() {
+		msg := invalidMsg + "The length of a index name must be less than " + Params.ProxyCfg.MaxNameLength.GetValue() + " characters."
 		return errors.New(msg)
 	}
 
@@ -877,4 +877,193 @@ func isPartitionLoaded(ctx context.Context, qc types.QueryCoord, collID int64, p
 		}
 	}
 	return false, nil
+}
+
+func checkLengthOfFieldsData(schema *schemapb.CollectionSchema, insertMsg *msgstream.InsertMsg) error {
+	neededFieldsNum := 0
+	for _, field := range schema.Fields {
+		if !field.AutoID {
+			neededFieldsNum++
+		}
+	}
+
+	if len(insertMsg.FieldsData) < neededFieldsNum {
+		return errFieldsLessThanNeeded(len(insertMsg.FieldsData), neededFieldsNum)
+	}
+
+	return nil
+}
+
+func checkPrimaryFieldData(schema *schemapb.CollectionSchema, insertMsg *msgstream.InsertMsg) (*schemapb.IDs, error) {
+	rowNums := uint32(insertMsg.NRows())
+	// TODO(dragondriver): in fact, NumRows is not trustable, we should check all input fields
+	if insertMsg.NRows() <= 0 {
+		return nil, errNumRowsLessThanOrEqualToZero(rowNums)
+	}
+
+	if err := checkLengthOfFieldsData(schema, insertMsg); err != nil {
+		return nil, err
+	}
+
+	primaryFieldSchema, err := typeutil.GetPrimaryFieldSchema(schema)
+	if err != nil {
+		log.Error("get primary field schema failed", zap.String("collectionName", insertMsg.CollectionName), zap.Any("schema", schema), zap.Error(err))
+		return nil, err
+	}
+
+	// get primaryFieldData whether autoID is true or not
+	var primaryFieldData *schemapb.FieldData
+	if !primaryFieldSchema.AutoID {
+		primaryFieldData, err = typeutil.GetPrimaryFieldData(insertMsg.GetFieldsData(), primaryFieldSchema)
+		if err != nil {
+			log.Error("get primary field data failed", zap.String("collectionName", insertMsg.CollectionName), zap.Error(err))
+			return nil, err
+		}
+	} else {
+		// check primary key data not exist
+		if typeutil.IsPrimaryFieldDataExist(insertMsg.GetFieldsData(), primaryFieldSchema) {
+			return nil, fmt.Errorf("can not assign primary field data when auto id enabled %v", primaryFieldSchema.Name)
+		}
+		// if autoID == true, currently only support autoID for int64 PrimaryField
+		primaryFieldData, err = autoGenPrimaryFieldData(primaryFieldSchema, insertMsg.GetRowIDs())
+		if err != nil {
+			log.Error("generate primary field data failed when autoID == true", zap.String("collectionName", insertMsg.CollectionName), zap.Error(err))
+			return nil, err
+		}
+		// if autoID == true, set the primary field data
+		// insertMsg.fieldsData need append primaryFieldData
+		insertMsg.FieldsData = append(insertMsg.FieldsData, primaryFieldData)
+	}
+
+	// parse primaryFieldData to result.IDs, and as returned primary keys
+	ids, err := parsePrimaryFieldData2IDs(primaryFieldData)
+	if err != nil {
+		log.Error("parse primary field data to IDs failed", zap.String("collectionName", insertMsg.CollectionName), zap.Error(err))
+		return nil, err
+	}
+
+	return ids, nil
+}
+
+// TODO(smellthemoon): can merge it with checkPrimaryFieldData
+func upsertCheckPrimaryFieldData(schema *schemapb.CollectionSchema, result *milvuspb.MutationResult, insertMsg *msgstream.InsertMsg) (*schemapb.IDs, error) {
+	rowNums := uint32(insertMsg.NRows())
+	// TODO(dragondriver): in fact, NumRows is not trustable, we should check all input fields
+	if insertMsg.NRows() <= 0 {
+		return nil, errNumRowsLessThanOrEqualToZero(rowNums)
+	}
+
+	if err := checkLengthOfFieldsData(schema, insertMsg); err != nil {
+		return nil, err
+	}
+
+	primaryFieldSchema, err := typeutil.GetPrimaryFieldSchema(schema)
+	if err != nil {
+		log.Error("get primary field schema failed", zap.String("collectionName", insertMsg.CollectionName), zap.Any("schema", schema), zap.Error(err))
+		return nil, err
+	}
+
+	// get primaryFieldData whether autoID is true or not
+	var primaryFieldData *schemapb.FieldData
+	if primaryFieldSchema.AutoID {
+		// upsert has not supported when autoID == true
+		log.Info("can not upsert when auto id enabled",
+			zap.String("primaryFieldSchemaName", primaryFieldSchema.Name))
+		result.Status.ErrorCode = commonpb.ErrorCode_UpsertAutoIDTrue
+		return nil, fmt.Errorf("upsert can not assign primary field data when auto id enabled %v", primaryFieldSchema.Name)
+	}
+	primaryFieldData, err = typeutil.GetPrimaryFieldData(insertMsg.GetFieldsData(), primaryFieldSchema)
+	if err != nil {
+		log.Error("get primary field data failed when upsert", zap.String("collectionName", insertMsg.CollectionName), zap.Error(err))
+		return nil, err
+	}
+
+	// parse primaryFieldData to result.IDs, and as returned primary keys
+	ids, err := parsePrimaryFieldData2IDs(primaryFieldData)
+	if err != nil {
+		log.Error("parse primary field data to IDs failed", zap.String("collectionName", insertMsg.CollectionName), zap.Error(err))
+		return nil, err
+	}
+
+	return ids, nil
+}
+
+func getCollectionProgress(ctx context.Context, queryCoord types.QueryCoord,
+	msgBase *commonpb.MsgBase, collectionID int64) (int64, error) {
+	resp, err := queryCoord.ShowCollections(ctx, &querypb.ShowCollectionsRequest{
+		Base: commonpbutil.UpdateMsgBase(
+			msgBase,
+			commonpbutil.WithMsgType(commonpb.MsgType_DescribeCollection),
+		),
+		CollectionIDs: []int64{collectionID},
+	})
+	if err != nil {
+		log.Warn("fail to show collections", zap.Int64("collection_id", collectionID), zap.Error(err))
+		return 0, err
+	}
+
+	if resp.Status.ErrorCode == commonpb.ErrorCode_InsufficientMemoryToLoad {
+		log.Warn("detected insufficientMemoryError when getCollectionProgress", zap.Int64("collection_id", collectionID), zap.String("reason", resp.GetStatus().GetReason()))
+		return 0, ErrInsufficientMemory
+	}
+
+	if resp.Status.ErrorCode != commonpb.ErrorCode_Success {
+		log.Warn("fail to show collections", zap.Int64("collection_id", collectionID),
+			zap.String("reason", resp.Status.Reason))
+		return 0, errors.New(resp.Status.Reason)
+	}
+
+	if len(resp.InMemoryPercentages) == 0 {
+		errMsg := "fail to show collections from the querycoord, no data"
+		log.Warn(errMsg, zap.Int64("collection_id", collectionID))
+		return 0, errors.New(errMsg)
+	}
+	return resp.InMemoryPercentages[0], nil
+}
+
+func getPartitionProgress(ctx context.Context, queryCoord types.QueryCoord,
+	msgBase *commonpb.MsgBase, partitionNames []string, collectionName string, collectionID int64) (int64, error) {
+	IDs2Names := make(map[int64]string)
+	partitionIDs := make([]int64, 0)
+	for _, partitionName := range partitionNames {
+		partitionID, err := globalMetaCache.GetPartitionID(ctx, collectionName, partitionName)
+		if err != nil {
+			return 0, err
+		}
+		IDs2Names[partitionID] = partitionName
+		partitionIDs = append(partitionIDs, partitionID)
+	}
+	resp, err := queryCoord.ShowPartitions(ctx, &querypb.ShowPartitionsRequest{
+		Base: commonpbutil.UpdateMsgBase(
+			msgBase,
+			commonpbutil.WithMsgType(commonpb.MsgType_ShowPartitions),
+		),
+		CollectionID: collectionID,
+		PartitionIDs: partitionIDs,
+	})
+	if err != nil {
+		log.Warn("fail to show partitions", zap.Int64("collection_id", collectionID),
+			zap.String("collection_name", collectionName),
+			zap.Strings("partition_names", partitionNames),
+			zap.Error(err))
+		return 0, err
+	}
+	if resp.GetStatus().GetErrorCode() == commonpb.ErrorCode_InsufficientMemoryToLoad {
+		log.Warn("detected insufficientMemoryError when getPartitionProgress", zap.Int64("collection_id", collectionID),
+			zap.String("collection_name", collectionName), zap.Strings("partition_names", partitionNames), zap.String("reason", resp.GetStatus().GetReason()))
+		return 0, ErrInsufficientMemory
+	}
+	if len(resp.InMemoryPercentages) != len(partitionIDs) {
+		errMsg := "fail to show partitions from the querycoord, invalid data num"
+		log.Warn(errMsg, zap.Int64("collection_id", collectionID),
+			zap.String("collection_name", collectionName),
+			zap.Strings("partition_names", partitionNames))
+		return 0, errors.New(errMsg)
+	}
+	var progress int64
+	for _, p := range resp.InMemoryPercentages {
+		progress += p
+	}
+	progress /= int64(len(partitionIDs))
+	return progress, nil
 }

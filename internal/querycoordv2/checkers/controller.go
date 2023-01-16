@@ -27,7 +27,6 @@ import (
 	. "github.com/milvus-io/milvus/internal/querycoordv2/params"
 	"github.com/milvus-io/milvus/internal/querycoordv2/session"
 	"github.com/milvus-io/milvus/internal/querycoordv2/task"
-	"go.uber.org/zap"
 )
 
 var (
@@ -36,6 +35,7 @@ var (
 
 type CheckerController struct {
 	stopCh    chan struct{}
+	checkCh   chan struct{}
 	meta      *meta.Meta
 	dist      *meta.DistributionManager
 	targetMgr *meta.TargetManager
@@ -69,6 +69,7 @@ func NewCheckerController(
 
 	return &CheckerController{
 		stopCh:    make(chan struct{}),
+		checkCh:   make(chan struct{}),
 		meta:      meta,
 		dist:      dist,
 		targetMgr: targetMgr,
@@ -79,7 +80,7 @@ func NewCheckerController(
 
 func (controller *CheckerController) Start(ctx context.Context) {
 	go func() {
-		ticker := time.NewTicker(Params.QueryCoordCfg.CheckInterval)
+		ticker := time.NewTicker(Params.QueryCoordCfg.CheckInterval.GetAsDuration(time.Millisecond))
 		defer ticker.Stop()
 		for {
 			select {
@@ -93,6 +94,11 @@ func (controller *CheckerController) Start(ctx context.Context) {
 
 			case <-ticker.C:
 				controller.check(ctx)
+
+			case <-controller.checkCh:
+				ticker.Stop()
+				controller.check(ctx)
+				ticker.Reset(Params.QueryCoordCfg.CheckInterval.GetAsDuration(time.Millisecond))
 			}
 		}
 	}()
@@ -104,6 +110,10 @@ func (controller *CheckerController) Stop() {
 	})
 }
 
+func (controller *CheckerController) Check() {
+	controller.checkCh <- struct{}{}
+}
+
 // check is the real implementation of Check
 func (controller *CheckerController) check(ctx context.Context) {
 	tasks := make([]task.Task, 0)
@@ -111,18 +121,11 @@ func (controller *CheckerController) check(ctx context.Context) {
 		tasks = append(tasks, checker.Check(ctx)...)
 	}
 
-	added := 0
 	for _, task := range tasks {
 		err := controller.scheduler.Add(task)
 		if err != nil {
 			task.Cancel()
 			continue
-		}
-		added++
-		if added >= checkRoundTaskNumLimit {
-			log.Info("checkers have added too many tasks, truncate the subsequent tasks",
-				zap.Int("taskNum", len(tasks)),
-				zap.Int("taskNumLimit", checkRoundTaskNumLimit))
 		}
 	}
 }

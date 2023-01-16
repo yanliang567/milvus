@@ -17,6 +17,8 @@
 package metrics
 
 import (
+	"fmt"
+
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -30,6 +32,30 @@ var (
 			Help:      "number of collections loaded",
 		}, []string{
 			nodeIDLabelName,
+		})
+
+	QueryNodeConsumeTimeTickLag = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.QueryNodeRole,
+			Name:      "consume_tt_lag_ms",
+			Help:      "now time minus tt per physical channel",
+		}, []string{
+			nodeIDLabelName,
+			msgTypeLabelName,
+			collectionIDLabelName,
+		})
+
+	QueryNodeConsumerMsgCount = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.QueryNodeRole,
+			Name:      "consume_msg_count",
+			Help:      "count of consumed msg",
+		}, []string{
+			nodeIDLabelName,
+			msgTypeLabelName,
+			collectionIDLabelName,
 		})
 
 	QueryNodeNumPartitions = prometheus.NewGaugeVec(
@@ -47,9 +73,13 @@ var (
 			Namespace: milvusNamespace,
 			Subsystem: typeutil.QueryNodeRole,
 			Name:      "segment_num",
-			Help:      "number of segments loaded",
+			Help:      "number of segments loaded, clustered by its collection, partition, state and # of indexed fields",
 		}, []string{
 			nodeIDLabelName,
+			collectionIDLabelName,
+			partitionIDLabelName,
+			segmentStateLabelName,
+			indexCountLabelName,
 		})
 
 	QueryNodeNumDmlChannels = prometheus.NewGaugeVec(
@@ -104,6 +134,7 @@ var (
 		}, []string{
 			nodeIDLabelName,
 			queryTypeLabelName,
+			requestScope,
 		})
 
 	QueryNodeSQLatencyInQueue = prometheus.NewHistogramVec(
@@ -286,9 +317,13 @@ var (
 			Namespace: milvusNamespace,
 			Subsystem: typeutil.QueryNodeRole,
 			Name:      "entity_num",
-			Help:      "number of entities which can be searched/queried",
+			Help:      "number of entities which can be searched/queried, clustered by collection, partition and state",
 		}, []string{
 			nodeIDLabelName,
+			collectionIDLabelName,
+			partitionIDLabelName,
+			segmentStateLabelName,
+			indexCountLabelName,
 		})
 
 	// QueryNodeConsumeCounter counts the bytes QueryNode consumed from message storage.
@@ -310,7 +345,7 @@ var (
 		}, []string{nodeIDLabelName, msgTypeLabelName})
 )
 
-//RegisterQueryNode registers QueryNode metrics
+// RegisterQueryNode registers QueryNode metrics
 func RegisterQueryNode(registry *prometheus.Registry) {
 	registry.MustRegister(QueryNodeNumCollections)
 	registry.MustRegister(QueryNodeNumPartitions)
@@ -339,4 +374,27 @@ func RegisterQueryNode(registry *prometheus.Registry) {
 	registry.MustRegister(QueryNodeNumEntities)
 	registry.MustRegister(QueryNodeConsumeCounter)
 	registry.MustRegister(QueryNodeExecuteCounter)
+	registry.MustRegister(QueryNodeConsumerMsgCount)
+	registry.MustRegister(QueryNodeConsumeTimeTickLag)
+}
+
+func CleanupQueryNodeCollectionMetrics(nodeID int64, collectionID int64) {
+	for _, label := range []string{DeleteLabel, InsertLabel} {
+		QueryNodeConsumerMsgCount.
+			Delete(
+				prometheus.Labels{
+					nodeIDLabelName:       fmt.Sprint(nodeID),
+					msgTypeLabelName:      label,
+					collectionIDLabelName: fmt.Sprint(collectionID),
+				})
+
+		QueryNodeConsumeTimeTickLag.
+			Delete(
+				prometheus.Labels{
+					nodeIDLabelName:       fmt.Sprint(nodeID),
+					msgTypeLabelName:      label,
+					collectionIDLabelName: fmt.Sprint(collectionID),
+				})
+	}
+
 }

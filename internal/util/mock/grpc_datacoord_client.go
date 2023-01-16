@@ -19,6 +19,8 @@ package mock
 import (
 	"context"
 
+	"github.com/milvus-io/milvus/internal/proto/indexpb"
+
 	"google.golang.org/grpc"
 
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
@@ -32,6 +34,10 @@ var _ datapb.DataCoordClient = &GrpcDataCoordClient{}
 // GrpcDataCoordClient mocks of GrpcDataCoordClient
 type GrpcDataCoordClient struct {
 	Err error
+}
+
+func (m *GrpcDataCoordClient) GcConfirm(ctx context.Context, in *datapb.GcConfirmRequest, opts ...grpc.CallOption) (*datapb.GcConfirmResponse, error) {
+	return &datapb.GcConfirmResponse{}, m.Err
 }
 
 func (m *GrpcDataCoordClient) CheckHealth(ctx context.Context, in *milvuspb.CheckHealthRequest, opts ...grpc.CallOption) (*milvuspb.CheckHealthResponse, error) {
@@ -145,11 +151,7 @@ func (m *GrpcDataCoordClient) UpdateSegmentStatistics(ctx context.Context, req *
 	return &commonpb.Status{}, m.Err
 }
 
-func (m *GrpcDataCoordClient) AcquireSegmentLock(ctx context.Context, req *datapb.AcquireSegmentLockRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
-	return &commonpb.Status{}, m.Err
-}
-
-func (m *GrpcDataCoordClient) ReleaseSegmentLock(ctx context.Context, req *datapb.ReleaseSegmentLockRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
+func (m *GrpcDataCoordClient) UpdateChannelCheckpoint(ctx context.Context, req *datapb.UpdateChannelCheckpointRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
 	return &commonpb.Status{}, m.Err
 }
 
@@ -165,7 +167,39 @@ func (m *GrpcDataCoordClient) MarkSegmentsDropped(context.Context, *datapb.MarkS
 	return &commonpb.Status{}, m.Err
 }
 
-func (m *GrpcDataCoordClient) BroadcastAlteredCollection(ctx context.Context, in *milvuspb.AlterCollectionRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
+func (m *GrpcDataCoordClient) BroadcastAlteredCollection(ctx context.Context, in *datapb.AlterCollectionRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
 	return &commonpb.Status{}, m.Err
 
+}
+
+func (m *GrpcDataCoordClient) CreateIndex(ctx context.Context, req *indexpb.CreateIndexRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
+	return &commonpb.Status{}, m.Err
+}
+
+func (m *GrpcDataCoordClient) DropIndex(ctx context.Context, req *indexpb.DropIndexRequest, opts ...grpc.CallOption) (*commonpb.Status, error) {
+	return &commonpb.Status{}, m.Err
+}
+
+func (m *GrpcDataCoordClient) GetIndexState(ctx context.Context, req *indexpb.GetIndexStateRequest, opts ...grpc.CallOption) (*indexpb.GetIndexStateResponse, error) {
+	return &indexpb.GetIndexStateResponse{}, m.Err
+}
+
+// GetSegmentIndexState gets the index state of the segments in the request from RootCoord.
+func (m *GrpcDataCoordClient) GetSegmentIndexState(ctx context.Context, req *indexpb.GetSegmentIndexStateRequest, opts ...grpc.CallOption) (*indexpb.GetSegmentIndexStateResponse, error) {
+	return &indexpb.GetSegmentIndexStateResponse{}, m.Err
+}
+
+// GetIndexInfos gets the index files of the IndexBuildIDs in the request from RootCoordinator.
+func (m *GrpcDataCoordClient) GetIndexInfos(ctx context.Context, req *indexpb.GetIndexInfoRequest, opts ...grpc.CallOption) (*indexpb.GetIndexInfoResponse, error) {
+	return &indexpb.GetIndexInfoResponse{}, m.Err
+}
+
+// DescribeIndex describe the index info of the collection.
+func (m *GrpcDataCoordClient) DescribeIndex(ctx context.Context, req *indexpb.DescribeIndexRequest, opts ...grpc.CallOption) (*indexpb.DescribeIndexResponse, error) {
+	return &indexpb.DescribeIndexResponse{}, m.Err
+}
+
+// GetIndexBuildProgress get the index building progress by num rows.
+func (m *GrpcDataCoordClient) GetIndexBuildProgress(ctx context.Context, req *indexpb.GetIndexBuildProgressRequest, opts ...grpc.CallOption) (*indexpb.GetIndexBuildProgressResponse, error) {
+	return &indexpb.GetIndexBuildProgressResponse{}, m.Err
 }

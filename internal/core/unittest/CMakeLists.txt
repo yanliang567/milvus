@@ -67,6 +67,14 @@ if (LINUX OR APPLE)
 endif()
 
 if (LINUX)
+    message( STATUS "Building Milvus Unit Test on Linux")
+    option(USE_ASAN "Whether to use AddressSanitizer" OFF)
+    if ( USE_ASAN )
+        message( STATUS "Building Milvus using AddressSanitizer")
+        add_compile_options(-fno-stack-protector -fno-omit-frame-pointer -fno-var-tracking -fsanitize=address)
+        add_link_options(-fno-stack-protector -fno-omit-frame-pointer -fno-var-tracking -fsanitize=address)
+    endif()
+
     # check if memory leak exists in index builder
     set(INDEX_BUILDER_TEST_FILES
             test_index_wrapper.cpp
@@ -82,6 +90,7 @@ if (LINUX)
             gtest
             gtest_main
             milvus_segcore
+            milvus_storage
             milvus_indexbuilder
             )
     install(TARGETS index_builder_test DESTINATION unittest)
@@ -94,6 +103,7 @@ add_executable(all_tests
 target_link_libraries(all_tests
         gtest
         milvus_segcore
+        milvus_storage
         milvus_indexbuilder
         pthread
         )

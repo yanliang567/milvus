@@ -17,7 +17,6 @@
 #include "Reduce.h"
 #include "pkVisitor.h"
 #include "SegmentInterface.h"
-#include "ReduceStructure.h"
 #include "Utils.h"
 
 namespace milvus::segcore {
@@ -76,23 +75,24 @@ ReduceHelper::FilterInvalidSearchResult(SearchResult* search_result) {
     AssertInfo(search_result->distances_.size() == nq * topK,
                "wrong distances size, size = " + std::to_string(search_result->distances_.size()) +
                    ", expected size = " + std::to_string(nq * topK));
-    std::vector<int64_t> real_topks(nq);
-    std::vector<float> distances;
-    std::vector<int64_t> seg_offsets;
-    for (auto i = 0; i < nq; i++) {
-        real_topks[i] = 0;
-        for (auto j = 0; j < topK; j++) {
-            auto offset = i * topK + j;
-            if (search_result->seg_offsets_[offset] != INVALID_SEG_OFFSET) {
+    std::vector<int64_t> real_topks(nq, 0);
+    uint32_t valid_index = 0;
+    auto& offsets = search_result->seg_offsets_;
+    auto& distances = search_result->distances_;
+    for (auto i = 0; i < nq; ++i) {
+        for (auto j = 0; j < topK; ++j) {
+            auto index = i * topK + j;
+            if (offsets[index] != INVALID_SEG_OFFSET) {
                 real_topks[i]++;
-                seg_offsets.push_back(search_result->seg_offsets_[offset]);
-                distances.push_back(search_result->distances_[offset]);
+                offsets[valid_index] = offsets[index];
+                distances[valid_index] = distances[index];
+                valid_index++;
             }
         }
     }
+    offsets.resize(valid_index);
+    distances.resize(valid_index);
 
-    search_result->distances_.swap(distances);
-    search_result->seg_offsets_.swap(seg_offsets);
     search_result->topk_per_nq_prefix_sum_.resize(nq + 1);
     std::partial_sum(real_topks.begin(), real_topks.end(), search_result->topk_per_nq_prefix_sum_.begin() + 1);
 }
@@ -101,15 +101,16 @@ void
 ReduceHelper::FillPrimaryKey() {
     std::vector<SearchResult*> valid_search_results;
     // get primary keys for duplicates removal
-    for (auto search_result : search_results_) {
+    uint32_t valid_index = 0;
+    for (auto& search_result : search_results_) {
         FilterInvalidSearchResult(search_result);
         if (search_result->get_total_result_count() > 0) {
             auto segment = static_cast<SegmentInterface*>(search_result->segment_);
             segment->FillPrimaryKeys(plan_, *search_result);
-            valid_search_results.emplace_back(search_result);
+            search_results_[valid_index++] = search_result;
         }
     }
-    search_results_.swap(valid_search_results);
+    search_results_.resize(valid_index);
     num_segments_ = search_results_.size();
 }
 
@@ -119,20 +120,27 @@ ReduceHelper::RefreshSearchResult() {
         std::vector<int64_t> real_topks(total_nq_, 0);
         auto search_result = search_results_[i];
         if (search_result->result_offsets_.size() != 0) {
-            std::vector<milvus::PkType> primary_keys;
-            std::vector<float> distances;
-            std::vector<int64_t> seg_offsets;
+            uint32_t size = 0;
+            for (int j = 0; j < total_nq_; j++) {
+                size += final_search_records_[i][j].size();
+            }
+            std::vector<milvus::PkType> primary_keys(size);
+            std::vector<float> distances(size);
+            std::vector<int64_t> seg_offsets(size);
+
+            uint32_t index = 0;
             for (int j = 0; j < total_nq_; j++) {
                 for (auto offset : final_search_records_[i][j]) {
-                    primary_keys.push_back(search_result->primary_keys_[offset]);
-                    distances.push_back(search_result->distances_[offset]);
-                    seg_offsets.push_back(search_result->seg_offsets_[offset]);
+                    primary_keys[index] = search_result->primary_keys_[offset];
+                    distances[index] = search_result->distances_[offset];
+                    seg_offsets[index] = search_result->seg_offsets_[offset];
+                    index++;
                     real_topks[j]++;
                 }
             }
-            search_result->primary_keys_ = std::move(primary_keys);
-            search_result->distances_ = std::move(distances);
-            search_result->seg_offsets_ = std::move(seg_offsets);
+            search_result->primary_keys_.swap(primary_keys);
+            search_result->distances_.swap(distances);
+            search_result->seg_offsets_.swap(seg_offsets);
         }
         std::partial_sum(real_topks.begin(), real_topks.end(), search_result->topk_per_nq_prefix_sum_.begin() + 1);
     }
@@ -148,7 +156,12 @@ ReduceHelper::FillEntryData() {
 
 int64_t
 ReduceHelper::ReduceSearchResultForOneNQ(int64_t qi, int64_t topk, int64_t& offset) {
-    std::vector<SearchResultPair> result_pairs;
+    while (!heap_.empty()) {
+        heap_.pop();
+    }
+    pk_set_.clear();
+
+    pairs_.reserve(num_segments_);
     for (int i = 0; i < num_segments_; i++) {
         auto search_result = search_results_[i];
         auto offset_beg = search_result->topk_per_nq_prefix_sum_[qi];
@@ -158,36 +171,39 @@ ReduceHelper::ReduceSearchResultForOneNQ(int64_t qi, int64_t topk, int64_t& offs
         }
         auto primary_key = search_result->primary_keys_[offset_beg];
         auto distance = search_result->distances_[offset_beg];
-        result_pairs.emplace_back(primary_key, distance, search_result, i, offset_beg, offset_end);
+
+        pairs_.emplace_back(primary_key, distance, search_result, i, offset_beg, offset_end);
+        heap_.push(&pairs_.back());
     }
 
     // nq has no results for all segments
-    if (result_pairs.size() == 0) {
+    if (heap_.size() == 0) {
         return 0;
     }
 
     int64_t dup_cnt = 0;
-    std::unordered_set<milvus::PkType> pk_set;
-    int64_t prev_offset = offset;
-    while (offset - prev_offset < topk) {
-        std::sort(result_pairs.begin(), result_pairs.end(), std::greater<>());
-        auto& pilot = result_pairs[0];
-        auto index = pilot.segment_index_;
-        auto pk = pilot.primary_key_;
+    auto start = offset;
+    while (offset - start < topk) {
+        auto pilot = heap_.top();
+        heap_.pop();
+
+        auto index = pilot->segment_index_;
+        auto pk = pilot->primary_key_;
         // no valid search result for this nq, break to next
         if (pk == INVALID_PK) {
             break;
         }
         // remove duplicates
-        if (pk_set.count(pk) == 0) {
-            pilot.search_result_->result_offsets_.push_back(offset++);
-            final_search_records_[index][qi].push_back(pilot.offset_);
-            pk_set.insert(pk);
+        if (pk_set_.count(pk) == 0) {
+            pilot->search_result_->result_offsets_.push_back(offset++);
+            final_search_records_[index][qi].push_back(pilot->offset_);
+            pk_set_.insert(pk);
         } else {
             // skip entity with same primary key
             dup_cnt++;
         }
-        pilot.reset();
+        pilot->advance();
+        heap_.push(pilot);
     }
     return dup_cnt;
 }
@@ -209,9 +225,9 @@ ReduceHelper::ReduceResultData() {
         auto nq_end = slice_nqs_prefix_sum_[slice_index + 1];
 
         // reduce search results
-        int64_t result_offset = 0;
+        int64_t offset = 0;
         for (int64_t qi = nq_begin; qi < nq_end; qi++) {
-            skip_dup_cnt += ReduceSearchResultForOneNQ(qi, slice_topKs_[slice_index], result_offset);
+            skip_dup_cnt += ReduceSearchResultForOneNQ(qi, slice_topKs_[slice_index], offset);
         }
     }
     if (skip_dup_cnt > 0) {
@@ -326,7 +342,7 @@ ReduceHelper::GetSearchResultDataSlice(int slice_index) {
     }
 
     // SearchResultData to blob
-    auto size = search_result_data->ByteSize();
+    auto size = search_result_data->ByteSizeLong();
     auto buffer = std::vector<char>(size);
     search_result_data->SerializePartialToArray(buffer.data(), size);
 

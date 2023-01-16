@@ -37,6 +37,7 @@ import (
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/commonpbutil"
 	"github.com/milvus-io/milvus/internal/util/metautil"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
 	"github.com/samber/lo"
@@ -123,7 +124,7 @@ func (q *orderFlushQueue) init() {
 }
 
 func (q *orderFlushQueue) getFlushTaskRunner(pos *internalpb.MsgPosition) *flushTaskRunner {
-	actual, loaded := q.working.LoadOrStore(string(pos.GetMsgID()), newFlushTaskRunner(q.segmentID, q.injectCh))
+	actual, loaded := q.working.LoadOrStore(getSyncTaskID(pos), newFlushTaskRunner(q.segmentID, q.injectCh))
 	t := actual.(*flushTaskRunner)
 	// not loaded means the task runner is new, do initializtion
 	if !loaded {
@@ -311,11 +312,12 @@ func (m *rendezvousFlushManager) handleInsertTask(segmentID UniqueID, task flush
 }
 
 func (m *rendezvousFlushManager) handleDeleteTask(segmentID UniqueID, task flushDeleteTask, deltaLogs *DelDataBuf, pos *internalpb.MsgPosition) {
+	log.Info("handling delete task", zap.Int64("segment ID", segmentID))
 	// in dropping mode
 	if m.dropping.Load() {
 		// preventing separate delete, check position exists in queue first
 		q := m.getFlushQueue(segmentID)
-		_, ok := q.working.Load(string(pos.MsgID))
+		_, ok := q.working.Load(getSyncTaskID(pos))
 		// if ok, means position insert data already in queue, just handle task in normal mode
 		// if not ok, means the insert buf should be handle in drop mode
 		if !ok {
@@ -430,7 +432,7 @@ func (m *rendezvousFlushManager) flushBufferData(data *BufferData, segmentID Uni
 		data:         kvs,
 	}, field2Insert, field2Stats, flushed, dropped, pos)
 
-	metrics.DataNodeEncodeBufferLatency.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID())).Observe(float64(tr.ElapseSpan().Milliseconds()))
+	metrics.DataNodeEncodeBufferLatency.WithLabelValues(fmt.Sprint(paramtable.GetNodeID())).Observe(float64(tr.ElapseSpan().Milliseconds()))
 	return statsBinlogs, nil
 }
 
@@ -549,6 +551,11 @@ func (m *rendezvousFlushManager) notifyAllFlushed() {
 	close(m.dropHandler.allFlushed)
 }
 
+func getSyncTaskID(pos *internalpb.MsgPosition) string {
+	// use msgID & timestamp to generate unique taskID, see also #20926
+	return fmt.Sprintf("%s%d", string(pos.GetMsgID()), pos.GetTimestamp())
+}
+
 // close cleans up all the left members
 func (m *rendezvousFlushManager) close() {
 	m.dispatcher.Range(func(k, v interface{}) bool {
@@ -561,6 +568,7 @@ func (m *rendezvousFlushManager) close() {
 		queue.injectMut.Unlock()
 		return true
 	})
+	m.waitForAllFlushQueue()
 }
 
 type flushBufferInsertTask struct {
@@ -575,10 +583,10 @@ func (t *flushBufferInsertTask) flushInsertData() error {
 	if t.ChunkManager != nil && len(t.data) > 0 {
 		tr := timerecord.NewTimeRecorder("insertData")
 		err := t.MultiWrite(ctx, t.data)
-		metrics.DataNodeSave2StorageLatency.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.InsertLabel).Observe(float64(tr.ElapseSpan().Milliseconds()))
+		metrics.DataNodeSave2StorageLatency.WithLabelValues(fmt.Sprint(paramtable.GetNodeID()), metrics.InsertLabel).Observe(float64(tr.ElapseSpan().Milliseconds()))
 		if err == nil {
 			for _, d := range t.data {
-				metrics.DataNodeFlushedSize.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.InsertLabel).Add(float64(len(d)))
+				metrics.DataNodeFlushedSize.WithLabelValues(fmt.Sprint(paramtable.GetNodeID()), metrics.InsertLabel).Add(float64(len(d)))
 			}
 		}
 		return err
@@ -598,10 +606,10 @@ func (t *flushBufferDeleteTask) flushDeleteData() error {
 	if len(t.data) > 0 && t.ChunkManager != nil {
 		tr := timerecord.NewTimeRecorder("deleteData")
 		err := t.MultiWrite(ctx, t.data)
-		metrics.DataNodeSave2StorageLatency.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.DeleteLabel).Observe(float64(tr.ElapseSpan().Milliseconds()))
+		metrics.DataNodeSave2StorageLatency.WithLabelValues(fmt.Sprint(paramtable.GetNodeID()), metrics.DeleteLabel).Observe(float64(tr.ElapseSpan().Milliseconds()))
 		if err == nil {
 			for _, d := range t.data {
-				metrics.DataNodeFlushedSize.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID()), metrics.DeleteLabel).Add(float64(len(d)))
+				metrics.DataNodeFlushedSize.WithLabelValues(fmt.Sprint(paramtable.GetNodeID()), metrics.DeleteLabel).Add(float64(len(d)))
 			}
 		}
 		return err
@@ -638,10 +646,9 @@ func dropVirtualChannelFunc(dsService *dataSyncService, opts ...retry.Option) fl
 	return func(packs []*segmentFlushPack) {
 		req := &datapb.DropVirtualChannelRequest{
 			Base: commonpbutil.NewMsgBase(
-				commonpbutil.WithMsgType(0),   //TODO msg type
-				commonpbutil.WithMsgID(0),     //TODO msg id
-				commonpbutil.WithTimeStamp(0), //TODO time stamp
-				commonpbutil.WithSourceID(Params.DataNodeCfg.GetNodeID()),
+				commonpbutil.WithMsgType(0), //TODO msg type
+				commonpbutil.WithMsgID(0),   //TODO msg id
+				commonpbutil.WithSourceID(paramtable.GetNodeID()),
 			),
 			ChannelName: dsService.vchannelName,
 		}
@@ -783,6 +790,7 @@ func flushNotifyFunc(dsService *dataSyncService, opts ...retry.Option) notifyMet
 			zap.Int64("SegmentID", pack.segmentID),
 			zap.Int64("CollectionID", dsService.collectionID),
 			zap.Any("startPos", startPos),
+			zap.Any("checkPoints", checkPoints),
 			zap.Int("Length of Field2BinlogPaths", len(fieldInsert)),
 			zap.Int("Length of Field2Stats", len(fieldStats)),
 			zap.Int("Length of Field2Deltalogs", len(deltaInfos[0].GetBinlogs())),
@@ -793,8 +801,7 @@ func flushNotifyFunc(dsService *dataSyncService, opts ...retry.Option) notifyMet
 			Base: commonpbutil.NewMsgBase(
 				commonpbutil.WithMsgType(0),
 				commonpbutil.WithMsgID(0),
-				commonpbutil.WithTimeStamp(0),
-				commonpbutil.WithSourceID(Params.DataNodeCfg.GetNodeID()),
+				commonpbutil.WithSourceID(dsService.serverID),
 			),
 			SegmentID:           pack.segmentID,
 			CollectionID:        dsService.collectionID,
@@ -812,7 +819,7 @@ func flushNotifyFunc(dsService *dataSyncService, opts ...retry.Option) notifyMet
 			rsp, err := dsService.dataCoord.SaveBinlogPaths(context.Background(), req)
 			// should be network issue, return error and retry
 			if err != nil {
-				return fmt.Errorf(err.Error())
+				return err
 			}
 
 			// Segment not found during stale segment flush. Segment might get compacted already.
@@ -823,7 +830,7 @@ func flushNotifyFunc(dsService *dataSyncService, opts ...retry.Option) notifyMet
 				log.Warn("failed to SaveBinlogPaths",
 					zap.Int64("segment ID", pack.segmentID),
 					zap.Error(errors.New(rsp.GetReason())))
-				return nil
+				return fmt.Errorf("segment %d not found", pack.segmentID)
 			}
 			// meta error, datanode handles a virtual channel does not belong here
 			if rsp.GetErrorCode() == commonpb.ErrorCode_MetaFailed {
@@ -850,6 +857,13 @@ func flushNotifyFunc(dsService *dataSyncService, opts ...retry.Option) notifyMet
 		if pack.flushed || pack.dropped {
 			dsService.channel.segmentFlushed(pack.segmentID)
 		}
+
+		if dsService.flushListener != nil {
+			dsService.flushListener <- pack
+		}
 		dsService.flushingSegCache.Remove(req.GetSegmentID())
+		dsService.channel.evictHistoryInsertBuffer(req.GetSegmentID(), pack.pos)
+		dsService.channel.evictHistoryDeleteBuffer(req.GetSegmentID(), pack.pos)
+		dsService.channel.setSegmentLastSyncTs(req.GetSegmentID(), pack.pos.GetTimestamp())
 	}
 }

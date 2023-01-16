@@ -32,14 +32,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-        - name: Code Checker AMD64 Ubuntu 20.04
-          os: ubuntu-20.04
+          - name: Code Checker AMD64 Ubuntu 20.04
+            os: ubuntu-20.04
     env:
       UBUNTU: 20.04
     steps:
       - name: Checkout
         uses: actions/checkout@v2
-      - name: "Generate CCache Hash"
+      - name: 'Generate CCache Hash'
         env:
           CORE_HASH: ${{ hashFiles( 'internal/core/**/*.cpp', 'internal/core/**/*.cc', 'internal/core/**/*.c', 'internal/core/**/*.h', 'internal/core/**/*.hpp', 'internal/core/**/CMakeLists.txt') }}
         run: |
@@ -51,33 +51,32 @@ jobs:
           path: .docker/amd64-ubuntu20.04-ccache
           key: ubuntu20.04-ccache-${{ env.corehash }}
           restore-keys: ubuntu20.04-ccache-
-      - name: Cache Third Party
-        uses: actions/cache@v3
-        with:
-          path: .docker/thirdparty
-          key: ubuntu20.04-thirdparty-${{ hashFiles('internal/core/thirdparty/**') }}
-          restore-keys: ubuntu20.04-thirdparty-
       - name: Cache Go Mod Volumes
         uses: actions/cache@v3
         with:
           path: .docker/amd64-ubuntu20.04-go-mod
           key: ubuntu20.04-go-mod-${{ hashFiles('**/go.sum') }}
           restore-keys: ubuntu20.04-go-mod-
+      - name: Cache Conan Packages
+        uses: actions/cache@v3
+        with:
+          path: .docker/amd64-ubuntu20.04-conan
+          key: ubuntu20.04-conan-${{ hashFiles('internal/core/conanfile.*') }}
+          restore-keys: ubuntu20.04-conan-
       - name: Code Check
         env:
-#          CHECK_BUILDER: "1"
-          OS_NAME: "ubuntu20.04"
+          OS_NAME: 'ubuntu20.04'
         run: |
-           ./build/builder.sh /bin/bash -c "make check-proto-product && make verifiers"
+          ./build/builder.sh /bin/bash -c "make check-proto-product && make verifiers"
   centos:
     name: Code Checker CentOS 7
-    # Run in centos docker 
+    # Run in centos docker
     runs-on: ubuntu-20.04
     timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v2
-      - name: "Generate CCache Hash"
+      - name: 'Generate CCache Hash'
         env:
           CORE_HASH: ${{ hashFiles( 'internal/core/**/*.cpp', 'internal/core/**/*.cc', 'internal/core/**/*.c', 'internal/core/**/*.h', 'internal/core/**/*.hpp', 'internal/core/**/CMakeLists.txt') }}
         run: |
@@ -101,59 +100,14 @@ jobs:
           path: .docker/amd64-centos7-go-mod
           key: centos7-go-mod-${{ hashFiles('**/go.sum') }}
           restore-keys: centos7-go-mod-
-      - name: Code Check
-        env:
-          OS_NAME: "centos7"
-        run: |
-           ./build/builder.sh /bin/bash -c "make install"
-  mingw64:
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-        - name: Code Checker MinGW
-          os: windows-2019
-    steps:
-      - name: Set git to use LF
-        run: |
-          git config --global core.autocrlf false
-          git config --global core.eol lf
-      - name: Checkout
-        uses: actions/checkout@v2
-      - name: Cache go
+      - name: Cache Conan Packages
         uses: actions/cache@v3
         with:
-          path: |
-            %LocalAppData%\go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: ${{ runner.os }}-go-
-      - name: Cache ccache
-        uses: actions/cache@v3
-        with:
-          path: |
-            ${{ github.workspace }}/.ccache
-          key: ${{ runner.os }}-ccache-${{ hashFiles('internal/core/**') }}
-          restore-keys: ${{ runner.os }}-ccache-
-      - name: Configure Toolchain
-        uses: msys2/setup-msys2@v2.12.0
-        with:
-          msystem: mingw64
-      - name: Install Deps
-        shell: msys2 {0}
-        run: |
-          sh scripts/install_deps_msys.sh
+          path: .docker/amd64-centos7-conan
+          key: centos7-conan-${{ hashFiles('internal/core/conanfile.txt') }}
+          restore-keys: centos7-conan-
       - name: Code Check
-        shell: msys2 {0}
         env:
-          CCACHE_COMPILERCHECK: content
-          CCACHE_COMPRESS: 1
-          CCACHE_COMPRESSLEVEL: 5
-          CCACHE_MAXSIZE: 2G
-          CCACHE_DIR: ${{ github.workspace }}/.ccache
+          OS_NAME: 'centos7'
         run: |
-          go version
-          mingw32-make verifiers milvus
+          ./build/builder.sh /bin/bash -c "make install"

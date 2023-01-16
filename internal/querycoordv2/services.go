@@ -22,10 +22,6 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/milvus-io/milvus/internal/util/errorutil"
-
-	"golang.org/x/sync/errgroup"
-
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/log"
@@ -35,11 +31,15 @@ import (
 	"github.com/milvus-io/milvus/internal/querycoordv2/job"
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	"github.com/milvus-io/milvus/internal/querycoordv2/utils"
+	"github.com/milvus-io/milvus/internal/util/errorutil"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 	"github.com/samber/lo"
+	"go.uber.org/multierr"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 )
 
 var (
@@ -47,9 +47,7 @@ var (
 )
 
 func (s *Server) ShowCollections(ctx context.Context, req *querypb.ShowCollectionsRequest) (*querypb.ShowCollectionsResponse, error) {
-	log := log.With(zap.Int64("msgID", req.GetBase().GetMsgID()))
-
-	log.Info("show collections request received", zap.Int64s("collections", req.GetCollectionIDs()))
+	log.Ctx(ctx).Info("show collections request received", zap.Int64s("collections", req.GetCollectionIDs()))
 
 	if s.status.Load() != commonpb.StateCode_Healthy {
 		msg := "failed to show collections"
@@ -58,6 +56,7 @@ func (s *Server) ShowCollections(ctx context.Context, req *querypb.ShowCollectio
 			Status: utils.WrapStatus(commonpb.ErrorCode_UnexpectedError, msg, ErrNotHealthy),
 		}, nil
 	}
+	defer meta.GlobalFailedLoadCache.TryExpire()
 
 	isGetAll := false
 	collectionSet := typeutil.NewUniqueSet(req.GetCollectionIDs()...)
@@ -88,6 +87,13 @@ func (s *Server) ShowCollections(ctx context.Context, req *querypb.ShowCollectio
 				// ignore it
 				continue
 			}
+			status := meta.GlobalFailedLoadCache.Get(collectionID)
+			if status.ErrorCode != commonpb.ErrorCode_Success {
+				log.Warn("show collection failed", zap.String("errCode", status.GetErrorCode().String()), zap.String("reason", status.GetReason()))
+				return &querypb.ShowCollectionsResponse{
+					Status: status,
+				}, nil
+			}
 			err := fmt.Errorf("collection %d has not been loaded to memory or load failed", collectionID)
 			log.Warn("show collection failed", zap.Error(err))
 			return &querypb.ShowCollectionsResponse{
@@ -103,8 +109,7 @@ func (s *Server) ShowCollections(ctx context.Context, req *querypb.ShowCollectio
 }
 
 func (s *Server) ShowPartitions(ctx context.Context, req *querypb.ShowPartitionsRequest) (*querypb.ShowPartitionsResponse, error) {
-	log := log.With(
-		zap.Int64("msgID", req.GetBase().GetMsgID()),
+	log := log.Ctx(ctx).With(
 		zap.Int64("collectionID", req.GetCollectionID()),
 	)
 
@@ -117,6 +122,7 @@ func (s *Server) ShowPartitions(ctx context.Context, req *querypb.ShowPartitions
 			Status: utils.WrapStatus(commonpb.ErrorCode_UnexpectedError, msg, ErrNotHealthy),
 		}, nil
 	}
+	defer meta.GlobalFailedLoadCache.TryExpire()
 
 	// TODO(yah01): now, for load collection, the percentage of partition is equal to the percentage of collection,
 	// we can calculates the real percentage of partitions
@@ -166,6 +172,13 @@ func (s *Server) ShowPartitions(ctx context.Context, req *querypb.ShowPartitions
 	}
 
 	if isReleased {
+		status := meta.GlobalFailedLoadCache.Get(req.GetCollectionID())
+		if status.ErrorCode != commonpb.ErrorCode_Success {
+			log.Warn("show collection failed", zap.String("errCode", status.GetErrorCode().String()), zap.String("reason", status.GetReason()))
+			return &querypb.ShowPartitionsResponse{
+				Status: status,
+			}, nil
+		}
 		msg := fmt.Sprintf("collection %v has not been loaded into QueryNode", req.GetCollectionID())
 		log.Warn(msg)
 		return &querypb.ShowPartitionsResponse{
@@ -181,8 +194,7 @@ func (s *Server) ShowPartitions(ctx context.Context, req *querypb.ShowPartitions
 }
 
 func (s *Server) LoadCollection(ctx context.Context, req *querypb.LoadCollectionRequest) (*commonpb.Status, error) {
-	log := log.With(
-		zap.Int64("msgID", req.GetBase().GetMsgID()),
+	log := log.Ctx(ctx).With(
 		zap.Int64("collectionID", req.GetCollectionID()),
 	)
 
@@ -207,7 +219,6 @@ func (s *Server) LoadCollection(ctx context.Context, req *querypb.LoadCollection
 		s.targetMgr,
 		s.broker,
 		s.nodeMgr,
-		s.handoffObserver,
 	)
 	s.jobScheduler.Add(loadJob)
 	err := loadJob.Wait()
@@ -223,8 +234,7 @@ func (s *Server) LoadCollection(ctx context.Context, req *querypb.LoadCollection
 }
 
 func (s *Server) ReleaseCollection(ctx context.Context, req *querypb.ReleaseCollectionRequest) (*commonpb.Status, error) {
-	log := log.With(
-		zap.Int64("msgID", req.GetBase().GetMsgID()),
+	log := log.Ctx(ctx).With(
 		zap.Int64("collectionID", req.GetCollectionID()),
 	)
 
@@ -244,7 +254,7 @@ func (s *Server) ReleaseCollection(ctx context.Context, req *querypb.ReleaseColl
 		s.dist,
 		s.meta,
 		s.targetMgr,
-		s.handoffObserver,
+		s.targetObserver,
 	)
 	s.jobScheduler.Add(releaseJob)
 	err := releaseJob.Wait()
@@ -258,12 +268,13 @@ func (s *Server) ReleaseCollection(ctx context.Context, req *querypb.ReleaseColl
 	log.Info("collection released")
 	metrics.QueryCoordReleaseCount.WithLabelValues(metrics.SuccessLabel).Inc()
 	metrics.QueryCoordReleaseLatency.WithLabelValues().Observe(float64(tr.ElapseSpan().Milliseconds()))
+	meta.GlobalFailedLoadCache.Remove(req.GetCollectionID())
+
 	return successStatus, nil
 }
 
 func (s *Server) LoadPartitions(ctx context.Context, req *querypb.LoadPartitionsRequest) (*commonpb.Status, error) {
-	log := log.With(
-		zap.Int64("msgID", req.GetBase().GetMsgID()),
+	log := log.Ctx(ctx).With(
 		zap.Int64("collectionID", req.GetCollectionID()),
 	)
 
@@ -287,7 +298,6 @@ func (s *Server) LoadPartitions(ctx context.Context, req *querypb.LoadPartitions
 		s.targetMgr,
 		s.broker,
 		s.nodeMgr,
-		s.handoffObserver,
 	)
 	s.jobScheduler.Add(loadJob)
 	err := loadJob.Wait()
@@ -303,8 +313,7 @@ func (s *Server) LoadPartitions(ctx context.Context, req *querypb.LoadPartitions
 }
 
 func (s *Server) ReleasePartitions(ctx context.Context, req *querypb.ReleasePartitionsRequest) (*commonpb.Status, error) {
-	log := log.With(
-		zap.Int64("msgID", req.GetBase().GetMsgID()),
+	log := log.Ctx(ctx).With(
 		zap.Int64("collectionID", req.GetCollectionID()),
 	)
 
@@ -331,7 +340,7 @@ func (s *Server) ReleasePartitions(ctx context.Context, req *querypb.ReleasePart
 		s.dist,
 		s.meta,
 		s.targetMgr,
-		s.handoffObserver,
+		s.targetObserver,
 	)
 	s.jobScheduler.Add(releaseJob)
 	err := releaseJob.Wait()
@@ -344,12 +353,13 @@ func (s *Server) ReleasePartitions(ctx context.Context, req *querypb.ReleasePart
 
 	metrics.QueryCoordReleaseCount.WithLabelValues(metrics.SuccessLabel).Inc()
 	metrics.QueryCoordReleaseLatency.WithLabelValues().Observe(float64(tr.ElapseSpan().Milliseconds()))
+
+	meta.GlobalFailedLoadCache.Remove(req.GetCollectionID())
 	return successStatus, nil
 }
 
 func (s *Server) GetPartitionStates(ctx context.Context, req *querypb.GetPartitionStatesRequest) (*querypb.GetPartitionStatesResponse, error) {
-	log := log.With(
-		zap.Int64("msgID", req.GetBase().GetMsgID()),
+	log := log.Ctx(ctx).With(
 		zap.Int64("collectionID", req.GetCollectionID()),
 	)
 
@@ -417,8 +427,7 @@ func (s *Server) GetPartitionStates(ctx context.Context, req *querypb.GetPartiti
 }
 
 func (s *Server) GetSegmentInfo(ctx context.Context, req *querypb.GetSegmentInfoRequest) (*querypb.GetSegmentInfoResponse, error) {
-	log := log.With(
-		zap.Int64("msgID", req.GetBase().GetMsgID()),
+	log := log.Ctx(ctx).With(
 		zap.Int64("collectionID", req.GetCollectionID()),
 	)
 
@@ -457,9 +466,22 @@ func (s *Server) GetSegmentInfo(ctx context.Context, req *querypb.GetSegmentInfo
 	}, nil
 }
 
+func (s *Server) isStoppingNode(nodeID int64) error {
+	isStopping, err := s.nodeMgr.IsStoppingNode(nodeID)
+	if err != nil {
+		log.Warn("fail to check whether the node is stopping", zap.Int64("node_id", nodeID), zap.Error(err))
+		return err
+	}
+	if isStopping {
+		msg := fmt.Sprintf("failed to balance due to the source/destination node[%d] is stopping", nodeID)
+		log.Warn(msg)
+		return errors.New(msg)
+	}
+	return nil
+}
+
 func (s *Server) LoadBalance(ctx context.Context, req *querypb.LoadBalanceRequest) (*commonpb.Status, error) {
-	log := log.With(
-		zap.Int64("msgID", req.GetBase().GetMsgID()),
+	log := log.Ctx(ctx).With(
 		zap.Int64("collectionID", req.GetCollectionID()),
 	)
 
@@ -492,11 +514,19 @@ func (s *Server) LoadBalance(ctx context.Context, req *querypb.LoadBalanceReques
 		log.Warn(msg)
 		return utils.WrapStatus(commonpb.ErrorCode_UnexpectedError, msg), nil
 	}
+	if err := s.isStoppingNode(srcNode); err != nil {
+		return utils.WrapStatus(commonpb.ErrorCode_UnexpectedError,
+			fmt.Sprintf("can't balance, because the source node[%d] is invalid", srcNode), err), nil
+	}
 	for _, dstNode := range req.GetDstNodeIDs() {
 		if !replica.Nodes.Contain(dstNode) {
 			msg := "destination nodes have to be in the same replica of source node"
 			log.Warn(msg)
 			return utils.WrapStatus(commonpb.ErrorCode_UnexpectedError, msg), nil
+		}
+		if err := s.isStoppingNode(dstNode); err != nil {
+			return utils.WrapStatus(commonpb.ErrorCode_UnexpectedError,
+				fmt.Sprintf("can't balance, because the destination node[%d] is invalid", dstNode), err), nil
 		}
 	}
 
@@ -510,9 +540,7 @@ func (s *Server) LoadBalance(ctx context.Context, req *querypb.LoadBalanceReques
 }
 
 func (s *Server) ShowConfigurations(ctx context.Context, req *internalpb.ShowConfigurationsRequest) (*internalpb.ShowConfigurationsResponse, error) {
-	log := log.With(
-		zap.Int64("msgID", req.GetBase().GetMsgID()),
-	)
+	log := log.Ctx(ctx)
 
 	log.Info("show configurations request received", zap.String("pattern", req.GetPattern()))
 
@@ -523,11 +551,8 @@ func (s *Server) ShowConfigurations(ctx context.Context, req *internalpb.ShowCon
 			Status: utils.WrapStatus(commonpb.ErrorCode_UnexpectedError, msg, ErrNotHealthy),
 		}, nil
 	}
-
-	prefix := "querycoord."
-	matchedConfig := Params.QueryCoordCfg.Base.GetByPattern(prefix + req.Pattern)
-	configList := make([]*commonpb.KeyValuePair, 0, len(matchedConfig))
-	for key, value := range matchedConfig {
+	configList := make([]*commonpb.KeyValuePair, 0)
+	for key, value := range Params.GetComponentConfigurations("querycoord", req.Pattern) {
 		configList = append(configList,
 			&commonpb.KeyValuePair{
 				Key:   key,
@@ -545,9 +570,9 @@ func (s *Server) ShowConfigurations(ctx context.Context, req *internalpb.ShowCon
 }
 
 func (s *Server) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
-	log := log.With(zap.Int64("msgID", req.Base.GetMsgID()))
+	log := log.Ctx(ctx)
 
-	log.Debug("get metrics request received",
+	log.RatedDebug(60, "get metrics request received",
 		zap.String("metricType", req.GetRequest()))
 
 	if s.status.Load() != commonpb.StateCode_Healthy {
@@ -561,7 +586,7 @@ func (s *Server) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest
 	resp := &milvuspb.GetMetricsResponse{
 		Status: successStatus,
 		ComponentName: metricsinfo.ConstructComponentName(typeutil.QueryCoordRole,
-			Params.QueryCoordCfg.GetNodeID()),
+			paramtable.GetNodeID()),
 	}
 
 	metricType, err := metricsinfo.ParseMetricType(req.GetRequest())
@@ -592,8 +617,7 @@ func (s *Server) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest
 }
 
 func (s *Server) GetReplicas(ctx context.Context, req *milvuspb.GetReplicasRequest) (*milvuspb.GetReplicasResponse, error) {
-	log := log.With(
-		zap.Int64("msgID", req.Base.GetMsgID()),
+	log := log.Ctx(ctx).With(
 		zap.Int64("collectionID", req.GetCollectionID()),
 	)
 
@@ -635,8 +659,7 @@ func (s *Server) GetReplicas(ctx context.Context, req *milvuspb.GetReplicasReque
 }
 
 func (s *Server) GetShardLeaders(ctx context.Context, req *querypb.GetShardLeadersRequest) (*querypb.GetShardLeadersResponse, error) {
-	log := log.With(
-		zap.Int64("msgID", req.Base.GetMsgID()),
+	log := log.Ctx(ctx).With(
 		zap.Int64("collectionID", req.GetCollectionID()),
 	)
 
@@ -660,7 +683,7 @@ func (s *Server) GetShardLeaders(ctx context.Context, req *querypb.GetShardLeade
 		return resp, nil
 	}
 
-	channels := s.targetMgr.GetDmChannelsByCollection(req.GetCollectionID())
+	channels := s.targetMgr.GetDmChannelsByCollection(req.GetCollectionID(), meta.CurrentTarget)
 	if len(channels) == 0 {
 		msg := "failed to get channels"
 		log.Warn(msg, zap.Error(meta.ErrCollectionNotFound))
@@ -668,35 +691,76 @@ func (s *Server) GetShardLeaders(ctx context.Context, req *querypb.GetShardLeade
 		return resp, nil
 	}
 
+	currentTargets := s.targetMgr.GetHistoricalSegmentsByCollection(req.GetCollectionID(), meta.CurrentTarget)
 	for _, channel := range channels {
 		log := log.With(zap.String("channel", channel.GetChannelName()))
 
 		leaders := s.dist.LeaderViewManager.GetLeadersByShard(channel.GetChannelName())
 		ids := make([]int64, 0, len(leaders))
 		addrs := make([]string, 0, len(leaders))
+
+		var channelErr error
+
+		// In a replica, a shard is available, if and only if:
+		// 1. The leader is online
+		// 2. All QueryNodes in the distribution are online
+		// 3. The last heartbeat response time is within HeartbeatAvailableInterval for all QueryNodes(include leader) in the distribution
+		// 4. All segments of the shard in target should be in the distribution
 		for _, leader := range leaders {
+			log := log.With(zap.Int64("leaderID", leader.ID))
 			info := s.nodeMgr.Get(leader.ID)
-			if info == nil {
+
+			// Check whether leader is online
+			err := checkNodeAvailable(leader.ID, info)
+			if err != nil {
+				log.Info("leader is not available", zap.Error(err))
+				multierr.AppendInto(&channelErr, fmt.Errorf("leader not available: %w", err))
 				continue
 			}
-			isAllNodeAvailable := true
+			// Check whether QueryNodes are online and available
+			isAvailable := true
 			for _, version := range leader.Segments {
-				if s.nodeMgr.Get(version.NodeID) == nil {
-					isAllNodeAvailable = false
+				info := s.nodeMgr.Get(version.GetNodeID())
+				err = checkNodeAvailable(version.GetNodeID(), info)
+				if err != nil {
+					log.Info("leader is not available due to QueryNode unavailable", zap.Error(err))
+					isAvailable = false
+					multierr.AppendInto(&channelErr, err)
 					break
 				}
 			}
-			if !isAllNodeAvailable {
+
+			// Avoid iterating all segments if any QueryNode unavailable
+			if !isAvailable {
 				continue
 			}
+
+			// Check whether segments are fully loaded
+			for segmentID, info := range currentTargets {
+				if info.GetInsertChannel() != leader.Channel {
+					continue
+				}
+
+				_, exist := leader.Segments[segmentID]
+				if !exist {
+					log.Info("leader is not available due to lack of segment", zap.Int64("segmentID", segmentID))
+					multierr.AppendInto(&channelErr, WrapErrLackSegment(segmentID))
+					isAvailable = false
+					break
+				}
+			}
+			if !isAvailable {
+				continue
+			}
+
 			ids = append(ids, info.ID())
 			addrs = append(addrs, info.Addr())
 		}
 
 		if len(ids) == 0 {
 			msg := fmt.Sprintf("channel %s is not available in any replica", channel.GetChannelName())
-			log.Warn(msg)
-			resp.Status = utils.WrapStatus(commonpb.ErrorCode_NoReplicaAvailable, msg)
+			log.Warn(msg, zap.Error(channelErr))
+			resp.Status = utils.WrapStatus(commonpb.ErrorCode_NoReplicaAvailable, msg, channelErr)
 			resp.Shards = nil
 			return resp, nil
 		}
@@ -707,6 +771,7 @@ func (s *Server) GetShardLeaders(ctx context.Context, req *querypb.GetShardLeade
 			NodeAddrs:   addrs,
 		})
 	}
+
 	return resp, nil
 }
 

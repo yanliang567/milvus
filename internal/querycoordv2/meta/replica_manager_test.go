@@ -51,9 +51,16 @@ func (suite *ReplicaManagerSuite) SetupSuite() {
 func (suite *ReplicaManagerSuite) SetupTest() {
 	var err error
 	config := GenerateEtcdConfig()
-	cli, err := etcd.GetEtcdClient(&config)
+	cli, err := etcd.GetEtcdClient(
+		config.UseEmbedEtcd.GetAsBool(),
+		config.EtcdUseSSL.GetAsBool(),
+		config.Endpoints.GetAsStrings(),
+		config.EtcdTLSCert.GetValue(),
+		config.EtcdTLSKey.GetValue(),
+		config.EtcdTLSCACert.GetValue(),
+		config.EtcdTLSMinVersion.GetValue())
 	suite.Require().NoError(err)
-	suite.kv = etcdkv.NewEtcdKV(cli, config.MetaRootPath)
+	suite.kv = etcdkv.NewEtcdKV(cli, config.MetaRootPath.GetValue())
 	suite.store = NewMetaStore(suite.kv)
 
 	suite.idAllocator = RandomIncrementIDAllocator()
@@ -111,7 +118,7 @@ func (suite *ReplicaManagerSuite) TestRecover() {
 
 	// Clear data in memory, and then recover from meta store
 	suite.clearMemory()
-	mgr.Recover()
+	mgr.Recover(suite.collections)
 	suite.TestGet()
 
 	// Test recover from 2.1 meta store
@@ -125,7 +132,7 @@ func (suite *ReplicaManagerSuite) TestRecover() {
 	suite.kv.Save(ReplicaMetaPrefixV1+"/2100", string(value))
 
 	suite.clearMemory()
-	mgr.Recover()
+	mgr.Recover(append(suite.collections, 1000))
 	replica := mgr.Get(2100)
 	suite.NotNil(replica)
 	suite.EqualValues(1000, replica.CollectionID)
@@ -148,7 +155,7 @@ func (suite *ReplicaManagerSuite) TestRemove() {
 	}
 
 	// Check whether the replicas are also removed from meta store
-	mgr.Recover()
+	mgr.Recover(suite.collections)
 	for _, collection := range suite.collections {
 		replicas := mgr.GetByCollection(collection)
 		suite.Empty(replicas)
@@ -179,7 +186,7 @@ func (suite *ReplicaManagerSuite) TestNodeManipulate() {
 
 	// Check these modifications are applied to meta store
 	suite.clearMemory()
-	mgr.Recover()
+	mgr.Recover(suite.collections)
 	for _, collection := range suite.collections {
 		replica := mgr.GetByCollectionAndNode(collection, firstNode)
 		suite.Nil(replica)

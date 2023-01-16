@@ -93,6 +93,8 @@ SearchOnGrowing(const segcore::SegmentGrowingImpl& segment,
     // step 1.2: get which vector field to search
     auto vecfield_id = info.field_id_;
     auto& field = schema[vecfield_id];
+    CheckBruteForceSearchParam(field, info);
+
     auto data_type = field.get_data_type();
     AssertInfo(datatype_is_vector(data_type), "[SearchOnGrowing]Data type isn't vector type");
 

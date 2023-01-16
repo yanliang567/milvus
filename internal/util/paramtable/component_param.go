@@ -12,19 +12,17 @@
 package paramtable
 
 import (
+	"fmt"
 	"math"
-	"os"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
+	config "github.com/milvus-io/milvus/internal/config"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
 	"github.com/shirou/gopsutil/v3/disk"
-	"go.uber.org/zap"
-
-	"github.com/milvus-io/milvus/internal/log"
 )
 
 const (
@@ -32,17 +30,19 @@ const (
 	DefaultRetentionDuration = 3600 * 24
 
 	// DefaultIndexSliceSize defines the default slice size of index file when serializing.
-	DefaultIndexSliceSize = 16
-	DefaultGracefulTime   = 5000 //ms
+	DefaultIndexSliceSize        = 16
+	DefaultGracefulTime          = 5000 //ms
+	DefaultGracefulStopTimeout   = 30   // s
+	DefaultThreadCoreCoefficient = 10
 
 	DefaultSessionTTL        = 60 //s
 	DefaultSessionRetryTimes = 30
 
 	DefaultMaxDegree                = 56
 	DefaultSearchListSize           = 100
-	DefaultPGCodeBudgetGBRatio      = 0.125
+	DefaultPQCodeBudgetGBRatio      = 0.125
 	DefaultBuildNumThreadsRatio     = 1.0
-	DefaultSearchCacheBudgetGBRatio = 0.125
+	DefaultSearchCacheBudgetGBRatio = 0.10
 	DefaultLoadNumThreadRatio       = 8.0
 	DefaultBeamWidthRatio           = 4.0
 )
@@ -55,6 +55,7 @@ type ComponentParam struct {
 	CommonCfg       commonConfig
 	QuotaConfig     quotaConfig
 	AutoIndexConfig autoIndexConfig
+	TraceCfg        traceConfig
 
 	RootCoordCfg  rootCoordConfig
 	ProxyCfg      proxyConfig
@@ -62,9 +63,29 @@ type ComponentParam struct {
 	QueryNodeCfg  queryNodeConfig
 	DataCoordCfg  dataCoordConfig
 	DataNodeCfg   dataNodeConfig
-	IndexCoordCfg indexCoordConfig
 	IndexNodeCfg  indexNodeConfig
-	HookCfg       HookConfig
+	HTTPCfg       httpConfig
+	HookCfg       hookConfig
+
+	RootCoordGrpcServerCfg  GrpcServerConfig
+	ProxyGrpcServerCfg      GrpcServerConfig
+	QueryCoordGrpcServerCfg GrpcServerConfig
+	QueryNodeGrpcServerCfg  GrpcServerConfig
+	DataCoordGrpcServerCfg  GrpcServerConfig
+	DataNodeGrpcServerCfg   GrpcServerConfig
+	IndexCoordGrpcServerCfg GrpcServerConfig
+	IndexNodeGrpcServerCfg  GrpcServerConfig
+
+	RootCoordGrpcClientCfg  GrpcClientConfig
+	ProxyGrpcClientCfg      GrpcClientConfig
+	QueryCoordGrpcClientCfg GrpcClientConfig
+	QueryNodeGrpcClientCfg  GrpcClientConfig
+	DataCoordGrpcClientCfg  GrpcClientConfig
+	DataNodeGrpcClientCfg   GrpcClientConfig
+	IndexCoordGrpcClientCfg GrpcClientConfig
+	IndexNodeGrpcClientCfg  GrpcClientConfig
+
+	IntegrationTestCfg integrationTestConfig
 }
 
 // InitOnce initialize once
@@ -81,6 +102,7 @@ func (p *ComponentParam) Init() {
 	p.CommonCfg.init(&p.BaseTable)
 	p.QuotaConfig.init(&p.BaseTable)
 	p.AutoIndexConfig.init(&p.BaseTable)
+	p.TraceCfg.init(&p.BaseTable)
 
 	p.RootCoordCfg.init(&p.BaseTable)
 	p.ProxyCfg.init(&p.BaseTable)
@@ -88,1499 +110,1641 @@ func (p *ComponentParam) Init() {
 	p.QueryNodeCfg.init(&p.BaseTable)
 	p.DataCoordCfg.init(&p.BaseTable)
 	p.DataNodeCfg.init(&p.BaseTable)
-	p.IndexCoordCfg.init(&p.BaseTable)
 	p.IndexNodeCfg.init(&p.BaseTable)
+	p.HTTPCfg.init(&p.BaseTable)
 	p.HookCfg.init()
+
+	p.RootCoordGrpcServerCfg.Init(typeutil.RootCoordRole, &p.BaseTable)
+	p.ProxyGrpcServerCfg.Init(typeutil.ProxyRole, &p.BaseTable)
+	p.QueryCoordGrpcServerCfg.Init(typeutil.QueryCoordRole, &p.BaseTable)
+	p.QueryNodeGrpcServerCfg.Init(typeutil.QueryNodeRole, &p.BaseTable)
+	p.DataCoordGrpcServerCfg.Init(typeutil.DataCoordRole, &p.BaseTable)
+	p.DataNodeGrpcServerCfg.Init(typeutil.DataNodeRole, &p.BaseTable)
+	p.IndexNodeGrpcServerCfg.Init(typeutil.IndexNodeRole, &p.BaseTable)
+
+	p.RootCoordGrpcClientCfg.Init(typeutil.RootCoordRole, &p.BaseTable)
+	p.ProxyGrpcClientCfg.Init(typeutil.ProxyRole, &p.BaseTable)
+	p.QueryCoordGrpcClientCfg.Init(typeutil.QueryCoordRole, &p.BaseTable)
+	p.QueryNodeGrpcClientCfg.Init(typeutil.QueryNodeRole, &p.BaseTable)
+	p.DataCoordGrpcClientCfg.Init(typeutil.DataCoordRole, &p.BaseTable)
+	p.DataNodeGrpcClientCfg.Init(typeutil.DataNodeRole, &p.BaseTable)
+	p.IndexNodeGrpcClientCfg.Init(typeutil.IndexNodeRole, &p.BaseTable)
+
+	p.IntegrationTestCfg.init(&p.BaseTable)
 }
 
-// SetLogConfig set log config with given role
-func (p *ComponentParam) SetLogConfig(role string) {
-	p.BaseTable.RoleName = role
-	p.BaseTable.SetLogConfig()
+func (p *ComponentParam) GetComponentConfigurations(componentName string, sub string) map[string]string {
+	allownPrefixs := append(globalConfigPrefixs(), componentName+".")
+	return p.mgr.GetBy(config.WithSubstr(sub), config.WithOneOfPrefixs(allownPrefixs...))
 }
 
-func (p *ComponentParam) RocksmqEnable() bool {
-	return p.RocksmqCfg.Path != ""
-}
-
-func (p *ComponentParam) PulsarEnable() bool {
-	return p.PulsarCfg.Address != ""
-}
-
-func (p *ComponentParam) KafkaEnable() bool {
-	return p.KafkaCfg.Address != ""
+func (p *ComponentParam) GetAll() map[string]string {
+	return p.mgr.GetConfigs()
 }
 
 // /////////////////////////////////////////////////////////////////////////////
 // --- common ---
 type commonConfig struct {
-	Base *BaseTable
+	ClusterPrefix ParamItem `refreshable:"false"`
 
-	ClusterPrefix string
+	// Deprecated: do not use it anymore
+	ProxySubName ParamItem `refreshable:"true"`
 
-	ProxySubName string
+	RootCoordTimeTick   ParamItem `refreshable:"true"`
+	RootCoordStatistics ParamItem `refreshable:"true"`
+	RootCoordDml        ParamItem `refreshable:"false"`
+	RootCoordDelta      ParamItem `refreshable:"false"`
+	// Deprecated: do not use it anymore
+	RootCoordSubName ParamItem `refreshable:"true"`
 
-	RootCoordTimeTick   string
-	RootCoordStatistics string
-	RootCoordDml        string
-	RootCoordDelta      string
-	RootCoordSubName    string
+	// Deprecated: only used in metrics as ID
+	QueryCoordSearch ParamItem `refreshable:"true"`
+	// Deprecated: only used in metrics as ID
+	QueryCoordSearchResult ParamItem `refreshable:"true"`
+	QueryCoordTimeTick     ParamItem `refreshable:"true"`
+	QueryNodeSubName       ParamItem `refreshable:"false"`
 
-	QueryCoordSearch       string
-	QueryCoordSearchResult string
-	QueryCoordTimeTick     string
-	QueryNodeSubName       string
+	// Deprecated: do not use it anymore
+	DataCoordStatistic    ParamItem `refreshable:"true"`
+	DataCoordTimeTick     ParamItem `refreshable:"false"`
+	DataCoordSegmentInfo  ParamItem `refreshable:"true"`
+	DataCoordSubName      ParamItem `refreshable:"false"`
+	DataCoordWatchSubPath ParamItem `refreshable:"false"`
+	DataNodeSubName       ParamItem `refreshable:"false"`
 
-	DataCoordStatistic   string
-	DataCoordTimeTick    string
-	DataCoordSegmentInfo string
-	DataCoordSubName     string
-	DataNodeSubName      string
+	DefaultPartitionName ParamItem `refreshable:"true"`
+	DefaultIndexName     ParamItem `refreshable:"true"`
+	RetentionDuration    ParamItem `refreshable:"true"`
+	EntityExpirationTTL  ParamItem `refreshable:"true"`
 
-	DefaultPartitionName string
-	DefaultIndexName     string
-	RetentionDuration    int64
-	EntityExpirationTTL  time.Duration
+	IndexSliceSize           ParamItem `refreshable:"false"`
+	ThreadCoreCoefficient    ParamItem `refreshable:"false"`
+	MaxDegree                ParamItem `refreshable:"true"`
+	SearchListSize           ParamItem `refreshable:"true"`
+	PQCodeBudgetGBRatio      ParamItem `refreshable:"true"`
+	BuildNumThreadsRatio     ParamItem `refreshable:"true"`
+	SearchCacheBudgetGBRatio ParamItem `refreshable:"true"`
+	LoadNumThreadRatio       ParamItem `refreshable:"true"`
+	BeamWidthRatio           ParamItem `refreshable:"true"`
+	GracefulTime             ParamItem `refreshable:"true"`
+	GracefulStopTimeout      ParamItem `refreshable:"true"`
 
-	IndexSliceSize           int64
-	MaxDegree                int64
-	SearchListSize           int64
-	PGCodeBudgetGBRatio      float64
-	BuildNumThreadsRatio     float64
-	SearchCacheBudgetGBRatio float64
-	LoadNumThreadRatio       float64
-	BeamWidthRatio           float64
-	GracefulTime             int64
+	// Search limit, which applies on:
+	// maximum # of results to return (topK), and
+	// maximum # of search requests (nq).
+	// Check https://milvus.io/docs/limitations.md for more details.
+	TopKLimit   ParamItem `refreshable:"true"`
+	StorageType ParamItem `refreshable:"false"`
+	SimdType    ParamItem `refreshable:"false"`
 
-	StorageType string
-	SimdType    string
+	AuthorizationEnabled ParamItem `refreshable:"false"`
+	SuperUsers           ParamItem `refreshable:"true"`
 
-	AuthorizationEnabled bool
+	ClusterName ParamItem `refreshable:"false"`
 
-	ClusterName string
-
-	SessionTTL        int64
-	SessionRetryTimes int64
+	SessionTTL        ParamItem `refreshable:"false"`
+	SessionRetryTimes ParamItem `refreshable:"false"`
 }
 
 func (p *commonConfig) init(base *BaseTable) {
-	p.Base = base
-
 	// must init cluster prefix first
-	p.initClusterPrefix()
-	p.initProxySubName()
-
-	p.initRootCoordTimeTick()
-	p.initRootCoordStatistics()
-	p.initRootCoordDml()
-	p.initRootCoordDelta()
-	p.initRootCoordSubName()
-
-	p.initQueryCoordSearch()
-	p.initQueryCoordSearchResult()
-	p.initQueryCoordTimeTick()
-	p.initQueryNodeSubName()
-
-	p.initDataCoordStatistic()
-	p.initDataCoordTimeTick()
-	p.initDataCoordSegmentInfo()
-	p.initDataCoordSubName()
-	p.initDataNodeSubName()
-
-	p.initDefaultPartitionName()
-	p.initDefaultIndexName()
-	p.initRetentionDuration()
-	p.initEntityExpiration()
-
-	p.initSimdType()
-	p.initIndexSliceSize()
-	p.initMaxDegree()
-	p.initSearchListSize()
-	p.initPGCodeBudgetGBRatio()
-	p.initBuildNumThreadsRatio()
-	p.initSearchCacheBudgetGBRatio()
-	p.initLoadNumThreadRatio()
-	p.initBeamWidthRatio()
-	p.initGracefulTime()
-	p.initStorageType()
-
-	p.initEnableAuthorization()
-
-	p.initClusterName()
-
-	p.initSessionTTL()
-	p.initSessionRetryTimes()
-}
-
-func (p *commonConfig) initClusterPrefix() {
-	keys := []string{
-		"msgChannel.chanNamePrefix.cluster",
-		"common.chanNamePrefix.cluster",
+	p.ClusterPrefix = ParamItem{
+		Key:          "common.chanNamePrefix.cluster",
+		Version:      "2.1.0",
+		FallbackKeys: []string{"msgChannel.chanNamePrefix.cluster"},
+		PanicIfEmpty: true,
 	}
-	str, err := p.Base.LoadWithPriority(keys)
-	if err != nil {
-		panic(err)
+	p.ClusterPrefix.Init(base.mgr)
+
+	chanNamePrefix := func(prefix string) string {
+		return strings.Join([]string{p.ClusterPrefix.GetValue(), prefix}, "-")
 	}
-	p.ClusterPrefix = str
-}
-
-func (p *commonConfig) initChanNamePrefix(keys []string) string {
-	value, err := p.Base.LoadWithPriority(keys)
-	if err != nil {
-		panic(err)
+	p.ProxySubName = ParamItem{
+		Key:          "common.subNamePrefix.proxySubNamePrefix",
+		Version:      "2.1.0",
+		FallbackKeys: []string{"msgChannel.subNamePrefix.proxySubNamePrefix"},
+		PanicIfEmpty: true,
+		Formatter:    chanNamePrefix,
 	}
-	s := []string{p.ClusterPrefix, value}
-	return strings.Join(s, "-")
-}
+	p.ProxySubName.Init(base.mgr)
 
-// --- proxy ---
-func (p *commonConfig) initProxySubName() {
-	keys := []string{
-		"msgChannel.subNamePrefix.proxySubNamePrefix",
-		"common.subNamePrefix.proxySubNamePrefix",
+	// --- rootcoord ---
+	p.RootCoordTimeTick = ParamItem{
+		Key:          "common.chanNamePrefix.rootCoordTimeTick",
+		Version:      "2.1.0",
+		FallbackKeys: []string{"msgChannel.chanNamePrefix.rootCoordTimeTick"},
+		PanicIfEmpty: true,
+		Formatter:    chanNamePrefix,
 	}
-	p.ProxySubName = p.initChanNamePrefix(keys)
-}
+	p.RootCoordTimeTick.Init(base.mgr)
 
-// --- rootcoord ---
-// Deprecate
-func (p *commonConfig) initRootCoordTimeTick() {
-	keys := []string{
-		"msgChannel.chanNamePrefix.rootCoordTimeTick",
-		"common.chanNamePrefix.rootCoordTimeTick",
+	p.RootCoordStatistics = ParamItem{
+		Key:          "common.chanNamePrefix.rootCoordStatistics",
+		Version:      "2.1.0",
+		FallbackKeys: []string{"msgChannel.chanNamePrefix.rootCoordStatistics"},
+		PanicIfEmpty: true,
+		Formatter:    chanNamePrefix,
 	}
-	p.RootCoordTimeTick = p.initChanNamePrefix(keys)
-}
+	p.RootCoordStatistics.Init(base.mgr)
 
-func (p *commonConfig) initRootCoordStatistics() {
-	keys := []string{
-		"msgChannel.chanNamePrefix.rootCoordStatistics",
-		"common.chanNamePrefix.rootCoordStatistics",
+	p.RootCoordDml = ParamItem{
+		Key:          "common.chanNamePrefix.rootCoordDml",
+		Version:      "2.1.0",
+		FallbackKeys: []string{"msgChannel.chanNamePrefix.rootCoordDml"},
+		PanicIfEmpty: true,
+		Formatter:    chanNamePrefix,
+		Doc:          "It is not refreshable currently",
 	}
-	p.RootCoordStatistics = p.initChanNamePrefix(keys)
-}
+	p.RootCoordDml.Init(base.mgr)
 
-func (p *commonConfig) initRootCoordDml() {
-	keys := []string{
-		"msgChannel.chanNamePrefix.rootCoordDml",
-		"common.chanNamePrefix.rootCoordDml",
+	p.RootCoordDelta = ParamItem{
+		Key:          "common.chanNamePrefix.rootCoordDelta",
+		Version:      "2.1.0",
+		FallbackKeys: []string{"msgChannel.chanNamePrefix.rootCoordDelta"},
+		PanicIfEmpty: true,
+		Formatter:    chanNamePrefix,
+		Doc:          "It is not refreshable currently",
 	}
-	p.RootCoordDml = p.initChanNamePrefix(keys)
-}
+	p.RootCoordDelta.Init(base.mgr)
 
-func (p *commonConfig) initRootCoordDelta() {
-	keys := []string{
-		"msgChannel.chanNamePrefix.rootCoordDelta",
-		"common.chanNamePrefix.rootCoordDelta",
+	p.RootCoordSubName = ParamItem{
+		Key:          "common.subNamePrefix.rootCoordSubNamePrefix",
+		Version:      "2.1.0",
+		FallbackKeys: []string{"msgChannel.subNamePrefix.rootCoordSubNamePrefix"},
+		PanicIfEmpty: true,
+		Formatter:    chanNamePrefix,
+		Doc:          "It is deprecated",
 	}
-	p.RootCoordDelta = p.initChanNamePrefix(keys)
-}
+	p.RootCoordSubName.Init(base.mgr)
 
-func (p *commonConfig) initRootCoordSubName() {
-	keys := []string{
-		"msgChannel.subNamePrefix.rootCoordSubNamePrefix",
-		"common.subNamePrefix.rootCoordSubNamePrefix",
+	p.QueryCoordSearch = ParamItem{
+		Key:          "common.chanNamePrefix.search",
+		Version:      "2.1.0",
+		FallbackKeys: []string{"msgChannel.chanNamePrefix.search"},
+		PanicIfEmpty: true,
+		Formatter:    chanNamePrefix,
+		Doc:          "It is deprecated",
 	}
-	p.RootCoordSubName = p.initChanNamePrefix(keys)
-}
+	p.QueryCoordSearch.Init(base.mgr)
 
-// --- querycoord ---
-func (p *commonConfig) initQueryCoordSearch() {
-	keys := []string{
-		"msgChannel.chanNamePrefix.search",
-		"common.chanNamePrefix.search",
+	p.QueryCoordSearchResult = ParamItem{
+		Key:          "common.chanNamePrefix.searchResult",
+		Version:      "2.1.0",
+		FallbackKeys: []string{"msgChannel.chanNamePrefix.searchResult"},
+		PanicIfEmpty: true,
+		Formatter:    chanNamePrefix,
+		Doc:          "It is deprecated",
 	}
-	p.QueryCoordSearch = p.initChanNamePrefix(keys)
-}
+	p.QueryCoordSearchResult.Init(base.mgr)
 
-// Deprecated, search result use grpc instead of a result channel
-func (p *commonConfig) initQueryCoordSearchResult() {
-	keys := []string{
-		"msgChannel.chanNamePrefix.searchResult",
-		"common.chanNamePrefix.searchResult",
+	p.QueryCoordTimeTick = ParamItem{
+		Key:          "common.chanNamePrefix.queryTimeTick",
+		Version:      "2.1.0",
+		FallbackKeys: []string{"msgChannel.chanNamePrefix.queryTimeTick"},
+		PanicIfEmpty: true,
+		Formatter:    chanNamePrefix,
 	}
-	p.QueryCoordSearchResult = p.initChanNamePrefix(keys)
-}
+	p.QueryCoordTimeTick.Init(base.mgr)
 
-// Deprecate
-func (p *commonConfig) initQueryCoordTimeTick() {
-	keys := []string{
-		"msgChannel.chanNamePrefix.queryTimeTick",
-		"common.chanNamePrefix.queryTimeTick",
+	p.QueryNodeSubName = ParamItem{
+		Key:          "common.subNamePrefix.queryNodeSubNamePrefix",
+		Version:      "2.1.0",
+		FallbackKeys: []string{"msgChannel.subNamePrefix.queryNodeSubNamePrefix"},
+		PanicIfEmpty: true,
+		Formatter:    chanNamePrefix,
 	}
-	p.QueryCoordTimeTick = p.initChanNamePrefix(keys)
-}
+	p.QueryNodeSubName.Init(base.mgr)
 
-// --- querynode ---
-func (p *commonConfig) initQueryNodeSubName() {
-	keys := []string{
-		"msgChannel.subNamePrefix.queryNodeSubNamePrefix",
-		"common.subNamePrefix.queryNodeSubNamePrefix",
+	p.DataCoordStatistic = ParamItem{
+		Key:          "common.chanNamePrefix.dataCoordStatistic",
+		Version:      "2.1.0",
+		FallbackKeys: []string{"msgChannel.chanNamePrefix.dataCoordStatistic"},
+		PanicIfEmpty: true,
+		Formatter:    chanNamePrefix,
 	}
-	p.QueryNodeSubName = p.initChanNamePrefix(keys)
-}
+	p.DataCoordStatistic.Init(base.mgr)
 
-// --- datacoord ---
-func (p *commonConfig) initDataCoordStatistic() {
-	keys := []string{
-		"msgChannel.chanNamePrefix.dataCoordStatistic",
-		"common.chanNamePrefix.dataCoordStatistic",
+	p.DataCoordTimeTick = ParamItem{
+		Key:          "common.chanNamePrefix.dataCoordTimeTick",
+		Version:      "2.1.0",
+		FallbackKeys: []string{"msgChannel.chanNamePrefix.dataCoordTimeTick"},
+		PanicIfEmpty: true,
+		Formatter:    chanNamePrefix,
 	}
-	p.DataCoordStatistic = p.initChanNamePrefix(keys)
-}
+	p.DataCoordTimeTick.Init(base.mgr)
 
-// Deprecate
-func (p *commonConfig) initDataCoordTimeTick() {
-	keys := []string{
-		"msgChannel.chanNamePrefix.dataCoordTimeTick",
-		"common.chanNamePrefix.dataCoordTimeTick",
+	p.DataCoordSegmentInfo = ParamItem{
+		Key:          "common.chanNamePrefix.dataCoordSegmentInfo",
+		Version:      "2.1.0",
+		FallbackKeys: []string{"msgChannel.chanNamePrefix.dataCoordSegmentInfo"},
+		PanicIfEmpty: true,
+		Formatter:    chanNamePrefix,
 	}
-	p.DataCoordTimeTick = p.initChanNamePrefix(keys)
-}
+	p.DataCoordSegmentInfo.Init(base.mgr)
 
-func (p *commonConfig) initDataCoordSegmentInfo() {
-	keys := []string{
-		"msgChannel.chanNamePrefix.dataCoordSegmentInfo",
-		"common.chanNamePrefix.dataCoordSegmentInfo",
+	p.DataCoordSubName = ParamItem{
+		Key:          "common.subNamePrefix.dataCoordSubNamePrefix",
+		Version:      "2.1.0",
+		FallbackKeys: []string{"msgChannel.subNamePrefix.dataCoordSubNamePrefix"},
+		PanicIfEmpty: true,
+		Formatter:    chanNamePrefix,
 	}
-	p.DataCoordSegmentInfo = p.initChanNamePrefix(keys)
-}
+	p.DataCoordSubName.Init(base.mgr)
 
-func (p *commonConfig) initDataCoordSubName() {
-	keys := []string{
-		"msgChannel.subNamePrefix.dataCoordSubNamePrefix",
-		"common.subNamePrefix.dataCoordSubNamePrefix",
+	p.DataCoordWatchSubPath = ParamItem{
+		Key:          "common.subNamePrefix.dataCoordWatchSubPath",
+		Version:      "2.1.0",
+		DefaultValue: "channelwatch",
+		PanicIfEmpty: true,
 	}
-	p.DataCoordSubName = p.initChanNamePrefix(keys)
-}
+	p.DataCoordWatchSubPath.Init(base.mgr)
 
-func (p *commonConfig) initDataNodeSubName() {
-	keys := []string{
-		"msgChannel.subNamePrefix.dataNodeSubNamePrefix",
-		"common.subNamePrefix.dataNodeSubNamePrefix",
+	p.DataNodeSubName = ParamItem{
+		Key:          "common.subNamePrefix.dataNodeSubNamePrefix",
+		Version:      "2.1.0",
+		FallbackKeys: []string{"msgChannel.subNamePrefix.dataNodeSubNamePrefix"},
+		PanicIfEmpty: true,
+		Formatter:    chanNamePrefix,
 	}
-	p.DataNodeSubName = p.initChanNamePrefix(keys)
-}
+	p.DataNodeSubName.Init(base.mgr)
 
-func (p *commonConfig) initDefaultPartitionName() {
-	p.DefaultPartitionName = p.Base.LoadWithDefault("common.defaultPartitionName", "_default")
-}
-
-func (p *commonConfig) initDefaultIndexName() {
-	p.DefaultIndexName = p.Base.LoadWithDefault("common.defaultIndexName", "_default_idx")
-}
-
-func (p *commonConfig) initRetentionDuration() {
-	p.RetentionDuration = p.Base.ParseInt64WithDefault("common.retentionDuration", DefaultRetentionDuration)
-}
-
-func (p *commonConfig) initEntityExpiration() {
-	ttl := p.Base.ParseInt64WithDefault("common.entityExpiration", -1)
-	if ttl < 0 {
-		p.EntityExpirationTTL = -1
-		return
+	p.DefaultPartitionName = ParamItem{
+		Key:          "common.defaultPartitionName",
+		Version:      "2.0.0",
+		DefaultValue: "_default",
 	}
+	p.DefaultPartitionName.Init(base.mgr)
 
-	// make sure ttl is larger than retention duration to ensure time travel works
-	if ttl > p.RetentionDuration {
-		p.EntityExpirationTTL = time.Duration(ttl) * time.Second
-	} else {
-		p.EntityExpirationTTL = time.Duration(p.RetentionDuration) * time.Second
+	p.DefaultIndexName = ParamItem{
+		Key:          "common.defaultIndexName",
+		Version:      "2.0.0",
+		DefaultValue: "_default_idx",
 	}
-}
+	p.DefaultIndexName.Init(base.mgr)
 
-func (p *commonConfig) initSimdType() {
-	keys := []string{
-		"common.simdType",
-		"knowhere.simdType",
+	p.RetentionDuration = ParamItem{
+		Key:          "common.retentionDuration",
+		Version:      "2.0.0",
+		DefaultValue: strconv.Itoa(DefaultRetentionDuration),
 	}
-	p.SimdType = p.Base.LoadWithDefault2(keys, "auto")
+	p.RetentionDuration.Init(base.mgr)
+
+	p.EntityExpirationTTL = ParamItem{
+		Key:          "common.entityExpiration",
+		Version:      "2.1.0",
+		DefaultValue: "-1",
+		Formatter: func(value string) string {
+			ttl := getAsInt(value)
+			if ttl < 0 {
+				return "-1"
+			}
+
+			// make sure ttl is larger than retention duration to ensure time travel works
+			if ttl > p.RetentionDuration.GetAsInt() {
+				return strconv.Itoa(ttl)
+			}
+			return p.RetentionDuration.GetValue()
+		},
+	}
+	p.EntityExpirationTTL.Init(base.mgr)
+
+	p.SimdType = ParamItem{
+		Key:          "common.simdType",
+		Version:      "2.1.0",
+		DefaultValue: "auto",
+		FallbackKeys: []string{"knowhere.simdType"},
+	}
+	p.SimdType.Init(base.mgr)
+
+	p.IndexSliceSize = ParamItem{
+		Key:          "common.indexSliceSize",
+		Version:      "2.0.0",
+		DefaultValue: strconv.Itoa(DefaultIndexSliceSize),
+	}
+	p.IndexSliceSize.Init(base.mgr)
+
+	p.MaxDegree = ParamItem{
+		Key:          "common.DiskIndex.MaxDegree",
+		Version:      "2.0.0",
+		DefaultValue: strconv.Itoa(DefaultMaxDegree),
+	}
+	p.MaxDegree.Init(base.mgr)
+
+	p.SearchListSize = ParamItem{
+		Key:          "common.DiskIndex.SearchListSize",
+		Version:      "2.0.0",
+		DefaultValue: strconv.Itoa(DefaultSearchListSize),
+	}
+	p.SearchListSize.Init(base.mgr)
+
+	p.PQCodeBudgetGBRatio = ParamItem{
+		Key:          "common.DiskIndex.PQCodeBudgetGBRatio",
+		Version:      "2.0.0",
+		DefaultValue: fmt.Sprintf("%f", DefaultPQCodeBudgetGBRatio),
+	}
+	p.PQCodeBudgetGBRatio.Init(base.mgr)
+
+	p.BuildNumThreadsRatio = ParamItem{
+		Key:          "common.DiskIndex.BuildNumThreadsRatio",
+		Version:      "2.0.0",
+		DefaultValue: strconv.Itoa(DefaultBuildNumThreadsRatio),
+	}
+	p.BuildNumThreadsRatio.Init(base.mgr)
+
+	p.SearchCacheBudgetGBRatio = ParamItem{
+		Key:          "common.DiskIndex.SearchCacheBudgetGBRatio",
+		Version:      "2.0.0",
+		DefaultValue: fmt.Sprintf("%f", DefaultSearchCacheBudgetGBRatio),
+	}
+	p.SearchCacheBudgetGBRatio.Init(base.mgr)
+
+	p.LoadNumThreadRatio = ParamItem{
+		Key:          "common.DiskIndex.LoadNumThreadRatio",
+		Version:      "2.0.0",
+		DefaultValue: strconv.Itoa(DefaultLoadNumThreadRatio),
+	}
+	p.LoadNumThreadRatio.Init(base.mgr)
+
+	p.GracefulStopTimeout = ParamItem{
+		Key:          "common.gracefulStopTimeout",
+		Version:      "2.2.1",
+		DefaultValue: "30",
+	}
+	p.GracefulStopTimeout.Init(base.mgr)
+
+	p.TopKLimit = ParamItem{
+		Key:          "common.topKLimit",
+		Version:      "2.2.1",
+		DefaultValue: "16384",
+	}
+	p.TopKLimit.Init(base.mgr)
+
+	p.BeamWidthRatio = ParamItem{
+		Key:          "common.DiskIndex.BeamWidthRatio",
+		Version:      "2.0.0",
+		DefaultValue: strconv.Itoa(DefaultBeamWidthRatio),
+	}
+	p.BeamWidthRatio.Init(base.mgr)
+
+	p.GracefulTime = ParamItem{
+		Key:          "common.gracefulTime",
+		Version:      "2.0.0",
+		DefaultValue: strconv.Itoa(DefaultGracefulTime),
+	}
+	p.GracefulTime.Init(base.mgr)
+
+	p.StorageType = ParamItem{
+		Key:          "common.storageType",
+		Version:      "2.0.0",
+		DefaultValue: "minio",
+	}
+	p.StorageType.Init(base.mgr)
+
+	p.ThreadCoreCoefficient = ParamItem{
+		Key:          "common.threadCoreCoefficient",
+		Version:      "2.0.0",
+		DefaultValue: strconv.Itoa(DefaultThreadCoreCoefficient),
+	}
+	p.ThreadCoreCoefficient.Init(base.mgr)
+
+	p.AuthorizationEnabled = ParamItem{
+		Key:          "common.security.authorizationEnabled",
+		Version:      "2.0.0",
+		DefaultValue: "false",
+	}
+	p.AuthorizationEnabled.Init(base.mgr)
+
+	p.SuperUsers = ParamItem{
+		Key:     "common.security.superUsers",
+		Version: "2.2.1",
+	}
+	p.SuperUsers.Init(base.mgr)
+
+	p.ClusterName = ParamItem{
+		Key:          "common.cluster.name",
+		Version:      "2.0.0",
+		DefaultValue: "",
+	}
+	p.ClusterName.Init(base.mgr)
+
+	p.SessionTTL = ParamItem{
+		Key:          "common.session.ttl",
+		Version:      "2.0.0",
+		DefaultValue: "60",
+	}
+	p.SessionTTL.Init(base.mgr)
+
+	p.SessionRetryTimes = ParamItem{
+		Key:          "common.session.retryTimes",
+		Version:      "2.0.0",
+		DefaultValue: "30",
+	}
+	p.SessionRetryTimes.Init(base.mgr)
+
 }
 
-func (p *commonConfig) initIndexSliceSize() {
-	p.IndexSliceSize = p.Base.ParseInt64WithDefault("common.indexSliceSize", DefaultIndexSliceSize)
+type traceConfig struct {
+	Exporter       ParamItem `refreshable:"false"`
+	SampleFraction ParamItem `refreshable:"false"`
+	JaegerURL      ParamItem `refreshable:"false"`
 }
 
-func (p *commonConfig) initPGCodeBudgetGBRatio() {
-	p.PGCodeBudgetGBRatio = p.Base.ParseFloatWithDefault("common.DiskIndex.PGCodeBudgetGBRatio", DefaultPGCodeBudgetGBRatio)
-}
+func (t *traceConfig) init(base *BaseTable) {
+	t.Exporter = ParamItem{
+		Key:     "trace.exporter",
+		Version: "2.3.0",
+	}
+	t.Exporter.Init(base.mgr)
 
-func (p *commonConfig) initBuildNumThreadsRatio() {
-	p.BuildNumThreadsRatio = p.Base.ParseFloatWithDefault("common.DiskIndex.BuildNumThreadsRatio", DefaultBuildNumThreadsRatio)
-}
+	t.SampleFraction = ParamItem{
+		Key:          "trace.sampleFraction",
+		Version:      "2.3.0",
+		DefaultValue: "1",
+	}
+	t.SampleFraction.Init(base.mgr)
 
-func (p *commonConfig) initSearchCacheBudgetGBRatio() {
-	p.SearchCacheBudgetGBRatio = p.Base.ParseFloatWithDefault("common.DiskIndex.SearchCacheBudgetGBRatio", DefaultSearchCacheBudgetGBRatio)
-}
-
-func (p *commonConfig) initLoadNumThreadRatio() {
-	p.LoadNumThreadRatio = p.Base.ParseFloatWithDefault("common.DiskIndex.LoadNumThreadRatio", DefaultLoadNumThreadRatio)
-}
-
-func (p *commonConfig) initBeamWidthRatio() {
-	p.BeamWidthRatio = p.Base.ParseFloatWithDefault("common.DiskIndex.BeamWidthRatio", DefaultBeamWidthRatio)
-}
-
-func (p *commonConfig) initMaxDegree() {
-	p.MaxDegree = p.Base.ParseInt64WithDefault("common.DiskIndex.MaxDegree", DefaultMaxDegree)
-}
-
-func (p *commonConfig) initSearchListSize() {
-	p.SearchListSize = p.Base.ParseInt64WithDefault("common.DiskIndex.SearchListSize", DefaultSearchListSize)
-}
-
-func (p *commonConfig) initGracefulTime() {
-	p.GracefulTime = p.Base.ParseInt64WithDefault("common.gracefulTime", DefaultGracefulTime)
-}
-
-func (p *commonConfig) initStorageType() {
-	p.StorageType = p.Base.LoadWithDefault("common.storageType", "minio")
-}
-
-func (p *commonConfig) initEnableAuthorization() {
-	p.AuthorizationEnabled = p.Base.ParseBool("common.security.authorizationEnabled", false)
-}
-
-func (p *commonConfig) initClusterName() {
-	p.ClusterName = p.Base.LoadWithDefault("common.cluster.name", "")
-}
-
-func (p *commonConfig) initSessionTTL() {
-	p.SessionTTL = p.Base.ParseInt64WithDefault("common.session.ttl", 60)
-}
-
-func (p *commonConfig) initSessionRetryTimes() {
-	p.SessionRetryTimes = p.Base.ParseInt64WithDefault("common.session.retryTimes", 30)
+	t.JaegerURL = ParamItem{
+		Key:     "trace.jaeger.url",
+		Version: "2.3.0",
+	}
+	t.JaegerURL.Init(base.mgr)
 }
 
 // /////////////////////////////////////////////////////////////////////////////
 // --- rootcoord ---
 type rootCoordConfig struct {
-	Base *BaseTable
-
-	Address string
-	Port    int
-
-	NodeID atomic.Value
-
-	DmlChannelNum               int64
-	MaxPartitionNum             int64
-	MinSegmentSizeToEnableIndex int64
-	ImportTaskExpiration        float64
-	ImportTaskRetention         float64
-
-	// --- ETCD Path ---
-	ImportTaskSubPath string
-
-	CreatedTime time.Time
-	UpdatedTime time.Time
-
-	EnableActiveStandby bool
+	DmlChannelNum               ParamItem `refreshable:"false"`
+	MaxPartitionNum             ParamItem `refreshable:"true"`
+	MinSegmentSizeToEnableIndex ParamItem `refreshable:"true"`
+	ImportTaskExpiration        ParamItem `refreshable:"true"`
+	ImportTaskRetention         ParamItem `refreshable:"true"`
+	ImportTaskSubPath           ParamItem `refreshable:"true"`
+	EnableActiveStandby         ParamItem `refreshable:"false"`
 }
 
 func (p *rootCoordConfig) init(base *BaseTable) {
-	p.Base = base
-	p.DmlChannelNum = p.Base.ParseInt64WithDefault("rootCoord.dmlChannelNum", 256)
-	p.MaxPartitionNum = p.Base.ParseInt64WithDefault("rootCoord.maxPartitionNum", 4096)
-	p.MinSegmentSizeToEnableIndex = p.Base.ParseInt64WithDefault("rootCoord.minSegmentSizeToEnableIndex", 1024)
-	p.ImportTaskExpiration = p.Base.ParseFloatWithDefault("rootCoord.importTaskExpiration", 15*60)
-	p.ImportTaskRetention = p.Base.ParseFloatWithDefault("rootCoord.importTaskRetention", 24*60*60)
-	p.ImportTaskSubPath = "importtask"
-	p.EnableActiveStandby = p.Base.ParseBool("rootCoord.enableActiveStandby", false)
-	p.NodeID.Store(UniqueID(0))
-}
-
-func (p *rootCoordConfig) SetNodeID(id UniqueID) {
-	p.NodeID.Store(id)
-}
-
-func (p *rootCoordConfig) GetNodeID() UniqueID {
-	val := p.NodeID.Load()
-	if val != nil {
-		return val.(UniqueID)
+	p.DmlChannelNum = ParamItem{
+		Key:          "rootCoord.dmlChannelNum",
+		Version:      "2.0.0",
+		DefaultValue: "256",
 	}
-	return 0
+	p.DmlChannelNum.Init(base.mgr)
+
+	p.MaxPartitionNum = ParamItem{
+		Key:          "rootCoord.maxPartitionNum",
+		Version:      "2.0.0",
+		DefaultValue: "4096",
+	}
+	p.MaxPartitionNum.Init(base.mgr)
+
+	p.MinSegmentSizeToEnableIndex = ParamItem{
+		Key:          "rootCoord.minSegmentSizeToEnableIndex",
+		Version:      "2.0.0",
+		DefaultValue: "1024",
+	}
+	p.MinSegmentSizeToEnableIndex.Init(base.mgr)
+
+	p.ImportTaskExpiration = ParamItem{
+		Key:          "rootCoord.importTaskExpiration",
+		Version:      "2.2.0",
+		DefaultValue: "900", // 15 * 60 seconds
+	}
+	p.ImportTaskExpiration.Init(base.mgr)
+
+	p.ImportTaskRetention = ParamItem{
+		Key:          "rootCoord.importTaskRetention",
+		Version:      "2.2.0",
+		DefaultValue: strconv.Itoa(24 * 60 * 60),
+	}
+	p.ImportTaskRetention.Init(base.mgr)
+
+	p.ImportTaskSubPath = ParamItem{
+		Key:          "rootCoord.ImportTaskSubPath",
+		Version:      "2.2.0",
+		DefaultValue: "importtask",
+	}
+	p.ImportTaskSubPath.Init(base.mgr)
+
+	p.EnableActiveStandby = ParamItem{
+		Key:          "rootCoord.enableActiveStandby",
+		Version:      "2.2.0",
+		DefaultValue: "false",
+	}
+	p.EnableActiveStandby.Init(base.mgr)
+
 }
 
 // /////////////////////////////////////////////////////////////////////////////
 // --- proxy ---
+type AccessLogConfig struct {
+	// if use access log
+	Enable ParamItem `refreshable:"false"`
+	// if upload sealed access log file to minio
+	MinioEnable ParamItem `refreshable:"false"`
+	// Log path
+	LocalPath ParamItem `refreshable:"false"`
+	// Log filename, leave empty to disable file log.
+	Filename ParamItem `refreshable:"false"`
+	// Max size for a single file, in MB.
+	MaxSize ParamItem `refreshable:"false"`
+	// Max time for single access log file in seconds
+	RotatedTime ParamItem `refreshable:"false"`
+	// Maximum number of old log files to retain.
+	MaxBackups ParamItem `refreshable:"false"`
+	//File path in minIO
+	RemotePath ParamItem `refreshable:"false"`
+	//Max time for log file in minIO, in hours
+	RemoteMaxTime ParamItem `refreshable:"false"`
+}
+
 type proxyConfig struct {
-	Base *BaseTable
+	// Alias  string
+	SoPath ParamItem `refreshable:"false"`
 
-	// NetworkPort & IP are not used
-	NetworkPort    int
-	IP             string
-	NetworkAddress string
-
-	Alias  string
-	SoPath string
-
-	NodeID                   atomic.Value
-	TimeTickInterval         time.Duration
-	MsgStreamTimeTickBufSize int64
-	MaxNameLength            int64
-	MaxUsernameLength        int64
-	MinPasswordLength        int64
-	MaxPasswordLength        int64
-	MaxFieldNum              int64
-	MaxShardNum              int32
-	MaxDimension             int64
-	GinLogging               bool
-	MaxUserNum               int
-	MaxRoleNum               int
-
-	// required from QueryCoord
-	SearchResultChannelNames   []string
-	RetrieveResultChannelNames []string
-
-	MaxTaskNum int64
-
-	CreatedTime time.Time
-	UpdatedTime time.Time
+	TimeTickInterval         ParamItem `refreshable:"false"`
+	MsgStreamTimeTickBufSize ParamItem `refreshable:"true"`
+	MaxNameLength            ParamItem `refreshable:"true"`
+	MaxUsernameLength        ParamItem `refreshable:"true"`
+	MinPasswordLength        ParamItem `refreshable:"true"`
+	MaxPasswordLength        ParamItem `refreshable:"true"`
+	MaxFieldNum              ParamItem `refreshable:"true"`
+	MaxShardNum              ParamItem `refreshable:"true"`
+	MaxDimension             ParamItem `refreshable:"true"`
+	GinLogging               ParamItem `refreshable:"false"`
+	MaxUserNum               ParamItem `refreshable:"true"`
+	MaxRoleNum               ParamItem `refreshable:"true"`
+	MaxTaskNum               ParamItem `refreshable:"false"`
+	AccessLog                AccessLogConfig
 }
 
 func (p *proxyConfig) init(base *BaseTable) {
-	p.Base = base
-	p.NodeID.Store(UniqueID(0))
-	p.initTimeTickInterval()
-
-	p.initMsgStreamTimeTickBufSize()
-	p.initMaxNameLength()
-	p.initMinPasswordLength()
-	p.initMaxUsernameLength()
-	p.initMaxPasswordLength()
-	p.initMaxFieldNum()
-	p.initMaxShardNum()
-	p.initMaxDimension()
-
-	p.initMaxTaskNum()
-	p.initGinLogging()
-	p.initMaxUserNum()
-	p.initMaxRoleNum()
-
-	p.initSoPath()
-}
-
-// InitAlias initialize Alias member.
-func (p *proxyConfig) InitAlias(alias string) {
-	p.Alias = alias
-}
-
-func (p *proxyConfig) initSoPath() {
-	p.SoPath = p.Base.LoadWithDefault("proxy.soPath", "")
-}
-
-func (p *proxyConfig) initTimeTickInterval() {
-	interval := p.Base.ParseIntWithDefault("proxy.timeTickInterval", 200)
-	p.TimeTickInterval = time.Duration(interval) * time.Millisecond
-}
-
-func (p *proxyConfig) initMsgStreamTimeTickBufSize() {
-	p.MsgStreamTimeTickBufSize = p.Base.ParseInt64WithDefault("proxy.msgStream.timeTick.bufSize", 512)
-}
-
-func (p *proxyConfig) initMaxNameLength() {
-	str := p.Base.LoadWithDefault("proxy.maxNameLength", "255")
-	maxNameLength, err := strconv.ParseInt(str, 10, 64)
-	if err != nil {
-		panic(err)
+	p.TimeTickInterval = ParamItem{
+		Key:          "proxy.timeTickInterval",
+		Version:      "2.2.0",
+		DefaultValue: "200",
+		PanicIfEmpty: true,
 	}
-	p.MaxNameLength = maxNameLength
-}
+	p.TimeTickInterval.Init(base.mgr)
 
-func (p *proxyConfig) initMaxUsernameLength() {
-	str := p.Base.LoadWithDefault("proxy.maxUsernameLength", "32")
-	maxUsernameLength, err := strconv.ParseInt(str, 10, 64)
-	if err != nil {
-		panic(err)
+	p.MsgStreamTimeTickBufSize = ParamItem{
+		Key:          "proxy.msgStream.timeTick.bufSize",
+		Version:      "2.2.0",
+		DefaultValue: "512",
+		PanicIfEmpty: true,
 	}
-	p.MaxUsernameLength = maxUsernameLength
-}
+	p.MsgStreamTimeTickBufSize.Init(base.mgr)
 
-func (p *proxyConfig) initMinPasswordLength() {
-	str := p.Base.LoadWithDefault("proxy.minPasswordLength", "6")
-	minPasswordLength, err := strconv.ParseInt(str, 10, 64)
-	if err != nil {
-		panic(err)
+	p.MaxNameLength = ParamItem{
+		Key:          "proxy.maxNameLength",
+		DefaultValue: "255",
+		Version:      "2.0.0",
+		PanicIfEmpty: true,
 	}
-	p.MinPasswordLength = minPasswordLength
-}
+	p.MaxNameLength.Init(base.mgr)
 
-func (p *proxyConfig) initMaxPasswordLength() {
-	str := p.Base.LoadWithDefault("proxy.maxPasswordLength", "256")
-	maxPasswordLength, err := strconv.ParseInt(str, 10, 64)
-	if err != nil {
-		panic(err)
+	p.MinPasswordLength = ParamItem{
+		Key:          "proxy.minPasswordLength",
+		DefaultValue: "6",
+		Version:      "2.0.0",
+		PanicIfEmpty: true,
 	}
-	p.MaxPasswordLength = maxPasswordLength
-}
+	p.MinPasswordLength.Init(base.mgr)
 
-func (p *proxyConfig) initMaxShardNum() {
-	str := p.Base.LoadWithDefault("proxy.maxShardNum", "256")
-	maxShardNum, err := strconv.ParseInt(str, 10, 64)
-	if err != nil {
-		panic(err)
+	p.MaxUsernameLength = ParamItem{
+		Key:          "proxy.maxUsernameLength",
+		DefaultValue: "32",
+		Version:      "2.0.0",
+		PanicIfEmpty: true,
 	}
-	p.MaxShardNum = int32(maxShardNum)
-}
+	p.MaxUsernameLength.Init(base.mgr)
 
-func (p *proxyConfig) initMaxFieldNum() {
-	str := p.Base.LoadWithDefault("proxy.maxFieldNum", "64")
-	maxFieldNum, err := strconv.ParseInt(str, 10, 64)
-	if err != nil {
-		panic(err)
+	p.MaxPasswordLength = ParamItem{
+		Key:          "proxy.maxPasswordLength",
+		DefaultValue: "256",
+		Version:      "2.0.0",
+		PanicIfEmpty: true,
 	}
-	p.MaxFieldNum = maxFieldNum
-}
+	p.MaxPasswordLength.Init(base.mgr)
 
-func (p *proxyConfig) initMaxDimension() {
-	str := p.Base.LoadWithDefault("proxy.maxDimension", "32768")
-	maxDimension, err := strconv.ParseInt(str, 10, 64)
-	if err != nil {
-		panic(err)
+	p.MaxFieldNum = ParamItem{
+		Key:          "proxy.maxFieldNum",
+		DefaultValue: "64",
+		Version:      "2.0.0",
+		PanicIfEmpty: true,
 	}
-	p.MaxDimension = maxDimension
-}
+	p.MaxFieldNum.Init(base.mgr)
 
-func (p *proxyConfig) initMaxTaskNum() {
-	p.MaxTaskNum = p.Base.ParseInt64WithDefault("proxy.maxTaskNum", 1024)
-}
-
-func (p *proxyConfig) initGinLogging() {
-	// Gin logging is on by default.
-	p.GinLogging = p.Base.ParseBool("proxy.ginLogging", true)
-}
-
-func (p *proxyConfig) SetNodeID(id UniqueID) {
-	p.NodeID.Store(id)
-}
-
-func (p *proxyConfig) GetNodeID() UniqueID {
-	val := p.NodeID.Load()
-	if val != nil {
-		return val.(UniqueID)
+	p.MaxShardNum = ParamItem{
+		Key:          "proxy.maxShardNum",
+		DefaultValue: "256",
+		Version:      "2.0.0",
+		PanicIfEmpty: true,
 	}
-	return 0
-}
+	p.MaxShardNum.Init(base.mgr)
 
-func (p *proxyConfig) initMaxUserNum() {
-	str := p.Base.LoadWithDefault("proxy.maxUserNum", "100")
-	maxUserNum, err := strconv.ParseInt(str, 10, 64)
-	if err != nil {
-		panic(err)
+	p.MaxDimension = ParamItem{
+		Key:          "proxy.maxDimension",
+		DefaultValue: "32768",
+		Version:      "2.0.0",
+		PanicIfEmpty: true,
 	}
-	p.MaxUserNum = int(maxUserNum)
-}
+	p.MaxDimension.Init(base.mgr)
 
-func (p *proxyConfig) initMaxRoleNum() {
-	str := p.Base.LoadWithDefault("proxy.maxRoleNum", "10")
-	maxRoleNum, err := strconv.ParseInt(str, 10, 64)
-	if err != nil {
-		panic(err)
+	p.MaxTaskNum = ParamItem{
+		Key:          "proxy.maxTaskNum",
+		Version:      "2.2.0",
+		DefaultValue: "1024",
 	}
-	p.MaxRoleNum = int(maxRoleNum)
+	p.MaxTaskNum.Init(base.mgr)
+
+	p.GinLogging = ParamItem{
+		Key:          "proxy.ginLogging",
+		Version:      "2.2.0",
+		DefaultValue: "true",
+	}
+	p.GinLogging.Init(base.mgr)
+
+	p.MaxUserNum = ParamItem{
+		Key:          "proxy.maxUserNum",
+		DefaultValue: "100",
+		Version:      "2.0.0",
+		PanicIfEmpty: true,
+	}
+	p.MaxUserNum.Init(base.mgr)
+
+	p.MaxRoleNum = ParamItem{
+		Key:          "proxy.maxRoleNum",
+		DefaultValue: "10",
+		Version:      "2.0.0",
+		PanicIfEmpty: true,
+	}
+	p.MaxRoleNum.Init(base.mgr)
+
+	p.SoPath = ParamItem{
+		Key:          "proxy.soPath",
+		Version:      "2.2.0",
+		DefaultValue: "",
+	}
+	p.SoPath.Init(base.mgr)
+
+	p.AccessLog.Enable = ParamItem{
+		Key:          "proxy.accessLog.enable",
+		Version:      "2.2.0",
+		DefaultValue: "true",
+	}
+	p.AccessLog.Enable.Init(base.mgr)
+
+	p.AccessLog.MinioEnable = ParamItem{
+		Key:          "proxy.accessLog.minioEnable",
+		Version:      "2.2.0",
+		DefaultValue: "false",
+	}
+	p.AccessLog.MinioEnable.Init(base.mgr)
+
+	p.AccessLog.LocalPath = ParamItem{
+		Key:     "proxy.accessLog.localPath",
+		Version: "2.2.0",
+	}
+	p.AccessLog.LocalPath.Init(base.mgr)
+
+	p.AccessLog.Filename = ParamItem{
+		Key:          "proxy.accessLog.filename",
+		Version:      "2.2.0",
+		DefaultValue: "milvus_access_log.log",
+	}
+	p.AccessLog.Filename.Init(base.mgr)
+
+	p.AccessLog.MaxSize = ParamItem{
+		Key:          "proxy.accessLog.maxSize",
+		Version:      "2.2.0",
+		DefaultValue: "64",
+	}
+	p.AccessLog.MaxSize.Init(base.mgr)
+
+	p.AccessLog.MaxBackups = ParamItem{
+		Key:          "proxy.accessLog.maxBackups",
+		Version:      "2.2.0",
+		DefaultValue: "8",
+	}
+	p.AccessLog.MaxBackups.Init(base.mgr)
+
+	p.AccessLog.RotatedTime = ParamItem{
+		Key:          "proxy.accessLog.rotatedTime",
+		Version:      "2.2.0",
+		DefaultValue: "3600",
+	}
+	p.AccessLog.RotatedTime.Init(base.mgr)
+
+	p.AccessLog.RemotePath = ParamItem{
+		Key:          "proxy.accessLog.remotePath",
+		Version:      "2.2.0",
+		DefaultValue: "access_log/",
+	}
+	p.AccessLog.RemotePath.Init(base.mgr)
+
+	p.AccessLog.RemoteMaxTime = ParamItem{
+		Key:          "proxy.accessLog.remoteMaxTime",
+		Version:      "2.2.0",
+		DefaultValue: "168",
+	}
+	p.AccessLog.RemoteMaxTime.Init(base.mgr)
 }
 
 // /////////////////////////////////////////////////////////////////////////////
 // --- querycoord ---
 type queryCoordConfig struct {
-	Base *BaseTable
-
-	Address string
-	Port    int
-	NodeID  atomic.Value
-
-	CreatedTime time.Time
-	UpdatedTime time.Time
-
-	//---- Task ---
-	RetryNum      int32
-	RetryInterval int64
-	TaskMergeCap  int32
+	//Deprecated: Since 2.2.0
+	RetryNum ParamItem `refreshable:"true"`
+	//Deprecated: Since 2.2.0
+	RetryInterval    ParamItem `refreshable:"true"`
+	TaskMergeCap     ParamItem `refreshable:"false"`
+	TaskExecutionCap ParamItem `refreshable:"true"`
 
 	//---- Handoff ---
-	AutoHandoff bool
+	//Deprecated: Since 2.2.2
+	AutoHandoff ParamItem `refreshable:"true"`
 
 	//---- Balance ---
-	AutoBalance                         bool
-	OverloadedMemoryThresholdPercentage float64
-	BalanceIntervalSeconds              int64
-	MemoryUsageMaxDifferencePercentage  float64
-	CheckInterval                       time.Duration
-	ChannelTaskTimeout                  time.Duration
-	SegmentTaskTimeout                  time.Duration
-	DistPullInterval                    time.Duration
-	LoadTimeoutSeconds                  time.Duration
-	CheckHandoffInterval                time.Duration
-	EnableActiveStandby                 bool
+	AutoBalance                         ParamItem `refreshable:"true"`
+	OverloadedMemoryThresholdPercentage ParamItem `refreshable:"true"`
+	BalanceIntervalSeconds              ParamItem `refreshable:"true"`
+	MemoryUsageMaxDifferencePercentage  ParamItem `refreshable:"true"`
+	CheckInterval                       ParamItem `refreshable:"true"`
+	ChannelTaskTimeout                  ParamItem `refreshable:"true"`
+	SegmentTaskTimeout                  ParamItem `refreshable:"true"`
+	DistPullInterval                    ParamItem `refreshable:"false"`
+	HeartbeatAvailableInterval          ParamItem `refreshable:"true"`
+	LoadTimeoutSeconds                  ParamItem `refreshable:"true"`
+	//Deprecated: Since 2.2.2, QueryCoord do not use HandOff logic anymore
+	CheckHandoffInterval ParamItem `refreshable:"true"`
+	EnableActiveStandby  ParamItem `refreshable:"false"`
+
+	NextTargetSurviveTime    ParamItem `refreshable:"true"`
+	UpdateNextTargetInterval ParamItem `refreshable:"false"`
 }
 
 func (p *queryCoordConfig) init(base *BaseTable) {
-	p.Base = base
-	p.NodeID.Store(UniqueID(0))
-
 	//---- Task ---
-	p.initTaskRetryNum()
-	p.initTaskRetryInterval()
-	p.initTaskMergeCap()
-
-	//---- Handoff ---
-	p.initAutoHandoff()
-
-	//---- Balance ---
-	p.initAutoBalance()
-	p.initOverloadedMemoryThresholdPercentage()
-	p.initBalanceIntervalSeconds()
-	p.initMemoryUsageMaxDifferencePercentage()
-	p.initCheckInterval()
-	p.initChannelTaskTimeout()
-	p.initSegmentTaskTimeout()
-	p.initDistPullInterval()
-	p.initLoadTimeoutSeconds()
-	p.initCheckHandoffInterval()
-	p.initEnableActiveStandby()
-}
-
-func (p *queryCoordConfig) initTaskRetryNum() {
-	p.RetryNum = p.Base.ParseInt32WithDefault("queryCoord.task.retrynum", 5)
-}
-
-func (p *queryCoordConfig) initTaskRetryInterval() {
-	p.RetryInterval = p.Base.ParseInt64WithDefault("queryCoord.task.retryinterval", int64(10*time.Second))
-}
-
-func (p *queryCoordConfig) initTaskMergeCap() {
-	p.TaskMergeCap = p.Base.ParseInt32WithDefault("queryCoord.taskMergeCap", 16)
-}
-
-func (p *queryCoordConfig) initAutoHandoff() {
-	handoff, err := p.Base.Load("queryCoord.autoHandoff")
-	if err != nil {
-		panic(err)
+	p.RetryNum = ParamItem{
+		Key:          "queryCoord.task.retrynum",
+		Version:      "2.2.0",
+		DefaultValue: "5",
 	}
-	p.AutoHandoff, err = strconv.ParseBool(handoff)
-	if err != nil {
-		panic(err)
+	p.RetryNum.Init(base.mgr)
+
+	p.RetryInterval = ParamItem{
+		Key:          "queryCoord.task.retryinterval",
+		Version:      "2.2.0",
+		DefaultValue: strconv.FormatInt(int64(10*time.Second), 10),
 	}
-}
+	p.RetryInterval.Init(base.mgr)
 
-func (p *queryCoordConfig) initAutoBalance() {
-	balanceStr := p.Base.LoadWithDefault("queryCoord.autoBalance", "false")
-	autoBalance, err := strconv.ParseBool(balanceStr)
-	if err != nil {
-		panic(err)
+	p.TaskMergeCap = ParamItem{
+		Key:          "queryCoord.taskMergeCap",
+		Version:      "2.2.0",
+		DefaultValue: "16",
 	}
-	p.AutoBalance = autoBalance
-}
+	p.TaskMergeCap.Init(base.mgr)
 
-func (p *queryCoordConfig) initOverloadedMemoryThresholdPercentage() {
-	overloadedMemoryThresholdPercentage := p.Base.LoadWithDefault("queryCoord.overloadedMemoryThresholdPercentage", "90")
-	thresholdPercentage, err := strconv.ParseInt(overloadedMemoryThresholdPercentage, 10, 64)
-	if err != nil {
-		panic(err)
+	p.TaskExecutionCap = ParamItem{
+		Key:          "queryCoord.taskExecutionCap",
+		Version:      "2.2.0",
+		DefaultValue: "256",
 	}
-	p.OverloadedMemoryThresholdPercentage = float64(thresholdPercentage) / 100
-}
+	p.TaskExecutionCap.Init(base.mgr)
 
-func (p *queryCoordConfig) initBalanceIntervalSeconds() {
-	balanceInterval := p.Base.LoadWithDefault("queryCoord.balanceIntervalSeconds", "60")
-	interval, err := strconv.ParseInt(balanceInterval, 10, 64)
-	if err != nil {
-		panic(err)
+	p.AutoHandoff = ParamItem{
+		Key:          "queryCoord.autoHandoff",
+		Version:      "2.0.0",
+		DefaultValue: "true",
+		PanicIfEmpty: true,
 	}
-	p.BalanceIntervalSeconds = interval
-}
+	p.AutoHandoff.Init(base.mgr)
 
-func (p *queryCoordConfig) initMemoryUsageMaxDifferencePercentage() {
-	maxDiff := p.Base.LoadWithDefault("queryCoord.memoryUsageMaxDifferencePercentage", "30")
-	diffPercentage, err := strconv.ParseInt(maxDiff, 10, 64)
-	if err != nil {
-		panic(err)
+	p.AutoBalance = ParamItem{
+		Key:          "queryCoord.autoBalance",
+		Version:      "2.0.0",
+		DefaultValue: "false",
+		PanicIfEmpty: true,
 	}
-	p.MemoryUsageMaxDifferencePercentage = float64(diffPercentage) / 100
-}
+	p.AutoBalance.Init(base.mgr)
 
-func (p *queryCoordConfig) initEnableActiveStandby() {
-	p.EnableActiveStandby = p.Base.ParseBool("queryCoord.enableActiveStandby", false)
-}
-
-func (p *queryCoordConfig) initCheckInterval() {
-	interval := p.Base.LoadWithDefault("queryCoord.checkInterval", "1000")
-	checkInterval, err := strconv.ParseInt(interval, 10, 64)
-	if err != nil {
-		panic(err)
+	p.OverloadedMemoryThresholdPercentage = ParamItem{
+		Key:          "queryCoord.overloadedMemoryThresholdPercentage",
+		Version:      "2.0.0",
+		DefaultValue: "90",
+		PanicIfEmpty: true,
 	}
-	p.CheckInterval = time.Duration(checkInterval) * time.Millisecond
-}
+	p.OverloadedMemoryThresholdPercentage.Init(base.mgr)
 
-func (p *queryCoordConfig) initChannelTaskTimeout() {
-	timeout := p.Base.LoadWithDefault("queryCoord.channelTaskTimeout", "60000")
-	taskTimeout, err := strconv.ParseInt(timeout, 10, 64)
-	if err != nil {
-		panic(err)
+	p.BalanceIntervalSeconds = ParamItem{
+		Key:          "queryCoord.balanceIntervalSeconds",
+		Version:      "2.0.0",
+		DefaultValue: "60",
+		PanicIfEmpty: true,
 	}
-	p.ChannelTaskTimeout = time.Duration(taskTimeout) * time.Millisecond
-}
+	p.BalanceIntervalSeconds.Init(base.mgr)
 
-func (p *queryCoordConfig) initSegmentTaskTimeout() {
-	timeout := p.Base.LoadWithDefault("queryCoord.segmentTaskTimeout", "120000")
-	taskTimeout, err := strconv.ParseInt(timeout, 10, 64)
-	if err != nil {
-		panic(err)
+	p.MemoryUsageMaxDifferencePercentage = ParamItem{
+		Key:          "queryCoord.memoryUsageMaxDifferencePercentage",
+		Version:      "2.0.0",
+		DefaultValue: "30",
+		PanicIfEmpty: true,
 	}
-	p.SegmentTaskTimeout = time.Duration(taskTimeout) * time.Millisecond
-}
+	p.MemoryUsageMaxDifferencePercentage.Init(base.mgr)
 
-func (p *queryCoordConfig) initDistPullInterval() {
-	interval := p.Base.LoadWithDefault("queryCoord.distPullInterval", "500")
-	pullInterval, err := strconv.ParseInt(interval, 10, 64)
-	if err != nil {
-		panic(err)
+	p.CheckInterval = ParamItem{
+		Key:          "queryCoord.checkInterval",
+		Version:      "2.0.0",
+		DefaultValue: "1000",
+		PanicIfEmpty: true,
 	}
-	p.DistPullInterval = time.Duration(pullInterval) * time.Millisecond
-}
+	p.CheckInterval.Init(base.mgr)
 
-func (p *queryCoordConfig) initLoadTimeoutSeconds() {
-	timeout := p.Base.LoadWithDefault("queryCoord.loadTimeoutSeconds", "600")
-	loadTimeout, err := strconv.ParseInt(timeout, 10, 64)
-	if err != nil {
-		panic(err)
+	p.ChannelTaskTimeout = ParamItem{
+		Key:          "queryCoord.channelTaskTimeout",
+		Version:      "2.0.0",
+		DefaultValue: "60000",
+		PanicIfEmpty: true,
 	}
-	p.LoadTimeoutSeconds = time.Duration(loadTimeout) * time.Second
-}
+	p.ChannelTaskTimeout.Init(base.mgr)
 
-func (p *queryCoordConfig) initCheckHandoffInterval() {
-	interval := p.Base.LoadWithDefault("queryCoord.checkHandoffInterval", "5000")
-	checkHandoffInterval, err := strconv.ParseInt(interval, 10, 64)
-	if err != nil {
-		panic(err)
+	p.SegmentTaskTimeout = ParamItem{
+		Key:          "queryCoord.segmentTaskTimeout",
+		Version:      "2.0.0",
+		DefaultValue: "120000",
+		PanicIfEmpty: true,
 	}
-	p.CheckHandoffInterval = time.Duration(checkHandoffInterval) * time.Millisecond
-}
+	p.SegmentTaskTimeout.Init(base.mgr)
 
-func (p *queryCoordConfig) SetNodeID(id UniqueID) {
-	p.NodeID.Store(id)
-}
-
-func (p *queryCoordConfig) GetNodeID() UniqueID {
-	val := p.NodeID.Load()
-	if val != nil {
-		return val.(UniqueID)
+	p.DistPullInterval = ParamItem{
+		Key:          "queryCoord.distPullInterval",
+		Version:      "2.0.0",
+		DefaultValue: "500",
+		PanicIfEmpty: true,
 	}
-	return 0
+	p.DistPullInterval.Init(base.mgr)
+
+	p.LoadTimeoutSeconds = ParamItem{
+		Key:          "queryCoord.loadTimeoutSeconds",
+		Version:      "2.0.0",
+		DefaultValue: "600",
+		PanicIfEmpty: true,
+	}
+	p.LoadTimeoutSeconds.Init(base.mgr)
+
+	p.HeartbeatAvailableInterval = ParamItem{
+		Key:          "queryCoord.heartbeatAvailableInterval",
+		Version:      "2.2.1",
+		DefaultValue: "10000",
+		PanicIfEmpty: true,
+	}
+	p.HeartbeatAvailableInterval.Init(base.mgr)
+
+	p.CheckHandoffInterval = ParamItem{
+		Key:          "queryCoord.checkHandoffInterval",
+		DefaultValue: "5000",
+		Version:      "2.2.0",
+		PanicIfEmpty: true,
+	}
+	p.CheckHandoffInterval.Init(base.mgr)
+
+	p.EnableActiveStandby = ParamItem{
+		Key:          "queryCoord.enableActiveStandby",
+		Version:      "2.2.0",
+		DefaultValue: "false",
+	}
+	p.EnableActiveStandby.Init(base.mgr)
+
+	p.NextTargetSurviveTime = ParamItem{
+		Key:          "queryCoord.NextTargetSurviveTime",
+		Version:      "2.0.0",
+		DefaultValue: "300",
+		PanicIfEmpty: true,
+	}
+	p.NextTargetSurviveTime.Init(base.mgr)
+
+	p.UpdateNextTargetInterval = ParamItem{
+		Key:          "queryCoord.UpdateNextTargetInterval",
+		Version:      "2.0.0",
+		DefaultValue: "10",
+		PanicIfEmpty: true,
+	}
+	p.UpdateNextTargetInterval.Init(base.mgr)
 }
 
 // /////////////////////////////////////////////////////////////////////////////
 // --- querynode ---
 type queryNodeConfig struct {
-	Base *BaseTable
-
-	Alias         string
-	QueryNodeIP   string
-	QueryNodePort int64
-	NodeID        atomic.Value
-
-	FlowGraphMaxQueueLength int32
-	FlowGraphMaxParallelism int32
+	FlowGraphMaxQueueLength ParamItem `refreshable:"false"`
+	FlowGraphMaxParallelism ParamItem `refreshable:"false"`
 
 	// stats
-	StatsPublishInterval int
-
-	SliceIndex int
+	//Deprecated: Never used
+	StatsPublishInterval ParamItem `refreshable:"true"`
 
 	// segcore
-	ChunkRows        int64
-	SmallIndexNlist  int64
-	SmallIndexNProbe int64
-
-	CreatedTime time.Time
-	UpdatedTime time.Time
+	ChunkRows        ParamItem `refreshable:"false"`
+	SmallIndexNlist  ParamItem `refreshable:"false"`
+	SmallIndexNProbe ParamItem `refreshable:"false"`
 
 	// memory limit
-	LoadMemoryUsageFactor               float64
-	OverloadedMemoryThresholdPercentage float64
+	LoadMemoryUsageFactor               ParamItem `refreshable:"true"`
+	OverloadedMemoryThresholdPercentage ParamItem `refreshable:"false"`
 
 	// enable disk
-	EnableDisk             bool
-	DiskCapacityLimit      int64
-	MaxDiskUsagePercentage float64
+	EnableDisk             ParamItem `refreshable:"true"`
+	DiskCapacityLimit      ParamItem `refreshable:"true"`
+	MaxDiskUsagePercentage ParamItem `refreshable:"true"`
 
 	// cache limit
-	CacheEnabled     bool
-	CacheMemoryLimit int64
+	CacheEnabled     ParamItem `refreshable:"false"`
+	CacheMemoryLimit ParamItem `refreshable:"false"`
 
-	GroupEnabled         bool
-	MaxReceiveChanSize   int32
-	MaxUnsolvedQueueSize int32
-	MaxReadConcurrency   int32
-	MaxGroupNQ           int64
-	TopKMergeRatio       float64
-	CPURatio             float64
+	GroupEnabled         ParamItem `refreshable:"true"`
+	MaxReceiveChanSize   ParamItem `refreshable:"false"`
+	MaxUnsolvedQueueSize ParamItem `refreshable:"true"`
+	MaxReadConcurrency   ParamItem `refreshable:"true"`
+	MaxGroupNQ           ParamItem `refreshable:"true"`
+	TopKMergeRatio       ParamItem `refreshable:"true"`
+	CPURatio             ParamItem `refreshable:"true"`
+	MaxTimestampLag      ParamItem `refreshable:"true"`
+
+	GCHelperEnabled     ParamItem `refreshable:"false"`
+	MinimumGOGCConfig   ParamItem `refreshable:"false"`
+	MaximumGOGCConfig   ParamItem `refreshable:"false"`
+	GracefulStopTimeout ParamItem `refreshable:"false"`
 }
 
 func (p *queryNodeConfig) init(base *BaseTable) {
-	p.Base = base
-	p.NodeID.Store(UniqueID(0))
-
-	p.initFlowGraphMaxQueueLength()
-	p.initFlowGraphMaxParallelism()
-
-	p.initStatsPublishInterval()
-
-	p.initSmallIndexParams()
-
-	p.initLoadMemoryUsageFactor()
-	p.initOverloadedMemoryThresholdPercentage()
-
-	p.initCacheMemoryLimit()
-	p.initCacheEnabled()
-
-	p.initGroupEnabled()
-	p.initMaxReceiveChanSize()
-	p.initMaxReadConcurrency()
-	p.initMaxUnsolvedQueueSize()
-	p.initMaxGroupNQ()
-	p.initTopKMergeRatio()
-	p.initCPURatio()
-	p.initEnableDisk()
-	p.initDiskCapacity()
-	p.initMaxDiskUsagePercentage()
-}
-
-// InitAlias initializes an alias for the QueryNode role.
-func (p *queryNodeConfig) InitAlias(alias string) {
-	p.Alias = alias
-}
-
-// advanced params
-// stats
-func (p *queryNodeConfig) initStatsPublishInterval() {
-	p.StatsPublishInterval = p.Base.ParseIntWithDefault("queryNode.stats.publishInterval", 1000)
-}
-
-// dataSync:
-func (p *queryNodeConfig) initFlowGraphMaxQueueLength() {
-	p.FlowGraphMaxQueueLength = p.Base.ParseInt32WithDefault("queryNode.dataSync.flowGraph.maxQueueLength", 1024)
-}
-
-func (p *queryNodeConfig) initFlowGraphMaxParallelism() {
-	p.FlowGraphMaxParallelism = p.Base.ParseInt32WithDefault("queryNode.dataSync.flowGraph.maxParallelism", 1024)
-}
-
-func (p *queryNodeConfig) initSmallIndexParams() {
-	p.ChunkRows = p.Base.ParseInt64WithDefault("queryNode.segcore.chunkRows", 1024)
-	if p.ChunkRows < 1024 {
-		log.Warn("chunk rows can not be less than 1024, force set to 1024", zap.Any("current", p.ChunkRows))
-		p.ChunkRows = 1024
+	p.FlowGraphMaxQueueLength = ParamItem{
+		Key:          "queryNode.dataSync.flowGraph.maxQueueLength",
+		Version:      "2.0.0",
+		DefaultValue: "1024",
 	}
+	p.FlowGraphMaxQueueLength.Init(base.mgr)
 
-	// default NList is the first nlist
-	var defaultNList int64
-	for i := int64(0); i < p.ChunkRows; i++ {
-		if math.Pow(2.0, float64(i)) > math.Sqrt(float64(p.ChunkRows)) {
-			defaultNList = int64(math.Pow(2, float64(i)))
-			break
-		}
+	p.FlowGraphMaxParallelism = ParamItem{
+		Key:          "queryNode.dataSync.flowGraph.maxParallelism",
+		Version:      "2.0.0",
+		DefaultValue: "1024",
 	}
+	p.FlowGraphMaxParallelism.Init(base.mgr)
 
-	p.SmallIndexNlist = p.Base.ParseInt64WithDefault("queryNode.segcore.smallIndex.nlist", defaultNList)
-	if p.SmallIndexNlist > p.ChunkRows/8 {
-		log.Warn("small index nlist must smaller than chunkRows/8, force set to", zap.Any("nliit", p.ChunkRows/8))
-		p.SmallIndexNlist = p.ChunkRows / 8
+	p.StatsPublishInterval = ParamItem{
+		Key:          "queryNode.stats.publishInterval",
+		Version:      "2.0.0",
+		DefaultValue: "1000",
 	}
+	p.StatsPublishInterval.Init(base.mgr)
 
-	defaultNprobe := p.SmallIndexNlist / 16
-	p.SmallIndexNProbe = p.Base.ParseInt64WithDefault("queryNode.segcore.smallIndex.nprobe", defaultNprobe)
-	if p.SmallIndexNProbe > p.SmallIndexNlist {
-		log.Warn("small index nprobe must smaller than nlist, force set to", zap.Any("nprobe", p.SmallIndexNlist))
-		p.SmallIndexNProbe = p.SmallIndexNlist
+	p.ChunkRows = ParamItem{
+		Key:          "queryNode.segcore.chunkRows",
+		Version:      "2.0.0",
+		DefaultValue: "1024",
+		Formatter: func(v string) string {
+			if getAsInt(v) < 1024 {
+				return "1024"
+			}
+			return v
+		},
 	}
-}
+	p.ChunkRows.Init(base.mgr)
 
-func (p *queryNodeConfig) initLoadMemoryUsageFactor() {
-	loadMemoryUsageFactor := p.Base.LoadWithDefault("queryNode.loadMemoryUsageFactor", "3")
-	factor, err := strconv.ParseFloat(loadMemoryUsageFactor, 64)
-	if err != nil {
-		panic(err)
+	p.SmallIndexNlist = ParamItem{
+		Key:     "queryNode.segcore.smallIndex.nlist",
+		Version: "2.0.0",
+		Formatter: func(v string) string {
+			rows := p.ChunkRows.GetAsInt64()
+			var defaultNList int64
+			for i := int64(0); i < rows; i++ {
+				if math.Pow(2.0, float64(i)) > math.Sqrt(float64(rows)) {
+					defaultNList = int64(math.Pow(2, float64(i)))
+					break
+				}
+			}
+
+			nlist := getAsInt64(v)
+			if nlist == 0 {
+				nlist = defaultNList
+			}
+			if nlist > rows/8 {
+				return strconv.FormatInt(rows/8, 10)
+			}
+			return strconv.FormatInt(nlist, 10)
+		},
 	}
-	p.LoadMemoryUsageFactor = factor
-}
+	p.SmallIndexNlist.Init(base.mgr)
 
-func (p *queryNodeConfig) initOverloadedMemoryThresholdPercentage() {
-	overloadedMemoryThresholdPercentage := p.Base.LoadWithDefault("queryCoord.overloadedMemoryThresholdPercentage", "90")
-	thresholdPercentage, err := strconv.ParseInt(overloadedMemoryThresholdPercentage, 10, 64)
-	if err != nil {
-		panic(err)
+	p.SmallIndexNProbe = ParamItem{
+		Key:     "queryNode.segcore.smallIndex.nprobe",
+		Version: "2.0.0",
+		Formatter: func(v string) string {
+			defaultNprobe := p.SmallIndexNlist.GetAsInt64() / 16
+			nprobe := getAsInt64(v)
+			if nprobe == 0 {
+				nprobe = defaultNprobe
+			}
+			if nprobe > p.SmallIndexNlist.GetAsInt64() {
+				return p.SmallIndexNlist.GetValue()
+			}
+			return strconv.FormatInt(nprobe, 10)
+		},
 	}
-	p.OverloadedMemoryThresholdPercentage = float64(thresholdPercentage) / 100
-}
+	p.SmallIndexNProbe.Init(base.mgr)
 
-func (p *queryNodeConfig) initCacheMemoryLimit() {
-	overloadedMemoryThresholdPercentage := p.Base.LoadWithDefault("queryNode.cache.memoryLimit", "2147483648")
-	cacheMemoryLimit, err := strconv.ParseInt(overloadedMemoryThresholdPercentage, 10, 64)
-	if err != nil {
-		panic(err)
+	p.LoadMemoryUsageFactor = ParamItem{
+		Key:          "queryNode.loadMemoryUsageFactor",
+		Version:      "2.0.0",
+		DefaultValue: "3",
+		PanicIfEmpty: true,
 	}
-	p.CacheMemoryLimit = cacheMemoryLimit
-}
+	p.LoadMemoryUsageFactor.Init(base.mgr)
 
-func (p *queryNodeConfig) initCacheEnabled() {
-	var err error
-	cacheEnabled := p.Base.LoadWithDefault("queryNode.cache.enabled", "true")
-	p.CacheEnabled, err = strconv.ParseBool(cacheEnabled)
-	if err != nil {
-		panic(err)
+	p.OverloadedMemoryThresholdPercentage = ParamItem{
+		Key:          "queryCoord.overloadedMemoryThresholdPercentage",
+		Version:      "2.0.0",
+		DefaultValue: "90",
+		PanicIfEmpty: true,
+		Formatter: func(v string) string {
+			return fmt.Sprintf("%f", getAsFloat(v)/100)
+		},
 	}
-}
+	p.OverloadedMemoryThresholdPercentage.Init(base.mgr)
 
-func (p *queryNodeConfig) initGroupEnabled() {
-	p.GroupEnabled = p.Base.ParseBool("queryNode.grouping.enabled", true)
-}
-
-func (p *queryNodeConfig) initMaxReceiveChanSize() {
-	p.MaxReceiveChanSize = p.Base.ParseInt32WithDefault("queryNode.scheduler.receiveChanSize", 10240)
-}
-
-func (p *queryNodeConfig) initMaxUnsolvedQueueSize() {
-	p.MaxUnsolvedQueueSize = p.Base.ParseInt32WithDefault("queryNode.scheduler.unsolvedQueueSize", 10240)
-}
-
-func (p *queryNodeConfig) initCPURatio() {
-	p.CPURatio = p.Base.ParseFloatWithDefault("queryNode.scheduler.cpuRatio", 10.0)
-}
-
-func (p *queryNodeConfig) initMaxReadConcurrency() {
-	readConcurrencyRatio := p.Base.ParseFloatWithDefault("queryNode.scheduler.maxReadConcurrentRatio", 2.0)
-	cpuNum := int32(runtime.GOMAXPROCS(0))
-	p.MaxReadConcurrency = int32(float64(cpuNum) * readConcurrencyRatio)
-	if p.MaxReadConcurrency < 1 {
-		p.MaxReadConcurrency = 1 // MaxReadConcurrency must >= 1
-	} else if p.MaxReadConcurrency > cpuNum*100 {
-		p.MaxReadConcurrency = cpuNum * 100 // MaxReadConcurrency must <= 100*cpuNum
+	p.CacheMemoryLimit = ParamItem{
+		Key:          "queryNode.cache.memoryLimit",
+		Version:      "2.0.0",
+		DefaultValue: "2147483648",
+		PanicIfEmpty: true,
 	}
-}
+	p.CacheMemoryLimit.Init(base.mgr)
 
-func (p *queryNodeConfig) initMaxGroupNQ() {
-	p.MaxGroupNQ = p.Base.ParseInt64WithDefault("queryNode.grouping.maxNQ", 1000)
-}
-
-func (p *queryNodeConfig) initTopKMergeRatio() {
-	p.TopKMergeRatio = p.Base.ParseFloatWithDefault("queryNode.grouping.topKMergeRatio", 10.0)
-}
-
-func (p *queryNodeConfig) SetNodeID(id UniqueID) {
-	p.NodeID.Store(id)
-}
-
-func (p *queryNodeConfig) GetNodeID() UniqueID {
-	val := p.NodeID.Load()
-	if val != nil {
-		return val.(UniqueID)
+	p.CacheEnabled = ParamItem{
+		Key:          "queryNode.cache.enabled",
+		Version:      "2.0.0",
+		DefaultValue: "",
 	}
-	return 0
-}
+	p.CacheEnabled.Init(base.mgr)
 
-func (p *queryNodeConfig) initEnableDisk() {
-	var err error
-	enableDisk := p.Base.LoadWithDefault("queryNode.enableDisk", "false")
-	p.EnableDisk, err = strconv.ParseBool(enableDisk)
-	if err != nil {
-		panic(err)
+	p.GroupEnabled = ParamItem{
+		Key:          "queryNode.grouping.enabled",
+		Version:      "2.0.0",
+		DefaultValue: "true",
 	}
-}
+	p.GroupEnabled.Init(base.mgr)
 
-func (p *queryNodeConfig) initMaxDiskUsagePercentage() {
-	maxDiskUsagePercentageStr := p.Base.LoadWithDefault("queryNode.maxDiskUsagePercentage", "95")
-	maxDiskUsagePercentage, err := strconv.ParseInt(maxDiskUsagePercentageStr, 10, 64)
-	if err != nil {
-		panic(err)
+	p.MaxReceiveChanSize = ParamItem{
+		Key:          "queryNode.scheduler.receiveChanSize",
+		Version:      "2.0.0",
+		DefaultValue: "10240",
 	}
-	p.MaxDiskUsagePercentage = float64(maxDiskUsagePercentage) / 100
-}
+	p.MaxReceiveChanSize.Init(base.mgr)
 
-func (p *queryNodeConfig) initDiskCapacity() {
-	diskSizeStr := os.Getenv("LOCAL_STORAGE_SIZE")
-	if len(diskSizeStr) == 0 {
-		diskUsage, err := disk.Usage("/")
-		if err != nil {
-			panic(err)
-		}
-		p.DiskCapacityLimit = int64(diskUsage.Total)
-
-		return
+	p.MaxReadConcurrency = ParamItem{
+		Key:          "queryNode.scheduler.maxReadConcurrentRatio",
+		Version:      "2.0.0",
+		DefaultValue: "2.0",
+		Formatter: func(v string) string {
+			ratio := getAsFloat(v)
+			cpuNum := int64(runtime.GOMAXPROCS(0))
+			concurrency := int64(float64(cpuNum) * ratio)
+			if concurrency < 1 {
+				return "1" // MaxReadConcurrency must >= 1
+			} else if concurrency > cpuNum*100 {
+				return strconv.FormatInt(cpuNum*100, 10) // MaxReadConcurrency must <= 100*cpuNum
+			}
+			return strconv.FormatInt(concurrency, 10)
+		},
 	}
+	p.MaxReadConcurrency.Init(base.mgr)
 
-	diskSize, err := strconv.ParseInt(diskSizeStr, 10, 64)
-	if err != nil {
-		panic(err)
+	p.MaxUnsolvedQueueSize = ParamItem{
+		Key:          "queryNode.scheduler.unsolvedQueueSize",
+		Version:      "2.0.0",
+		DefaultValue: "10240",
 	}
-	p.DiskCapacityLimit = diskSize * 1024 * 1024 * 1024
+	p.MaxUnsolvedQueueSize.Init(base.mgr)
+
+	p.MaxGroupNQ = ParamItem{
+		Key:          "queryNode.grouping.maxNQ",
+		Version:      "2.0.0",
+		DefaultValue: "1000",
+	}
+	p.MaxGroupNQ.Init(base.mgr)
+
+	p.TopKMergeRatio = ParamItem{
+		Key:          "queryNode.grouping.topKMergeRatio",
+		Version:      "2.0.0",
+		DefaultValue: "10.0",
+	}
+	p.TopKMergeRatio.Init(base.mgr)
+
+	p.CPURatio = ParamItem{
+		Key:          "queryNode.scheduler.cpuRatio",
+		Version:      "2.0.0",
+		DefaultValue: "10",
+	}
+	p.CPURatio.Init(base.mgr)
+
+	p.EnableDisk = ParamItem{
+		Key:          "queryNode.enableDisk",
+		Version:      "2.2.0",
+		DefaultValue: "false",
+	}
+	p.EnableDisk.Init(base.mgr)
+
+	p.DiskCapacityLimit = ParamItem{
+		Key:     "LOCAL_STORAGE_SIZE",
+		Version: "2.2.0",
+		Formatter: func(v string) string {
+			if len(v) == 0 {
+				diskUsage, err := disk.Usage("/")
+				if err != nil {
+					panic(err)
+				}
+				return strconv.FormatUint(diskUsage.Total, 10)
+			}
+			diskSize := getAsInt64(v)
+			return strconv.FormatInt(diskSize*1024*1024*1024, 10)
+		},
+	}
+	p.DiskCapacityLimit.Init(base.mgr)
+
+	p.MaxDiskUsagePercentage = ParamItem{
+		Key:          "queryNode.maxDiskUsagePercentage",
+		Version:      "2.2.0",
+		DefaultValue: "95",
+		PanicIfEmpty: true,
+		Formatter: func(v string) string {
+			return fmt.Sprintf("%f", getAsFloat(v)/100)
+		},
+	}
+	p.MaxDiskUsagePercentage.Init(base.mgr)
+
+	p.MaxTimestampLag = ParamItem{
+		Key:          "queryNode.scheduler.maxTimestampLag",
+		Version:      "2.2.3",
+		DefaultValue: "86400",
+	}
+	p.MaxTimestampLag.Init(base.mgr)
+
+	p.GCHelperEnabled = ParamItem{
+		Key:          "queryNode.gchelper.enabled",
+		Version:      "2.0.0",
+		DefaultValue: "true",
+	}
+	p.GCHelperEnabled.Init(base.mgr)
+
+	p.MaximumGOGCConfig = ParamItem{
+		Key:          "queryNode.gchelper.maximumGoGC",
+		Version:      "2.0.0",
+		DefaultValue: "200",
+	}
+	p.MaximumGOGCConfig.Init(base.mgr)
+
+	p.MinimumGOGCConfig = ParamItem{
+		Key:          "queryNode.gchelper.minimumGoGC",
+		Version:      "2.0.0",
+		DefaultValue: "30",
+	}
+	p.MinimumGOGCConfig.Init(base.mgr)
+
+	p.GracefulStopTimeout = ParamItem{
+		Key:          "queryNode.gracefulStopTimeout",
+		Version:      "2.2.1",
+		FallbackKeys: []string{"common.gracefulStopTimeout"},
+	}
+	p.GracefulStopTimeout.Init(base.mgr)
 }
 
 // /////////////////////////////////////////////////////////////////////////////
 // --- datacoord ---
 type dataCoordConfig struct {
-	Base *BaseTable
 
-	NodeID atomic.Value
-
-	IP      string
-	Port    int
-	Address string
-
-	// --- ETCD ---
-	ChannelWatchSubPath string
+	// --- CHANNEL ---
+	MaxWatchDuration ParamItem `refreshable:"false"`
 
 	// --- SEGMENTS ---
-	SegmentMaxSize                 float64
-	DiskSegmentMaxSize             float64
-	SegmentSealProportion          float64
-	SegAssignmentExpiration        int64
-	SegmentMaxLifetime             time.Duration
-	SegmentMaxIdleTime             time.Duration
-	SegmentMinSizeFromIdleToSealed float64
-
-	CreatedTime time.Time
-	UpdatedTime time.Time
+	SegmentMaxSize                 ParamItem `refreshable:"false"`
+	DiskSegmentMaxSize             ParamItem `refreshable:"true"`
+	SegmentSealProportion          ParamItem `refreshable:"false"`
+	SegAssignmentExpiration        ParamItem `refreshable:"true"`
+	SegmentMaxLifetime             ParamItem `refreshable:"false"`
+	SegmentMaxIdleTime             ParamItem `refreshable:"false"`
+	SegmentMinSizeFromIdleToSealed ParamItem `refreshable:"false"`
+	SegmentMaxBinlogFileNumber     ParamItem `refreshable:"false"`
 
 	// compaction
-	EnableCompaction     bool
-	EnableAutoCompaction atomic.Value
+	EnableCompaction     ParamItem `refreshable:"false"`
+	EnableAutoCompaction ParamItem `refreshable:"true"`
 
-	MinSegmentToMerge                 int
-	MaxSegmentToMerge                 int
-	SegmentSmallProportion            float64
-	CompactionTimeoutInSeconds        int32
-	CompactionCheckIntervalInSeconds  int64
-	SingleCompactionRatioThreshold    float32
-	SingleCompactionDeltaLogMaxSize   int64
-	SingleCompactionExpiredLogMaxSize int64
-	SingleCompactionBinlogMaxNum      int64
-	GlobalCompactionInterval          time.Duration
+	MinSegmentToMerge                 ParamItem `refreshable:"true"`
+	MaxSegmentToMerge                 ParamItem `refreshable:"true"`
+	SegmentSmallProportion            ParamItem `refreshable:"true"`
+	SegmentCompactableProportion      ParamItem `refreshable:"true"`
+	SegmentExpansionRate              ParamItem `refreshable:"true"`
+	CompactionTimeoutInSeconds        ParamItem `refreshable:"true"`
+	CompactionCheckIntervalInSeconds  ParamItem `refreshable:"false"`
+	SingleCompactionRatioThreshold    ParamItem `refreshable:"true"`
+	SingleCompactionDeltaLogMaxSize   ParamItem `refreshable:"true"`
+	SingleCompactionExpiredLogMaxSize ParamItem `refreshable:"true"`
+	SingleCompactionDeltalogMaxNum    ParamItem `refreshable:"true"`
+	GlobalCompactionInterval          ParamItem `refreshable:"false"`
 
 	// Garbage Collection
-	EnableGarbageCollection bool
-	GCInterval              time.Duration
-	GCMissingTolerance      time.Duration
-	GCDropTolerance         time.Duration
-	EnableActiveStandby     bool
+	EnableGarbageCollection ParamItem `refreshable:"false"`
+	GCInterval              ParamItem `refreshable:"false"`
+	GCMissingTolerance      ParamItem `refreshable:"false"`
+	GCDropTolerance         ParamItem `refreshable:"false"`
+	EnableActiveStandby     ParamItem `refreshable:"false"`
+
+	BindIndexNodeMode ParamItem `refreshable:"false"`
+	IndexNodeAddress  ParamItem `refreshable:"false"`
+	WithCredential    ParamItem `refreshable:"false"`
+	IndexNodeID       ParamItem `refreshable:"false"`
+
+	MinSegmentNumRowsToEnableIndex ParamItem `refreshable:"true"`
 }
 
 func (p *dataCoordConfig) init(base *BaseTable) {
-	p.Base = base
-	p.initChannelWatchPrefix()
 
-	p.initSegmentMaxSize()
-	p.initDiskSegmentMaxSize()
-	p.initSegmentSealProportion()
-	p.initSegAssignmentExpiration()
-	p.initSegmentMaxLifetime()
-	p.initSegmentMaxIdleTime()
-	p.initSegmentMinSizeFromIdleToSealed()
-
-	p.initEnableCompaction()
-	p.initEnableAutoCompaction()
-
-	p.initCompactionMinSegment()
-	p.initCompactionMaxSegment()
-	p.initSegmentSmallProportion()
-	p.initCompactionTimeoutInSeconds()
-	p.initCompactionCheckIntervalInSeconds()
-	p.initSingleCompactionRatioThreshold()
-	p.initSingleCompactionDeltaLogMaxSize()
-	p.initSingleCompactionExpiredLogMaxSize()
-	p.initSingleCompactionBinlogMaxNum()
-	p.initGlobalCompactionInterval()
-
-	p.initEnableGarbageCollection()
-	p.initGCInterval()
-	p.initGCMissingTolerance()
-	p.initGCDropTolerance()
-	p.initEnableActiveStandby()
-}
-
-func (p *dataCoordConfig) initSegmentMaxSize() {
-	p.SegmentMaxSize = p.Base.ParseFloatWithDefault("dataCoord.segment.maxSize", 512.0)
-}
-
-func (p *dataCoordConfig) initDiskSegmentMaxSize() {
-	p.DiskSegmentMaxSize = p.Base.ParseFloatWithDefault("dataCoord.segment.diskSegmentMaxSize", 512.0*4)
-}
-
-func (p *dataCoordConfig) initSegmentSealProportion() {
-	p.SegmentSealProportion = p.Base.ParseFloatWithDefault("dataCoord.segment.sealProportion", 0.25)
-}
-
-func (p *dataCoordConfig) initSegAssignmentExpiration() {
-	p.SegAssignmentExpiration = p.Base.ParseInt64WithDefault("dataCoord.segment.assignmentExpiration", 2000)
-}
-
-func (p *dataCoordConfig) initSegmentMaxLifetime() {
-	p.SegmentMaxLifetime = time.Duration(p.Base.ParseInt64WithDefault("dataCoord.segment.maxLife", 24*60*60)) * time.Second
-}
-
-func (p *dataCoordConfig) initSegmentMaxIdleTime() {
-	p.SegmentMaxIdleTime = time.Duration(p.Base.ParseInt64WithDefault("dataCoord.segment.maxIdleTime", 60*60)) * time.Second
-	log.Info("init segment max idle time", zap.String("value", p.SegmentMaxIdleTime.String()))
-}
-
-func (p *dataCoordConfig) initSegmentMinSizeFromIdleToSealed() {
-	p.SegmentMinSizeFromIdleToSealed = p.Base.ParseFloatWithDefault("dataCoord.segment.minSizeFromIdleToSealed", 16.0)
-	log.Info("init segment min size from idle to sealed", zap.Float64("value", p.SegmentMinSizeFromIdleToSealed))
-}
-
-func (p *dataCoordConfig) initChannelWatchPrefix() {
-	// WARN: this value should not be put to milvus.yaml. It's a default value for channel watch path.
-	// This will be removed after we reconstruct our config module.
-	p.ChannelWatchSubPath = "channelwatch"
-}
-
-func (p *dataCoordConfig) initEnableCompaction() {
-	p.EnableCompaction = p.Base.ParseBool("dataCoord.enableCompaction", false)
-}
-
-func (p *dataCoordConfig) initEnableAutoCompaction() {
-	p.EnableAutoCompaction.Store(p.Base.ParseBool("dataCoord.compaction.enableAutoCompaction", false))
-}
-
-func (p *dataCoordConfig) initCompactionMinSegment() {
-	p.MinSegmentToMerge = p.Base.ParseIntWithDefault("dataCoord.compaction.min.segment", 4)
-}
-
-func (p *dataCoordConfig) initCompactionMaxSegment() {
-	p.MaxSegmentToMerge = p.Base.ParseIntWithDefault("dataCoord.compaction.max.segment", 30)
-}
-
-func (p *dataCoordConfig) initSegmentSmallProportion() {
-	p.SegmentSmallProportion = p.Base.ParseFloatWithDefault("dataCoord.segment.smallProportion", 0.5)
-}
-
-// compaction execution timeout
-func (p *dataCoordConfig) initCompactionTimeoutInSeconds() {
-	p.CompactionTimeoutInSeconds = p.Base.ParseInt32WithDefault("dataCoord.compaction.timeout", 60*3)
-}
-
-func (p *dataCoordConfig) initCompactionCheckIntervalInSeconds() {
-	p.CompactionCheckIntervalInSeconds = p.Base.ParseInt64WithDefault("dataCoord.compaction.check.interval", 10)
-}
-
-// if total delete entities is large than a ratio of total entities, trigger single compaction.
-func (p *dataCoordConfig) initSingleCompactionRatioThreshold() {
-	p.SingleCompactionRatioThreshold = float32(p.Base.ParseFloatWithDefault("dataCoord.compaction.single.ratio.threshold", 0.2))
-}
-
-// if total delta file size > SingleCompactionDeltaLogMaxSize, trigger single compaction
-func (p *dataCoordConfig) initSingleCompactionDeltaLogMaxSize() {
-	p.SingleCompactionDeltaLogMaxSize = p.Base.ParseInt64WithDefault("dataCoord.compaction.single.deltalog.maxsize", 2*1024*1024)
-}
-
-// if total expired file size > SingleCompactionExpiredLogMaxSize, trigger single compaction
-func (p *dataCoordConfig) initSingleCompactionExpiredLogMaxSize() {
-	p.SingleCompactionExpiredLogMaxSize = p.Base.ParseInt64WithDefault("dataCoord.compaction.single.expiredlog.maxsize", 10*1024*1024)
-}
-
-// if total binlog number > SingleCompactionBinlogMaxNum, trigger single compaction to ensure binlog number per segment is limited
-func (p *dataCoordConfig) initSingleCompactionBinlogMaxNum() {
-	p.SingleCompactionBinlogMaxNum = p.Base.ParseInt64WithDefault("dataCoord.compaction.single.binlog.maxnum", 1000)
-}
-
-// interval we check and trigger global compaction
-func (p *dataCoordConfig) initGlobalCompactionInterval() {
-	p.GlobalCompactionInterval = time.Duration(p.Base.ParseInt64WithDefault("dataCoord.compaction.global.interval", int64(60*time.Second)))
-}
-
-// -- GC --
-func (p *dataCoordConfig) initEnableGarbageCollection() {
-	p.EnableGarbageCollection = p.Base.ParseBool("dataCoord.enableGarbageCollection", true)
-}
-
-func (p *dataCoordConfig) initGCInterval() {
-	p.GCInterval = time.Duration(p.Base.ParseInt64WithDefault("dataCoord.gc.interval", 60*60)) * time.Second
-}
-
-func (p *dataCoordConfig) initGCMissingTolerance() {
-	p.GCMissingTolerance = time.Duration(p.Base.ParseInt64WithDefault("dataCoord.gc.missingTolerance", 24*60*60)) * time.Second
-}
-
-func (p *dataCoordConfig) initGCDropTolerance() {
-	p.GCDropTolerance = time.Duration(p.Base.ParseInt64WithDefault("dataCoord.gc.dropTolerance", 24*60*60)) * time.Second
-}
-
-func (p *dataCoordConfig) SetEnableAutoCompaction(enable bool) {
-	p.EnableAutoCompaction.Store(enable)
-}
-
-func (p *dataCoordConfig) GetEnableAutoCompaction() bool {
-	enable := p.EnableAutoCompaction.Load()
-	if enable != nil {
-		return enable.(bool)
+	p.MaxWatchDuration = ParamItem{
+		Key:          "dataCoord.channel.maxWatchDuration",
+		Version:      "2.2.1",
+		DefaultValue: "60",
 	}
-	return false
-}
+	p.MaxWatchDuration.Init(base.mgr)
 
-func (p *dataCoordConfig) initEnableActiveStandby() {
-	p.EnableActiveStandby = p.Base.ParseBool("dataCoord.enableActiveStandby", false)
-}
-
-func (p *dataCoordConfig) SetNodeID(id UniqueID) {
-	p.NodeID.Store(id)
-}
-
-func (p *dataCoordConfig) GetNodeID() UniqueID {
-	val := p.NodeID.Load()
-	if val != nil {
-		return val.(UniqueID)
+	p.SegmentMaxSize = ParamItem{
+		Key:          "dataCoord.segment.maxSize",
+		Version:      "2.0.0",
+		DefaultValue: "512",
 	}
-	return 0
+	p.SegmentMaxSize.Init(base.mgr)
+
+	p.DiskSegmentMaxSize = ParamItem{
+		Key:          "dataCoord.segment.diskSegmentMaxSize",
+		Version:      "2.0.0",
+		DefaultValue: "512",
+	}
+	p.DiskSegmentMaxSize.Init(base.mgr)
+
+	p.SegmentSealProportion = ParamItem{
+		Key:          "dataCoord.segment.sealProportion",
+		Version:      "2.0.0",
+		DefaultValue: "0.25",
+	}
+	p.SegmentSealProportion.Init(base.mgr)
+
+	p.SegAssignmentExpiration = ParamItem{
+		Key:          "dataCoord.segment.assignmentExpiration",
+		Version:      "2.0.0",
+		DefaultValue: "2000",
+	}
+	p.SegAssignmentExpiration.Init(base.mgr)
+
+	p.SegmentMaxLifetime = ParamItem{
+		Key:          "dataCoord.segment.maxLife",
+		Version:      "2.0.0",
+		DefaultValue: "86400",
+	}
+	p.SegmentMaxLifetime.Init(base.mgr)
+
+	p.SegmentMaxIdleTime = ParamItem{
+		Key:          "dataCoord.segment.maxIdleTime",
+		Version:      "2.0.0",
+		DefaultValue: "3600",
+	}
+	p.SegmentMaxIdleTime.Init(base.mgr)
+
+	p.SegmentMinSizeFromIdleToSealed = ParamItem{
+		Key:          "dataCoord.segment.minSizeFromIdleToSealed",
+		Version:      "2.0.0",
+		DefaultValue: "16.0",
+	}
+	p.SegmentMinSizeFromIdleToSealed.Init(base.mgr)
+
+	p.SegmentMaxBinlogFileNumber = ParamItem{
+		Key:          "dataCoord.segment.maxBinlogFileNumber",
+		Version:      "2.0.0",
+		DefaultValue: "256",
+	}
+	p.SegmentMaxBinlogFileNumber.Init(base.mgr)
+
+	p.EnableCompaction = ParamItem{
+		Key:          "dataCoord.enableCompaction",
+		Version:      "2.0.0",
+		DefaultValue: "false",
+	}
+	p.EnableCompaction.Init(base.mgr)
+
+	p.EnableAutoCompaction = ParamItem{
+		Key:          "dataCoord.compaction.enableAutoCompaction",
+		Version:      "2.0.0",
+		DefaultValue: "false",
+	}
+	p.EnableAutoCompaction.Init(base.mgr)
+
+	p.MinSegmentToMerge = ParamItem{
+		Key:          "dataCoord.compaction.min.segment",
+		Version:      "2.0.0",
+		DefaultValue: "3",
+	}
+	p.MinSegmentToMerge.Init(base.mgr)
+
+	p.MaxSegmentToMerge = ParamItem{
+		Key:          "dataCoord.compaction.max.segment",
+		Version:      "2.0.0",
+		DefaultValue: "30",
+	}
+	p.MaxSegmentToMerge.Init(base.mgr)
+
+	p.SegmentSmallProportion = ParamItem{
+		Key:          "dataCoord.segment.smallProportion",
+		Version:      "2.0.0",
+		DefaultValue: "0.5",
+	}
+	p.SegmentSmallProportion.Init(base.mgr)
+
+	p.SegmentCompactableProportion = ParamItem{
+		Key:          "dataCoord.segment.compactableProportion",
+		Version:      "2.2.1",
+		DefaultValue: "0.5",
+	}
+	p.SegmentCompactableProportion.Init(base.mgr)
+
+	p.SegmentExpansionRate = ParamItem{
+		Key:          "dataCoord.segment.expansionRate",
+		Version:      "2.2.1",
+		DefaultValue: "1.25",
+	}
+	p.SegmentExpansionRate.Init(base.mgr)
+
+	p.CompactionTimeoutInSeconds = ParamItem{
+		Key:          "dataCoord.compaction.timeout",
+		Version:      "2.0.0",
+		DefaultValue: "180",
+	}
+	p.CompactionTimeoutInSeconds.Init(base.mgr)
+
+	p.CompactionCheckIntervalInSeconds = ParamItem{
+		Key:          "dataCoord.compaction.check.interval",
+		Version:      "2.0.0",
+		DefaultValue: "10",
+	}
+	p.CompactionCheckIntervalInSeconds.Init(base.mgr)
+
+	p.SingleCompactionRatioThreshold = ParamItem{
+		Key:          "dataCoord.compaction.single.ratio.threshold",
+		Version:      "2.0.0",
+		DefaultValue: "0.2",
+	}
+	p.SingleCompactionRatioThreshold.Init(base.mgr)
+
+	p.SingleCompactionDeltaLogMaxSize = ParamItem{
+		Key:          "dataCoord.compaction.single.deltalog.maxsize",
+		Version:      "2.0.0",
+		DefaultValue: strconv.Itoa(2 * 1024 * 1024),
+	}
+	p.SingleCompactionDeltaLogMaxSize.Init(base.mgr)
+
+	p.SingleCompactionExpiredLogMaxSize = ParamItem{
+		Key:          "dataCoord.compaction.single.expiredlog.maxsize",
+		Version:      "2.0.0",
+		DefaultValue: "10485760",
+	}
+	p.SingleCompactionExpiredLogMaxSize.Init(base.mgr)
+
+	p.SingleCompactionDeltalogMaxNum = ParamItem{
+		Key:          "dataCoord.compaction.single.deltalog.maxnum",
+		Version:      "2.0.0",
+		DefaultValue: "1000",
+	}
+	p.SingleCompactionDeltalogMaxNum.Init(base.mgr)
+
+	p.GlobalCompactionInterval = ParamItem{
+		Key:          "dataCoord.compaction.global.interval",
+		Version:      "2.0.0",
+		DefaultValue: "60",
+	}
+	p.GlobalCompactionInterval.Init(base.mgr)
+
+	p.EnableGarbageCollection = ParamItem{
+		Key:          "dataCoord.enableGarbageCollection",
+		Version:      "2.0.0",
+		DefaultValue: "true",
+	}
+	p.EnableGarbageCollection.Init(base.mgr)
+
+	p.GCInterval = ParamItem{
+		Key:          "dataCoord.gc.interval",
+		Version:      "2.0.0",
+		DefaultValue: "3600",
+	}
+	p.GCInterval.Init(base.mgr)
+
+	p.GCMissingTolerance = ParamItem{
+		Key:          "dataCoord.gc.missingTolerance",
+		Version:      "2.0.0",
+		DefaultValue: "86400",
+	}
+	p.GCMissingTolerance.Init(base.mgr)
+
+	p.GCDropTolerance = ParamItem{
+		Key:          "dataCoord.gc.dropTolerance",
+		Version:      "2.0.0",
+		DefaultValue: "86400",
+	}
+	p.GCDropTolerance.Init(base.mgr)
+
+	p.EnableActiveStandby = ParamItem{
+		Key:          "dataCoord.enableActiveStandby",
+		Version:      "2.0.0",
+		DefaultValue: "false",
+	}
+	p.EnableActiveStandby.Init(base.mgr)
+
+	p.MinSegmentNumRowsToEnableIndex = ParamItem{
+		Key:          "dataCoord.segment.minSegmentNumRowsToEnableIndex",
+		Version:      "2.0.0",
+		DefaultValue: "1024",
+	}
+	p.MinSegmentNumRowsToEnableIndex.Init(base.mgr)
+
+	p.BindIndexNodeMode = ParamItem{
+		Key:          "dataCoord.bindIndexNodeMode.enable",
+		Version:      "2.0.0",
+		DefaultValue: "false",
+	}
+	p.BindIndexNodeMode.Init(base.mgr)
+
+	p.IndexNodeAddress = ParamItem{
+		Key:          "dataCoord.bindIndexNodeMode.address",
+		Version:      "2.0.0",
+		DefaultValue: "localhost:22930",
+	}
+	p.IndexNodeAddress.Init(base.mgr)
+
+	p.WithCredential = ParamItem{
+		Key:          "dataCoord.bindIndexNodeMode.withCred",
+		Version:      "2.0.0",
+		DefaultValue: "false",
+	}
+	p.WithCredential.Init(base.mgr)
+
+	p.IndexNodeID = ParamItem{
+		Key:          "dataCoord.bindIndexNodeMode.nodeID",
+		Version:      "2.0.0",
+		DefaultValue: "0",
+	}
+	p.IndexNodeID.Init(base.mgr)
 }
 
 // /////////////////////////////////////////////////////////////////////////////
 // --- datanode ---
 type dataNodeConfig struct {
-	Base *BaseTable
+	FlowGraphMaxQueueLength ParamItem `refreshable:"false"`
+	FlowGraphMaxParallelism ParamItem `refreshable:"false"`
 
-	// ID of the current node
-	//NodeID atomic.Value
-	NodeID atomic.Value
-	// IP of the current DataNode
-	IP string
-
-	// Port of the current DataNode
-	Port                    int
-	FlowGraphMaxQueueLength int32
-	FlowGraphMaxParallelism int32
-	FlushInsertBufferSize   int64
-
-	Alias string // Different datanode in one machine
-
-	// etcd
-	ChannelWatchSubPath string
+	// segment
+	FlushInsertBufferSize  ParamItem `refreshable:"true"`
+	FlushDeleteBufferBytes ParamItem `refreshable:"true"`
+	BinLogMaxSize          ParamItem `refreshable:"true"`
+	SyncPeriod             ParamItem `refreshable:"true"`
 
 	// io concurrency to fetch stats logs
-	IOConcurrency int
-
-	CreatedTime time.Time
-	UpdatedTime time.Time
+	IOConcurrency ParamItem `refreshable:"false"`
 }
 
 func (p *dataNodeConfig) init(base *BaseTable) {
-	p.Base = base
-	p.NodeID.Store(UniqueID(0))
-	p.initFlowGraphMaxQueueLength()
-	p.initFlowGraphMaxParallelism()
-	p.initFlushInsertBufferSize()
-	p.initIOConcurrency()
-
-	p.initChannelWatchPath()
-}
-
-// InitAlias init this DataNode alias
-func (p *dataNodeConfig) InitAlias(alias string) {
-	p.Alias = alias
-}
-
-func (p *dataNodeConfig) initFlowGraphMaxQueueLength() {
-	p.FlowGraphMaxQueueLength = p.Base.ParseInt32WithDefault("dataNode.dataSync.flowGraph.maxQueueLength", 1024)
-}
-
-func (p *dataNodeConfig) initFlowGraphMaxParallelism() {
-	p.FlowGraphMaxParallelism = p.Base.ParseInt32WithDefault("dataNode.dataSync.flowGraph.maxParallelism", 1024)
-}
-
-func (p *dataNodeConfig) initFlushInsertBufferSize() {
-	bufferSize := p.Base.LoadWithDefault2([]string{"DATA_NODE_IBUFSIZE", "datanode.flush.insertBufSize"}, "0")
-	bs, err := strconv.ParseInt(bufferSize, 10, 64)
-	if err != nil {
-		panic(err)
+	p.FlowGraphMaxQueueLength = ParamItem{
+		Key:          "dataNode.dataSync.flowGraph.maxQueueLength",
+		Version:      "2.0.0",
+		DefaultValue: "1024",
 	}
-	p.FlushInsertBufferSize = bs
-}
+	p.FlowGraphMaxQueueLength.Init(base.mgr)
 
-func (p *dataNodeConfig) initChannelWatchPath() {
-	p.ChannelWatchSubPath = "channelwatch"
-}
-
-func (p *dataNodeConfig) initIOConcurrency() {
-	p.IOConcurrency = p.Base.ParseIntWithDefault("dataNode.dataSync.ioConcurrency", 10)
-}
-
-func (p *dataNodeConfig) SetNodeID(id UniqueID) {
-	p.NodeID.Store(id)
-}
-
-func (p *dataNodeConfig) GetNodeID() UniqueID {
-	val := p.NodeID.Load()
-	if val != nil {
-		return val.(UniqueID)
+	p.FlowGraphMaxParallelism = ParamItem{
+		Key:          "dataNode.dataSync.flowGraph.maxParallelism",
+		Version:      "2.0.0",
+		DefaultValue: "1024",
 	}
-	return 0
-}
+	p.FlowGraphMaxParallelism.Init(base.mgr)
 
-// /////////////////////////////////////////////////////////////////////////////
-// --- indexcoord ---
-type indexCoordConfig struct {
-	Base *BaseTable
-
-	Address string
-	Port    int
-
-	BindIndexNodeMode bool
-	IndexNodeAddress  string
-	WithCredential    bool
-	IndexNodeID       int64
-
-	NodeID atomic.Value
-
-	MinSegmentNumRowsToEnableIndex int64
-
-	GCInterval time.Duration
-
-	CreatedTime time.Time
-	UpdatedTime time.Time
-
-	EnableActiveStandby bool
-}
-
-func (p *indexCoordConfig) init(base *BaseTable) {
-	p.Base = base
-
-	p.initGCInterval()
-	p.initMinSegmentNumRowsToEnableIndex()
-	p.initBindIndexNodeMode()
-	p.initIndexNodeAddress()
-	p.initWithCredential()
-	p.initIndexNodeID()
-	p.initEnableActiveStandby()
-	p.NodeID.Store(UniqueID(0))
-}
-
-func (p *indexCoordConfig) initMinSegmentNumRowsToEnableIndex() {
-	p.MinSegmentNumRowsToEnableIndex = p.Base.ParseInt64WithDefault("indexCoord.minSegmentNumRowsToEnableIndex", 1024)
-}
-
-func (p *indexCoordConfig) initGCInterval() {
-	p.GCInterval = time.Duration(p.Base.ParseInt64WithDefault("indexCoord.gc.interval", 60*10)) * time.Second
-}
-
-func (p *indexCoordConfig) initBindIndexNodeMode() {
-	p.BindIndexNodeMode = p.Base.ParseBool("indexCoord.bindIndexNodeMode.enable", false)
-}
-
-func (p *indexCoordConfig) initIndexNodeAddress() {
-	p.IndexNodeAddress = p.Base.LoadWithDefault("indexCoord.bindIndexNodeMode.address", "localhost:22930")
-}
-
-func (p *indexCoordConfig) initWithCredential() {
-	p.WithCredential = p.Base.ParseBool("indexCoord.bindIndexNodeMode.withCred", false)
-}
-
-func (p *indexCoordConfig) initIndexNodeID() {
-	p.IndexNodeID = p.Base.ParseInt64WithDefault("indexCoord.bindIndexNodeMode.nodeID", 0)
-}
-
-func (p *indexCoordConfig) initEnableActiveStandby() {
-	p.EnableActiveStandby = p.Base.ParseBool("indexCoord.enableActiveStandby", false)
-}
-
-func (p *indexCoordConfig) SetNodeID(id UniqueID) {
-	p.NodeID.Store(id)
-}
-
-func (p *indexCoordConfig) GetNodeID() UniqueID {
-	val := p.NodeID.Load()
-	if val != nil {
-		return val.(UniqueID)
+	p.FlushInsertBufferSize = ParamItem{
+		Key:          "DATA_NODE_IBUFSIZE",
+		Version:      "2.0.0",
+		FallbackKeys: []string{"datanode.segment.insertBufSize"},
+		DefaultValue: "16777216",
+		PanicIfEmpty: true,
 	}
-	return 0
+	p.FlushInsertBufferSize.Init(base.mgr)
+
+	p.FlushDeleteBufferBytes = ParamItem{
+		Key:          "datanode.segment.deleteBufBytes",
+		Version:      "2.0.0",
+		DefaultValue: "67108864",
+	}
+	p.FlushDeleteBufferBytes.Init(base.mgr)
+
+	p.BinLogMaxSize = ParamItem{
+		Key:          "datanode.segment.binlog.maxsize",
+		Version:      "2.0.0",
+		DefaultValue: "67108864",
+	}
+	p.BinLogMaxSize.Init(base.mgr)
+
+	p.SyncPeriod = ParamItem{
+		Key:          "datanode.segment.syncPeriod",
+		Version:      "2.0.0",
+		DefaultValue: "600",
+	}
+	p.SyncPeriod.Init(base.mgr)
+
+	p.IOConcurrency = ParamItem{
+		Key:          "dataNode.dataSync.ioConcurrency",
+		Version:      "2.0.0",
+		DefaultValue: "10",
+	}
+	p.IOConcurrency.Init(base.mgr)
+
 }
 
 // /////////////////////////////////////////////////////////////////////////////
 // --- indexnode ---
 type indexNodeConfig struct {
-	Base *BaseTable
-
-	IP      string
-	Address string
-	Port    int
-
-	NodeID atomic.Value
-
-	Alias string
-
-	BuildParallel int
-
-	CreatedTime time.Time
-	UpdatedTime time.Time
-
+	BuildParallel ParamItem `refreshable:"false"`
 	// enable disk
-	EnableDisk             bool
-	DiskCapacityLimit      int64
-	MaxDiskUsagePercentage float64
+	EnableDisk             ParamItem `refreshable:"false"`
+	DiskCapacityLimit      ParamItem `refreshable:"true"`
+	MaxDiskUsagePercentage ParamItem `refreshable:"true"`
+
+	GracefulStopTimeout ParamItem `refreshable:"false"`
 }
 
 func (p *indexNodeConfig) init(base *BaseTable) {
-	p.Base = base
-	p.NodeID.Store(UniqueID(0))
-	p.initBuildParallel()
-	p.initEnableDisk()
-	p.initDiskCapacity()
-	p.initMaxDiskUsagePercentage()
-}
-
-// InitAlias initializes an alias for the IndexNode role.
-func (p *indexNodeConfig) InitAlias(alias string) {
-	p.Alias = alias
-}
-
-func (p *indexNodeConfig) initBuildParallel() {
-	p.BuildParallel = p.Base.ParseIntWithDefault("indexNode.scheduler.buildParallel", 1)
-}
-
-func (p *indexNodeConfig) SetNodeID(id UniqueID) {
-	p.NodeID.Store(id)
-}
-
-func (p *indexNodeConfig) GetNodeID() UniqueID {
-	val := p.NodeID.Load()
-	if val != nil {
-		return val.(UniqueID)
+	p.BuildParallel = ParamItem{
+		Key:          "indexNode.scheduler.buildParallel",
+		Version:      "2.0.0",
+		DefaultValue: "1",
 	}
-	return 0
+	p.BuildParallel.Init(base.mgr)
+
+	p.EnableDisk = ParamItem{
+		Key:          "indexNode.enableDisk",
+		Version:      "2.2.0",
+		DefaultValue: "false",
+		PanicIfEmpty: true,
+	}
+	p.EnableDisk.Init(base.mgr)
+
+	p.DiskCapacityLimit = ParamItem{
+		Key:     "LOCAL_STORAGE_SIZE",
+		Version: "2.2.0",
+		Formatter: func(v string) string {
+			if len(v) == 0 {
+				diskUsage, err := disk.Usage("/")
+				if err != nil {
+					panic(err)
+				}
+				return strconv.FormatUint(diskUsage.Total, 10)
+			}
+			diskSize := getAsInt64(v)
+			return strconv.FormatInt(diskSize*1024*1024*1024, 10)
+		},
+	}
+	p.DiskCapacityLimit.Init(base.mgr)
+
+	p.MaxDiskUsagePercentage = ParamItem{
+		Key:          "indexNode.maxDiskUsagePercentage",
+		Version:      "2.2.0",
+		DefaultValue: "95",
+		PanicIfEmpty: true,
+		Formatter: func(v string) string {
+			return fmt.Sprintf("%f", getAsFloat(v)/100)
+		},
+	}
+	p.MaxDiskUsagePercentage.Init(base.mgr)
+
+	p.GracefulStopTimeout = ParamItem{
+		Key:          "indexNode.gracefulStopTimeout",
+		Version:      "2.2.1",
+		FallbackKeys: []string{"common.gracefulStopTimeout"},
+	}
+	p.GracefulStopTimeout.Init(base.mgr)
 }
 
-func (p *indexNodeConfig) initEnableDisk() {
-	var err error
-	enableDisk := p.Base.LoadWithDefault("indexNode.enableDisk", "false")
-	p.EnableDisk, err = strconv.ParseBool(enableDisk)
-	if err != nil {
-		panic(err)
-	}
+type integrationTestConfig struct {
+	IntegrationMode ParamItem `refreshable:"false"`
 }
 
-func (p *indexNodeConfig) initDiskCapacity() {
-	diskSizeStr := os.Getenv("LOCAL_STORAGE_SIZE")
-	if len(diskSizeStr) == 0 {
-		diskUsage, err := disk.Usage("/")
-		if err != nil {
-			panic(err)
-		}
-
-		p.DiskCapacityLimit = int64(diskUsage.Total)
-		return
+func (p *integrationTestConfig) init(base *BaseTable) {
+	p.IntegrationMode = ParamItem{
+		Key:          "integration.test.mode",
+		Version:      "2.2.0",
+		DefaultValue: "false",
+		PanicIfEmpty: true,
 	}
-
-	diskSize, err := strconv.ParseInt(diskSizeStr, 10, 64)
-	if err != nil {
-		panic(err)
-	}
-	p.DiskCapacityLimit = diskSize * 1024 * 1024 * 1024
-}
-
-func (p *indexNodeConfig) initMaxDiskUsagePercentage() {
-	maxDiskUsagePercentageStr := p.Base.LoadWithDefault("indexNode.maxDiskUsagePercentage", "95")
-	maxDiskUsagePercentage, err := strconv.ParseInt(maxDiskUsagePercentageStr, 10, 64)
-	if err != nil {
-		panic(err)
-	}
-	p.MaxDiskUsagePercentage = float64(maxDiskUsagePercentage) / 100
+	p.IntegrationMode.Init(base.mgr)
 }

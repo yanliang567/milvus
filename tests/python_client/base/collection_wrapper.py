@@ -13,7 +13,7 @@ from utils.util_log import test_log as log
 from pymilvus.orm.types import CONSISTENCY_STRONG
 from common.common_func import param_info
 
-TIMEOUT = 20
+TIMEOUT = 120
 INDEX_NAME = ""
 
 
@@ -175,7 +175,7 @@ class ApiCollectionWrapper:
         timeout = TIMEOUT if timeout is None else timeout
 
         func_name = sys._getframe().f_code.co_name
-        res, check = api_request([self.collection.query, expr, output_fields, partition_names, timeout])
+        res, check = api_request([self.collection.query, expr, output_fields, partition_names, timeout], **kwargs)
         check_result = ResponseChecker(res, func_name, check_task, check_items, check,
                                        expression=expr, partition_names=partition_names,
                                        output_fields=output_fields,
@@ -234,7 +234,7 @@ class ApiCollectionWrapper:
 
     @trace()
     def create_index(self, field_name, index_params, index_name=None, check_task=None, check_items=None, **kwargs):
-        disktimeout = 100
+        disktimeout = 600
         timeout = kwargs.get("timeout", disktimeout * 2)
         index_name = INDEX_NAME if index_name is None else index_name
         index_name = kwargs.get("index_name", index_name)
@@ -339,4 +339,11 @@ class ApiCollectionWrapper:
         func_name = sys._getframe().f_code.co_name
         res, check = api_request([self.collection.get_replicas, timeout], **kwargs)
         check_result = ResponseChecker(res, func_name, check_task, check_items, check, **kwargs).run()
+        return res, check_result
+
+    def describe(self, timeout=None, check_task=None, check_items=None):
+        timeout = TIMEOUT if timeout is None else timeout
+        func_name = sys._getframe().f_code.co_name
+        res, check = api_request([self.collection.describe, timeout])
+        check_result = ResponseChecker(res, func_name, check_task, check_items, check).run()
         return res, check_result

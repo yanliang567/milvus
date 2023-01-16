@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/milvus-io/milvus/internal/proto/indexpb"
+
 	"go.uber.org/zap"
 
 	"github.com/golang/protobuf/proto"
@@ -32,10 +34,10 @@ import (
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
-	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/commonpbutil"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
@@ -64,11 +66,12 @@ const (
 	ReleaseCollectionTaskName  = "ReleaseCollectionTask"
 	LoadPartitionTaskName      = "LoadPartitionsTask"
 	ReleasePartitionTaskName   = "ReleasePartitionsTask"
-	deleteTaskName             = "DeleteTask"
+	DeleteTaskName             = "DeleteTask"
 	CreateAliasTaskName        = "CreateAliasTask"
 	DropAliasTaskName          = "DropAliasTask"
 	AlterAliasTaskName         = "AlterAliasTask"
 	AlterCollectionTaskName    = "AlterCollectionTask"
+	UpsertTaskName             = "UpsertTask"
 
 	// minFloat32 minimum float.
 	minFloat32 = -1 * float32(math.MaxFloat32)
@@ -143,13 +146,13 @@ func (cct *createCollectionTask) SetTs(ts Timestamp) {
 func (cct *createCollectionTask) OnEnqueue() error {
 	cct.Base = commonpbutil.NewMsgBase()
 	cct.Base.MsgType = commonpb.MsgType_CreateCollection
-	cct.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	cct.Base.SourceID = paramtable.GetNodeID()
 	return nil
 }
 
 func (cct *createCollectionTask) PreExecute(ctx context.Context) error {
 	cct.Base.MsgType = commonpb.MsgType_CreateCollection
-	cct.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	cct.Base.SourceID = paramtable.GetNodeID()
 
 	cct.schema = &schemapb.CollectionSchema{}
 	err := proto.Unmarshal(cct.Schema, cct.schema)
@@ -158,12 +161,12 @@ func (cct *createCollectionTask) PreExecute(ctx context.Context) error {
 	}
 	cct.schema.AutoID = false
 
-	if cct.ShardsNum > Params.ProxyCfg.MaxShardNum {
-		return fmt.Errorf("maximum shards's number should be limited to %d", Params.ProxyCfg.MaxShardNum)
+	if cct.ShardsNum > Params.ProxyCfg.MaxShardNum.GetAsInt32() {
+		return fmt.Errorf("maximum shards's number should be limited to %d", Params.ProxyCfg.MaxShardNum.GetAsInt())
 	}
 
-	if int64(len(cct.schema.Fields)) > Params.ProxyCfg.MaxFieldNum {
-		return fmt.Errorf("maximum field's number should be limited to %d", Params.ProxyCfg.MaxFieldNum)
+	if len(cct.schema.Fields) > Params.ProxyCfg.MaxFieldNum.GetAsInt() {
+		return fmt.Errorf("maximum field's number should be limited to %d", Params.ProxyCfg.MaxFieldNum.GetAsInt())
 	}
 
 	// validate collection name
@@ -284,7 +287,7 @@ func (dct *dropCollectionTask) OnEnqueue() error {
 
 func (dct *dropCollectionTask) PreExecute(ctx context.Context) error {
 	dct.Base.MsgType = commonpb.MsgType_DropCollection
-	dct.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	dct.Base.SourceID = paramtable.GetNodeID()
 
 	if err := validateCollectionName(dct.CollectionName); err != nil {
 		return err
@@ -354,7 +357,7 @@ func (hct *hasCollectionTask) OnEnqueue() error {
 
 func (hct *hasCollectionTask) PreExecute(ctx context.Context) error {
 	hct.Base.MsgType = commonpb.MsgType_HasCollection
-	hct.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	hct.Base.SourceID = paramtable.GetNodeID()
 
 	if err := validateCollectionName(hct.CollectionName); err != nil {
 		return err
@@ -428,7 +431,7 @@ func (dct *describeCollectionTask) OnEnqueue() error {
 
 func (dct *describeCollectionTask) PreExecute(ctx context.Context) error {
 	dct.Base.MsgType = commonpb.MsgType_DescribeCollection
-	dct.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	dct.Base.SourceID = paramtable.GetNodeID()
 
 	if dct.CollectionID != 0 && len(dct.CollectionName) == 0 {
 		return nil
@@ -546,7 +549,7 @@ func (sct *showCollectionsTask) OnEnqueue() error {
 
 func (sct *showCollectionsTask) PreExecute(ctx context.Context) error {
 	sct.Base.MsgType = commonpb.MsgType_ShowCollections
-	sct.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	sct.Base.SourceID = paramtable.GetNodeID()
 	if sct.GetType() == milvuspb.ShowType_InMemory {
 		for _, collectionName := range sct.CollectionNames {
 			if err := validateCollectionName(collectionName); err != nil {
@@ -705,7 +708,7 @@ func (act *alterCollectionTask) OnEnqueue() error {
 
 func (act *alterCollectionTask) PreExecute(ctx context.Context) error {
 	act.Base.MsgType = commonpb.MsgType_AlterCollection
-	act.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	act.Base.SourceID = paramtable.GetNodeID()
 
 	return nil
 }
@@ -767,7 +770,7 @@ func (cpt *createPartitionTask) OnEnqueue() error {
 
 func (cpt *createPartitionTask) PreExecute(ctx context.Context) error {
 	cpt.Base.MsgType = commonpb.MsgType_CreatePartition
-	cpt.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	cpt.Base.SourceID = paramtable.GetNodeID()
 
 	collName, partitionTag := cpt.CollectionName, cpt.PartitionName
 
@@ -845,7 +848,7 @@ func (dpt *dropPartitionTask) OnEnqueue() error {
 
 func (dpt *dropPartitionTask) PreExecute(ctx context.Context) error {
 	dpt.Base.MsgType = commonpb.MsgType_DropPartition
-	dpt.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	dpt.Base.SourceID = paramtable.GetNodeID()
 
 	collName, partitionTag := dpt.CollectionName, dpt.PartitionName
 
@@ -948,7 +951,7 @@ func (hpt *hasPartitionTask) OnEnqueue() error {
 
 func (hpt *hasPartitionTask) PreExecute(ctx context.Context) error {
 	hpt.Base.MsgType = commonpb.MsgType_HasPartition
-	hpt.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	hpt.Base.SourceID = paramtable.GetNodeID()
 
 	collName, partitionTag := hpt.CollectionName, hpt.PartitionName
 
@@ -1025,7 +1028,7 @@ func (spt *showPartitionsTask) OnEnqueue() error {
 
 func (spt *showPartitionsTask) PreExecute(ctx context.Context) error {
 	spt.Base.MsgType = commonpb.MsgType_ShowPartitions
-	spt.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	spt.Base.SourceID = paramtable.GetNodeID()
 
 	if err := validateCollectionName(spt.CollectionName); err != nil {
 		return err
@@ -1187,7 +1190,7 @@ func (ft *flushTask) OnEnqueue() error {
 
 func (ft *flushTask) PreExecute(ctx context.Context) error {
 	ft.Base.MsgType = commonpb.MsgType_Flush
-	ft.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	ft.Base.SourceID = paramtable.GetNodeID()
 	return nil
 }
 
@@ -1241,7 +1244,7 @@ type loadCollectionTask struct {
 	*milvuspb.LoadCollectionRequest
 	ctx        context.Context
 	queryCoord types.QueryCoord
-	indexCoord types.IndexCoord
+	datacoord  types.DataCoord
 	result     *commonpb.Status
 
 	collectionID UniqueID
@@ -1285,9 +1288,10 @@ func (lct *loadCollectionTask) OnEnqueue() error {
 }
 
 func (lct *loadCollectionTask) PreExecute(ctx context.Context) error {
-	log.Debug("loadCollectionTask PreExecute", zap.String("role", typeutil.ProxyRole), zap.Int64("msgID", lct.Base.MsgID))
+	log.Ctx(ctx).Debug("loadCollectionTask PreExecute",
+		zap.String("role", typeutil.ProxyRole))
 	lct.Base.MsgType = commonpb.MsgType_LoadCollection
-	lct.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	lct.Base.SourceID = paramtable.GetNodeID()
 
 	collName := lct.CollectionName
 
@@ -1304,8 +1308,13 @@ func (lct *loadCollectionTask) PreExecute(ctx context.Context) error {
 }
 
 func (lct *loadCollectionTask) Execute(ctx context.Context) (err error) {
-	log.Debug("loadCollectionTask Execute", zap.String("role", typeutil.ProxyRole), zap.Int64("msgID", lct.Base.MsgID))
 	collID, err := globalMetaCache.GetCollectionID(ctx, lct.CollectionName)
+
+	log := log.Ctx(ctx).With(
+		zap.String("role", typeutil.ProxyRole),
+		zap.Int64("collectionID", collID))
+
+	log.Debug("loadCollectionTask Execute")
 	if err != nil {
 		return err
 	}
@@ -1316,7 +1325,7 @@ func (lct *loadCollectionTask) Execute(ctx context.Context) (err error) {
 		return err
 	}
 	// check index
-	indexResponse, err := lct.indexCoord.DescribeIndex(ctx, &indexpb.DescribeIndexRequest{
+	indexResponse, err := lct.datacoord.DescribeIndex(ctx, &indexpb.DescribeIndexRequest{
 		CollectionID: collID,
 		IndexName:    "",
 	})
@@ -1339,7 +1348,7 @@ func (lct *loadCollectionTask) Execute(ctx context.Context) (err error) {
 	}
 	if !hasVecIndex {
 		errMsg := fmt.Sprintf("there is no vector index on collection: %s, please create index firstly", lct.LoadCollectionRequest.CollectionName)
-		log.Ctx(ctx).Error(errMsg)
+		log.Error(errMsg)
 		return errors.New(errMsg)
 	}
 	request := &querypb.LoadCollectionRequest{
@@ -1353,8 +1362,7 @@ func (lct *loadCollectionTask) Execute(ctx context.Context) (err error) {
 		ReplicaNumber: lct.ReplicaNumber,
 		FieldIndexID:  fieldIndexIDs,
 	}
-	log.Debug("send LoadCollectionRequest to query coordinator", zap.String("role", typeutil.ProxyRole),
-		zap.Int64("msgID", request.Base.MsgID), zap.Int64("collectionID", request.CollectionID),
+	log.Debug("send LoadCollectionRequest to query coordinator",
 		zap.Any("schema", request.Schema))
 	lct.result, err = lct.queryCoord.LoadCollection(ctx, request)
 	if err != nil {
@@ -1364,8 +1372,13 @@ func (lct *loadCollectionTask) Execute(ctx context.Context) (err error) {
 }
 
 func (lct *loadCollectionTask) PostExecute(ctx context.Context) error {
-	log.Debug("loadCollectionTask PostExecute", zap.String("role", typeutil.ProxyRole),
-		zap.Int64("msgID", lct.Base.MsgID))
+	collID, err := globalMetaCache.GetCollectionID(ctx, lct.CollectionName)
+	log.Ctx(ctx).Debug("loadCollectionTask PostExecute",
+		zap.String("role", typeutil.ProxyRole),
+		zap.Int64("collectionID", collID))
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1419,7 +1432,7 @@ func (rct *releaseCollectionTask) OnEnqueue() error {
 
 func (rct *releaseCollectionTask) PreExecute(ctx context.Context) error {
 	rct.Base.MsgType = commonpb.MsgType_ReleaseCollection
-	rct.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	rct.Base.SourceID = paramtable.GetNodeID()
 
 	collName := rct.CollectionName
 
@@ -1462,7 +1475,7 @@ type loadPartitionsTask struct {
 	*milvuspb.LoadPartitionsRequest
 	ctx        context.Context
 	queryCoord types.QueryCoord
-	indexCoord types.IndexCoord
+	datacoord  types.DataCoord
 	result     *commonpb.Status
 
 	collectionID UniqueID
@@ -1507,7 +1520,7 @@ func (lpt *loadPartitionsTask) OnEnqueue() error {
 
 func (lpt *loadPartitionsTask) PreExecute(ctx context.Context) error {
 	lpt.Base.MsgType = commonpb.MsgType_LoadPartitions
-	lpt.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	lpt.Base.SourceID = paramtable.GetNodeID()
 
 	collName := lpt.CollectionName
 
@@ -1530,7 +1543,7 @@ func (lpt *loadPartitionsTask) Execute(ctx context.Context) error {
 		return err
 	}
 	// check index
-	indexResponse, err := lpt.indexCoord.DescribeIndex(ctx, &indexpb.DescribeIndexRequest{
+	indexResponse, err := lpt.datacoord.DescribeIndex(ctx, &indexpb.DescribeIndexRequest{
 		CollectionID: collID,
 		IndexName:    "",
 	})
@@ -1632,7 +1645,7 @@ func (rpt *releasePartitionsTask) OnEnqueue() error {
 
 func (rpt *releasePartitionsTask) PreExecute(ctx context.Context) error {
 	rpt.Base.MsgType = commonpb.MsgType_ReleasePartitions
-	rpt.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	rpt.Base.SourceID = paramtable.GetNodeID()
 
 	collName := rpt.CollectionName
 
@@ -1733,7 +1746,7 @@ func (c *CreateAliasTask) OnEnqueue() error {
 // PreExecute defines the action before task execution
 func (c *CreateAliasTask) PreExecute(ctx context.Context) error {
 	c.Base.MsgType = commonpb.MsgType_CreateAlias
-	c.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	c.Base.SourceID = paramtable.GetNodeID()
 
 	collAlias := c.Alias
 	// collection alias uses the same format as collection name
@@ -1812,7 +1825,7 @@ func (d *DropAliasTask) OnEnqueue() error {
 
 func (d *DropAliasTask) PreExecute(ctx context.Context) error {
 	d.Base.MsgType = commonpb.MsgType_DropAlias
-	d.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	d.Base.SourceID = paramtable.GetNodeID()
 	collAlias := d.Alias
 	if err := ValidateCollectionAlias(collAlias); err != nil {
 		return err
@@ -1878,7 +1891,7 @@ func (a *AlterAliasTask) OnEnqueue() error {
 
 func (a *AlterAliasTask) PreExecute(ctx context.Context) error {
 	a.Base.MsgType = commonpb.MsgType_AlterAlias
-	a.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	a.Base.SourceID = paramtable.GetNodeID()
 
 	collAlias := a.Alias
 	// collection alias uses the same format as collection name

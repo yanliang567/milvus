@@ -33,13 +33,12 @@ import (
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3client"
 )
 
-var Params paramtable.BaseTable
-
 func TestGetServerIDConcurrently(t *testing.T) {
 	ctx := context.Background()
-	Params.Init()
+	paramtable.Init()
+	params := paramtable.Get()
 
-	endpoints := Params.LoadWithDefault("etcd.endpoints", paramtable.DefaultEtcdEndpoints)
+	endpoints := params.GetWithDefault("etcd.endpoints", paramtable.DefaultEtcdEndpoints)
 	metaRoot := fmt.Sprintf("%d/%s", rand.Int(), DefaultServiceRoot)
 
 	etcdEndpoints := strings.Split(endpoints, ",")
@@ -74,16 +73,15 @@ func TestGetServerIDConcurrently(t *testing.T) {
 		go getIDFunc()
 	}
 	wg.Wait()
-	for i := 1; i <= 10; i++ {
-		assert.Contains(t, res, int64(i))
-	}
+	assert.ElementsMatch(t, []int64{1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, res)
 }
 
 func TestInit(t *testing.T) {
 	ctx := context.Background()
-	Params.Init()
+	paramtable.Init()
+	params := paramtable.Get()
 
-	endpoints := Params.LoadWithDefault("etcd.endpoints", paramtable.DefaultEtcdEndpoints)
+	endpoints := params.GetWithDefault("etcd.endpoints", paramtable.DefaultEtcdEndpoints)
 	metaRoot := fmt.Sprintf("%d/%s", rand.Int(), DefaultServiceRoot)
 
 	etcdEndpoints := strings.Split(endpoints, ",")
@@ -108,9 +106,10 @@ func TestInit(t *testing.T) {
 
 func TestUpdateSessions(t *testing.T) {
 	ctx := context.Background()
-	Params.Init()
+	paramtable.Init()
+	params := paramtable.Get()
 
-	endpoints := Params.LoadWithDefault("etcd.endpoints", paramtable.DefaultEtcdEndpoints)
+	endpoints := params.GetWithDefault("etcd.endpoints", paramtable.DefaultEtcdEndpoints)
 	etcdEndpoints := strings.Split(endpoints, ",")
 	metaRoot := fmt.Sprintf("%d/%s", rand.Int(), DefaultServiceRoot)
 	etcdCli, err := etcd.GetRemoteEtcdClient(etcdEndpoints)
@@ -124,7 +123,7 @@ func TestUpdateSessions(t *testing.T) {
 	var wg sync.WaitGroup
 	var muList = sync.Mutex{}
 
-	s := NewSession(ctx, metaRoot, etcdCli)
+	s := NewSession(ctx, metaRoot, etcdCli, WithResueNodeID(false))
 
 	sessions, rev, err := s.GetSessions("test")
 	assert.Nil(t, err)
@@ -136,7 +135,7 @@ func TestUpdateSessions(t *testing.T) {
 	getIDFunc := func() {
 		etcdCli, err := etcd.GetRemoteEtcdClient(etcdEndpoints)
 		require.NoError(t, err)
-		singleS := NewSession(ctx, metaRoot, etcdCli)
+		singleS := NewSession(ctx, metaRoot, etcdCli, WithResueNodeID(false))
 		singleS.Init("test", "testAddr", false, false)
 		singleS.Register()
 		muList.Lock()
@@ -222,9 +221,10 @@ func TestSessionLivenessCheck(t *testing.T) {
 
 func TestWatcherHandleWatchResp(t *testing.T) {
 	ctx := context.Background()
-	Params.Init()
+	paramtable.Init()
+	params := paramtable.Get()
 
-	endpoints := Params.LoadWithDefault("etcd.endpoints", paramtable.DefaultEtcdEndpoints)
+	endpoints := params.GetWithDefault("etcd.endpoints", paramtable.DefaultEtcdEndpoints)
 	etcdEndpoints := strings.Split(endpoints, ",")
 	metaRoot := fmt.Sprintf("%d/%s", rand.Int(), DefaultServiceRoot)
 
@@ -372,9 +372,10 @@ func TestSessionRevoke(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	Params.Init()
+	paramtable.Init()
+	params := paramtable.Get()
 
-	endpoints := Params.LoadWithDefault("etcd.endpoints", paramtable.DefaultEtcdEndpoints)
+	endpoints := params.GetWithDefault("etcd.endpoints", paramtable.DefaultEtcdEndpoints)
 	metaRoot := fmt.Sprintf("%d/%s", rand.Int(), DefaultServiceRoot)
 
 	etcdEndpoints := strings.Split(endpoints, ",")
@@ -495,21 +496,21 @@ func (suite *SessionWithVersionSuite) SetupTest() {
 	suite.metaRoot = "sessionWithVersion"
 	suite.serverName = "sessionComp"
 
-	s1 := NewSession(ctx, suite.metaRoot, client)
+	s1 := NewSession(ctx, suite.metaRoot, client, WithResueNodeID(false))
 	s1.Version.Major, s1.Version.Minor, s1.Version.Patch = 0, 0, 0
 	s1.Init(suite.serverName, "s1", false, false)
 	s1.Register()
 
 	suite.sessions = append(suite.sessions, s1)
 
-	s2 := NewSession(ctx, suite.metaRoot, client)
+	s2 := NewSession(ctx, suite.metaRoot, client, WithResueNodeID(false))
 	s2.Version.Major, s2.Version.Minor, s2.Version.Patch = 2, 1, 0
 	s2.Init(suite.serverName, "s2", false, false)
 	s2.Register()
 
 	suite.sessions = append(suite.sessions, s2)
 
-	s3 := NewSession(ctx, suite.metaRoot, client)
+	s3 := NewSession(ctx, suite.metaRoot, client, WithResueNodeID(false))
 	s3.Version.Major, s3.Version.Minor, s3.Version.Patch = 2, 2, 0
 	s3.Version.Build = []string{"dev"}
 	s3.Init(suite.serverName, "s3", false, false)
@@ -535,7 +536,7 @@ func (suite *SessionWithVersionSuite) TearDownTest() {
 }
 
 func (suite *SessionWithVersionSuite) TestGetSessionsWithRangeVersion() {
-	s := NewSession(context.Background(), suite.metaRoot, suite.client)
+	s := NewSession(context.Background(), suite.metaRoot, suite.client, WithResueNodeID(false))
 
 	suite.Run(">1.0.0", func() {
 		r, err := semver.ParseRange(">1.0.0")
@@ -578,7 +579,7 @@ func (suite *SessionWithVersionSuite) TestGetSessionsWithRangeVersion() {
 }
 
 func (suite *SessionWithVersionSuite) TestWatchServicesWithVersionRange() {
-	s := NewSession(context.Background(), suite.metaRoot, suite.client)
+	s := NewSession(context.Background(), suite.metaRoot, suite.client, WithResueNodeID(false))
 
 	suite.Run(">1.0.0 <=2.1.0", func() {
 		r, err := semver.ParseRange(">1.0.0 <=2.1.0")
@@ -613,8 +614,9 @@ func TestSessionWithVersionRange(t *testing.T) {
 
 func TestSessionProcessActiveStandBy(t *testing.T) {
 	// initial etcd
-	Params.Init()
-	endpoints, err := Params.Load("_EtcdEndpoints")
+	paramtable.Init()
+	params := paramtable.Get()
+	endpoints, err := params.Load("_EtcdEndpoints")
 	if err != nil {
 		panic(err)
 	}
@@ -637,7 +639,7 @@ func TestSessionProcessActiveStandBy(t *testing.T) {
 
 	// register session 1, will be active
 	ctx1 := context.Background()
-	s1 := NewSession(ctx1, metaRoot, etcdCli)
+	s1 := NewSession(ctx1, metaRoot, etcdCli, WithResueNodeID(false))
 	s1.Init("inittest", "testAddr", true, true)
 	s1.SetEnableActiveStandBy(true)
 	s1.Register()
@@ -656,7 +658,7 @@ func TestSessionProcessActiveStandBy(t *testing.T) {
 
 	// register session 2, will be standby
 	ctx2 := context.Background()
-	s2 := NewSession(ctx2, metaRoot, etcdCli)
+	s2 := NewSession(ctx2, metaRoot, etcdCli, WithResueNodeID(false))
 	s2.Init("inittest", "testAddr", true, true)
 	s2.SetEnableActiveStandBy(true)
 	s2.Register()
@@ -690,6 +692,7 @@ func TestSessionEventType_String(t *testing.T) {
 		{t: SessionNoneEvent, want: ""},
 		{t: SessionAddEvent, want: "SessionAddEvent"},
 		{t: SessionDelEvent, want: "SessionDelEvent"},
+		{t: SessionUpdateEvent, want: "SessionUpdateEvent"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -700,9 +703,34 @@ func TestSessionEventType_String(t *testing.T) {
 
 func TestSession_apply(t *testing.T) {
 	session := &Session{}
-	opts := []SessionOption{WithCustomConfigEnable(), WithSessionTTL(100), WithSessionRetryTimes(200)}
+	opts := []SessionOption{WithCustomConfigEnable(), WithTTL(100), WithRetryTimes(200)}
 	session.apply(opts...)
 	assert.True(t, session.useCustomConfig)
 	assert.Equal(t, int64(100), session.sessionTTL)
 	assert.Equal(t, int64(200), session.sessionRetryTimes)
+}
+
+func TestIntegrationMode(t *testing.T) {
+	ctx := context.Background()
+	params := paramtable.Get()
+	params.Init()
+	params.Save(params.IntegrationTestCfg.IntegrationMode.Key, "true")
+
+	endpoints := params.GetWithDefault("etcd.endpoints", paramtable.DefaultEtcdEndpoints)
+	metaRoot := fmt.Sprintf("%d/%s", rand.Int(), DefaultServiceRoot)
+
+	etcdEndpoints := strings.Split(endpoints, ",")
+	etcdCli, err := etcd.GetRemoteEtcdClient(etcdEndpoints)
+	require.NoError(t, err)
+	etcdKV := etcdkv.NewEtcdKV(etcdCli, metaRoot)
+	err = etcdKV.RemoveWithPrefix("")
+	assert.NoError(t, err)
+
+	s1 := NewSession(ctx, metaRoot, etcdCli)
+	assert.Equal(t, false, s1.reuseNodeID)
+	s2 := NewSession(ctx, metaRoot, etcdCli)
+	assert.Equal(t, false, s2.reuseNodeID)
+	s1.Init("inittest1", "testAddr1", false, false)
+	s1.Init("inittest2", "testAddr2", false, false)
+	assert.NotEqual(t, s1.ServerID, s2.ServerID)
 }

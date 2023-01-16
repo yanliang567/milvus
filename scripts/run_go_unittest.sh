@@ -111,7 +111,6 @@ go test -race -cover ${APPLE_SILICON_FLAG} "${MILVUS_DIR}/util/funcutil/..." -fa
 go test -race -cover ${APPLE_SILICON_FLAG} "${MILVUS_DIR}/util/paramtable/..." -failfast
 go test -race -cover ${APPLE_SILICON_FLAG} "${MILVUS_DIR}/util/retry/..." -failfast
 go test -race -cover ${APPLE_SILICON_FLAG} "${MILVUS_DIR}/util/sessionutil/..." -failfast
-go test -race -cover ${APPLE_SILICON_FLAG} "${MILVUS_DIR}/util/trace/..." -failfast
 go test -race -cover ${APPLE_SILICON_FLAG} "${MILVUS_DIR}/util/typeutil/..." -failfast
 go test -race -cover ${APPLE_SILICON_FLAG} "${MILVUS_DIR}/util/importutil/..." -failfast
 }
@@ -147,10 +146,10 @@ go test -race -cover ${APPLE_SILICON_FLAG} "${MILVUS_DIR}/distributed/querycoord
 go test -race -cover ${APPLE_SILICON_FLAG} "${MILVUS_DIR}/querycoordv2/..." -failfast
 }
 
-function test_indexcoord()
-{
-go test -race -cover ${APPLE_SILICON_FLAG} "${MILVUS_DIR}/indexcoord/..." -failfast
-}
+#function test_indexcoord()
+#{
+#go test -race -cover ${APPLE_SILICON_FLAG} "${MILVUS_DIR}/indexcoord/..." -failfast
+#}
 
 function test_metastore()
 {
@@ -166,7 +165,7 @@ test_indexnode
 test_rootcoord
 test_querycoord
 test_datacoord
-test_indexcoord
+#test_indexcoord
 test_kv
 test_mq
 test_storage
@@ -201,9 +200,9 @@ case "${TEST_TAG}" in
     datacoord)
 	test_datacoord
         ;;
-    indexcoord)
-	test_indexcoord
-        ;;
+#    indexcoord)
+#	test_indexcoord
+#        ;;
     kv)
 	test_kv
         ;;

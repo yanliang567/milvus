@@ -47,21 +47,13 @@ class VectorMemIndex : public VectorIndex {
     std::unique_ptr<SearchResult>
     Query(const DatasetPtr dataset, const SearchInfo& search_info, const BitsetView& bitset) override;
 
- private:
-    void
-    store_raw_data(const knowhere::DatasetPtr& dataset);
-
+ protected:
     void
     parse_config(Config& config);
 
-    void
-    LoadRawData();
-
- private:
+ protected:
     Config config_;
     knowhere::VecIndexPtr index_ = nullptr;
-    std::vector<uint8_t> raw_data_;
-    std::once_flag raw_data_loaded_;
 };
 
 using VectorMemIndexPtr = std::unique_ptr<VectorMemIndex>;

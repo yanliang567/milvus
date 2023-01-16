@@ -17,21 +17,18 @@
 package paramtable
 
 import (
+	"encoding/json"
 	"net/url"
 	"os"
 	"path"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/util"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
-	"github.com/streamnative/pulsarctl/pkg/cmdutils"
 	"go.uber.org/zap"
 )
-
-var pulsarOnce sync.Once
 
 const (
 	// SuggestPulsarMaxMessageSize defines the maximum size of Pulsar message.
@@ -57,471 +54,606 @@ type ServiceParam struct {
 }
 
 func (p *ServiceParam) Init() {
-	p.BaseTable.Init()
+	p.BaseTable.Init(10)
 
-	p.LocalStorageCfg.init(&p.BaseTable)
-	p.MetaStoreCfg.init(&p.BaseTable)
-	p.EtcdCfg.init(&p.BaseTable)
-	if p.MetaStoreCfg.MetaStoreType == util.MetaStoreTypeMysql {
-		log.Debug("Mysql protocol is used as meta store")
-		p.DBCfg.init(&p.BaseTable)
-	}
-	p.PulsarCfg.init(&p.BaseTable)
-	p.KafkaCfg.init(&p.BaseTable)
-	p.RocksmqCfg.init(&p.BaseTable)
-	p.MinioCfg.init(&p.BaseTable)
+	p.LocalStorageCfg.Init(&p.BaseTable)
+	p.MetaStoreCfg.Init(&p.BaseTable)
+	p.EtcdCfg.Init(&p.BaseTable)
+	p.DBCfg.Init(&p.BaseTable)
+	p.PulsarCfg.Init(&p.BaseTable)
+	p.KafkaCfg.Init(&p.BaseTable)
+	p.RocksmqCfg.Init(&p.BaseTable)
+	p.MinioCfg.Init(&p.BaseTable)
 }
 
-///////////////////////////////////////////////////////////////////////////////
+func (p *ServiceParam) RocksmqEnable() bool {
+	return p.RocksmqCfg.Path.GetValue() != ""
+}
+
+func (p *ServiceParam) PulsarEnable() bool {
+	return p.PulsarCfg.Address.GetValue() != ""
+}
+
+func (p *ServiceParam) KafkaEnable() bool {
+	return p.KafkaCfg.Address.GetValue() != ""
+}
+
+// /////////////////////////////////////////////////////////////////////////////
 // --- etcd ---
 type EtcdConfig struct {
-	Base *BaseTable
-
 	// --- ETCD ---
-	Endpoints         []string
-	MetaRootPath      string
-	KvRootPath        string
-	EtcdLogLevel      string
-	EtcdLogPath       string
-	EtcdUseSSL        bool
-	EtcdTLSCert       string
-	EtcdTLSKey        string
-	EtcdTLSCACert     string
-	EtcdTLSMinVersion string
+	Endpoints         ParamItem          `refreshable:"false"`
+	RootPath          ParamItem          `refreshable:"false"`
+	MetaSubPath       ParamItem          `refreshable:"false"`
+	KvSubPath         ParamItem          `refreshable:"false"`
+	MetaRootPath      CompositeParamItem `refreshable:"false"`
+	KvRootPath        CompositeParamItem `refreshable:"false"`
+	EtcdLogLevel      ParamItem          `refreshable:"false"`
+	EtcdLogPath       ParamItem          `refreshable:"false"`
+	EtcdUseSSL        ParamItem          `refreshable:"false"`
+	EtcdTLSCert       ParamItem          `refreshable:"false"`
+	EtcdTLSKey        ParamItem          `refreshable:"false"`
+	EtcdTLSCACert     ParamItem          `refreshable:"false"`
+	EtcdTLSMinVersion ParamItem          `refreshable:"false"`
 
 	// --- Embed ETCD ---
-	UseEmbedEtcd bool
-	ConfigPath   string
-	DataDir      string
+	UseEmbedEtcd ParamItem `refreshable:"false"`
+	ConfigPath   ParamItem `refreshable:"false"`
+	DataDir      ParamItem `refreshable:"false"`
 }
 
-func (p *EtcdConfig) init(base *BaseTable) {
-	p.Base = base
-	p.LoadCfgToMemory()
-}
-
-func (p *EtcdConfig) LoadCfgToMemory() {
-	p.initUseEmbedEtcd()
-	if p.UseEmbedEtcd {
-		p.initConfigPath()
-		p.initDataDir()
-	} else {
-		p.initEndpoints()
+func (p *EtcdConfig) Init(base *BaseTable) {
+	p.Endpoints = ParamItem{
+		Key:          "etcd.endpoints",
+		Version:      "2.0.0",
+		PanicIfEmpty: true,
 	}
-	p.initMetaRootPath()
-	p.initKvRootPath()
-	p.initEtcdLogLevel()
-	p.initEtcdLogPath()
-	p.initEtcdUseSSL()
-	p.initEtcdTLSCert()
-	p.initEtcdTLSKey()
-	p.initEtcdTLSCACert()
-	p.initEtcdTLSMinVersion()
-}
+	p.Endpoints.Init(base.mgr)
 
-func (p *EtcdConfig) initUseEmbedEtcd() {
-	p.UseEmbedEtcd = p.Base.ParseBool("etcd.use.embed", false)
-	if p.UseEmbedEtcd && (os.Getenv(metricsinfo.DeployModeEnvKey) != metricsinfo.StandaloneDeployMode) {
+	p.UseEmbedEtcd = ParamItem{
+		Key:          "etcd.use.embed",
+		DefaultValue: "false",
+		Version:      "2.1.0",
+	}
+	p.UseEmbedEtcd.Init(base.mgr)
+
+	if p.UseEmbedEtcd.GetAsBool() && (os.Getenv(metricsinfo.DeployModeEnvKey) != metricsinfo.StandaloneDeployMode) {
 		panic("embedded etcd can not be used under distributed mode")
 	}
-}
 
-func (p *EtcdConfig) initConfigPath() {
-	addr := p.Base.LoadWithDefault("etcd.config.path", "")
-	p.ConfigPath = addr
-}
-
-func (p *EtcdConfig) initDataDir() {
-	addr := p.Base.LoadWithDefault("etcd.data.dir", "default.etcd")
-	p.DataDir = addr
-}
-
-func (p *EtcdConfig) initEndpoints() {
-	endpoints, err := p.Base.Load("etcd.endpoints")
-	if err != nil {
-		panic(err)
+	p.ConfigPath = ParamItem{
+		Key:     "etcd.config.path",
+		Version: "2.1.0",
 	}
-	p.Endpoints = strings.Split(endpoints, ",")
-}
+	p.ConfigPath.Init(base.mgr)
 
-func (p *EtcdConfig) initMetaRootPath() {
-	rootPath, err := p.Base.Load("etcd.rootPath")
-	if err != nil {
-		panic(err)
+	p.DataDir = ParamItem{
+		Key:          "etcd.data.dir",
+		DefaultValue: "default.etcd",
+		Version:      "2.1.0",
 	}
-	subPath, err := p.Base.Load("etcd.metaSubPath")
-	if err != nil {
-		panic(err)
+	p.DataDir.Init(base.mgr)
+
+	p.Endpoints = ParamItem{
+		Key:          "etcd.endpoints",
+		Version:      "2.0.0",
+		PanicIfEmpty: true,
 	}
-	p.MetaRootPath = path.Join(rootPath, subPath)
-}
+	p.Endpoints.Init(base.mgr)
 
-func (p *EtcdConfig) initKvRootPath() {
-	rootPath, err := p.Base.Load("etcd.rootPath")
-	if err != nil {
-		panic(err)
+	p.RootPath = ParamItem{
+		Key:          "etcd.rootPath",
+		Version:      "2.0.0",
+		PanicIfEmpty: true,
 	}
-	subPath, err := p.Base.Load("etcd.kvSubPath")
-	if err != nil {
-		panic(err)
+	p.RootPath.Init(base.mgr)
+
+	p.MetaSubPath = ParamItem{
+		Key:          "etcd.metaSubPath",
+		Version:      "2.0.0",
+		PanicIfEmpty: true,
 	}
-	p.KvRootPath = path.Join(rootPath, subPath)
-}
+	p.MetaSubPath.Init(base.mgr)
 
-func (p *EtcdConfig) initEtcdLogLevel() {
-	p.EtcdLogLevel = p.Base.LoadWithDefault("etcd.log.level", defaultEtcdLogLevel)
-}
+	p.MetaRootPath = CompositeParamItem{
+		Items: []*ParamItem{&p.RootPath, &p.MetaSubPath},
+		Format: func(kvs map[string]string) string {
+			return path.Join(kvs[p.RootPath.Key], kvs[p.MetaSubPath.Key])
+		},
+	}
 
-func (p *EtcdConfig) initEtcdLogPath() {
-	p.EtcdLogPath = p.Base.LoadWithDefault("etcd.log.path", defaultEtcdLogPath)
-}
+	p.KvSubPath = ParamItem{
+		Key:          "etcd.kvSubPath",
+		Version:      "2.0.0",
+		PanicIfEmpty: true,
+	}
+	p.KvSubPath.Init(base.mgr)
 
-func (p *EtcdConfig) initEtcdUseSSL() {
-	p.EtcdUseSSL = p.Base.ParseBool("etcd.ssl.enabled", false)
-}
+	p.KvRootPath = CompositeParamItem{
+		Items: []*ParamItem{&p.RootPath, &p.KvSubPath},
+		Format: func(kvs map[string]string) string {
+			return path.Join(kvs[p.RootPath.Key], kvs[p.KvSubPath.Key])
+		},
+	}
 
-func (p *EtcdConfig) initEtcdTLSCert() {
-	p.EtcdTLSCert = p.Base.LoadWithDefault("etcd.ssl.tlsCert", "")
-}
+	p.EtcdLogLevel = ParamItem{
+		Key:          "etcd.log.level",
+		DefaultValue: defaultEtcdLogLevel,
+		Version:      "2.0.0",
+	}
+	p.EtcdLogLevel.Init(base.mgr)
 
-func (p *EtcdConfig) initEtcdTLSKey() {
-	p.EtcdTLSKey = p.Base.LoadWithDefault("etcd.ssl.tlsKey", "")
-}
+	p.EtcdLogPath = ParamItem{
+		Key:          "etcd.log.path",
+		DefaultValue: defaultEtcdLogPath,
+		Version:      "2.0.0",
+	}
+	p.EtcdLogPath.Init(base.mgr)
 
-func (p *EtcdConfig) initEtcdTLSCACert() {
-	p.EtcdTLSCACert = p.Base.LoadWithDefault("etcd.ssl.tlsCACert", "")
-}
+	p.EtcdUseSSL = ParamItem{
+		Key:          "etcd.ssl.enabled",
+		DefaultValue: "false",
+		Version:      "2.0.0",
+	}
+	p.EtcdUseSSL.Init(base.mgr)
 
-func (p *EtcdConfig) initEtcdTLSMinVersion() {
-	p.EtcdTLSMinVersion = p.Base.LoadWithDefault("etcd.ssl.tlsMinVersion", "1.3")
+	p.EtcdTLSCert = ParamItem{
+		Key:     "etcd.ssl.tlsCert",
+		Version: "2.0.0",
+	}
+	p.EtcdTLSCert.Init(base.mgr)
+
+	p.EtcdTLSKey = ParamItem{
+		Key:     "etcd.ssl.tlsKey",
+		Version: "2.0.0",
+	}
+	p.EtcdTLSKey.Init(base.mgr)
+
+	p.EtcdTLSCACert = ParamItem{
+		Key:     "etcd.ssl.tlsCACert",
+		Version: "2.0.0",
+	}
+	p.EtcdTLSCACert.Init(base.mgr)
+
+	p.EtcdTLSMinVersion = ParamItem{
+		Key:          "etcd.ssl.tlsMinVersion",
+		DefaultValue: "1.3",
+		Version:      "2.0.0",
+	}
+	p.EtcdTLSMinVersion.Init(base.mgr)
 }
 
 type LocalStorageConfig struct {
-	Base *BaseTable
-
-	Path string
+	Path ParamItem `refreshable:"false"`
 }
 
-func (p *LocalStorageConfig) init(base *BaseTable) {
-	p.Base = base
-	p.initPath()
-}
-
-func (p *LocalStorageConfig) initPath() {
-	p.Path = p.Base.LoadWithDefault("localStorage.path", "/var/lib/milvus/data")
+func (p *LocalStorageConfig) Init(base *BaseTable) {
+	p.Path = ParamItem{
+		Key:          "localStorage.path",
+		Version:      "2.0.0",
+		DefaultValue: "/var/lib/milvus/data",
+	}
+	p.Path.Init(base.mgr)
 }
 
 type MetaStoreConfig struct {
-	Base *BaseTable
-
-	MetaStoreType string
+	MetaStoreType ParamItem `refreshable:"false"`
 }
 
-func (p *MetaStoreConfig) init(base *BaseTable) {
-	p.Base = base
-	p.LoadCfgToMemory()
+func (p *MetaStoreConfig) Init(base *BaseTable) {
+	p.MetaStoreType = ParamItem{
+		Key:          "metastore.type",
+		Version:      "2.2.0",
+		DefaultValue: util.MetaStoreTypeEtcd,
+	}
+	p.MetaStoreType.Init(base.mgr)
 }
 
-func (p *MetaStoreConfig) LoadCfgToMemory() {
-	p.initMetaStoreType()
-}
-
-func (p *MetaStoreConfig) initMetaStoreType() {
-	p.MetaStoreType = p.Base.LoadWithDefault("metastore.type", util.MetaStoreTypeEtcd)
-}
-
-///////////////////////////////////////////////////////////////////////////////
+// /////////////////////////////////////////////////////////////////////////////
 // --- meta db ---
 type MetaDBConfig struct {
-	Base *BaseTable
-
-	Username     string
-	Password     string
-	Address      string
-	Port         int
-	DBName       string
-	MaxOpenConns int
-	MaxIdleConns int
+	Username     ParamItem `refreshable:"false"`
+	Password     ParamItem `refreshable:"false"`
+	Address      ParamItem `refreshable:"false"`
+	Port         ParamItem `refreshable:"false"`
+	DBName       ParamItem `refreshable:"false"`
+	MaxOpenConns ParamItem `refreshable:"false"`
+	MaxIdleConns ParamItem `refreshable:"false"`
+	LogLevel     ParamItem `refreshable:"false"`
 }
 
-func (p *MetaDBConfig) init(base *BaseTable) {
-	p.Base = base
-	p.LoadCfgToMemory()
-}
-
-func (p *MetaDBConfig) LoadCfgToMemory() {
-	p.initUsername()
-	p.initPassword()
-	p.initAddress()
-	p.initPort()
-	p.initDbName()
-	p.initMaxOpenConns()
-	p.initMaxIdleConns()
-}
-
-func (p *MetaDBConfig) initUsername() {
-	username, err := p.Base.Load("mysql.username")
-	if err != nil {
-		panic(err)
+func (p *MetaDBConfig) Init(base *BaseTable) {
+	p.Username = ParamItem{
+		Key:          "mysql.username",
+		Version:      "2.2.0",
+		PanicIfEmpty: true,
 	}
-	p.Username = username
-}
+	p.Username.Init(base.mgr)
 
-func (p *MetaDBConfig) initPassword() {
-	password, err := p.Base.Load("mysql.password")
-	if err != nil {
-		panic(err)
+	p.Password = ParamItem{
+		Key:          "mysql.password",
+		Version:      "2.2.0",
+		PanicIfEmpty: true,
 	}
-	p.Password = password
-}
+	p.Password.Init(base.mgr)
 
-func (p *MetaDBConfig) initAddress() {
-	address, err := p.Base.Load("mysql.address")
-	if err != nil {
-		panic(err)
+	p.Address = ParamItem{
+		Key:          "mysql.address",
+		Version:      "2.2.0",
+		PanicIfEmpty: true,
 	}
-	p.Address = address
-}
+	p.Address.Init(base.mgr)
 
-func (p *MetaDBConfig) initPort() {
-	port := p.Base.ParseIntWithDefault("mysql.port", 3306)
-	p.Port = port
-}
-
-func (p *MetaDBConfig) initDbName() {
-	dbName, err := p.Base.Load("mysql.dbName")
-	if err != nil {
-		panic(err)
+	p.Port = ParamItem{
+		Key:          "mysql.port",
+		Version:      "2.2.0",
+		DefaultValue: "3306",
 	}
-	p.DBName = dbName
+	p.Port.Init(base.mgr)
+
+	p.DBName = ParamItem{
+		Key:          "mysql.dbName",
+		Version:      "2.2.0",
+		PanicIfEmpty: true,
+	}
+	p.DBName.Init(base.mgr)
+
+	p.MaxOpenConns = ParamItem{
+		Key:          "mysql.maxOpenConns",
+		Version:      "2.2.0",
+		DefaultValue: "20",
+	}
+	p.MaxOpenConns.Init(base.mgr)
+
+	p.MaxIdleConns = ParamItem{
+		Key:          "mysql.maxIdleConns",
+		Version:      "2.2.0",
+		DefaultValue: "5",
+	}
+	p.MaxIdleConns.Init(base.mgr)
+
+	p.LogLevel = ParamItem{
+		Key:          "log.level",
+		Version:      "2.0.0",
+		DefaultValue: "debug",
+	}
+	p.LogLevel.Init(base.mgr)
 }
 
-func (p *MetaDBConfig) initMaxOpenConns() {
-	maxOpenConns := p.Base.ParseIntWithDefault("mysql.maxOpenConns", 20)
-	p.MaxOpenConns = maxOpenConns
-}
-
-func (p *MetaDBConfig) initMaxIdleConns() {
-	maxIdleConns := p.Base.ParseIntWithDefault("mysql.maxIdleConns", 5)
-	p.MaxIdleConns = maxIdleConns
-}
-
-///////////////////////////////////////////////////////////////////////////////
+// /////////////////////////////////////////////////////////////////////////////
 // --- pulsar ---
 type PulsarConfig struct {
-	Base *BaseTable
+	Address        ParamItem `refreshable:"false"`
+	Port           ParamItem `refreshable:"false"`
+	WebAddress     ParamItem `refreshable:"false"`
+	WebPort        ParamItem `refreshable:"false"`
+	MaxMessageSize ParamItem `refreshable:"true"`
 
-	Address        string
-	WebAddress     string
-	MaxMessageSize int
+	// support auth
+	AuthPlugin ParamItem `refreshable:"false"`
+	AuthParams ParamItem `refreshable:"false"`
+
+	// support tenant
+	Tenant    ParamItem `refreshable:"false"`
+	Namespace ParamItem `refreshable:"false"`
 }
 
-func (p *PulsarConfig) init(base *BaseTable) {
-	p.Base = base
-
-	p.initAddress()
-	p.initWebAddress()
-	p.initMaxMessageSize()
-}
-
-func (p *PulsarConfig) initAddress() {
-	pulsarHost := p.Base.LoadWithDefault("pulsar.address", "")
-	if strings.Contains(pulsarHost, ":") {
-		p.Address = pulsarHost
-		return
+func (p *PulsarConfig) Init(base *BaseTable) {
+	p.Port = ParamItem{
+		Key:          "pulsar.port",
+		Version:      "2.0.0",
+		DefaultValue: "6650",
 	}
+	p.Port.Init(base.mgr)
 
-	port := p.Base.LoadWithDefault("pulsar.port", "")
-	if len(pulsarHost) != 0 && len(port) != 0 {
-		p.Address = "pulsar://" + pulsarHost + ":" + port
+	// due to implicit rule of MQ priority，the default address should be empty
+	p.Address = ParamItem{
+		Key:          "pulsar.address",
+		Version:      "2.0.0",
+		DefaultValue: "",
+		Formatter: func(addr string) string {
+			if addr == "" {
+				return ""
+			}
+			if strings.Contains(addr, ":") {
+				return addr
+			}
+			port, _ := p.Port.get()
+			return "pulsar://" + addr + ":" + port
+		},
 	}
-}
+	p.Address.Init(base.mgr)
 
-func (p *PulsarConfig) initWebAddress() {
-	if p.Address == "" {
-		return
+	p.WebPort = ParamItem{
+		Key:          "pulsar.webport",
+		Version:      "2.0.0",
+		DefaultValue: "80",
 	}
+	p.WebPort.Init(base.mgr)
 
-	pulsarURL, err := url.ParseRequestURI(p.Address)
-	if err != nil {
-		p.WebAddress = ""
-		log.Info("failed to parse pulsar config, assume pulsar not used", zap.Error(err))
-	} else {
-		webport := p.Base.LoadWithDefault("pulsar.webport", "80")
-		p.WebAddress = "http://" + pulsarURL.Hostname() + ":" + webport
+	p.WebAddress = ParamItem{
+		Key:          "pulsar.webaddress",
+		Version:      "2.0.0",
+		DefaultValue: "",
+		Formatter: func(add string) string {
+			pulsarURL, err := url.ParseRequestURI(p.Address.GetValue())
+			if err != nil {
+				log.Info("failed to parse pulsar config, assume pulsar not used", zap.Error(err))
+				return ""
+			}
+			return "http://" + pulsarURL.Hostname() + ":" + p.WebPort.GetValue()
+		},
 	}
-	pulsarOnce.Do(func() {
-		cmdutils.PulsarCtlConfig.WebServiceURL = p.WebAddress
-	})
-}
+	p.WebAddress.Init(base.mgr)
 
-func (p *PulsarConfig) initMaxMessageSize() {
-	maxMessageSizeStr, err := p.Base.Load("pulsar.maxMessageSize")
-	if err != nil {
-		p.MaxMessageSize = SuggestPulsarMaxMessageSize
-	} else {
-		maxMessageSize, err := strconv.Atoi(maxMessageSizeStr)
-		if err != nil {
-			p.MaxMessageSize = SuggestPulsarMaxMessageSize
-		} else {
-			p.MaxMessageSize = maxMessageSize
-		}
+	p.MaxMessageSize = ParamItem{
+		Key:          "pulsar.maxMessageSize",
+		Version:      "2.0.0",
+		DefaultValue: strconv.Itoa(SuggestPulsarMaxMessageSize),
 	}
+	p.MaxMessageSize.Init(base.mgr)
+
+	p.Tenant = ParamItem{
+		Key:          "pulsar.tenant",
+		Version:      "2.2.0",
+		DefaultValue: "public",
+	}
+	p.Tenant.Init(base.mgr)
+
+	p.Namespace = ParamItem{
+		Key:          "pulsar.namespace",
+		Version:      "2.2.0",
+		DefaultValue: "default",
+	}
+	p.Namespace.Init(base.mgr)
+
+	p.AuthPlugin = ParamItem{
+		Key:     "pulsar.authPlugin",
+		Version: "2.2.0",
+	}
+	p.AuthPlugin.Init(base.mgr)
+
+	p.AuthParams = ParamItem{
+		Key:     "pulsar.authParams",
+		Version: "2.2.0",
+		Formatter: func(authParams string) string {
+			jsonMap := make(map[string]string)
+			params := strings.Split(authParams, ",")
+			for _, param := range params {
+				kv := strings.Split(param, ":")
+				if len(kv) == 2 {
+					jsonMap[kv[0]] = kv[1]
+				}
+			}
+
+			jsonData, _ := json.Marshal(&jsonMap)
+			return string(jsonData)
+		},
+	}
+	p.AuthParams.Init(base.mgr)
+
 }
 
 // --- kafka ---
 type KafkaConfig struct {
-	Base                *BaseTable
-	Address             string
-	SaslUsername        string
-	SaslPassword        string
-	SaslMechanisms      string
-	SecurityProtocol    string
-	ConsumerExtraConfig map[string]string
-	ProducerExtraConfig map[string]string
+	Address             ParamItem  `refreshable:"false"`
+	SaslUsername        ParamItem  `refreshable:"false"`
+	SaslPassword        ParamItem  `refreshable:"false"`
+	SaslMechanisms      ParamItem  `refreshable:"false"`
+	SecurityProtocol    ParamItem  `refreshable:"false"`
+	ConsumerExtraConfig ParamGroup `refreshable:"false"`
+	ProducerExtraConfig ParamGroup `refreshable:"false"`
 }
 
-func (k *KafkaConfig) init(base *BaseTable) {
-	k.Base = base
-	k.initAddress()
-	k.initSaslUsername()
-	k.initSaslPassword()
-	k.initSaslMechanisms()
-	k.initSecurityProtocol()
-	k.initExtraKafkaConfig()
+func (k *KafkaConfig) Init(base *BaseTable) {
+	// due to implicit rule of MQ priority，the default address should be empty
+	k.Address = ParamItem{
+		Key:          "kafka.brokerList",
+		DefaultValue: "",
+		Version:      "2.1.0",
+	}
+	k.Address.Init(base.mgr)
+
+	k.SaslUsername = ParamItem{
+		Key:          "kafka.saslUsername",
+		DefaultValue: "",
+		Version:      "2.1.0",
+	}
+	k.SaslUsername.Init(base.mgr)
+
+	k.SaslPassword = ParamItem{
+		Key:          "kafka.saslPassword",
+		DefaultValue: "",
+		Version:      "2.1.0",
+	}
+	k.SaslPassword.Init(base.mgr)
+
+	k.SaslMechanisms = ParamItem{
+		Key:          "kafka.saslMechanisms",
+		DefaultValue: "PLAIN",
+		Version:      "2.1.0",
+	}
+	k.SaslMechanisms.Init(base.mgr)
+
+	k.SecurityProtocol = ParamItem{
+		Key:          "kafka.securityProtocol",
+		DefaultValue: "SASL_SSL",
+		Version:      "2.1.0",
+	}
+	k.SecurityProtocol.Init(base.mgr)
+
+	k.ConsumerExtraConfig = ParamGroup{
+		KeyPrefix: "kafka.consumer.",
+		Version:   "2.2.0",
+	}
+	k.ConsumerExtraConfig.Init(base.mgr)
+
+	k.ProducerExtraConfig = ParamGroup{
+		KeyPrefix: "kafka.producer.",
+		Version:   "2.2.0",
+	}
+	k.ProducerExtraConfig.Init(base.mgr)
 }
 
-func (k *KafkaConfig) initAddress() {
-	k.Address = k.Base.LoadWithDefault("kafka.brokerList", "")
-}
-
-func (k *KafkaConfig) initSaslUsername() {
-	k.SaslUsername = k.Base.LoadWithDefault("kafka.saslUsername", "")
-}
-
-func (k *KafkaConfig) initSaslPassword() {
-	k.SaslPassword = k.Base.LoadWithDefault("kafka.saslPassword", "")
-}
-
-func (k *KafkaConfig) initSaslMechanisms() {
-	k.SaslMechanisms = k.Base.LoadWithDefault("kafka.saslMechanisms", "PLAIN")
-}
-
-func (k *KafkaConfig) initSecurityProtocol() {
-	k.SecurityProtocol = k.Base.LoadWithDefault("kafka.securityProtocol", "SASL_SSL")
-}
-
-func (k *KafkaConfig) initExtraKafkaConfig() {
-	k.ConsumerExtraConfig = k.Base.GetConfigSubSet(KafkaConsumerConfigPrefix)
-	k.ProducerExtraConfig = k.Base.GetConfigSubSet(KafkaProducerConfigPrefix)
-}
-
-///////////////////////////////////////////////////////////////////////////////
+// /////////////////////////////////////////////////////////////////////////////
 // --- rocksmq ---
 type RocksmqConfig struct {
-	Base *BaseTable
-
-	Path string
+	Path          ParamItem `refreshable:"false"`
+	LRUCacheRatio ParamItem `refreshable:"false"`
+	PageSize      ParamItem `refreshable:"false"`
+	// RetentionTimeInMinutes is the time of retention
+	RetentionTimeInMinutes ParamItem `refreshable:"false"`
+	// RetentionSizeInMB is the size of retention
+	RetentionSizeInMB ParamItem `refreshable:"false"`
+	// CompactionInterval is the Interval we trigger compaction,
+	CompactionInterval ParamItem `refreshable:"false"`
+	// TickerTimeInSeconds is the time of expired check, default 10 minutes
+	TickerTimeInSeconds ParamItem `refreshable:"false"`
 }
 
-func (p *RocksmqConfig) init(base *BaseTable) {
-	p.Base = base
+func (r *RocksmqConfig) Init(base *BaseTable) {
+	r.Path = ParamItem{
+		Key:     "rocksmq.path",
+		Version: "2.0.0",
+	}
+	r.Path.Init(base.mgr)
 
-	p.initPath()
+	r.LRUCacheRatio = ParamItem{
+		Key:          "rocksmq.lrucacheratio",
+		DefaultValue: "0.0.6",
+		Version:      "2.0.0",
+	}
+	r.LRUCacheRatio.Init(base.mgr)
+
+	r.PageSize = ParamItem{
+		Key:          "rocksmq.rocksmqPageSize",
+		DefaultValue: strconv.FormatInt(256<<20, 10),
+		Version:      "2.0.0",
+	}
+	r.PageSize.Init(base.mgr)
+
+	r.RetentionTimeInMinutes = ParamItem{
+		Key:          "rocksmq.retentionTimeInMinutes",
+		DefaultValue: "7200",
+		Version:      "2.0.0",
+	}
+	r.RetentionTimeInMinutes.Init(base.mgr)
+
+	r.RetentionSizeInMB = ParamItem{
+		Key:          "rocksmq.retentionSizeInMB",
+		DefaultValue: "7200",
+		Version:      "2.0.0",
+	}
+	r.RetentionSizeInMB.Init(base.mgr)
+
+	r.CompactionInterval = ParamItem{
+		Key:          "rocksmq.compactionInterval",
+		DefaultValue: "86400",
+		Version:      "2.0.0",
+	}
+	r.CompactionInterval.Init(base.mgr)
+
+	r.TickerTimeInSeconds = ParamItem{
+		Key:          "rocksmq.timtickerInterval",
+		DefaultValue: "600",
+		Version:      "2.2.2",
+	}
+	r.TickerTimeInSeconds.Init(base.mgr)
 }
 
-func (p *RocksmqConfig) initPath() {
-	p.Path = p.Base.LoadWithDefault("rocksmq.path", "")
-}
-
-///////////////////////////////////////////////////////////////////////////////
+// /////////////////////////////////////////////////////////////////////////////
 // --- minio ---
 type MinioConfig struct {
-	Base *BaseTable
-
-	Address         string
-	AccessKeyID     string
-	SecretAccessKey string
-	UseSSL          bool
-	BucketName      string
-	RootPath        string
-	UseIAM          bool
-	IAMEndpoint     string
+	Address         ParamItem `refreshable:"false"`
+	Port            ParamItem `refreshable:"false"`
+	AccessKeyID     ParamItem `refreshable:"false"`
+	SecretAccessKey ParamItem `refreshable:"false"`
+	UseSSL          ParamItem `refreshable:"false"`
+	BucketName      ParamItem `refreshable:"false"`
+	RootPath        ParamItem `refreshable:"false"`
+	UseIAM          ParamItem `refreshable:"false"`
+	CloudProvider   ParamItem `refreshable:"false"`
+	IAMEndpoint     ParamItem `refreshable:"false"`
 }
 
-func (p *MinioConfig) init(base *BaseTable) {
-	p.Base = base
-
-	p.initAddress()
-	p.initAccessKeyID()
-	p.initSecretAccessKey()
-	p.initUseSSL()
-	p.initBucketName()
-	p.initRootPath()
-	p.initUseIAM()
-	p.initIAMEndpoint()
-}
-
-func (p *MinioConfig) initAddress() {
-	host, err := p.Base.Load("minio.Address")
-	if err != nil {
-		panic(err)
+func (p *MinioConfig) Init(base *BaseTable) {
+	p.Port = ParamItem{
+		Key:          "minio.port",
+		DefaultValue: "9000",
+		Version:      "2.0.0",
 	}
-	// for compatible
-	if strings.Contains(host, ":") {
-		p.Address = host
-	} else {
-		port := p.Base.LoadWithDefault("minio.port", "9000")
-		p.Address = host + ":" + port
+	p.Port.Init(base.mgr)
+
+	p.Address = ParamItem{
+		Key:          "minio.address",
+		DefaultValue: "",
+		Version:      "2.0.0",
+		Formatter: func(addr string) string {
+			if addr == "" {
+				return ""
+			}
+			if strings.Contains(addr, ":") {
+				return addr
+			}
+			port, _ := p.Port.get()
+			return addr + ":" + port
+		},
 	}
-}
+	p.Address.Init(base.mgr)
 
-func (p *MinioConfig) initAccessKeyID() {
-	keyID, err := p.Base.Load("minio.accessKeyID")
-	if err != nil {
-		panic(err)
+	p.AccessKeyID = ParamItem{
+		Key:          "minio.accessKeyID",
+		Version:      "2.0.0",
+		PanicIfEmpty: true,
 	}
-	p.AccessKeyID = keyID
-}
+	p.AccessKeyID.Init(base.mgr)
 
-func (p *MinioConfig) initSecretAccessKey() {
-	key, err := p.Base.Load("minio.secretAccessKey")
-	if err != nil {
-		panic(err)
+	p.SecretAccessKey = ParamItem{
+		Key:          "minio.secretAccessKey",
+		Version:      "2.0.0",
+		PanicIfEmpty: true,
 	}
-	p.SecretAccessKey = key
-}
+	p.SecretAccessKey.Init(base.mgr)
 
-func (p *MinioConfig) initUseSSL() {
-	usessl, err := p.Base.Load("minio.useSSL")
-	if err != nil {
-		panic(err)
+	p.UseSSL = ParamItem{
+		Key:          "minio.useSSL",
+		Version:      "2.0.0",
+		PanicIfEmpty: true,
 	}
-	p.UseSSL, _ = strconv.ParseBool(usessl)
-}
+	p.UseSSL.Init(base.mgr)
 
-func (p *MinioConfig) initBucketName() {
-	bucketName, err := p.Base.Load("minio.bucketName")
-	if err != nil {
-		panic(err)
+	p.BucketName = ParamItem{
+		Key:          "minio.bucketName",
+		Version:      "2.0.0",
+		PanicIfEmpty: true,
 	}
-	p.BucketName = bucketName
-}
+	p.BucketName.Init(base.mgr)
 
-func (p *MinioConfig) initRootPath() {
-	rootPath, err := p.Base.Load("minio.rootPath")
-	if err != nil {
-		panic(err)
+	p.RootPath = ParamItem{
+		Key:          "minio.rootPath",
+		Version:      "2.0.0",
+		PanicIfEmpty: true,
 	}
-	p.RootPath = rootPath
-}
+	p.RootPath.Init(base.mgr)
 
-func (p *MinioConfig) initUseIAM() {
-	useIAM := p.Base.LoadWithDefault("minio.useIAM", DefaultMinioUseIAM)
-	p.UseIAM, _ = strconv.ParseBool(useIAM)
-}
+	p.UseIAM = ParamItem{
+		Key:          "minio.useIAM",
+		DefaultValue: DefaultMinioUseIAM,
+		Version:      "2.0.0",
+	}
+	p.UseIAM.Init(base.mgr)
 
-func (p *MinioConfig) initIAMEndpoint() {
-	iamEndpoint := p.Base.LoadWithDefault("minio.iamEndpoint", DefaultMinioIAMEndpoint)
-	p.IAMEndpoint = iamEndpoint
+	p.CloudProvider = ParamItem{
+		Key:          "minio.cloudProvider",
+		DefaultValue: DefaultMinioCloudProvider,
+		Version:      "2.2.0",
+	}
+	p.CloudProvider.Init(base.mgr)
+
+	p.IAMEndpoint = ParamItem{
+		Key:          "minio.iamEndpoint",
+		DefaultValue: DefaultMinioIAMEndpoint,
+		Version:      "2.0.0",
+	}
+	p.IAMEndpoint.Init(base.mgr)
 }

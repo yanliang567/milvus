@@ -16,15 +16,6 @@
 
 cmake_minimum_required( VERSION 3.18 )
 
-# To debug memory issues, you can comment out these below two lines.
-# Also, they are identical to that you define these environments:
-# CFLAGS="-fno-stack-protector -fno-omit-frame-pointer -fno-var-tracking -fsanitize=address"
-# CXXFLAGS="-fno-stack-protector -fno-omit-frame-pointer -fno-var-tracking -fsanitize=address"
-# LDFLAGS="-fno-stack-protector -fno-omit-frame-pointer -fno-var-tracking -fsanitize=address"
-
-# add_compile_options(-fno-stack-protector -fno-omit-frame-pointer -fno-var-tracking -fsanitize=address)
-# add_link_options(-fno-stack-protector -fno-omit-frame-pointer -fno-var-tracking -fsanitize=address)
-
 if ( APPLE )
     set( CMAKE_CROSSCOMPILING TRUE )
     set( RUN_HAVE_GNU_POSIX_REGEX 0 )
@@ -93,6 +84,13 @@ set( CMAKE_INSTALL_RPATH "/usr/lib" "${CMAKE_INSTALL_PREFIX}/lib" "${CMAKE_INSTA
 set( CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE )
 
 # **************************** Dependencies ****************************
+include( ${CMAKE_BINARY_DIR}/conan/conanbuildinfo.cmake )
+set( CONAN_DISABLE_CHECK_COMPILER ON )
+conan_basic_setup( KEEP_RPATHS )
+
+set( CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${CONAN_PROTOBUF_ROOT})
+message( STATUS "cmake prefix path ${CMAKE_PREFIX_PATH}")
+
 include( CTest )
 include( BuildUtils )
 include( DefineOptions )
@@ -110,13 +108,13 @@ include( ThirdPartyPackages )
 message( STATUS "Building Milvus CPU version" )
 
 if (LINUX OR MSYS)
-append_flags( CMAKE_CXX_FLAGS
-              FLAGS
-              "-fPIC"
-              "-DELPP_THREAD_SAFE"
-              "-fopenmp"
-              "-Werror"
-              )
+    append_flags( CMAKE_CXX_FLAGS
+                  FLAGS
+                  "-fPIC"
+                  "-DELPP_THREAD_SAFE"
+                  "-fopenmp"
+                  "-Werror"
+                  )
 endif ()
 
 if ( APPLE )
@@ -173,6 +171,17 @@ add_custom_target(lint
 
 find_program( CPPLINT_BIN NAMES cpplint cpplint.py HINTS ${BUILD_SUPPORT_DIR} )
 message( STATUS "Found cpplint executable at ${CPPLINT_BIN}" )
+
+# Use the first Python installation on PATH, not the newest one
+set(Python3_FIND_STRATEGY "LOCATION")
+# On Windows, use registry last, not first
+set(Python3_FIND_REGISTRY "LAST")
+# On macOS, use framework last, not first
+set(Python3_FIND_FRAMEWORK "LAST")
+find_package(Python3)
+set(PYTHON_EXECUTABLE ${Python3_EXECUTABLE})
+
+message( STATUS "Found Python at ${PYTHON_EXECUTABLE}")
 
 #
 # "make clang-format" and "make check-clang-format" targets
@@ -276,3 +285,8 @@ install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/src/common/
         DESTINATION include/common
         FILES_MATCHING PATTERN "*_c.h"
 )
+
+install(DIRECTORY ${CMAKE_BINARY_DIR}/lib/
+        DESTINATION ${CMAKE_INSTALL_FULL_LIBDIR}
+)
+

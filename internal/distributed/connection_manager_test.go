@@ -40,10 +40,8 @@ import (
 	"google.golang.org/grpc"
 )
 
-var Params paramtable.BaseTable
-
 func TestConnectionManager(t *testing.T) {
-	Params.Init()
+	paramtable.Init()
 	ctx := context.Background()
 
 	session := initSession(ctx)
@@ -51,7 +49,6 @@ func TestConnectionManager(t *testing.T) {
 	cm.AddDependency(typeutil.RootCoordRole)
 	cm.AddDependency(typeutil.QueryCoordRole)
 	cm.AddDependency(typeutil.DataCoordRole)
-	cm.AddDependency(typeutil.IndexCoordRole)
 	cm.AddDependency(typeutil.QueryNodeRole)
 	cm.AddDependency(typeutil.DataNodeRole)
 	cm.AddDependency(typeutil.IndexNodeRole)
@@ -105,23 +102,6 @@ func TestConnectionManager(t *testing.T) {
 		assert.Eventually(t, func() bool {
 			dataCoord, ok := cm.GetDataCoordClient()
 			return dataCoord != nil && ok
-		}, 10*time.Second, 100*time.Millisecond)
-	})
-
-	t.Run("indexCoord", func(t *testing.T) {
-		lis, err := net.Listen("tcp", "127.0.0.1:")
-		assert.Nil(t, err)
-		defer lis.Close()
-		indexCoord := &testIndexCoord{}
-		grpcServer := grpc.NewServer()
-		defer grpcServer.Stop()
-		indexpb.RegisterIndexCoordServer(grpcServer, indexCoord)
-		go grpcServer.Serve(lis)
-		session.Init(typeutil.IndexCoordRole, lis.Addr().String(), true, false)
-		session.Register()
-		assert.Eventually(t, func() bool {
-			indexCoord, ok := cm.GetIndexCoordClient()
-			return indexCoord != nil && ok
 		}, 10*time.Second, 100*time.Millisecond)
 	})
 
@@ -253,10 +233,6 @@ type testDataCoord struct {
 	datapb.DataCoordServer
 }
 
-type testIndexCoord struct {
-	indexpb.IndexCoordServer
-}
-
 type testQueryNode struct {
 	querypb.QueryNodeServer
 }
@@ -270,17 +246,18 @@ type testIndexNode struct {
 }
 
 func initSession(ctx context.Context) *sessionutil.Session {
-	rootPath, err := Params.Load("etcd.rootPath")
+	baseTable := paramtable.Get().BaseTable
+	rootPath, err := baseTable.Load("etcd.rootPath")
 	if err != nil {
 		panic(err)
 	}
-	subPath, err := Params.Load("etcd.metaSubPath")
+	subPath, err := baseTable.Load("etcd.metaSubPath")
 	if err != nil {
 		panic(err)
 	}
 	metaRootPath := rootPath + "/" + subPath
 
-	endpoints := Params.LoadWithDefault("etcd.endpoints", paramtable.DefaultEtcdEndpoints)
+	endpoints := baseTable.GetWithDefault("etcd.endpoints", paramtable.DefaultEtcdEndpoints)
 	etcdEndpoints := strings.Split(endpoints, ",")
 
 	log.Debug("metaRootPath", zap.Any("metaRootPath", metaRootPath))

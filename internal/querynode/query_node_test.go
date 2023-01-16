@@ -18,19 +18,18 @@ package querynode
 
 import (
 	"context"
-	"io/ioutil"
-	"net/url"
 	"os"
-	"runtime"
-	"sync"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/server/v3/embed"
 
-	"github.com/milvus-io/milvus/internal/util/concurrency"
+	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/util/dependency"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/types"
@@ -46,8 +45,9 @@ type queryCoordMock struct {
 
 func setup() {
 	os.Setenv("QUERY_NODE_ID", "1")
-	Params.Init()
-	Params.EtcdCfg.MetaRootPath = "/etcd/test/root/querynode"
+	paramtable.Init()
+	paramtable.Get().BaseTable.Save("etcd.rootPath", "/etcd/test/root")
+	paramtable.Get().BaseTable.Save("etcd.metaSubPath", "querynode")
 }
 
 func initTestMeta(t *testing.T, node *QueryNode, collectionID UniqueID, segmentID UniqueID, optional ...bool) {
@@ -63,7 +63,7 @@ func initTestMeta(t *testing.T, node *QueryNode, collectionID UniqueID, segmentI
 	err = node.metaReplica.addPartition(collection.ID(), defaultPartitionID)
 	assert.NoError(t, err)
 
-	err = node.metaReplica.addSegment(segmentID, defaultPartitionID, collectionID, "", defaultSegmentVersion, segmentTypeSealed)
+	err = node.metaReplica.addSegment(segmentID, defaultPartitionID, collectionID, "", defaultSegmentVersion, defaultSegmentStartPosition, segmentTypeSealed)
 	assert.NoError(t, err)
 }
 
@@ -82,30 +82,33 @@ func newQueryNodeMock() *QueryNode {
 			cancel()
 		}()
 	}
-	etcdCli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
+	etcdCli, err := etcd.GetEtcdClient(
+		Params.EtcdCfg.UseEmbedEtcd.GetAsBool(),
+		Params.EtcdCfg.EtcdUseSSL.GetAsBool(),
+		Params.EtcdCfg.Endpoints.GetAsStrings(),
+		Params.EtcdCfg.EtcdTLSCert.GetValue(),
+		Params.EtcdCfg.EtcdTLSKey.GetValue(),
+		Params.EtcdCfg.EtcdTLSCACert.GetValue(),
+		Params.EtcdCfg.EtcdTLSMinVersion.GetValue())
 	if err != nil {
 		panic(err)
 	}
-	etcdKV := etcdkv.NewEtcdKV(etcdCli, Params.EtcdCfg.MetaRootPath)
+	etcdKV := etcdkv.NewEtcdKV(etcdCli, Params.EtcdCfg.MetaRootPath.GetValue())
 
 	factory := newMessageStreamFactory()
 	svr := NewQueryNode(ctx, factory)
 	tsReplica := newTSafeReplica()
 
-	pool, err := concurrency.NewPool(runtime.GOMAXPROCS(0))
-	if err != nil {
-		panic(err)
-	}
-
-	replica := newCollectionReplica(pool)
+	replica := newCollectionReplica()
 	svr.metaReplica = replica
 	svr.dataSyncService = newDataSyncService(ctx, svr.metaReplica, tsReplica, factory)
 	svr.vectorStorage, err = factory.NewPersistentStorageChunkManager(ctx)
 	if err != nil {
 		panic(err)
 	}
-	svr.loader = newSegmentLoader(svr.metaReplica, etcdKV, svr.vectorStorage, factory, pool)
+	svr.loader = newSegmentLoader(svr.metaReplica, etcdKV, svr.vectorStorage, factory)
 	svr.etcdKV = etcdKV
+	svr.etcdCli = etcdCli
 
 	return svr
 }
@@ -114,44 +117,26 @@ func newMessageStreamFactory() dependency.Factory {
 	return dependency.NewDefaultFactory(true)
 }
 
-func startEmbedEtcdServer() (*embed.Etcd, error) {
-	dir, err := ioutil.TempDir(os.TempDir(), "milvus_ut")
-	if err != nil {
-		return nil, err
-	}
-	defer os.RemoveAll(dir)
-	config := embed.NewConfig()
-
-	config.Dir = os.TempDir()
-	config.LogLevel = "warn"
-	config.LogOutputs = []string{"default"}
-	u, err := url.Parse("http://localhost:8989")
-	if err != nil {
-		return nil, err
-	}
-	config.LCUrls = []url.URL{*u}
-	u, err = url.Parse("http://localhost:8990")
-	if err != nil {
-		return nil, err
-	}
-	config.LPUrls = []url.URL{*u}
-
-	return embed.StartEtcd(config)
-}
-
 func TestMain(m *testing.M) {
-	setup()
 	var err error
+	var tempDir string
 	rateCol, err = newRateCollector()
 	if err != nil {
 		panic("init test failed, err = " + err.Error())
 	}
 	// init embed etcd
-	embedetcdServer, err = startEmbedEtcdServer()
+	embedetcdServer, tempDir, err = etcd.StartTestEmbedEtcdServer()
 	if err != nil {
-		os.Exit(1)
+		log.Fatal(err.Error())
 	}
+	defer os.RemoveAll(tempDir)
 	defer embedetcdServer.Close()
+
+	addrs := etcd.GetEmbedEtcdEndpoints(embedetcdServer)
+	// setup env for etcd endpoint
+	os.Setenv("etcd.endpoints", strings.Join(addrs, ","))
+	paramtable.Init()
+	setup()
 	exitCode := m.Run()
 	os.Exit(exitCode)
 }
@@ -169,9 +154,17 @@ func TestQueryNode_register(t *testing.T) {
 	defer cancel()
 
 	node, err := genSimpleQueryNode(ctx)
-	assert.NoError(t, err)
+	require.NoError(t, err)
+	defer node.Stop()
 
-	etcdcli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
+	etcdcli, err := etcd.GetEtcdClient(
+		Params.EtcdCfg.UseEmbedEtcd.GetAsBool(),
+		Params.EtcdCfg.EtcdUseSSL.GetAsBool(),
+		Params.EtcdCfg.Endpoints.GetAsStrings(),
+		Params.EtcdCfg.EtcdTLSCert.GetValue(),
+		Params.EtcdCfg.EtcdTLSKey.GetValue(),
+		Params.EtcdCfg.EtcdTLSCACert.GetValue(),
+		Params.EtcdCfg.EtcdTLSMinVersion.GetValue())
 	assert.NoError(t, err)
 	defer etcdcli.Close()
 	node.SetEtcdClient(etcdcli)
@@ -188,13 +181,25 @@ func TestQueryNode_init(t *testing.T) {
 	defer cancel()
 
 	node, err := genSimpleQueryNode(ctx)
-	assert.NoError(t, err)
-	etcdcli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
+	require.NoError(t, err)
+	defer node.Stop()
+
+	etcdcli, err := etcd.GetEtcdClient(
+		Params.EtcdCfg.UseEmbedEtcd.GetAsBool(),
+		Params.EtcdCfg.EtcdUseSSL.GetAsBool(),
+		Params.EtcdCfg.Endpoints.GetAsStrings(),
+		Params.EtcdCfg.EtcdTLSCert.GetValue(),
+		Params.EtcdCfg.EtcdTLSKey.GetValue(),
+		Params.EtcdCfg.EtcdTLSCACert.GetValue(),
+		Params.EtcdCfg.EtcdTLSMinVersion.GetValue())
 	assert.NoError(t, err)
 	defer etcdcli.Close()
 	node.SetEtcdClient(etcdcli)
 	err = node.Init()
 	assert.Nil(t, err)
+	assert.Empty(t, node.GetAddress())
+	node.SetAddress("address")
+	assert.Equal(t, "address", node.GetAddress())
 }
 
 func genSimpleQueryNodeToTestWatchChangeInfo(ctx context.Context) (*QueryNode, error) {
@@ -221,25 +226,21 @@ func TestQueryNode_adjustByChangeInfo(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var wg sync.WaitGroup
-	wg.Add(1)
 	t.Run("test cleanup segments", func(t *testing.T) {
-		defer wg.Done()
-		_, err := genSimpleQueryNodeToTestWatchChangeInfo(ctx)
-		assert.NoError(t, err)
-
+		node, err := genSimpleQueryNodeToTestWatchChangeInfo(ctx)
+		require.NoError(t, err)
+		defer node.Stop()
 	})
 
-	wg.Add(1)
 	t.Run("test cleanup segments no segment", func(t *testing.T) {
-		defer wg.Done()
 		node, err := genSimpleQueryNodeToTestWatchChangeInfo(ctx)
-		assert.NoError(t, err)
+		require.NoError(t, err)
+		defer node.Stop()
 
 		node.metaReplica.removeSegment(defaultSegmentID, segmentTypeSealed)
 		segmentChangeInfos := genSimpleChangeInfo()
 		segmentChangeInfos.Infos[0].OnlineSegments = nil
-		segmentChangeInfos.Infos[0].OfflineNodeID = Params.QueryNodeCfg.GetNodeID()
+		segmentChangeInfos.Infos[0].OfflineNodeID = paramtable.GetNodeID()
 
 		/*
 			qc, err := node.queryService.getQueryCollection(defaultCollectionID)
@@ -248,5 +249,4 @@ func TestQueryNode_adjustByChangeInfo(t *testing.T) {
 		*/
 
 	})
-	wg.Wait()
 }

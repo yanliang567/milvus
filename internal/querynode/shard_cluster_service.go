@@ -2,6 +2,7 @@ package querynode
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"strconv"
@@ -49,8 +50,8 @@ func newShardClusterService(client *clientv3.Client, session *sessionutil.Sessio
 }
 
 // addShardCluster adds shardCluster into service.
-func (s *ShardClusterService) addShardCluster(collectionID, replicaID int64, vchannelName string) {
-	nodeDetector := NewEtcdShardNodeDetector(s.client, path.Join(Params.EtcdCfg.MetaRootPath, ReplicaMetaPrefix),
+func (s *ShardClusterService) addShardCluster(collectionID, replicaID int64, vchannelName string, version int64) {
+	nodeDetector := NewEtcdShardNodeDetector(s.client, path.Join(Params.EtcdCfg.MetaRootPath.GetValue(), ReplicaMetaPrefix),
 		func() (map[int64]string, error) {
 			result := make(map[int64]string)
 			sessions, _, err := s.session.GetSessions(typeutil.QueryNodeRole)
@@ -63,9 +64,9 @@ func (s *ShardClusterService) addShardCluster(collectionID, replicaID int64, vch
 			return result, nil
 		})
 
-	segmentDetector := NewEtcdShardSegmentDetector(s.client, path.Join(Params.EtcdCfg.MetaRootPath, util.SegmentMetaPrefix, strconv.FormatInt(collectionID, 10)))
+	segmentDetector := NewEtcdShardSegmentDetector(s.client, path.Join(Params.EtcdCfg.MetaRootPath.GetValue(), util.SegmentMetaPrefix, strconv.FormatInt(collectionID, 10)))
 
-	cs := NewShardCluster(collectionID, replicaID, vchannelName, nodeDetector, segmentDetector,
+	cs := NewShardCluster(collectionID, replicaID, vchannelName, version, nodeDetector, segmentDetector,
 		func(nodeID int64, addr string) shardQueryNode {
 			if nodeID == s.session.ServerID {
 				// wrap node itself
@@ -99,6 +100,29 @@ func (s *ShardClusterService) releaseShardCluster(vchannelName string) error {
 	cs := raw.(*ShardCluster)
 	cs.Close()
 	return nil
+}
+
+func (s *ShardClusterService) close() error {
+	log.Debug("start to close shard cluster service")
+
+	isFinish := true
+	s.clusters.Range(func(key, value any) bool {
+		cs, ok := value.(*ShardCluster)
+		if !ok {
+			log.Error("convert to ShardCluster fail, close shard cluster is interrupted", zap.Any("key", key))
+			isFinish = false
+			return false
+		}
+
+		cs.Close()
+		return true
+	})
+
+	if isFinish {
+		return nil
+	}
+
+	return errors.New("close shard cluster failed")
 }
 
 // releaseCollection removes all shardCluster matching specified collectionID

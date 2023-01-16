@@ -24,6 +24,7 @@ import (
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 
 	"go.uber.org/zap"
 )
@@ -47,7 +48,7 @@ func (fm *flowgraphManager) addAndStart(dn *DataNode, vchan *datapb.VchannelInfo
 	var alloc allocatorInterface = newAllocator(dn.rootCoord)
 
 	dataSyncService, err := newDataSyncService(dn.ctx, make(chan flushMsg, 100), make(chan resendTTMsg, 100), channel,
-		alloc, dn.factory, vchan, dn.clearSignal, dn.dataCoord, dn.segmentCache, dn.chunkManager, dn.compactionExecutor)
+		alloc, dn.factory, vchan, dn.clearSignal, dn.dataCoord, dn.segmentCache, dn.chunkManager, dn.compactionExecutor, dn.GetSession().ServerID)
 	if err != nil {
 		log.Warn("new data sync service fail", zap.String("vChannelName", vchan.GetChannelName()), zap.Error(err))
 		return err
@@ -55,14 +56,14 @@ func (fm *flowgraphManager) addAndStart(dn *DataNode, vchan *datapb.VchannelInfo
 	dataSyncService.start()
 	fm.flowgraphs.Store(vchan.GetChannelName(), dataSyncService)
 
-	metrics.DataNodeNumFlowGraphs.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID())).Inc()
+	metrics.DataNodeNumFlowGraphs.WithLabelValues(fmt.Sprint(paramtable.GetNodeID())).Inc()
 	return nil
 }
 
 func (fm *flowgraphManager) release(vchanName string) {
 	if fg, loaded := fm.flowgraphs.LoadAndDelete(vchanName); loaded {
 		fg.(*dataSyncService).close()
-		metrics.DataNodeNumFlowGraphs.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID())).Dec()
+		metrics.DataNodeNumFlowGraphs.WithLabelValues(fmt.Sprint(paramtable.GetNodeID())).Dec()
 	}
 	rateCol.removeFlowGraphChannel(vchanName)
 }
@@ -108,8 +109,9 @@ func (fm *flowgraphManager) getChannel(segID UniqueID) (Channel, error) {
 	return nil, fmt.Errorf("cannot find segment %d in all flowgraphs", segID)
 }
 
-// resendTT loops through flow graphs, looks for segments that are not flushed, and sends them to that flow graph's
-// `resendTTCh` channel so stats of these segments will be resent.
+// resendTT loops through flow graphs, looks for segments that are not flushed,
+// and sends them to that flow graph's `resendTTCh` channel so stats of
+// these segments will be resent.
 func (fm *flowgraphManager) resendTT() []UniqueID {
 	var unFlushedSegments []UniqueID
 	fm.flowgraphs.Range(func(key, value interface{}) bool {

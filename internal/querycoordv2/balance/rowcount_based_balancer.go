@@ -19,23 +19,27 @@ package balance
 import (
 	"sort"
 
+	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	"github.com/milvus-io/milvus/internal/querycoordv2/session"
 	"github.com/milvus-io/milvus/internal/querycoordv2/task"
+	"github.com/samber/lo"
+	"go.uber.org/zap"
 )
 
 type RowCountBasedBalancer struct {
-	RoundRobinBalancer
-	nodeManager *session.NodeManager
-	dist        *meta.DistributionManager
-	meta        *meta.Meta
+	*RoundRobinBalancer
+	dist      *meta.DistributionManager
+	meta      *meta.Meta
+	targetMgr *meta.TargetManager
 }
 
 func (b *RowCountBasedBalancer) AssignSegment(segments []*meta.Segment, nodes []int64) []SegmentAssignPlan {
-	if len(nodes) == 0 {
+	nodeItems := b.convertToNodeItems(nodes)
+	if len(nodeItems) == 0 {
 		return nil
 	}
-	nodeItems := b.convertToNodeItems(nodes)
 	queue := newPriorityQueue()
 	for _, item := range nodeItems {
 		queue.push(item)
@@ -65,7 +69,8 @@ func (b *RowCountBasedBalancer) AssignSegment(segments []*meta.Segment, nodes []
 
 func (b *RowCountBasedBalancer) convertToNodeItems(nodeIDs []int64) []*nodeItem {
 	ret := make([]*nodeItem, 0, len(nodeIDs))
-	for _, node := range nodeIDs {
+	for _, nodeInfo := range b.getNodes(nodeIDs) {
+		node := nodeInfo.ID()
 		segments := b.dist.SegmentDistManager.GetByNode(node)
 		rowcnt := 0
 		for _, s := range segments {
@@ -81,8 +86,13 @@ func (b *RowCountBasedBalancer) convertToNodeItems(nodeIDs []int64) []*nodeItem 
 func (b *RowCountBasedBalancer) Balance() ([]SegmentAssignPlan, []ChannelAssignPlan) {
 	ids := b.meta.CollectionManager.GetAll()
 
+	// loading collection should skip balance
+	loadedCollections := lo.Filter(ids, func(cid int64, _ int) bool {
+		return b.meta.GetStatus(cid) == querypb.LoadStatus_Loaded
+	})
+
 	segmentPlans, channelPlans := make([]SegmentAssignPlan, 0), make([]ChannelAssignPlan, 0)
-	for _, cid := range ids {
+	for _, cid := range loadedCollections {
 		replicas := b.meta.ReplicaManager.GetByCollection(cid)
 		for _, replica := range replicas {
 			splans, cplans := b.balanceReplica(replica)
@@ -100,21 +110,45 @@ func (b *RowCountBasedBalancer) balanceReplica(replica *meta.Replica) ([]Segment
 	}
 	nodesRowCnt := make(map[int64]int)
 	nodesSegments := make(map[int64][]*meta.Segment)
+	stoppingNodesSegments := make(map[int64][]*meta.Segment)
+
 	totalCnt := 0
 	for _, nid := range nodes {
 		segments := b.dist.SegmentDistManager.GetByCollectionAndNode(replica.GetCollectionID(), nid)
+		// Only balance segments in targets
+		segments = lo.Filter(segments, func(segment *meta.Segment, _ int) bool {
+			return b.targetMgr.GetHistoricalSegment(segment.GetCollectionID(), segment.GetID(), meta.CurrentTarget) != nil
+		})
+
+		if isStopping, err := b.nodeManager.IsStoppingNode(nid); err != nil {
+			log.Info("not existed node", zap.Int64("nid", nid), zap.Any("segments", segments), zap.Error(err))
+			continue
+		} else if isStopping {
+			stoppingNodesSegments[nid] = segments
+		} else {
+			nodesSegments[nid] = segments
+		}
+
 		cnt := 0
 		for _, s := range segments {
 			cnt += int(s.GetNumOfRows())
 		}
 		nodesRowCnt[nid] = cnt
-		nodesSegments[nid] = segments
 		totalCnt += cnt
 	}
 
-	average := totalCnt / len(nodes)
+	if len(nodes) == len(stoppingNodesSegments) {
+		return b.handleStoppingNodes(replica, stoppingNodesSegments)
+	}
+
+	if len(nodesSegments) == 0 {
+		return nil, nil
+	}
+
+	average := totalCnt / len(nodesSegments)
 	neededRowCnt := 0
-	for _, rowcnt := range nodesRowCnt {
+	for nodeID := range nodesSegments {
+		rowcnt := nodesRowCnt[nodeID]
 		if rowcnt < average {
 			neededRowCnt += average - rowcnt
 		}
@@ -126,13 +160,17 @@ func (b *RowCountBasedBalancer) balanceReplica(replica *meta.Replica) ([]Segment
 
 	segmentsToMove := make([]*meta.Segment, 0)
 
+	stopSegments, cnt := b.collectionStoppingSegments(stoppingNodesSegments)
+	segmentsToMove = append(segmentsToMove, stopSegments...)
+	neededRowCnt -= cnt
+
 	// select segments to be moved
 outer:
-	for nodeID, rowcnt := range nodesRowCnt {
+	for nodeID, segments := range nodesSegments {
+		rowcnt := nodesRowCnt[nodeID]
 		if rowcnt <= average {
 			continue
 		}
-		segments := nodesSegments[nodeID]
 		sort.Slice(segments, func(i, j int) bool {
 			return segments[i].GetNumOfRows() > segments[j].GetNumOfRows()
 		})
@@ -156,7 +194,8 @@ outer:
 
 	// allocate segments to those nodes with row cnt less than average
 	queue := newPriorityQueue()
-	for nodeID, rowcnt := range nodesRowCnt {
+	for nodeID := range nodesSegments {
+		rowcnt := nodesRowCnt[nodeID]
 		if rowcnt >= average {
 			continue
 		}
@@ -165,19 +204,92 @@ outer:
 	}
 
 	plans := make([]SegmentAssignPlan, 0)
+	getPlanWeight := func(nodeID int64) Weight {
+		if _, ok := stoppingNodesSegments[nodeID]; ok {
+			return GetWeight(1)
+		}
+		return GetWeight(0)
+	}
 	for _, s := range segmentsToMove {
 		node := queue.pop().(*nodeItem)
+
 		plan := SegmentAssignPlan{
 			ReplicaID: replica.GetID(),
 			From:      s.Node,
 			To:        node.nodeID,
 			Segment:   s,
+			Weight:    getPlanWeight(s.Node),
 		}
 		plans = append(plans, plan)
 		node.setPriority(node.getPriority() + int(s.GetNumOfRows()))
 		queue.push(node)
 	}
-	return plans, nil
+	return plans, b.getChannelPlan(replica, stoppingNodesSegments)
+}
+
+func (b *RowCountBasedBalancer) handleStoppingNodes(replica *meta.Replica, nodeSegments map[int64][]*meta.Segment) ([]SegmentAssignPlan, []ChannelAssignPlan) {
+	segmentPlans := make([]SegmentAssignPlan, 0, len(nodeSegments))
+	channelPlans := make([]ChannelAssignPlan, 0, len(nodeSegments))
+	for nodeID, segments := range nodeSegments {
+		for _, segment := range segments {
+			segmentPlan := SegmentAssignPlan{
+				ReplicaID: replica.ID,
+				From:      nodeID,
+				To:        -1,
+				Segment:   segment,
+				Weight:    GetWeight(1),
+			}
+			segmentPlans = append(segmentPlans, segmentPlan)
+		}
+		for _, dmChannel := range b.dist.ChannelDistManager.GetByCollectionAndNode(replica.GetCollectionID(), nodeID) {
+			channelPlan := ChannelAssignPlan{
+				ReplicaID: replica.ID,
+				From:      nodeID,
+				To:        -1,
+				Channel:   dmChannel,
+				Weight:    GetWeight(1),
+			}
+			channelPlans = append(channelPlans, channelPlan)
+		}
+	}
+
+	return segmentPlans, channelPlans
+}
+
+func (b *RowCountBasedBalancer) collectionStoppingSegments(stoppingNodesSegments map[int64][]*meta.Segment) ([]*meta.Segment, int) {
+	var (
+		segments     []*meta.Segment
+		removeRowCnt int
+	)
+
+	for _, stoppingSegments := range stoppingNodesSegments {
+		for _, segment := range stoppingSegments {
+			segments = append(segments, segment)
+			removeRowCnt += int(segment.GetNumOfRows())
+		}
+	}
+	return segments, removeRowCnt
+}
+
+func (b *RowCountBasedBalancer) getChannelPlan(replica *meta.Replica, stoppingNodesSegments map[int64][]*meta.Segment) []ChannelAssignPlan {
+	// maybe it will have some strategies to balance the channel in the future
+	// but now, only balance the channel for the stopping nodes.
+	return b.getChannelPlanForStoppingNodes(replica, stoppingNodesSegments)
+}
+
+func (b *RowCountBasedBalancer) getChannelPlanForStoppingNodes(replica *meta.Replica, stoppingNodesSegments map[int64][]*meta.Segment) []ChannelAssignPlan {
+	channelPlans := make([]ChannelAssignPlan, 0)
+	for nodeID := range stoppingNodesSegments {
+		dmChannels := b.dist.ChannelDistManager.GetByCollectionAndNode(replica.GetCollectionID(), nodeID)
+		plans := b.AssignChannel(dmChannels, replica.Replica.GetNodes())
+		for i := range plans {
+			plans[i].From = nodeID
+			plans[i].ReplicaID = replica.ID
+			plans[i].Weight = GetWeight(1)
+		}
+		channelPlans = append(channelPlans, plans...)
+	}
+	return channelPlans
 }
 
 func NewRowCountBasedBalancer(
@@ -185,12 +297,13 @@ func NewRowCountBasedBalancer(
 	nodeManager *session.NodeManager,
 	dist *meta.DistributionManager,
 	meta *meta.Meta,
+	targetMgr *meta.TargetManager,
 ) *RowCountBasedBalancer {
 	return &RowCountBasedBalancer{
-		RoundRobinBalancer: *NewRoundRobinBalancer(scheduler, nodeManager),
-		nodeManager:        nodeManager,
+		RoundRobinBalancer: NewRoundRobinBalancer(scheduler, nodeManager),
 		dist:               dist,
 		meta:               meta,
+		targetMgr:          targetMgr,
 	}
 }
 

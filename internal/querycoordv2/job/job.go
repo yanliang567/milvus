@@ -21,15 +21,17 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/samber/lo"
+	"go.uber.org/zap"
+
 	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	"github.com/milvus-io/milvus/internal/querycoordv2/observers"
 	"github.com/milvus-io/milvus/internal/querycoordv2/session"
 	"github.com/milvus-io/milvus/internal/querycoordv2/utils"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	"github.com/samber/lo"
-	"go.uber.org/zap"
 )
 
 // Job is request of loading/releasing collection/partitions,
@@ -40,6 +42,7 @@ import (
 type Job interface {
 	MsgID() int64
 	CollectionID() int64
+	Context() context.Context
 	// PreExecute does checks, DO NOT persists any thing within this stage,
 	PreExecute() error
 	// Execute processes the request
@@ -77,6 +80,10 @@ func (job *BaseJob) CollectionID() int64 {
 	return job.collectionID
 }
 
+func (job *BaseJob) Context() context.Context {
+	return job.ctx
+}
+
 func (job *BaseJob) Error() error {
 	return job.err
 }
@@ -104,12 +111,11 @@ type LoadCollectionJob struct {
 	*BaseJob
 	req *querypb.LoadCollectionRequest
 
-	dist            *meta.DistributionManager
-	meta            *meta.Meta
-	targetMgr       *meta.TargetManager
-	broker          meta.Broker
-	nodeMgr         *session.NodeManager
-	handoffObserver *observers.HandoffObserver
+	dist      *meta.DistributionManager
+	meta      *meta.Meta
+	targetMgr *meta.TargetManager
+	broker    meta.Broker
+	nodeMgr   *session.NodeManager
 }
 
 func NewLoadCollectionJob(
@@ -120,17 +126,15 @@ func NewLoadCollectionJob(
 	targetMgr *meta.TargetManager,
 	broker meta.Broker,
 	nodeMgr *session.NodeManager,
-	handoffObserver *observers.HandoffObserver,
 ) *LoadCollectionJob {
 	return &LoadCollectionJob{
-		BaseJob:         NewBaseJob(ctx, req.Base.GetMsgID(), req.GetCollectionID()),
-		req:             req,
-		dist:            dist,
-		meta:            meta,
-		targetMgr:       targetMgr,
-		broker:          broker,
-		nodeMgr:         nodeMgr,
-		handoffObserver: handoffObserver,
+		BaseJob:   NewBaseJob(ctx, req.Base.GetMsgID(), req.GetCollectionID()),
+		req:       req,
+		dist:      dist,
+		meta:      meta,
+		targetMgr: targetMgr,
+		broker:    broker,
+		nodeMgr:   nodeMgr,
 	}
 }
 
@@ -164,6 +168,7 @@ func (job *LoadCollectionJob) PreExecute() error {
 			log.Warn(msg)
 			return utils.WrapError(msg, ErrLoadParameterMismatched)
 		}
+
 		return ErrCollectionLoaded
 	}
 
@@ -182,8 +187,16 @@ func (job *LoadCollectionJob) Execute() error {
 		zap.Int64("collectionID", req.GetCollectionID()),
 	)
 
+	meta.GlobalFailedLoadCache.Remove(req.GetCollectionID())
+
+	// Clear stale replicas
+	err := job.meta.ReplicaManager.RemoveCollection(req.GetCollectionID())
+	if err != nil {
+		log.Warn("failed to clear stale replicas", zap.Error(err))
+		return err
+	}
+
 	// Create replicas
-	// TODO(yah01): store replicas and collection atomically
 	replicas, err := utils.SpawnReplicas(job.meta.ReplicaManager,
 		job.nodeMgr,
 		req.GetCollectionID(),
@@ -200,25 +213,20 @@ func (job *LoadCollectionJob) Execute() error {
 	}
 
 	// Fetch channels and segments from DataCoord
-	partitions, err := job.broker.GetPartitions(job.ctx, req.GetCollectionID())
+	partitionIDs, err := job.broker.GetPartitions(job.ctx, req.GetCollectionID())
 	if err != nil {
 		msg := "failed to get partitions from RootCoord"
 		log.Error(msg, zap.Error(err))
 		return utils.WrapError(msg, err)
 	}
 
-	job.handoffObserver.Register(job.CollectionID())
-	err = utils.RegisterTargets(job.ctx,
-		job.targetMgr,
-		job.broker,
-		req.GetCollectionID(),
-		partitions)
+	// It's safe here to call UpdateCollectionNextTargetWithPartitions, as the collection not existing
+	err = job.targetMgr.UpdateCollectionNextTargetWithPartitions(req.GetCollectionID(), partitionIDs...)
 	if err != nil {
-		msg := "failed to register channels and segments"
+		msg := "failed to update next targets for collection"
 		log.Error(msg, zap.Error(err))
 		return utils.WrapError(msg, err)
 	}
-	job.handoffObserver.StartHandoff(job.CollectionID())
 
 	err = job.meta.CollectionManager.PutCollection(&meta.Collection{
 		CollectionLoadInfo: &querypb.CollectionLoadInfo{
@@ -236,24 +244,24 @@ func (job *LoadCollectionJob) Execute() error {
 		return utils.WrapError(msg, err)
 	}
 
+	metrics.QueryCoordNumCollections.WithLabelValues().Inc()
 	return nil
 }
 
 func (job *LoadCollectionJob) PostExecute() {
 	if job.Error() != nil && !job.meta.Exist(job.CollectionID()) {
 		job.meta.ReplicaManager.RemoveCollection(job.CollectionID())
-		job.handoffObserver.Unregister(job.ctx)
 		job.targetMgr.RemoveCollection(job.req.GetCollectionID())
 	}
 }
 
 type ReleaseCollectionJob struct {
 	*BaseJob
-	req             *querypb.ReleaseCollectionRequest
-	dist            *meta.DistributionManager
-	meta            *meta.Meta
-	targetMgr       *meta.TargetManager
-	handoffObserver *observers.HandoffObserver
+	req            *querypb.ReleaseCollectionRequest
+	dist           *meta.DistributionManager
+	meta           *meta.Meta
+	targetMgr      *meta.TargetManager
+	targetObserver *observers.TargetObserver
 }
 
 func NewReleaseCollectionJob(ctx context.Context,
@@ -261,15 +269,15 @@ func NewReleaseCollectionJob(ctx context.Context,
 	dist *meta.DistributionManager,
 	meta *meta.Meta,
 	targetMgr *meta.TargetManager,
-	handoffObserver *observers.HandoffObserver,
+	targetObserver *observers.TargetObserver,
 ) *ReleaseCollectionJob {
 	return &ReleaseCollectionJob{
-		BaseJob:         NewBaseJob(ctx, req.Base.GetMsgID(), req.GetCollectionID()),
-		req:             req,
-		dist:            dist,
-		meta:            meta,
-		targetMgr:       targetMgr,
-		handoffObserver: handoffObserver,
+		BaseJob:        NewBaseJob(ctx, req.Base.GetMsgID(), req.GetCollectionID()),
+		req:            req,
+		dist:           dist,
+		meta:           meta,
+		targetMgr:      targetMgr,
+		targetObserver: targetObserver,
 	}
 }
 
@@ -290,8 +298,6 @@ func (job *ReleaseCollectionJob) Execute() error {
 		return utils.WrapError(msg, err)
 	}
 
-	job.handoffObserver.Unregister(job.ctx, job.CollectionID())
-
 	err = job.meta.ReplicaManager.RemoveCollection(req.GetCollectionID())
 	if err != nil {
 		msg := "failed to remove replicas"
@@ -299,7 +305,9 @@ func (job *ReleaseCollectionJob) Execute() error {
 	}
 
 	job.targetMgr.RemoveCollection(req.GetCollectionID())
+	job.targetObserver.ReleaseCollection(req.GetCollectionID())
 	waitCollectionReleased(job.dist, req.GetCollectionID())
+	metrics.QueryCoordNumCollections.WithLabelValues().Dec()
 	return nil
 }
 
@@ -307,12 +315,11 @@ type LoadPartitionJob struct {
 	*BaseJob
 	req *querypb.LoadPartitionsRequest
 
-	dist            *meta.DistributionManager
-	meta            *meta.Meta
-	targetMgr       *meta.TargetManager
-	broker          meta.Broker
-	nodeMgr         *session.NodeManager
-	handoffObserver *observers.HandoffObserver
+	dist      *meta.DistributionManager
+	meta      *meta.Meta
+	targetMgr *meta.TargetManager
+	broker    meta.Broker
+	nodeMgr   *session.NodeManager
 }
 
 func NewLoadPartitionJob(
@@ -323,17 +330,15 @@ func NewLoadPartitionJob(
 	targetMgr *meta.TargetManager,
 	broker meta.Broker,
 	nodeMgr *session.NodeManager,
-	handoffObserver *observers.HandoffObserver,
 ) *LoadPartitionJob {
 	return &LoadPartitionJob{
-		BaseJob:         NewBaseJob(ctx, req.Base.GetMsgID(), req.GetCollectionID()),
-		req:             req,
-		dist:            dist,
-		meta:            meta,
-		targetMgr:       targetMgr,
-		broker:          broker,
-		nodeMgr:         nodeMgr,
-		handoffObserver: handoffObserver,
+		BaseJob:   NewBaseJob(ctx, req.Base.GetMsgID(), req.GetCollectionID()),
+		req:       req,
+		dist:      dist,
+		meta:      meta,
+		targetMgr: targetMgr,
+		broker:    broker,
+		nodeMgr:   nodeMgr,
 	}
 }
 
@@ -393,10 +398,19 @@ func (job *LoadPartitionJob) Execute() error {
 	req := job.req
 	log := log.Ctx(job.ctx).With(
 		zap.Int64("collectionID", req.GetCollectionID()),
+		zap.Int64s("partitionIDs", req.GetPartitionIDs()),
 	)
 
+	meta.GlobalFailedLoadCache.Remove(req.GetCollectionID())
+
+	// Clear stale replicas
+	err := job.meta.ReplicaManager.RemoveCollection(req.GetCollectionID())
+	if err != nil {
+		log.Warn("failed to clear stale replicas", zap.Error(err))
+		return err
+	}
+
 	// Create replicas
-	// TODO(yah01): store replicas and collection atomically
 	replicas, err := utils.SpawnReplicas(job.meta.ReplicaManager,
 		job.nodeMgr,
 		req.GetCollectionID(),
@@ -412,19 +426,15 @@ func (job *LoadPartitionJob) Execute() error {
 			zap.Int64s("nodes", replica.GetNodes()))
 	}
 
-	job.handoffObserver.Register(job.CollectionID())
-	err = utils.RegisterTargets(job.ctx,
-		job.targetMgr,
-		job.broker,
-		req.GetCollectionID(),
-		req.GetPartitionIDs())
+	// It's safe here to call UpdateCollectionNextTargetWithPartitions, as the collection not existing
+	err = job.targetMgr.UpdateCollectionNextTargetWithPartitions(req.GetCollectionID(), req.GetPartitionIDs()...)
 	if err != nil {
-		msg := "failed to register channels and segments"
-		log.Error(msg, zap.Error(err))
+		msg := "failed to update next targets for collection"
+		log.Error(msg,
+			zap.Int64s("partitionIDs", req.GetPartitionIDs()),
+			zap.Error(err))
 		return utils.WrapError(msg, err)
 	}
-	job.handoffObserver.StartHandoff(job.CollectionID())
-
 	partitions := lo.Map(req.GetPartitionIDs(), func(partition int64, _ int) *meta.Partition {
 		return &meta.Partition{
 			PartitionLoadInfo: &querypb.PartitionLoadInfo{
@@ -444,24 +454,24 @@ func (job *LoadPartitionJob) Execute() error {
 		return utils.WrapError(msg, err)
 	}
 
+	metrics.QueryCoordNumCollections.WithLabelValues().Inc()
 	return nil
 }
 
 func (job *LoadPartitionJob) PostExecute() {
 	if job.Error() != nil && !job.meta.Exist(job.CollectionID()) {
 		job.meta.ReplicaManager.RemoveCollection(job.CollectionID())
-		job.handoffObserver.Unregister(job.ctx, job.CollectionID())
 		job.targetMgr.RemoveCollection(job.req.GetCollectionID())
 	}
 }
 
 type ReleasePartitionJob struct {
 	*BaseJob
-	req             *querypb.ReleasePartitionsRequest
-	dist            *meta.DistributionManager
-	meta            *meta.Meta
-	targetMgr       *meta.TargetManager
-	handoffObserver *observers.HandoffObserver
+	req            *querypb.ReleasePartitionsRequest
+	dist           *meta.DistributionManager
+	meta           *meta.Meta
+	targetMgr      *meta.TargetManager
+	targetObserver *observers.TargetObserver
 }
 
 func NewReleasePartitionJob(ctx context.Context,
@@ -469,15 +479,15 @@ func NewReleasePartitionJob(ctx context.Context,
 	dist *meta.DistributionManager,
 	meta *meta.Meta,
 	targetMgr *meta.TargetManager,
-	handoffObserver *observers.HandoffObserver,
+	targetObserver *observers.TargetObserver,
 ) *ReleasePartitionJob {
 	return &ReleasePartitionJob{
-		BaseJob:         NewBaseJob(ctx, req.Base.GetMsgID(), req.GetCollectionID()),
-		req:             req,
-		dist:            dist,
-		meta:            meta,
-		targetMgr:       targetMgr,
-		handoffObserver: handoffObserver,
+		BaseJob:        NewBaseJob(ctx, req.Base.GetMsgID(), req.GetCollectionID()),
+		req:            req,
+		dist:           dist,
+		meta:           meta,
+		targetMgr:      targetMgr,
+		targetObserver: targetObserver,
 	}
 }
 
@@ -520,12 +530,12 @@ func (job *ReleasePartitionJob) Execute() error {
 			log.Warn(msg, zap.Error(err))
 			return utils.WrapError(msg, err)
 		}
-		job.handoffObserver.Unregister(job.ctx, job.CollectionID())
 		err = job.meta.ReplicaManager.RemoveCollection(req.GetCollectionID())
 		if err != nil {
 			log.Warn("failed to remove replicas", zap.Error(err))
 		}
 		job.targetMgr.RemoveCollection(req.GetCollectionID())
+		job.targetObserver.ReleaseCollection(req.GetCollectionID())
 		waitCollectionReleased(job.dist, req.GetCollectionID())
 	} else {
 		err := job.meta.CollectionManager.RemovePartition(toRelease...)
@@ -534,10 +544,9 @@ func (job *ReleasePartitionJob) Execute() error {
 			log.Warn(msg, zap.Error(err))
 			return utils.WrapError(msg, err)
 		}
-		for _, partition := range toRelease {
-			job.targetMgr.RemovePartition(partition)
-		}
+		job.targetMgr.RemovePartition(req.GetCollectionID(), toRelease...)
 		waitCollectionReleased(job.dist, req.GetCollectionID(), toRelease...)
 	}
+	metrics.QueryCoordNumCollections.WithLabelValues().Dec()
 	return nil
 }

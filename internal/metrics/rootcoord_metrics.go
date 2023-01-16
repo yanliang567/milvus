@@ -23,8 +23,8 @@ var (
 		prometheus.GaugeOpts{
 			Namespace: milvusNamespace,
 			Subsystem: typeutil.RootCoordRole,
-			Name:      "sync_epoch_time",
-			Help:      "synchronized unix epoch per physical channel",
+			Name:      "produce_tt_lag_ms",
+			Help:      "now time minus tt per physical channel",
 		}, []string{channelNameLabelName})
 
 	RootCoordDDLReqCounter = prometheus.NewCounterVec(
@@ -142,7 +142,19 @@ var (
 			Name:      "time_tick_delay",
 			Help:      "The max time tick delay of flow graphs",
 		}, []string{
+			roleNameLabelName,
 			nodeIDLabelName,
+		})
+
+	// RootCoordQuotaStates records the quota states of cluster.
+	RootCoordQuotaStates = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.RootCoordRole,
+			Name:      "quota_states",
+			Help:      "The quota states of cluster",
+		}, []string{
+			"quota_states",
 		})
 )
 
@@ -175,4 +187,5 @@ func RegisterRootCoord(registry *prometheus.Registry) {
 
 	registry.MustRegister(RootCoordNumOfRoles)
 	registry.MustRegister(RootCoordTtDelay)
+	registry.MustRegister(RootCoordQuotaStates)
 }

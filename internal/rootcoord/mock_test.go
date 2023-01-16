@@ -6,22 +6,23 @@ import (
 	"math/rand"
 	"os"
 
+	"github.com/milvus-io/milvus/internal/proto/indexpb"
+
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/allocator"
-	"github.com/milvus-io/milvus/internal/kv"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metastore/model"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	pb "github.com/milvus-io/milvus/internal/proto/etcdpb"
-	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/proto/proxypb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/tso"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
@@ -38,7 +39,7 @@ type mockMetaTable struct {
 	ListCollectionsFunc              func(ctx context.Context, ts Timestamp) ([]*model.Collection, error)
 	AddCollectionFunc                func(ctx context.Context, coll *model.Collection) error
 	GetCollectionByNameFunc          func(ctx context.Context, collectionName string, ts Timestamp) (*model.Collection, error)
-	GetCollectionByIDFunc            func(ctx context.Context, collectionID UniqueID, ts Timestamp) (*model.Collection, error)
+	GetCollectionByIDFunc            func(ctx context.Context, collectionID UniqueID, ts Timestamp, allowUnavailable bool) (*model.Collection, error)
 	ChangeCollectionStateFunc        func(ctx context.Context, collectionID UniqueID, state pb.CollectionState, ts Timestamp) error
 	RemoveCollectionFunc             func(ctx context.Context, collectionID UniqueID, ts Timestamp) error
 	AddPartitionFunc                 func(ctx context.Context, partition *model.Partition) error
@@ -67,8 +68,8 @@ func (m mockMetaTable) GetCollectionByName(ctx context.Context, collectionName s
 	return m.GetCollectionByNameFunc(ctx, collectionName, ts)
 }
 
-func (m mockMetaTable) GetCollectionByID(ctx context.Context, collectionID UniqueID, ts Timestamp) (*model.Collection, error) {
-	return m.GetCollectionByIDFunc(ctx, collectionID, ts)
+func (m mockMetaTable) GetCollectionByID(ctx context.Context, collectionID UniqueID, ts Timestamp, allowUnavailable bool) (*model.Collection, error) {
+	return m.GetCollectionByIDFunc(ctx, collectionID, ts, allowUnavailable)
 }
 
 func (m mockMetaTable) ChangeCollectionState(ctx context.Context, collectionID UniqueID, state pb.CollectionState, ts Timestamp) error {
@@ -131,39 +132,39 @@ func newMockMetaTable() *mockMetaTable {
 	return &mockMetaTable{}
 }
 
-type mockIndexCoord struct {
-	types.IndexCoord
-	GetComponentStatesFunc   func(ctx context.Context) (*milvuspb.ComponentStates, error)
-	GetSegmentIndexStateFunc func(ctx context.Context, req *indexpb.GetSegmentIndexStateRequest) (*indexpb.GetSegmentIndexStateResponse, error)
-	DropIndexFunc            func(ctx context.Context, req *indexpb.DropIndexRequest) (*commonpb.Status, error)
-}
-
-func newMockIndexCoord() *mockIndexCoord {
-	return &mockIndexCoord{}
-}
-
-func (m mockIndexCoord) GetComponentStates(ctx context.Context) (*milvuspb.ComponentStates, error) {
-	return m.GetComponentStatesFunc(ctx)
-}
-
-func (m mockIndexCoord) GetSegmentIndexState(ctx context.Context, req *indexpb.GetSegmentIndexStateRequest) (*indexpb.GetSegmentIndexStateResponse, error) {
-	return m.GetSegmentIndexStateFunc(ctx, req)
-}
-
-func (m mockIndexCoord) DropIndex(ctx context.Context, req *indexpb.DropIndexRequest) (*commonpb.Status, error) {
-	return m.DropIndexFunc(ctx, req)
-}
+//type mockIndexCoord struct {
+//	types.IndexCoord
+//	GetComponentStatesFunc   func(ctx context.Context) (*milvuspb.ComponentStates, error)
+//	GetSegmentIndexStateFunc func(ctx context.Context, req *indexpb.GetSegmentIndexStateRequest) (*indexpb.GetSegmentIndexStateResponse, error)
+//	DropIndexFunc            func(ctx context.Context, req *indexpb.DropIndexRequest) (*commonpb.Status, error)
+//}
+//
+//func newMockIndexCoord() *mockIndexCoord {
+//	return &mockIndexCoord{}
+//}
+//
+//func (m mockIndexCoord) GetComponentStates(ctx context.Context) (*milvuspb.ComponentStates, error) {
+//	return m.GetComponentStatesFunc(ctx)
+//}
+//
+//func (m mockIndexCoord) GetSegmentIndexState(ctx context.Context, req *indexpb.GetSegmentIndexStateRequest) (*indexpb.GetSegmentIndexStateResponse, error) {
+//	return m.GetSegmentIndexStateFunc(ctx, req)
+//}
+//
+//func (m mockIndexCoord) DropIndex(ctx context.Context, req *indexpb.DropIndexRequest) (*commonpb.Status, error) {
+//	return m.DropIndexFunc(ctx, req)
+//}
 
 type mockDataCoord struct {
 	types.DataCoord
 	GetComponentStatesFunc         func(ctx context.Context) (*milvuspb.ComponentStates, error)
 	WatchChannelsFunc              func(ctx context.Context, req *datapb.WatchChannelsRequest) (*datapb.WatchChannelsResponse, error)
-	AcquireSegmentLockFunc         func(ctx context.Context, req *datapb.AcquireSegmentLockRequest) (*commonpb.Status, error)
-	ReleaseSegmentLockFunc         func(ctx context.Context, req *datapb.ReleaseSegmentLockRequest) (*commonpb.Status, error)
 	FlushFunc                      func(ctx context.Context, req *datapb.FlushRequest) (*datapb.FlushResponse, error)
 	ImportFunc                     func(ctx context.Context, req *datapb.ImportTaskRequest) (*datapb.ImportTaskResponse, error)
 	UnsetIsImportingStateFunc      func(ctx context.Context, req *datapb.UnsetIsImportingStateRequest) (*commonpb.Status, error)
-	broadCastAlteredCollectionFunc func(ctx context.Context, req *milvuspb.AlterCollectionRequest) (*commonpb.Status, error)
+	broadCastAlteredCollectionFunc func(ctx context.Context, req *datapb.AlterCollectionRequest) (*commonpb.Status, error)
+	GetSegmentIndexStateFunc       func(ctx context.Context, req *indexpb.GetSegmentIndexStateRequest) (*indexpb.GetSegmentIndexStateResponse, error)
+	DropIndexFunc                  func(ctx context.Context, req *indexpb.DropIndexRequest) (*commonpb.Status, error)
 }
 
 func newMockDataCoord() *mockDataCoord {
@@ -178,14 +179,6 @@ func (m *mockDataCoord) WatchChannels(ctx context.Context, req *datapb.WatchChan
 	return m.WatchChannelsFunc(ctx, req)
 }
 
-func (m *mockDataCoord) AcquireSegmentLock(ctx context.Context, req *datapb.AcquireSegmentLockRequest) (*commonpb.Status, error) {
-	return m.AcquireSegmentLockFunc(ctx, req)
-}
-
-func (m *mockDataCoord) ReleaseSegmentLock(ctx context.Context, req *datapb.ReleaseSegmentLockRequest) (*commonpb.Status, error) {
-	return m.ReleaseSegmentLockFunc(ctx, req)
-}
-
 func (m *mockDataCoord) Flush(ctx context.Context, req *datapb.FlushRequest) (*datapb.FlushResponse, error) {
 	return m.FlushFunc(ctx, req)
 }
@@ -198,7 +191,7 @@ func (m *mockDataCoord) UnsetIsImportingState(ctx context.Context, req *datapb.U
 	return m.UnsetIsImportingStateFunc(ctx, req)
 }
 
-func (m *mockDataCoord) BroadcastAlteredCollection(ctx context.Context, req *milvuspb.AlterCollectionRequest) (*commonpb.Status, error) {
+func (m *mockDataCoord) BroadcastAlteredCollection(ctx context.Context, req *datapb.AlterCollectionRequest) (*commonpb.Status, error) {
 	return m.broadCastAlteredCollectionFunc(ctx, req)
 }
 
@@ -206,6 +199,14 @@ func (m *mockDataCoord) CheckHealth(ctx context.Context, req *milvuspb.CheckHeal
 	return &milvuspb.CheckHealthResponse{
 		IsHealthy: true,
 	}, nil
+}
+
+func (m *mockDataCoord) GetSegmentIndexState(ctx context.Context, req *indexpb.GetSegmentIndexStateRequest) (*indexpb.GetSegmentIndexStateResponse, error) {
+	return m.GetSegmentIndexStateFunc(ctx, req)
+}
+
+func (m *mockDataCoord) DropIndex(ctx context.Context, req *indexpb.DropIndexRequest) (*commonpb.Status, error) {
+	return m.DropIndexFunc(ctx, req)
 }
 
 type mockQueryCoord struct {
@@ -246,17 +247,6 @@ func newMockTsoAllocator() *tso.MockAllocator {
 	r := tso.NewMockAllocator()
 	r.GenerateTSOF = func(count uint32) (uint64, error) {
 		return 0, nil
-	}
-	return r
-}
-
-func newTxnKV() *kv.TxnKVMock {
-	r := kv.NewMockTxnKV()
-	r.SaveF = func(key, value string) error {
-		return nil
-	}
-	r.RemoveF = func(key string) error {
-		return nil
 	}
 	return r
 }
@@ -372,7 +362,7 @@ func withInvalidMeta() Opt {
 	meta.GetCollectionByNameFunc = func(ctx context.Context, collectionName string, ts Timestamp) (*model.Collection, error) {
 		return nil, errors.New("error mock GetCollectionByName")
 	}
-	meta.GetCollectionByIDFunc = func(ctx context.Context, collectionID typeutil.UniqueID, ts Timestamp) (*model.Collection, error) {
+	meta.GetCollectionByIDFunc = func(ctx context.Context, collectionID typeutil.UniqueID, ts Timestamp, allowUnavailable bool) (*model.Collection, error) {
 		return nil, errors.New("error mock GetCollectionByID")
 	}
 	meta.AddPartitionFunc = func(ctx context.Context, partition *model.Partition) error {
@@ -490,74 +480,6 @@ func withValidQueryCoord() Opt {
 	return withQueryCoord(qc)
 }
 
-func withIndexCoord(ic types.IndexCoord) Opt {
-	return func(c *Core) {
-		c.indexCoord = ic
-	}
-}
-
-func withUnhealthyIndexCoord() Opt {
-	ic := newMockIndexCoord()
-	ic.GetComponentStatesFunc = func(ctx context.Context) (*milvuspb.ComponentStates, error) {
-		return &milvuspb.ComponentStates{
-			State:  &milvuspb.ComponentInfo{StateCode: commonpb.StateCode_Abnormal},
-			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "error mock GetComponentStates"),
-		}, retry.Unrecoverable(errors.New("error mock GetComponentStates"))
-	}
-	return withIndexCoord(ic)
-}
-
-func withInvalidIndexCoord() Opt {
-	ic := newMockIndexCoord()
-	ic.GetComponentStatesFunc = func(ctx context.Context) (*milvuspb.ComponentStates, error) {
-		return &milvuspb.ComponentStates{
-			State:  &milvuspb.ComponentInfo{StateCode: commonpb.StateCode_Healthy},
-			Status: succStatus(),
-		}, nil
-	}
-	ic.GetSegmentIndexStateFunc = func(ctx context.Context, req *indexpb.GetSegmentIndexStateRequest) (*indexpb.GetSegmentIndexStateResponse, error) {
-		return &indexpb.GetSegmentIndexStateResponse{}, errors.New("error mock GetSegmentIndexState")
-	}
-	ic.DropIndexFunc = func(ctx context.Context, req *indexpb.DropIndexRequest) (*commonpb.Status, error) {
-		return succStatus(), errors.New("error mock DropIndex")
-	}
-	return withIndexCoord(ic)
-}
-
-func withFailedIndexCoord() Opt {
-	ic := newMockIndexCoord()
-	ic.GetComponentStatesFunc = func(ctx context.Context) (*milvuspb.ComponentStates, error) {
-		return &milvuspb.ComponentStates{
-			State:  &milvuspb.ComponentInfo{StateCode: commonpb.StateCode_Healthy},
-			Status: succStatus(),
-		}, nil
-	}
-	ic.GetSegmentIndexStateFunc = func(ctx context.Context, req *indexpb.GetSegmentIndexStateRequest) (*indexpb.GetSegmentIndexStateResponse, error) {
-		return &indexpb.GetSegmentIndexStateResponse{Status: failStatus(commonpb.ErrorCode_UnexpectedError, "reason mock GetSegmentIndexState")}, nil
-	}
-	ic.DropIndexFunc = func(ctx context.Context, req *indexpb.DropIndexRequest) (*commonpb.Status, error) {
-		return failStatus(commonpb.ErrorCode_UnexpectedError, "reason mock DropIndex"), nil
-	}
-	return withIndexCoord(ic)
-}
-
-func withValidIndexCoord() Opt {
-	ic := newMockIndexCoord()
-	ic.GetComponentStatesFunc = func(ctx context.Context) (*milvuspb.ComponentStates, error) {
-		return &milvuspb.ComponentStates{
-			State:  &milvuspb.ComponentInfo{StateCode: commonpb.StateCode_Healthy},
-			Status: succStatus(),
-		}, nil
-	}
-	ic.GetSegmentIndexStateFunc = func(ctx context.Context, req *indexpb.GetSegmentIndexStateRequest) (*indexpb.GetSegmentIndexStateResponse, error) {
-		return &indexpb.GetSegmentIndexStateResponse{Status: succStatus()}, nil
-	}
-	ic.DropIndexFunc = func(ctx context.Context, req *indexpb.DropIndexRequest) (*commonpb.Status, error) {
-		return succStatus(), nil
-	}
-	return withIndexCoord(ic)
-}
-
 // cleanTestEnv clean test environment, for example, files generated by rocksmq.
 func cleanTestEnv() {
 	path := "/tmp/milvus"
@@ -575,7 +497,7 @@ func withTtSynchronizer(ticker *timetickSync) Opt {
 
 func newRocksMqTtSynchronizer() *timetickSync {
 	Params.InitOnce()
-	Params.RootCoordCfg.DmlChannelNum = 4
+	paramtable.Get().Save(Params.RootCoordCfg.DmlChannelNum.Key, "4")
 	ctx := context.Background()
 	factory := dependency.NewDefaultFactory(true)
 	chans := map[UniqueID][]string{}
@@ -620,12 +542,6 @@ func withInvalidDataCoord() Opt {
 	dc.WatchChannelsFunc = func(ctx context.Context, req *datapb.WatchChannelsRequest) (*datapb.WatchChannelsResponse, error) {
 		return nil, errors.New("error mock WatchChannels")
 	}
-	dc.AcquireSegmentLockFunc = func(ctx context.Context, req *datapb.AcquireSegmentLockRequest) (*commonpb.Status, error) {
-		return nil, errors.New("error mock AddSegRefLock")
-	}
-	dc.ReleaseSegmentLockFunc = func(ctx context.Context, req *datapb.ReleaseSegmentLockRequest) (*commonpb.Status, error) {
-		return nil, errors.New("error mock ReleaseSegRefLock")
-	}
 	dc.FlushFunc = func(ctx context.Context, req *datapb.FlushRequest) (*datapb.FlushResponse, error) {
 		return nil, errors.New("error mock Flush")
 	}
@@ -635,8 +551,14 @@ func withInvalidDataCoord() Opt {
 	dc.UnsetIsImportingStateFunc = func(ctx context.Context, req *datapb.UnsetIsImportingStateRequest) (*commonpb.Status, error) {
 		return nil, errors.New("error mock UnsetIsImportingState")
 	}
-	dc.broadCastAlteredCollectionFunc = func(ctx context.Context, req *milvuspb.AlterCollectionRequest) (*commonpb.Status, error) {
+	dc.broadCastAlteredCollectionFunc = func(ctx context.Context, req *datapb.AlterCollectionRequest) (*commonpb.Status, error) {
 		return nil, errors.New("error mock broadCastAlteredCollection")
+	}
+	dc.GetSegmentIndexStateFunc = func(ctx context.Context, req *indexpb.GetSegmentIndexStateRequest) (*indexpb.GetSegmentIndexStateResponse, error) {
+		return nil, errors.New("error mock GetSegmentIndexStateFunc")
+	}
+	dc.DropIndexFunc = func(ctx context.Context, req *indexpb.DropIndexRequest) (*commonpb.Status, error) {
+		return nil, errors.New("error mock DropIndexFunc")
 	}
 	return withDataCoord(dc)
 }
@@ -654,12 +576,6 @@ func withFailedDataCoord() Opt {
 			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "mock watch channels error"),
 		}, nil
 	}
-	dc.AcquireSegmentLockFunc = func(ctx context.Context, req *datapb.AcquireSegmentLockRequest) (*commonpb.Status, error) {
-		return failStatus(commonpb.ErrorCode_UnexpectedError, "mock add seg ref lock error"), nil
-	}
-	dc.ReleaseSegmentLockFunc = func(ctx context.Context, req *datapb.ReleaseSegmentLockRequest) (*commonpb.Status, error) {
-		return failStatus(commonpb.ErrorCode_UnexpectedError, "mock release seg ref lock error"), nil
-	}
 	dc.FlushFunc = func(ctx context.Context, req *datapb.FlushRequest) (*datapb.FlushResponse, error) {
 		return &datapb.FlushResponse{
 			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "mock flush error"),
@@ -676,8 +592,16 @@ func withFailedDataCoord() Opt {
 			Reason:    "mock UnsetIsImportingState error",
 		}, nil
 	}
-	dc.broadCastAlteredCollectionFunc = func(ctx context.Context, req *milvuspb.AlterCollectionRequest) (*commonpb.Status, error) {
+	dc.broadCastAlteredCollectionFunc = func(ctx context.Context, req *datapb.AlterCollectionRequest) (*commonpb.Status, error) {
 		return failStatus(commonpb.ErrorCode_UnexpectedError, "mock broadcast altered collection error"), nil
+	}
+	dc.GetSegmentIndexStateFunc = func(ctx context.Context, req *indexpb.GetSegmentIndexStateRequest) (*indexpb.GetSegmentIndexStateResponse, error) {
+		return &indexpb.GetSegmentIndexStateResponse{
+			Status: failStatus(commonpb.ErrorCode_UnexpectedError, "mock GetSegmentIndexStateFunc fail"),
+		}, nil
+	}
+	dc.DropIndexFunc = func(ctx context.Context, req *indexpb.DropIndexRequest) (*commonpb.Status, error) {
+		return failStatus(commonpb.ErrorCode_UnexpectedError, "mock DropIndexFunc fail"), nil
 	}
 	return withDataCoord(dc)
 }
@@ -695,12 +619,6 @@ func withValidDataCoord() Opt {
 			Status: succStatus(),
 		}, nil
 	}
-	dc.AcquireSegmentLockFunc = func(ctx context.Context, req *datapb.AcquireSegmentLockRequest) (*commonpb.Status, error) {
-		return succStatus(), nil
-	}
-	dc.ReleaseSegmentLockFunc = func(ctx context.Context, req *datapb.ReleaseSegmentLockRequest) (*commonpb.Status, error) {
-		return succStatus(), nil
-	}
 	dc.FlushFunc = func(ctx context.Context, req *datapb.FlushRequest) (*datapb.FlushResponse, error) {
 		return &datapb.FlushResponse{
 			Status: succStatus(),
@@ -714,7 +632,15 @@ func withValidDataCoord() Opt {
 	dc.UnsetIsImportingStateFunc = func(ctx context.Context, req *datapb.UnsetIsImportingStateRequest) (*commonpb.Status, error) {
 		return succStatus(), nil
 	}
-	dc.broadCastAlteredCollectionFunc = func(ctx context.Context, req *milvuspb.AlterCollectionRequest) (*commonpb.Status, error) {
+	dc.broadCastAlteredCollectionFunc = func(ctx context.Context, req *datapb.AlterCollectionRequest) (*commonpb.Status, error) {
+		return succStatus(), nil
+	}
+	dc.GetSegmentIndexStateFunc = func(ctx context.Context, req *indexpb.GetSegmentIndexStateRequest) (*indexpb.GetSegmentIndexStateResponse, error) {
+		return &indexpb.GetSegmentIndexStateResponse{
+			Status: succStatus(),
+		}, nil
+	}
+	dc.DropIndexFunc = func(ctx context.Context, req *indexpb.DropIndexRequest) (*commonpb.Status, error) {
 		return succStatus(), nil
 	}
 	return withDataCoord(dc)
@@ -839,6 +765,8 @@ type mockBroker struct {
 	GetSegmentIndexStateFunc func(ctx context.Context, collID UniqueID, indexName string, segIDs []UniqueID) ([]*indexpb.SegmentIndexState, error)
 
 	BroadcastAlteredCollectionFunc func(ctx context.Context, req *milvuspb.AlterCollectionRequest) error
+
+	GCConfirmFunc func(ctx context.Context, collectionID, partitionID UniqueID) bool
 }
 
 func newMockBroker() *mockBroker {
@@ -871,6 +799,10 @@ func (b mockBroker) GetSegmentIndexState(ctx context.Context, collID UniqueID, i
 
 func (b mockBroker) BroadcastAlteredCollection(ctx context.Context, req *milvuspb.AlterCollectionRequest) error {
 	return b.BroadcastAlteredCollectionFunc(ctx, req)
+}
+
+func (b mockBroker) GcConfirm(ctx context.Context, collectionID, partitionID UniqueID) bool {
+	return b.GCConfirmFunc(ctx, collectionID, partitionID)
 }
 
 func withBroker(b Broker) Opt {
@@ -957,7 +889,7 @@ func newTickerWithMockNormalStream() *timetickSync {
 
 func newTickerWithFactory(factory msgstream.Factory) *timetickSync {
 	Params.InitOnce()
-	Params.RootCoordCfg.DmlChannelNum = 4
+	paramtable.Get().Save(Params.RootCoordCfg.DmlChannelNum.Key, "4")
 	ctx := context.Background()
 	chans := map[UniqueID][]string{}
 	ticker := newTimeTickSync(ctx, TestRootCoordID, factory, chans)

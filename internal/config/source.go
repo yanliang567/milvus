@@ -28,27 +28,40 @@ type Source interface {
 	GetConfigurationByKey(string) (string, error)
 	GetPriority() int
 	GetSourceName() string
+	SetEventHandler(eh EventHandler)
 	Close()
 }
 
 // EventHandler handles config change event
 type EventHandler interface {
 	OnEvent(event *Event)
+	GetIdentifier() string
 }
 
 // EtcdInfo has attribute for config center source initialization
 type EtcdInfo struct {
-	Endpoints []string
-	KeyPrefix string
+	UseEmbed   bool
+	UseSSL     bool
+	Endpoints  []string
+	KeyPrefix  string
+	CertFile   string
+	KeyFile    string
+	CaCertFile string
+	MinVersion string
 
-	RefreshMode int
 	//Pull Configuration interval, unit is second
+	RefreshInterval time.Duration
+}
+
+// FileInfo has attribute for file source
+type FileInfo struct {
+	Filepath        string
 	RefreshInterval time.Duration
 }
 
 //Options hold options
 type Options struct {
-	File            *string
+	File            *FileInfo
 	EtcdInfo        *EtcdInfo
 	EnvKeyFormatter func(string) string
 }
@@ -57,9 +70,9 @@ type Options struct {
 type Option func(options *Options)
 
 //WithRequiredFiles tell archaius to manage files, if not exist will return error
-func WithFilesSource(f string) Option {
+func WithFilesSource(fi *FileInfo) Option {
 	return func(options *Options) {
-		options.File = &f
+		options.File = fi
 	}
 }
 

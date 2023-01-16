@@ -9,10 +9,11 @@ package indexcgowrapper
 import "C"
 import (
 	"fmt"
-	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"path/filepath"
 	"runtime"
 	"unsafe"
+
+	"github.com/milvus-io/milvus/internal/proto/indexpb"
 
 	"github.com/golang/protobuf/proto"
 
@@ -50,7 +51,7 @@ type CgoIndex struct {
 }
 
 // TODO: use proto.Marshal instead of proto.MarshalTextString for better compatibility.
-func NewCgoIndex(dtype schemapb.DataType, typeParams, indexParams map[string]string, config *indexpb.StorageConfig) (*CgoIndex, error) {
+func NewCgoIndex(dtype schemapb.DataType, typeParams, indexParams map[string]string, config *indexpb.StorageConfig) (CodecIndex, error) {
 	protoTypeParams := &indexcgopb.TypeParams{
 		Params: make([]*commonpb.KeyValuePair, 0),
 	}

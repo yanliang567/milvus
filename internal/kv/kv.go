@@ -17,8 +17,9 @@
 package kv
 
 import (
-	"github.com/milvus-io/milvus/internal/util/typeutil"
 	clientv3 "go.etcd.io/etcd/client/v3"
+
+	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
 // CompareFailedError is a helper type for checking MetaKv CompareAndSwap series func error type
@@ -46,11 +47,10 @@ type BaseKV interface {
 	Remove(key string) error
 	MultiRemove(keys []string) error
 	RemoveWithPrefix(key string) error
-
 	Close()
 }
 
-//go:generate mockery --name=TxnKV
+//go:generate mockery --name=TxnKV --with-expecter
 // TxnKV contains extra txn operations of kv. The extra operations is transactional.
 type TxnKV interface {
 	BaseKV
@@ -59,6 +59,7 @@ type TxnKV interface {
 	MultiSaveAndRemoveWithPrefix(saves map[string]string, removals []string) error
 }
 
+//go:generate mockery --name=MetaKv --with-expecter
 // MetaKv is TxnKV for metadata. It should save data with lease.
 type MetaKv interface {
 	TxnKV
@@ -76,9 +77,10 @@ type MetaKv interface {
 	KeepAlive(id clientv3.LeaseID) (<-chan *clientv3.LeaseKeepAliveResponse, error)
 	CompareValueAndSwap(key, value, target string, opts ...clientv3.OpOption) (bool, error)
 	CompareVersionAndSwap(key string, version int64, target string, opts ...clientv3.OpOption) (bool, error)
+	WalkWithPrefix(prefix string, paginationSize int, fn func([]byte, []byte) error) error
 }
 
-//go:generate mockery --name=SnapShotKV
+//go:generate mockery --name=SnapShotKV --with-expecter
 // SnapShotKV is TxnKV for snapshot data. It must save timestamp.
 type SnapShotKV interface {
 	Save(key string, value string, ts typeutil.Timestamp) error

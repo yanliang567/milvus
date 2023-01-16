@@ -31,6 +31,7 @@ import (
 	queryPb "github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/util/commonpbutil"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 )
 
 type watchDmChannelsTask struct {
@@ -64,16 +65,19 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) (err error) {
 		VPChannels[v] = p
 	}
 
+	log := log.With(
+		zap.Int64("collectionID", w.req.GetCollectionID()),
+		zap.Strings("vChannels", vChannels),
+		zap.Int64("replicaID", w.req.GetReplicaID()),
+	)
+
 	if len(VPChannels) != len(vChannels) {
 		return errors.New("get physical channels failed, illegal channel length, collectionID = " + fmt.Sprintln(collectionID))
 	}
 
 	log.Info("Starting WatchDmChannels ...",
-		zap.String("collectionName", w.req.Schema.Name),
-		zap.Int64("collectionID", collectionID),
-		zap.Int64("replicaID", w.req.GetReplicaID()),
-		zap.String("load type", lType.String()),
-		zap.Strings("vChannels", vChannels),
+		zap.String("loadType", lType.String()),
+		zap.String("collectionName", w.req.GetSchema().GetName()),
 	)
 
 	// init collection meta
@@ -96,7 +100,7 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) (err error) {
 
 	//add shard cluster
 	for _, vchannel := range vChannels {
-		w.node.ShardClusterService.addShardCluster(w.req.GetCollectionID(), w.req.GetReplicaID(), vchannel)
+		w.node.ShardClusterService.addShardCluster(w.req.GetCollectionID(), w.req.GetReplicaID(), vchannel, w.req.GetVersion())
 	}
 
 	defer func() {
@@ -125,7 +129,7 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) (err error) {
 
 	coll.setLoadType(lType)
 
-	log.Info("watchDMChannel, init replica done", zap.Int64("collectionID", collectionID), zap.Strings("vChannels", vChannels))
+	log.Info("watchDMChannel, init replica done")
 
 	// create tSafe
 	for _, channel := range vChannels {
@@ -142,7 +146,30 @@ func (w *watchDmChannelsTask) Execute(ctx context.Context) (err error) {
 		fg.flowGraph.Start()
 	}
 
-	log.Info("WatchDmChannels done", zap.Int64("collectionID", collectionID), zap.Strings("vChannels", vChannels))
+	log.Info("WatchDmChannels done")
+	return nil
+}
+
+// PostExecute setup ShardCluster first version and without do gc if failed.
+func (w *watchDmChannelsTask) PostExecute(ctx context.Context) error {
+	// setup shard cluster version
+	var releasedChannels []string
+	for _, info := range w.req.GetInfos() {
+		sc, ok := w.node.ShardClusterService.getShardCluster(info.GetChannelName())
+		// shard cluster may be released by a release task
+		if !ok {
+			releasedChannels = append(releasedChannels, info.GetChannelName())
+			continue
+		}
+		sc.SetupFirstVersion()
+	}
+	if len(releasedChannels) > 0 {
+		// no clean up needed, release shall do the job
+		log.Warn("WatchDmChannels failed, shard cluster may be released",
+			zap.Strings("releasedChannels", releasedChannels),
+		)
+		return fmt.Errorf("failed to watch %v, shard cluster may be released", releasedChannels)
+	}
 	return nil
 }
 
@@ -204,7 +231,7 @@ func (w *watchDmChannelsTask) LoadGrowingSegments(ctx context.Context, collectio
 		zap.Int64("collectionID", collectionID),
 		zap.Int64s("unFlushedSegmentIDs", unFlushedSegmentIDs),
 	)
-	err := w.node.loader.LoadSegment(w.ctx, req, segmentTypeGrowing)
+	_, err := w.node.loader.LoadSegment(w.ctx, req, segmentTypeGrowing)
 	if err != nil {
 		log.Warn("failed to load segment", zap.Int64("collection", collectionID), zap.Error(err))
 		return nil, err
@@ -218,7 +245,7 @@ func (w *watchDmChannelsTask) LoadGrowingSegments(ctx context.Context, collectio
 
 func (w *watchDmChannelsTask) initFlowGraph(ctx context.Context, collectionID UniqueID, vChannels []Channel, VPChannels map[string]string) (map[string]*queryNodeFlowGraph, error) {
 	// So far, we don't support to enable each node with two different channel
-	consumeSubName := funcutil.GenChannelSubName(Params.CommonCfg.QueryNodeSubName, collectionID, Params.QueryNodeCfg.GetNodeID())
+	consumeSubName := funcutil.GenChannelSubName(Params.CommonCfg.QueryNodeSubName.GetValue(), collectionID, paramtable.GetNodeID())
 
 	// group channels by to seeking or consuming
 	channel2SeekPosition := make(map[string]*internalpb.MsgPosition)

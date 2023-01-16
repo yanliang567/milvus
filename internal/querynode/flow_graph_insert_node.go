@@ -27,17 +27,17 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/opentracing/opentracing-go"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
+	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/segcorepb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
-	"github.com/milvus-io/milvus/internal/util/trace"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
@@ -46,7 +46,7 @@ type insertNode struct {
 	baseNode
 	collectionID UniqueID
 	metaReplica  ReplicaInterface // streaming
-	channel      Channel
+	vchannel     Channel
 }
 
 // insertData stores the valid insert data
@@ -67,25 +67,42 @@ type deleteData struct {
 
 // Name returns the name of insertNode
 func (iNode *insertNode) Name() string {
-	return fmt.Sprintf("iNode-%s", iNode.channel)
+	return fmt.Sprintf("iNode-%s", iNode.vchannel)
+}
+
+func (iNode *insertNode) IsValidInMsg(in []Msg) bool {
+	if !iNode.baseNode.IsValidInMsg(in) {
+		return false
+	}
+	_, ok := in[0].(*insertMsg)
+	if !ok {
+		log.Warn("type assertion failed for insertMsg", zap.String("msgType", reflect.TypeOf(in[0]).Name()), zap.String("name", iNode.Name()))
+		return false
+	}
+	return true
 }
 
 // Operate handles input messages, to execute insert operations
-func (iNode *insertNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
-	if in == nil {
-		log.Debug("type assertion failed for insertMsg because it's nil", zap.String("name", iNode.Name()))
-		return []Msg{}
-	}
+func (iNode *insertNode) Operate(in []Msg) []Msg {
+	iMsg := in[0].(*insertMsg)
 
-	if len(in) != 1 {
-		log.Warn("Invalid operate message input in insertNode", zap.Int("input length", len(in)), zap.String("name", iNode.Name()))
-		return []Msg{}
+	var spans []trace.Span
+	for _, msg := range iMsg.insertMessages {
+		ctx := msg.TraceCtx()
+		sp := trace.SpanFromContext(msg.TraceCtx())
+		spans = append(spans, sp)
+		msg.SetTraceCtx(ctx)
 	}
+	defer func() {
+		for _, sp := range spans {
+			sp.End()
+		}
+	}()
 
-	iMsg, ok := in[0].(*insertMsg)
-	if !ok {
-		log.Warn("type assertion failed for insertMsg", zap.String("msgType", reflect.TypeOf(in[0]).Name()), zap.String("name", iNode.Name()))
-		return []Msg{}
+	if iMsg.IsCloseMsg() {
+		return []Msg{
+			&serviceTimeMsg{BaseMsg: flowgraph.NewBaseMsg(true)},
+		}
 	}
 
 	iData := insertData{
@@ -96,17 +113,10 @@ func (iNode *insertNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 		insertPKs:        make(map[UniqueID][]primaryKey),
 	}
 
-	var spans []opentracing.Span
-	for _, msg := range iMsg.insertMessages {
-		sp, ctx := trace.StartSpanFromContext(msg.TraceCtx())
-		spans = append(spans, sp)
-		msg.SetTraceCtx(ctx)
-	}
-
 	collection, err := iNode.metaReplica.getCollectionByID(iNode.collectionID)
 	if err != nil {
 		// QueryNode should add collection before start flow graph
-		panic(fmt.Errorf("%s getCollectionByID failed, collectionID = %d, channel: %s", iNode.Name(), iNode.collectionID, iNode.channel))
+		panic(fmt.Errorf("%s getCollectionByID failed, collectionID = %d, vchannel: %s", iNode.Name(), iNode.collectionID, iNode.vchannel))
 	}
 
 	// 1. hash insertMessages to insertData
@@ -122,7 +132,7 @@ func (iNode *insertNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 			if err != nil {
 				// error occurs only when collection cannot be found, should not happen
 				err = fmt.Errorf("insertNode addPartition failed, err = %s", err)
-				log.Error(err.Error(), zap.Int64("collection", iNode.collectionID), zap.String("channel", iNode.channel))
+				log.Error(err.Error(), zap.Int64("collection", iNode.collectionID), zap.String("vchannel", iNode.vchannel))
 				panic(err)
 			}
 		}
@@ -134,12 +144,20 @@ func (iNode *insertNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 			panic(err)
 		}
 		if !has {
-			log.Info("Add growing segment", zap.Int64("collectionID", insertMsg.CollectionID), zap.Int64("segmentID", insertMsg.SegmentID))
-			err = iNode.metaReplica.addSegment(insertMsg.SegmentID, insertMsg.PartitionID, insertMsg.CollectionID, insertMsg.ShardName, 0, segmentTypeGrowing)
+			log.Info("Add growing segment",
+				zap.Int64("collectionID", insertMsg.CollectionID),
+				zap.Int64("segmentID", insertMsg.SegmentID),
+				zap.Uint64("startPosition", insertMsg.BeginTs()),
+			)
+			startPosition := &internalpb.MsgPosition{
+				ChannelName: insertMsg.ShardName,
+				Timestamp:   insertMsg.BeginTs(),
+			}
+			err = iNode.metaReplica.addSegment(insertMsg.SegmentID, insertMsg.PartitionID, insertMsg.CollectionID, insertMsg.ShardName, 0, startPosition, segmentTypeGrowing)
 			if err != nil {
 				// error occurs when collection or partition cannot be found, collection and partition should be created before
 				err = fmt.Errorf("insertNode addSegment failed, err = %s", err)
-				log.Error(err.Error(), zap.Int64("collectionID", iNode.collectionID), zap.String("channel", iNode.channel))
+				log.Error(err.Error(), zap.Int64("collectionID", iNode.collectionID), zap.String("vchannel", iNode.vchannel))
 				panic(err)
 			}
 		}
@@ -148,7 +166,7 @@ func (iNode *insertNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 		if err != nil {
 			// occurs only when schema doesn't have dim param, this should not happen
 			err = fmt.Errorf("failed to transfer msgStream.insertMsg to storage.InsertRecord, err = %s", err)
-			log.Error(err.Error(), zap.Int64("collectionID", iNode.collectionID), zap.String("channel", iNode.channel))
+			log.Error(err.Error(), zap.Int64("collectionID", iNode.collectionID), zap.String("vchannel", iNode.vchannel))
 			panic(err)
 		}
 
@@ -163,7 +181,7 @@ func (iNode *insertNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 		if err != nil {
 			// error occurs when cannot find collection or data is misaligned, should not happen
 			err = fmt.Errorf("failed to get primary keys, err = %d", err)
-			log.Error(err.Error(), zap.Int64("collectionID", iNode.collectionID), zap.String("channel", iNode.channel))
+			log.Error(err.Error(), zap.Int64("collectionID", iNode.collectionID), zap.String("vchannel", iNode.vchannel))
 			panic(err)
 		}
 		iData.insertPKs[insertMsg.SegmentID] = append(iData.insertPKs[insertMsg.SegmentID], pks...)
@@ -177,7 +195,7 @@ func (iNode *insertNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 		if err != nil {
 			// should not happen, segment should be created before
 			err = fmt.Errorf("insertNode getSegmentByID failed, err = %s", err)
-			log.Error(err.Error(), zap.Int64("collectionID", iNode.collectionID), zap.String("channel", iNode.channel))
+			log.Error(err.Error(), zap.Int64("collectionID", iNode.collectionID), zap.String("vchannel", iNode.vchannel))
 
 			if !errors.Is(err, ErrSegmentNotFound) {
 				panic(err)
@@ -194,11 +212,11 @@ func (iNode *insertNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 				}
 				// error occurs when cgo function `PreInsert` failed
 				err = fmt.Errorf("segmentPreInsert failed, segmentID = %d, err = %s", segmentID, err)
-				log.Error(err.Error(), zap.Int64("collectionID", iNode.collectionID), zap.String("channel", iNode.channel))
+				log.Error(err.Error(), zap.Int64("collectionID", iNode.collectionID), zap.String("vchannel", iNode.vchannel))
 				panic(err)
 			}
 			iData.insertOffset[segmentID] = offset
-			log.Debug("insertNode operator", zap.Int("insert size", numOfRecords), zap.Int64("insert offset", offset), zap.Int64("segmentID", segmentID), zap.Int64("collectionID", iNode.collectionID), zap.String("channel", iNode.channel))
+			log.Debug("insertNode operator", zap.Int("insert size", numOfRecords), zap.Int64("insert offset", offset), zap.Int64("segmentID", segmentID), zap.Int64("collectionID", iNode.collectionID), zap.String("vchannel", iNode.vchannel))
 			targetSegment.updateBloomFilter(iData.insertPKs[segmentID])
 		}
 	}
@@ -214,7 +232,7 @@ func (iNode *insertNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 			if err != nil {
 				// error occurs when segment cannot be found or cgo function `Insert` failed
 				err = fmt.Errorf("segment insert failed, segmentID = %d, err = %s", segmentID, err)
-				log.Error(err.Error(), zap.Int64("collection", iNode.collectionID), zap.String("channel", iNode.channel))
+				log.Error(err.Error(), zap.Int64("collection", iNode.collectionID), zap.String("vchannel", iNode.vchannel))
 				panic(err)
 			}
 		}()
@@ -230,14 +248,14 @@ func (iNode *insertNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 	for _, delMsg := range iMsg.deleteMessages {
 		if iNode.metaReplica.getSegmentNum(segmentTypeGrowing) != 0 {
 			log.Debug("delete in streaming replica",
-				zap.String("channel", iNode.channel),
-				zap.Any("collectionID", delMsg.CollectionID),
-				zap.Any("collectionName", delMsg.CollectionName),
+				zap.String("vchannel", iNode.vchannel),
+				zap.Int64("collectionID", delMsg.CollectionID),
+				zap.String("collectionName", delMsg.CollectionName),
 				zap.Int64("numPKs", delMsg.NumRows))
-			err := processDeleteMessages(iNode.metaReplica, segmentTypeGrowing, delMsg, delData)
+			err := processDeleteMessages(iNode.metaReplica, segmentTypeGrowing, delMsg, delData, iNode.vchannel)
 			if err != nil {
 				// error occurs when missing meta info or unexpected pk type, should not happen
-				err = fmt.Errorf("insertNode processDeleteMessages failed, collectionID = %d, err = %s, channel: %s", delMsg.CollectionID, err, iNode.channel)
+				err = fmt.Errorf("insertNode processDeleteMessages failed, collectionID = %d, err = %s, vchannel: %s", delMsg.CollectionID, err, iNode.vchannel)
 				log.Error(err.Error())
 				panic(err)
 			}
@@ -286,15 +304,12 @@ func (iNode *insertNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 	var res Msg = &serviceTimeMsg{
 		timeRange: iMsg.timeRange,
 	}
-	for _, sp := range spans {
-		sp.Finish()
-	}
 
 	return []Msg{res}
 }
 
 // processDeleteMessages would execute delete operations for growing segments
-func processDeleteMessages(replica ReplicaInterface, segType segmentType, msg *msgstream.DeleteMsg, delData *deleteData) error {
+func processDeleteMessages(replica ReplicaInterface, segType segmentType, msg *msgstream.DeleteMsg, delData *deleteData, vchannelName string) error {
 	var partitionIDs []UniqueID
 	var err error
 	if msg.PartitionID != -1 {
@@ -309,17 +324,13 @@ func processDeleteMessages(replica ReplicaInterface, segType segmentType, msg *m
 			return err
 		}
 	}
-	resultSegmentIDs := make([]UniqueID, 0)
-	for _, partitionID := range partitionIDs {
-		segmentIDs, err := replica.getSegmentIDs(partitionID, segType)
-		if err != nil {
-			// Skip this partition
-			if errors.Is(err, ErrPartitionNotFound) {
-				continue
-			}
+	var resultSegmentIDs []UniqueID
+	resultSegmentIDs, err = replica.getSegmentIDsByVChannel(partitionIDs, vchannelName, segType)
+	log.Warn("processDeleteMessage", zap.String("vchannel", vchannelName), zap.Int64s("segmentIDs", resultSegmentIDs), zap.Int64s("paritions", partitionIDs))
+	if err != nil {
+		if !errors.Is(err, ErrPartitionNotFound) {
 			return err
 		}
-		resultSegmentIDs = append(resultSegmentIDs, segmentIDs...)
 	}
 
 	primaryKeys := storage.ParseIDs2PrimaryKeys(msg.PrimaryKeys)
@@ -550,9 +561,9 @@ func getPKsFromColumnBasedInsertMsg(msg *msgstream.InsertMsg, schema *schemapb.C
 }
 
 // newInsertNode returns a new insertNode
-func newInsertNode(metaReplica ReplicaInterface, collectionID UniqueID, channel Channel) *insertNode {
-	maxQueueLength := Params.QueryNodeCfg.FlowGraphMaxQueueLength
-	maxParallelism := Params.QueryNodeCfg.FlowGraphMaxParallelism
+func newInsertNode(metaReplica ReplicaInterface, collectionID UniqueID, vchannel Channel) *insertNode {
+	maxQueueLength := Params.QueryNodeCfg.FlowGraphMaxQueueLength.GetAsInt32()
+	maxParallelism := Params.QueryNodeCfg.FlowGraphMaxParallelism.GetAsInt32()
 
 	baseNode := baseNode{}
 	baseNode.SetMaxQueueLength(maxQueueLength)
@@ -562,6 +573,6 @@ func newInsertNode(metaReplica ReplicaInterface, collectionID UniqueID, channel 
 		baseNode:     baseNode,
 		collectionID: collectionID,
 		metaReplica:  metaReplica,
-		channel:      channel,
+		vchannel:     vchannel,
 	}
 }

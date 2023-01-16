@@ -1,3 +1,19 @@
+// Licensed to the LF AI & Data foundation under one
+// or more contributor license agreements. See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership. The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License. You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package sessionutil
 
 import (
@@ -7,6 +23,7 @@ import (
 	"fmt"
 	"path"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -28,8 +45,6 @@ const (
 	DefaultIDKey = "id"
 )
 
-var GlobalParams paramtable.ComponentParam
-
 // SessionEventType session event type
 type SessionEventType int
 
@@ -39,6 +54,8 @@ func (t SessionEventType) String() string {
 		return "SessionAddEvent"
 	case SessionDelEvent:
 		return "SessionDelEvent"
+	case SessionUpdateEvent:
+		return "SessionUpdateEvent"
 	default:
 		return ""
 	}
@@ -56,6 +73,8 @@ const (
 	SessionAddEvent
 	// SessionDelEvent event type for a Session deleted
 	SessionDelEvent
+	// SessionUpdateEvent event type for a Session stopping
+	SessionUpdateEvent
 )
 
 // Session is a struct to store service's session, including ServerID, ServerName,
@@ -71,6 +90,7 @@ type Session struct {
 	ServerName  string `json:"ServerName,omitempty"`
 	Address     string `json:"Address,omitempty"`
 	Exclusive   bool   `json:"Exclusive,omitempty"`
+	Stopping    bool   `json:"Stopping,omitempty"`
 	TriggerKill bool
 	Version     semver.Version `json:"Version,omitempty"`
 
@@ -89,6 +109,7 @@ type Session struct {
 	useCustomConfig   bool
 	sessionTTL        int64
 	sessionRetryTimes int64
+	reuseNodeID       bool
 }
 
 type SessionOption func(session *Session)
@@ -97,12 +118,16 @@ func WithCustomConfigEnable() SessionOption {
 	return func(session *Session) { session.useCustomConfig = true }
 }
 
-func WithSessionTTL(ttl int64) SessionOption {
+func WithTTL(ttl int64) SessionOption {
 	return func(session *Session) { session.sessionTTL = ttl }
 }
 
-func WithSessionRetryTimes(n int64) SessionOption {
+func WithRetryTimes(n int64) SessionOption {
 	return func(session *Session) { session.sessionRetryTimes = n }
+}
+
+func WithResueNodeID(b bool) SessionOption {
+	return func(session *Session) { session.reuseNodeID = b }
 }
 
 func (s *Session) apply(opts ...SessionOption) {
@@ -118,6 +143,7 @@ func (s *Session) UnmarshalJSON(data []byte) error {
 		ServerName  string `json:"ServerName,omitempty"`
 		Address     string `json:"Address,omitempty"`
 		Exclusive   bool   `json:"Exclusive,omitempty"`
+		Stopping    bool   `json:"Stopping,omitempty"`
 		TriggerKill bool
 		Version     string `json:"Version"`
 	}
@@ -137,6 +163,7 @@ func (s *Session) UnmarshalJSON(data []byte) error {
 	s.ServerName = raw.ServerName
 	s.Address = raw.Address
 	s.Exclusive = raw.Exclusive
+	s.Stopping = raw.Stopping
 	s.TriggerKill = raw.TriggerKill
 	return nil
 }
@@ -150,6 +177,7 @@ func (s *Session) MarshalJSON() ([]byte, error) {
 		ServerName  string `json:"ServerName,omitempty"`
 		Address     string `json:"Address,omitempty"`
 		Exclusive   bool   `json:"Exclusive,omitempty"`
+		Stopping    bool   `json:"Stopping,omitempty"`
 		TriggerKill bool
 		Version     string `json:"Version"`
 	}{
@@ -157,6 +185,7 @@ func (s *Session) MarshalJSON() ([]byte, error) {
 		ServerName:  s.ServerName,
 		Address:     s.Address,
 		Exclusive:   s.Exclusive,
+		Stopping:    s.Stopping,
 		TriggerKill: s.TriggerKill,
 		Version:     verStr,
 	})
@@ -169,12 +198,20 @@ func (s *Session) MarshalJSON() ([]byte, error) {
 // etcdEndpoints is to init etcdCli when NewSession
 func NewSession(ctx context.Context, metaRoot string, client *clientv3.Client, opts ...SessionOption) *Session {
 	session := &Session{
-		ctx:               ctx,
-		metaRoot:          metaRoot,
-		Version:           common.Version,
+		ctx:      ctx,
+		metaRoot: metaRoot,
+		Version:  common.Version,
+
+		// options
 		useCustomConfig:   false,
 		sessionTTL:        60,
 		sessionRetryTimes: 30,
+		reuseNodeID:       true,
+	}
+
+	// integration test create cluster with different nodeId in one process
+	if paramtable.Get().IntegrationTestCfg.IntegrationMode.GetAsBool() {
+		session.reuseNodeID = false
 	}
 
 	session.apply(opts...)
@@ -209,14 +246,15 @@ func (s *Session) Init(serverName, address string, exclusive bool, triggerKill b
 	s.Exclusive = exclusive
 	s.TriggerKill = triggerKill
 	s.checkIDExist()
-	serverID, err := s.getServerID()
-	if err != nil {
-		panic(err)
-	}
-	s.ServerID = serverID
+	// TO AVOID PANIC IN MIGRATION SCRIPT.
 	if !s.useCustomConfig {
-		GlobalParams.InitOnce()
+		serverID, err := s.getServerID()
+		if err != nil {
+			panic(err)
+		}
+		s.ServerID = serverID
 	}
+	log.Info("start server", zap.String("name", serverName), zap.String("address", address), zap.Int64("id", s.ServerID))
 }
 
 // String makes Session struct able to be logged by zap
@@ -228,14 +266,34 @@ func (s *Session) String() string {
 func (s *Session) Register() {
 	ch, err := s.registerService()
 	if err != nil {
+		log.Error("Register failed", zap.Error(err))
 		panic(err)
 	}
 	s.liveCh = s.processKeepAliveResponse(ch)
 	s.UpdateRegistered(true)
 }
 
+var serverIDMu sync.Mutex
+
 func (s *Session) getServerID() (int64, error) {
-	return s.getServerIDWithKey(DefaultIDKey)
+	serverIDMu.Lock()
+	defer serverIDMu.Unlock()
+
+	log.Debug("getServerID", zap.Bool("reuse", s.reuseNodeID))
+	if s.reuseNodeID {
+		// Notice, For standalone, all process share the same nodeID.
+		if nodeID := paramtable.GetNodeID(); nodeID != 0 {
+			return nodeID, nil
+		}
+	}
+	nodeID, err := s.getServerIDWithKey(DefaultIDKey)
+	if err != nil {
+		return nodeID, err
+	}
+	if s.reuseNodeID {
+		paramtable.SetNodeID(nodeID)
+	}
+	return nodeID, nil
 }
 
 func (s *Session) checkIDExist() {
@@ -284,6 +342,14 @@ func (s *Session) getServerIDWithKey(key string) (int64, error) {
 	}
 }
 
+func (s *Session) getCompleteKey() string {
+	key := s.ServerName
+	if !s.Exclusive || (s.enableActiveStandBy && s.isStandby.Load().(bool)) {
+		key = fmt.Sprintf("%s-%d", key, s.ServerID)
+	}
+	return path.Join(s.metaRoot, DefaultServiceRoot, key)
+}
+
 // registerService registers the service to etcd so that other services
 // can find that the service is online and issue subsequent operations
 // RegisterService will save a key-value in etcd
@@ -301,19 +367,15 @@ func (s *Session) registerService() (<-chan *clientv3.LeaseKeepAliveResponse, er
 	if s.enableActiveStandBy {
 		s.updateStandby(true)
 	}
-	key := s.ServerName
-	if !s.Exclusive || s.enableActiveStandBy {
-		key = fmt.Sprintf("%s-%d", key, s.ServerID)
-	}
-	completeKey := path.Join(s.metaRoot, DefaultServiceRoot, key)
+	completeKey := s.getCompleteKey()
 	var ch <-chan *clientv3.LeaseKeepAliveResponse
 	log.Debug("service begin to register to etcd", zap.String("serverName", s.ServerName), zap.Int64("ServerID", s.ServerID))
 
 	ttl := s.sessionTTL
 	retryTimes := s.sessionRetryTimes
 	if !s.useCustomConfig {
-		ttl = GlobalParams.CommonCfg.SessionTTL
-		retryTimes = GlobalParams.CommonCfg.SessionRetryTimes
+		ttl = paramtable.Get().CommonCfg.SessionTTL.GetAsInt64()
+		retryTimes = paramtable.Get().CommonCfg.SessionRetryTimes.GetAsInt64()
 	}
 
 	registerFn := func() error {
@@ -342,7 +404,7 @@ func (s *Session) registerService() (<-chan *clientv3.LeaseKeepAliveResponse, er
 		}
 
 		if !txnResp.Succeeded {
-			return fmt.Errorf("function CompareAndSwap error for compare is false for key: %s", key)
+			return fmt.Errorf("function CompareAndSwap error for compare is false for key: %s", s.ServerName)
 		}
 		log.Debug("put session key into etcd", zap.String("key", completeKey), zap.String("value", string(sessionJSON)))
 
@@ -456,6 +518,34 @@ func (s *Session) GetSessionsWithVersionRange(prefix string, r semver.Range) (ma
 	return res, resp.Header.Revision, nil
 }
 
+func (s *Session) GoingStop() error {
+	if s == nil || s.etcdCli == nil || s.leaseID == nil {
+		return errors.New("the session hasn't been init")
+	}
+
+	completeKey := s.getCompleteKey()
+	resp, err := s.etcdCli.Get(s.ctx, completeKey, clientv3.WithCountOnly())
+	if err != nil {
+		log.Error("fail to get the session", zap.String("key", completeKey), zap.Error(err))
+		return err
+	}
+	if resp.Count == 0 {
+		return nil
+	}
+	s.Stopping = true
+	sessionJSON, err := json.Marshal(s)
+	if err != nil {
+		log.Error("fail to marshal the session", zap.String("key", completeKey))
+		return err
+	}
+	_, err = s.etcdCli.Put(s.ctx, completeKey, string(sessionJSON), clientv3.WithLease(*s.leaseID))
+	if err != nil {
+		log.Error("fail to update the session to stopping state", zap.String("key", completeKey))
+		return err
+	}
+	return nil
+}
+
 // SessionEvent indicates the changes of other servers.
 // if a server is up, EventType is SessAddEvent.
 // if a server is down, EventType is SessDelEvent.
@@ -555,7 +645,11 @@ func (w *sessionWatcher) handleWatchResponse(wresp clientv3.WatchResponse) {
 			if !w.validate(session) {
 				continue
 			}
-			eventType = SessionAddEvent
+			if session.Stopping {
+				eventType = SessionUpdateEvent
+			} else {
+				eventType = SessionAddEvent
+			}
 		case mvccpb.DELETE:
 			log.Debug("watch services",
 				zap.Any("delete kv", ev.PrevKv))

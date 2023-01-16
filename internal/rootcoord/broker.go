@@ -5,18 +5,18 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
-
-	"github.com/milvus-io/milvus/internal/proto/indexpb"
-	"github.com/milvus-io/milvus/internal/util/commonpbutil"
-
-	"github.com/milvus-io/milvus/internal/proto/datapb"
+	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/metastore/model"
+	"github.com/milvus-io/milvus/internal/proto/datapb"
+	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
-	"go.uber.org/zap"
+	"github.com/milvus-io/milvus/internal/util/commonpbutil"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
 type watchInfo struct {
@@ -35,12 +35,12 @@ type Broker interface {
 
 	WatchChannels(ctx context.Context, info *watchInfo) error
 	UnwatchChannels(ctx context.Context, info *watchInfo) error
-	AddSegRefLock(ctx context.Context, taskID int64, segIDs []int64) error
-	ReleaseSegRefLock(ctx context.Context, taskID int64, segIDs []int64) error
 	Flush(ctx context.Context, cID int64, segIDs []int64) error
 	Import(ctx context.Context, req *datapb.ImportTaskRequest) (*datapb.ImportTaskResponse, error)
 	UnsetIsImportingState(context.Context, *datapb.UnsetIsImportingStateRequest) (*commonpb.Status, error)
 	MarkSegmentsDropped(context.Context, *datapb.MarkSegmentsDroppedRequest) (*commonpb.Status, error)
+	GetSegmentStates(context.Context, *datapb.GetSegmentStatesRequest) (*datapb.GetSegmentStatesResponse, error)
+	GcConfirm(ctx context.Context, collectionID, partitionID UniqueID) bool
 
 	DropCollectionIndex(ctx context.Context, collID UniqueID, partIDs []UniqueID) error
 	GetSegmentIndexState(ctx context.Context, collID UniqueID, indexName string, segIDs []UniqueID) ([]*indexpb.SegmentIndexState, error)
@@ -126,48 +126,6 @@ func (b *ServerBroker) UnwatchChannels(ctx context.Context, info *watchInfo) err
 	return nil
 }
 
-func (b *ServerBroker) AddSegRefLock(ctx context.Context, taskID int64, segIDs []int64) error {
-	log.Info("acquiring seg lock",
-		zap.Int64s("segment IDs", segIDs),
-		zap.Int64("node ID", b.s.session.ServerID))
-	resp, err := b.s.dataCoord.AcquireSegmentLock(ctx, &datapb.AcquireSegmentLockRequest{
-		SegmentIDs: segIDs,
-		NodeID:     b.s.session.ServerID,
-		TaskID:     taskID,
-	})
-	if err != nil {
-		return err
-	}
-	if resp.GetErrorCode() != commonpb.ErrorCode_Success {
-		return fmt.Errorf("failed to acquire segment lock %s", resp.GetReason())
-	}
-	log.Info("acquire seg lock succeed",
-		zap.Int64s("segment IDs", segIDs),
-		zap.Int64("node ID", b.s.session.ServerID))
-	return nil
-}
-
-func (b *ServerBroker) ReleaseSegRefLock(ctx context.Context, taskID int64, segIDs []int64) error {
-	log.Info("releasing seg lock",
-		zap.Int64s("segment IDs", segIDs),
-		zap.Int64("node ID", b.s.session.ServerID))
-	resp, err := b.s.dataCoord.ReleaseSegmentLock(ctx, &datapb.ReleaseSegmentLockRequest{
-		SegmentIDs: segIDs,
-		NodeID:     b.s.session.ServerID,
-		TaskID:     taskID,
-	})
-	if err != nil {
-		return err
-	}
-	if resp.GetErrorCode() != commonpb.ErrorCode_Success {
-		return fmt.Errorf("failed to release segment lock %s", resp.GetReason())
-	}
-	log.Info("release seg lock succeed",
-		zap.Int64s("segment IDs", segIDs),
-		zap.Int64("node ID", b.s.session.ServerID))
-	return nil
-}
-
 func (b *ServerBroker) Flush(ctx context.Context, cID int64, segIDs []int64) error {
 	resp, err := b.s.dataCoord.Flush(ctx, &datapb.FlushRequest{
 		Base: commonpbutil.NewMsgBase(
@@ -200,8 +158,12 @@ func (b *ServerBroker) MarkSegmentsDropped(ctx context.Context, req *datapb.Mark
 	return b.s.dataCoord.MarkSegmentsDropped(ctx, req)
 }
 
+func (b *ServerBroker) GetSegmentStates(ctx context.Context, req *datapb.GetSegmentStatesRequest) (*datapb.GetSegmentStatesResponse, error) {
+	return b.s.dataCoord.GetSegmentStates(ctx, req)
+}
+
 func (b *ServerBroker) DropCollectionIndex(ctx context.Context, collID UniqueID, partIDs []UniqueID) error {
-	rsp, err := b.s.indexCoord.DropIndex(ctx, &indexpb.DropIndexRequest{
+	rsp, err := b.s.dataCoord.DropIndex(ctx, &indexpb.DropIndexRequest{
 		CollectionID: collID,
 		PartitionIDs: partIDs,
 		IndexName:    "",
@@ -217,7 +179,7 @@ func (b *ServerBroker) DropCollectionIndex(ctx context.Context, collID UniqueID,
 }
 
 func (b *ServerBroker) GetSegmentIndexState(ctx context.Context, collID UniqueID, indexName string, segIDs []UniqueID) ([]*indexpb.SegmentIndexState, error) {
-	resp, err := b.s.indexCoord.GetSegmentIndexState(ctx, &indexpb.GetSegmentIndexStateRequest{
+	resp, err := b.s.dataCoord.GetSegmentIndexState(ctx, &indexpb.GetSegmentIndexStateRequest{
 		CollectionID: collID,
 		IndexName:    indexName,
 		SegmentIDs:   segIDs,
@@ -233,8 +195,31 @@ func (b *ServerBroker) GetSegmentIndexState(ctx context.Context, collID UniqueID
 }
 
 func (b *ServerBroker) BroadcastAlteredCollection(ctx context.Context, req *milvuspb.AlterCollectionRequest) error {
-	log.Info("")
-	resp, err := b.s.dataCoord.BroadcastAlteredCollection(ctx, req)
+	log.Info("broadcasting request to alter collection", zap.String("collection name", req.GetCollectionName()), zap.Int64("collection id", req.GetCollectionID()))
+
+	colMeta, err := b.s.meta.GetCollectionByID(ctx, req.GetCollectionID(), typeutil.MaxTimestamp, false)
+	if err != nil {
+		return err
+	}
+
+	partitionIDs := make([]int64, len(colMeta.Partitions))
+	for _, p := range colMeta.Partitions {
+		partitionIDs = append(partitionIDs, p.PartitionID)
+	}
+	dcReq := &datapb.AlterCollectionRequest{
+		CollectionID: req.GetCollectionID(),
+		Schema: &schemapb.CollectionSchema{
+			Name:        colMeta.Name,
+			Description: colMeta.Description,
+			AutoID:      colMeta.AutoID,
+			Fields:      model.MarshalFieldModels(colMeta.Fields),
+		},
+		PartitionIDs:   partitionIDs,
+		StartPositions: colMeta.StartPositions,
+		Properties:     req.GetProperties(),
+	}
+
+	resp, err := b.s.dataCoord.BroadcastAlteredCollection(ctx, dcReq)
 	if err != nil {
 		return err
 	}
@@ -242,11 +227,24 @@ func (b *ServerBroker) BroadcastAlteredCollection(ctx context.Context, req *milv
 	if resp.ErrorCode != commonpb.ErrorCode_Success {
 		return errors.New(resp.Reason)
 	}
+	log.Info("done to broadcast request to alter collection", zap.String("collection name", req.GetCollectionName()), zap.Int64("collection id", req.GetCollectionID()))
 	return nil
 }
 
 func (b *ServerBroker) DescribeIndex(ctx context.Context, colID UniqueID) (*indexpb.DescribeIndexResponse, error) {
-	return b.s.indexCoord.DescribeIndex(ctx, &indexpb.DescribeIndexRequest{
+	return b.s.dataCoord.DescribeIndex(ctx, &indexpb.DescribeIndexRequest{
 		CollectionID: colID,
 	})
+}
+
+func (b *ServerBroker) GcConfirm(ctx context.Context, collectionID, partitionID UniqueID) bool {
+	req := &datapb.GcConfirmRequest{CollectionId: collectionID, PartitionId: partitionID}
+	resp, err := b.s.dataCoord.GcConfirm(ctx, req)
+	if err != nil {
+		return false
+	}
+	if resp.GetStatus().GetErrorCode() != commonpb.ErrorCode_Success {
+		return false
+	}
+	return resp.GetGcFinished()
 }

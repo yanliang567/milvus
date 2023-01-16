@@ -24,6 +24,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	. "github.com/milvus-io/milvus/internal/querycoordv2/params"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -39,8 +40,8 @@ type MergerSuite struct {
 }
 
 func (suite *MergerSuite) SetupSuite() {
-	Params.Init()
-	Params.QueryCoordCfg.TaskMergeCap = 3
+	paramtable.Init()
+	paramtable.Get().Save(Params.QueryCoordCfg.TaskMergeCap.Key, "3")
 	suite.collectionID = 1000
 	suite.replicaID = 100
 	suite.nodeID = 1
@@ -134,6 +135,9 @@ func (suite *MergerSuite) TestMerge() {
 	suite.Len(task.steps, 3)
 	suite.EqualValues(1, task.Result().DeltaPositions[0].Timestamp)
 	suite.EqualValues(1, task.Result().DeltaPositions[1].Timestamp)
+	suite.merger.Stop()
+	_, ok := <-suite.merger.Chan()
+	suite.Equal(ok, false)
 }
 
 func TestMerger(t *testing.T) {

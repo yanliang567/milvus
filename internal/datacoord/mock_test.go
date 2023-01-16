@@ -22,25 +22,100 @@ import (
 	"sync/atomic"
 	"time"
 
+	clientv3 "go.etcd.io/etcd/client/v3"
+
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/kv"
 	memkv "github.com/milvus-io/milvus/internal/kv/mem"
+	"github.com/milvus-io/milvus/internal/metastore/kv/datacoord"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
-	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/proxypb"
 	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
-	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
-func newMemoryMeta(allocator allocator) (*meta, error) {
-	memoryKV := memkv.NewMemoryKV()
-	return newMeta(context.TODO(), memoryKV, "")
+type metaMemoryKV struct {
+	memkv.MemoryKV
+}
+
+func NewMetaMemoryKV() *metaMemoryKV {
+	return &metaMemoryKV{MemoryKV: *memkv.NewMemoryKV()}
+}
+
+func (mm *metaMemoryKV) WalkWithPrefix(prefix string, paginationSize int, fn func([]byte, []byte) error) error {
+	keys, values, err := mm.MemoryKV.LoadWithPrefix(prefix)
+	if err != nil {
+		return err
+	}
+
+	for i, k := range keys {
+		if err := fn([]byte(k), []byte(values[i])); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (mm *metaMemoryKV) GetPath(key string) string {
+	panic("implement me")
+}
+
+func (mm *metaMemoryKV) LoadWithPrefix2(key string) ([]string, []string, []int64, error) {
+	panic("implement me")
+}
+
+func (mm *metaMemoryKV) LoadWithRevisionAndVersions(key string) ([]string, []string, []int64, int64, error) {
+	panic("implement me")
+}
+
+func (mm *metaMemoryKV) LoadWithRevision(key string) ([]string, []string, int64, error) {
+	panic("implement me")
+}
+
+func (mm *metaMemoryKV) Watch(key string) clientv3.WatchChan {
+	panic("implement me")
+}
+
+func (mm *metaMemoryKV) WatchWithPrefix(key string) clientv3.WatchChan {
+	panic("implement me")
+}
+
+func (mm *metaMemoryKV) WatchWithRevision(key string, revision int64) clientv3.WatchChan {
+	panic("implement me")
+}
+
+func (mm *metaMemoryKV) SaveWithLease(key, value string, id clientv3.LeaseID) error {
+	panic("implement me")
+}
+
+func (mm *metaMemoryKV) SaveWithIgnoreLease(key, value string) error {
+	panic("implement me")
+}
+
+func (mm *metaMemoryKV) Grant(ttl int64) (id clientv3.LeaseID, err error) {
+	panic("implement me")
+}
+
+func (mm *metaMemoryKV) KeepAlive(id clientv3.LeaseID) (<-chan *clientv3.LeaseKeepAliveResponse, error) {
+	panic("implement me")
+}
+
+func (mm *metaMemoryKV) CompareValueAndSwap(key, value, target string, opts ...clientv3.OpOption) (bool, error) {
+	panic("implement me")
+}
+
+func (mm *metaMemoryKV) CompareVersionAndSwap(key string, version int64, target string, opts ...clientv3.OpOption) (bool, error) {
+	panic("implement me")
+}
+
+func newMemoryMeta() (*meta, error) {
+	catalog := datacoord.NewCatalog(NewMetaMemoryKV(), "", "")
+	return newMeta(context.TODO(), catalog, nil)
 }
 
 var _ allocator = (*MockAllocator)(nil)
@@ -93,7 +168,7 @@ func (a *FailsAllocator) allocID(_ context.Context) (UniqueID, error) {
 }
 
 // a mock kv that always fail when do `Save`
-type saveFailKV struct{ kv.TxnKV }
+type saveFailKV struct{ kv.MetaKv }
 
 // Save override behavior
 func (kv *saveFailKV) Save(key, value string) error {
@@ -105,10 +180,14 @@ func (kv *saveFailKV) MultiSave(kvs map[string]string) error {
 }
 
 // a mock kv that always fail when do `Remove`
-type removeFailKV struct{ kv.TxnKV }
+type removeFailKV struct{ kv.MetaKv }
 
 // Remove override behavior, inject error
 func (kv *removeFailKV) MultiRemove(key []string) error {
+	return errors.New("mocked fail")
+}
+
+func (kv *removeFailKV) Remove(key string) error {
 	return errors.New("mocked fail")
 }
 
@@ -147,6 +226,18 @@ func newMockDataNodeClient(id int64, ch chan interface{}) (*mockDataNodeClient, 
 				ErrorCode: commonpb.ErrorCode_Success,
 			},
 		},
+	}, nil
+}
+
+type mockIndexNodeClient struct {
+	id    int64
+	state commonpb.StateCode
+}
+
+func newMockIndexNodeClient(id int64) (*mockIndexNodeClient, error) {
+	return &mockIndexNodeClient{
+		id:    id,
+		state: commonpb.StateCode_Initializing,
 	}, nil
 }
 
@@ -338,7 +429,7 @@ func (m *mockRootCoordService) GetStatisticsChannel(ctx context.Context) (*milvu
 	panic("not implemented") // TODO: Implement
 }
 
-//DDL request
+// DDL request
 func (m *mockRootCoordService) CreateCollection(ctx context.Context, req *milvuspb.CreateCollectionRequest) (*commonpb.Status, error) {
 	panic("not implemented") // TODO: Implement
 }
@@ -363,6 +454,10 @@ func (m *mockRootCoordService) DescribeCollection(ctx context.Context, req *milv
 		CollectionID:        1314,
 		VirtualChannelNames: []string{"vchan1"},
 	}, nil
+}
+
+func (m *mockRootCoordService) DescribeCollectionInternal(ctx context.Context, req *milvuspb.DescribeCollectionRequest) (*milvuspb.DescribeCollectionResponse, error) {
+	return m.DescribeCollection(ctx, req)
 }
 
 func (m *mockRootCoordService) ShowCollections(ctx context.Context, req *milvuspb.ShowCollectionsRequest) (*milvuspb.ShowCollectionsResponse, error) {
@@ -402,7 +497,11 @@ func (m *mockRootCoordService) ShowPartitions(ctx context.Context, req *milvuspb
 	}, nil
 }
 
-//global timestamp allocator
+func (m *mockRootCoordService) ShowPartitionsInternal(ctx context.Context, req *milvuspb.ShowPartitionsRequest) (*milvuspb.ShowPartitionsResponse, error) {
+	return m.ShowPartitions(ctx, req)
+}
+
+// global timestamp allocator
 func (m *mockRootCoordService) AllocTimestamp(ctx context.Context, req *rootcoordpb.AllocTimestampRequest) (*rootcoordpb.AllocTimestampResponse, error) {
 	if m.state != commonpb.StateCode_Healthy {
 		return &rootcoordpb.AllocTimestampResponse{Status: &commonpb.Status{ErrorCode: commonpb.ErrorCode_UnexpectedError}}, nil
@@ -436,7 +535,7 @@ func (m *mockRootCoordService) AllocID(ctx context.Context, req *rootcoordpb.All
 	}, nil
 }
 
-//segment
+// segment
 func (m *mockRootCoordService) DescribeSegment(ctx context.Context, req *milvuspb.DescribeSegmentRequest) (*milvuspb.DescribeSegmentResponse, error) {
 	panic("not implemented") // TODO: Implement
 }
@@ -759,7 +858,9 @@ func (h *mockHandler) CheckShouldDropChannel(channel string) bool {
 	return false
 }
 
-func (h *mockHandler) FinishDropChannel(channel string) {}
+func (h *mockHandler) FinishDropChannel(channel string) error {
+	return nil
+}
 
 func (h *mockHandler) GetCollection(_ context.Context, collectionID UniqueID) (*collectionInfo, error) {
 	// empty schema
@@ -773,88 +874,4 @@ func newMockHandlerWithMeta(meta *meta) *mockHandler {
 	return &mockHandler{
 		meta: meta,
 	}
-}
-
-type mockIndexCoord struct {
-	types.IndexCoord
-}
-
-func newMockIndexCoord() *mockIndexCoord {
-	return &mockIndexCoord{}
-}
-
-func (m *mockIndexCoord) Init() error {
-	return nil
-}
-
-func (m *mockIndexCoord) Start() error {
-	return nil
-}
-
-func (m *mockIndexCoord) DescribeIndex(ctx context.Context, req *indexpb.DescribeIndexRequest) (*indexpb.DescribeIndexResponse, error) {
-	if req.CollectionID == 10000 {
-		return nil, errors.New("server down")
-	}
-
-	// Has diskann index
-	if req.CollectionID == 1000 || req.CollectionID == 2000 ||
-		req.CollectionID == 3000 || req.CollectionID == 4000 {
-		return &indexpb.DescribeIndexResponse{
-			Status: &commonpb.Status{
-				ErrorCode: commonpb.ErrorCode_Success,
-			},
-			IndexInfos: []*indexpb.IndexInfo{
-				{
-					CollectionID: req.CollectionID,
-					FieldID:      0,
-					IndexName:    "DISKANN",
-					IndexID:      0,
-					TypeParams:   nil,
-					IndexParams: []*commonpb.KeyValuePair{
-						{
-							Key:   "index_type",
-							Value: "DISKANN",
-						},
-					},
-				},
-			},
-		}, nil
-	}
-
-	// Has common index
-	return &indexpb.DescribeIndexResponse{
-		Status: &commonpb.Status{
-			ErrorCode: commonpb.ErrorCode_Success,
-		},
-		IndexInfos: []*indexpb.IndexInfo{
-			{
-				CollectionID: 1,
-				FieldID:      0,
-				IndexName:    "default",
-				IndexID:      0,
-				TypeParams:   nil,
-				IndexParams:  nil,
-			},
-		},
-	}, nil
-}
-
-func (m *mockIndexCoord) GetIndexInfos(ctx context.Context, req *indexpb.GetIndexInfoRequest) (*indexpb.GetIndexInfoResponse, error) {
-	segmentID := req.GetSegmentIDs()[0]
-	collectionID := req.GetCollectionID()
-	return &indexpb.GetIndexInfoResponse{
-		Status: &commonpb.Status{},
-		SegmentInfo: map[int64]*indexpb.SegmentInfo{
-			segmentID: {
-				EnableIndex:  true,
-				CollectionID: collectionID,
-				SegmentID:    segmentID,
-				IndexInfos: []*indexpb.IndexFilePathInfo{
-					{
-						FieldID: int64(201),
-					},
-				},
-			},
-		},
-	}, nil
 }

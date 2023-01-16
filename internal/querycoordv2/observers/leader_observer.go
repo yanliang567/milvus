@@ -105,8 +105,9 @@ func (o *LeaderObserver) findNeedLoadedSegments(leaderView *meta.LeaderView, dis
 	dists = utils.FindMaxVersionSegments(dists)
 	for _, s := range dists {
 		version, ok := leaderView.Segments[s.GetID()]
-		if ok && version.GetVersion() >= s.Version ||
-			!o.target.ContainSegment(s.GetID()) {
+		existInCurrentTarget := o.target.GetHistoricalSegment(s.CollectionID, s.GetID(), meta.CurrentTarget) != nil
+		existInNextTarget := o.target.GetHistoricalSegment(s.CollectionID, s.GetID(), meta.NextTarget) != nil
+		if ok && version.GetVersion() >= s.Version || (!existInCurrentTarget && !existInNextTarget) {
 			continue
 		}
 		ret = append(ret, &querypb.SyncAction{
@@ -128,9 +129,16 @@ func (o *LeaderObserver) findNeedRemovedSegments(leaderView *meta.LeaderView, di
 	}
 	for sid := range leaderView.Segments {
 		_, ok := distMap[sid]
-		if ok || o.target.ContainSegment(sid) {
+		existInCurrentTarget := o.target.GetHistoricalSegment(leaderView.CollectionID, sid, meta.CurrentTarget) != nil
+		existInNextTarget := o.target.GetHistoricalSegment(leaderView.CollectionID, sid, meta.NextTarget) != nil
+		if ok || existInCurrentTarget || existInNextTarget {
 			continue
 		}
+		log.Debug("leader observer append a segment to remove:", zap.Int64("collectionID", leaderView.CollectionID),
+			zap.String("Channel", leaderView.Channel), zap.Int64("leaderViewID", leaderView.ID),
+			zap.Int64("segmentID", sid), zap.Bool("distMap_exist", ok),
+			zap.Bool("existInCurrentTarget", existInCurrentTarget),
+			zap.Bool("existInNextTarget", existInNextTarget))
 		ret = append(ret, &querypb.SyncAction{
 			Type:      querypb.SyncType_Remove,
 			SegmentID: sid,

@@ -41,7 +41,7 @@ func calBySchemaPolicy(schema *schemapb.CollectionSchema) (int, error) {
 	if sizePerRecord == 0 {
 		return -1, errors.New("zero size record schema found")
 	}
-	threshold := Params.DataCoordCfg.SegmentMaxSize * 1024 * 1024
+	threshold := Params.DataCoordCfg.SegmentMaxSize.GetAsFloat() * 1024 * 1024
 	return int(threshold / float64(sizePerRecord)), nil
 }
 
@@ -57,7 +57,7 @@ func calBySchemaPolicyWithDiskIndex(schema *schemapb.CollectionSchema) (int, err
 	if sizePerRecord == 0 {
 		return -1, errors.New("zero size record schema found")
 	}
-	threshold := Params.DataCoordCfg.DiskSegmentMaxSize * 1024 * 1024
+	threshold := Params.DataCoordCfg.DiskSegmentMaxSize.GetAsFloat() * 1024 * 1024
 	return int(threshold / float64(sizePerRecord)), nil
 }
 
@@ -116,13 +116,25 @@ func getSegmentCapacityPolicy(sizeFactor float64) segmentSealPolicy {
 	}
 }
 
-// getLastExpiresLifetimePolicy get segmentSealPolicy with lifetime limit compares ts - segment.lastExpireTime
+// sealByMaxBinlogSizePolicy get segmentSealPolicy with lifetime limit compares ts - segment.lastExpireTime
 func sealByLifetimePolicy(lifetime time.Duration) segmentSealPolicy {
 	return func(segment *SegmentInfo, ts Timestamp) bool {
 		pts, _ := tsoutil.ParseTS(ts)
 		epts, _ := tsoutil.ParseTS(segment.GetLastExpireTime())
 		d := pts.Sub(epts)
 		return d >= lifetime
+	}
+}
+
+// sealByMaxBinlogSizePolicy seal segment if binlog file number of segment exceed configured max number
+func sealByMaxBinlogFileNumberPolicy(maxBinlogFileNumber int) segmentSealPolicy {
+	return func(segment *SegmentInfo, ts Timestamp) bool {
+		logFileCounter := 0
+		for _, fieldBinlog := range segment.Binlogs {
+			logFileCounter += len(fieldBinlog.GetBinlogs())
+		}
+
+		return logFileCounter >= maxBinlogFileNumber
 	}
 }
 

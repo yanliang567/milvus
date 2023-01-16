@@ -19,7 +19,7 @@ func TestShardClusterService(t *testing.T) {
 	clusterService := newShardClusterService(client, session, nil)
 
 	assert.NotPanics(t, func() {
-		clusterService.addShardCluster(defaultCollectionID, defaultReplicaID, defaultDMLChannel)
+		clusterService.addShardCluster(defaultCollectionID, defaultReplicaID, defaultDMLChannel, defaultVersion)
 	})
 
 	shardCluster, ok := clusterService.getShardCluster(defaultDMLChannel)
@@ -39,6 +39,7 @@ func TestShardClusterService(t *testing.T) {
 func TestShardClusterService_SyncReplicaSegments(t *testing.T) {
 	qn, err := genSimpleQueryNode(context.Background())
 	require.NoError(t, err)
+	defer qn.Stop()
 
 	client := v3client.New(embedetcdServer.Server)
 	defer client.Close()
@@ -51,7 +52,7 @@ func TestShardClusterService_SyncReplicaSegments(t *testing.T) {
 	})
 
 	t.Run("sync initailizing shard cluster", func(t *testing.T) {
-		clusterService.addShardCluster(defaultCollectionID, defaultReplicaID, defaultDMLChannel)
+		clusterService.addShardCluster(defaultCollectionID, defaultReplicaID, defaultDMLChannel, defaultVersion)
 
 		sc, ok := clusterService.getShardCluster(defaultDMLChannel)
 		require.True(t, ok)
@@ -72,7 +73,7 @@ func TestShardClusterService_SyncReplicaSegments(t *testing.T) {
 	})
 
 	t.Run("sync shard cluster", func(t *testing.T) {
-		clusterService.addShardCluster(defaultCollectionID, defaultReplicaID, defaultDMLChannel)
+		clusterService.addShardCluster(defaultCollectionID, defaultReplicaID, defaultDMLChannel, defaultVersion)
 
 		sc, ok := clusterService.getShardCluster(defaultDMLChannel)
 		require.True(t, ok)
@@ -97,5 +98,32 @@ func TestShardClusterService_SyncReplicaSegments(t *testing.T) {
 		assert.Equal(t, common.InvalidNodeID, segment.nodeID)
 		assert.Equal(t, defaultPartitionID, segment.partitionID)
 		assert.Equal(t, segmentStateLoaded, segment.state)
+	})
+}
+
+func TestShardClusterService_close(t *testing.T) {
+	client := v3client.New(embedetcdServer.Server)
+	defer client.Close()
+	session := sessionutil.NewSession(context.Background(), "/by-dev/sessions/unittest/querynode/", client)
+	clusterService := newShardClusterService(client, session, nil)
+
+	t.Run("close ok", func(t *testing.T) {
+		clusterService.addShardCluster(defaultCollectionID, defaultReplicaID, defaultDMLChannel, defaultVersion)
+
+		cnt := 0
+		clusterService.clusters.Range(func(key, value any) bool {
+			cnt++
+			return true
+		})
+		assert.Equal(t, 1, cnt)
+
+		err := clusterService.close()
+		assert.NoError(t, err)
+	})
+
+	t.Run("close fail", func(t *testing.T) {
+		clusterService.clusters.Store("key", "error")
+		err := clusterService.close()
+		assert.Error(t, err)
 	})
 }

@@ -80,26 +80,20 @@ func reduceStatisticResponse(results []*internalpb.GetStatisticsResponse) (*inte
 func reduceSearchResults(ctx context.Context, results []*internalpb.SearchResults, nq int64, topk int64, metricType string) (*internalpb.SearchResults, error) {
 	searchResultData, err := decodeSearchResults(results)
 	if err != nil {
-		log.Ctx(ctx).Warn("shard leader decode search results errors", zap.Error(err))
+		log.Ctx(ctx).Warn("decode search results errors", zap.Error(err))
 		return nil, err
 	}
-	log.Ctx(ctx).Debug("shard leader get valid search results", zap.Int("numbers", len(searchResultData)))
-
-	for i, sData := range searchResultData {
-		log.Ctx(ctx).Debug("reduceSearchResultData",
-			zap.Int("result No.", i),
-			zap.Int64("nq", sData.NumQueries),
-			zap.Int64("topk", sData.TopK))
-	}
+	log.Ctx(ctx).Debug("reduceSearchResultData",
+		zap.Int("numbers", len(searchResultData)), zap.Int64("targetNq", nq), zap.Int64("targetTopk", topk))
 
 	reducedResultData, err := reduceSearchResultData(ctx, searchResultData, nq, topk)
 	if err != nil {
-		log.Ctx(ctx).Warn("shard leader reduce errors", zap.Error(err))
+		log.Ctx(ctx).Warn("reduce search results error", zap.Error(err))
 		return nil, err
 	}
 	searchResults, err := encodeSearchResultData(reducedResultData, nq, topk, metricType)
 	if err != nil {
-		log.Warn("shard leader encode search result errors", zap.Error(err))
+		log.Ctx(ctx).Warn("encode search results error", zap.Error(err))
 		return nil, err
 	}
 	//if searchResults.SlicedBlob == nil {
@@ -178,7 +172,10 @@ func reduceSearchResultData(ctx context.Context, searchResultData []*schemapb.Se
 		// }
 		ret.Topks = append(ret.Topks, j)
 	}
-	log.Ctx(ctx).Debug("skip duplicated search result", zap.Int64("count", skipDupCnt))
+
+	if skipDupCnt > 0 {
+		log.Ctx(ctx).Debug("skip duplicated search result", zap.Int64("count", skipDupCnt))
+	}
 	return ret, nil
 }
 
@@ -201,10 +198,13 @@ func selectSearchResultData(dataArray []*schemapb.SearchResultData, resultOffset
 			maxDistance = distance
 			resultDataIdx = idx
 		} else if distance == maxDistance {
-			sID := typeutil.GetPK(dataArray[i].GetIds(), idx)
-			tmpID := typeutil.GetPK(dataArray[sel].GetIds(), resultDataIdx)
-
-			if typeutil.ComparePK(sID, tmpID) {
+			if sel == -1 {
+				// A bad case happens where knowhere returns distance == +/-maxFloat32
+				// by mistake.
+				log.Error("a bad distance is found, something is wrong here!", zap.Float32("score", distance))
+			} else if typeutil.ComparePK(
+				typeutil.GetPK(dataArray[i].GetIds(), idx),
+				typeutil.GetPK(dataArray[sel].GetIds(), resultDataIdx)) {
 				sel = i
 				maxDistance = distance
 				resultDataIdx = idx
@@ -253,7 +253,7 @@ func encodeSearchResultData(searchResultData *schemapb.SearchResultData, nq int6
 }
 
 func mergeInternalRetrieveResult(ctx context.Context, retrieveResults []*internalpb.RetrieveResults, limit int64) (*internalpb.RetrieveResults, error) {
-	log.Ctx(ctx).Debug("reduceInternelRetrieveResults",
+	log.Ctx(ctx).Debug("mergeInternelRetrieveResults",
 		zap.Int64("limit", limit),
 		zap.Int("len(retrieveResults)", len(retrieveResults)),
 	)
@@ -261,7 +261,6 @@ func mergeInternalRetrieveResult(ctx context.Context, retrieveResults []*interna
 		ret = &internalpb.RetrieveResults{
 			Ids: &schemapb.IDs{},
 		}
-
 		skipDupCnt int64
 		loopEnd    int
 	)
@@ -285,7 +284,7 @@ func mergeInternalRetrieveResult(ctx context.Context, retrieveResults []*interna
 	}
 
 	ret.FieldsData = make([]*schemapb.FieldData, len(validRetrieveResults[0].GetFieldsData()))
-	idSet := make(map[interface{}]struct{})
+	idTsMap := make(map[interface{}]uint64)
 	cursors := make([]int64, len(validRetrieveResults))
 	for j := 0; j < loopEnd; j++ {
 		sel := typeutil.SelectMinPK(validRetrieveResults, cursors)
@@ -294,13 +293,19 @@ func mergeInternalRetrieveResult(ctx context.Context, retrieveResults []*interna
 		}
 
 		pk := typeutil.GetPK(validRetrieveResults[sel].GetIds(), cursors[sel])
-		if _, ok := idSet[pk]; !ok {
+		ts := typeutil.GetTS(validRetrieveResults[sel], cursors[sel])
+		if _, ok := idTsMap[pk]; !ok {
 			typeutil.AppendPKs(ret.Ids, pk)
 			typeutil.AppendFieldData(ret.FieldsData, validRetrieveResults[sel].GetFieldsData(), cursors[sel])
-			idSet[pk] = struct{}{}
+			idTsMap[pk] = ts
 		} else {
 			// primary keys duplicate
 			skipDupCnt++
+			if ts != 0 && ts > idTsMap[pk] {
+				idTsMap[pk] = ts
+				typeutil.DeleteFieldData(ret.FieldsData)
+				typeutil.AppendFieldData(ret.FieldsData, validRetrieveResults[sel].GetFieldsData(), cursors[sel])
+			}
 		}
 		cursors[sel]++
 	}
@@ -313,7 +318,7 @@ func mergeInternalRetrieveResult(ctx context.Context, retrieveResults []*interna
 }
 
 func mergeSegcoreRetrieveResults(ctx context.Context, retrieveResults []*segcorepb.RetrieveResults, limit int64) (*segcorepb.RetrieveResults, error) {
-	log.Ctx(ctx).Debug("reduceSegcoreRetrieveResults",
+	log.Ctx(ctx).Debug("mergeSegcoreRetrieveResults",
 		zap.Int64("limit", limit),
 		zap.Int("len(retrieveResults)", len(retrieveResults)),
 	)
@@ -370,6 +375,46 @@ func mergeSegcoreRetrieveResults(ctx context.Context, retrieveResults []*segcore
 	}
 
 	return ret, nil
+}
+
+func mergeSegcoreRetrieveResultsAndFillIfEmpty(
+	ctx context.Context,
+	retrieveResults []*segcorepb.RetrieveResults,
+	limit int64,
+	outputFieldsID []int64,
+	schema *schemapb.CollectionSchema,
+) (*segcorepb.RetrieveResults, error) {
+
+	mergedResult, err := mergeSegcoreRetrieveResults(ctx, retrieveResults, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := typeutil.FillRetrieveResultIfEmpty(typeutil.NewSegcoreResults(mergedResult), outputFieldsID, schema); err != nil {
+		return nil, fmt.Errorf("failed to fill segcore retrieve results: %s", err.Error())
+	}
+
+	return mergedResult, nil
+}
+
+func mergeInternalRetrieveResultsAndFillIfEmpty(
+	ctx context.Context,
+	retrieveResults []*internalpb.RetrieveResults,
+	limit int64,
+	outputFieldsID []int64,
+	schema *schemapb.CollectionSchema,
+) (*internalpb.RetrieveResults, error) {
+
+	mergedResult, err := mergeInternalRetrieveResult(ctx, retrieveResults, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := typeutil.FillRetrieveResultIfEmpty(typeutil.NewInternalResult(mergedResult), outputFieldsID, schema); err != nil {
+		return nil, fmt.Errorf("failed to fill internal retrieve results: %s", err.Error())
+	}
+
+	return mergedResult, nil
 }
 
 // func printSearchResultData(data *schemapb.SearchResultData, header string) {

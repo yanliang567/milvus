@@ -220,13 +220,20 @@ func (c *mck) connectEctd() {
 	if c.etcdIP != "" {
 		etcdCli, err = etcd.GetRemoteEtcdClient([]string{c.etcdIP})
 	} else {
-		etcdCli, err = etcd.GetEtcdClient(&c.params.EtcdCfg)
+		etcdCli, err = etcd.GetEtcdClient(
+			c.params.EtcdCfg.UseEmbedEtcd.GetAsBool(),
+			c.params.EtcdCfg.EtcdUseSSL.GetAsBool(),
+			c.params.EtcdCfg.Endpoints.GetAsStrings(),
+			c.params.EtcdCfg.EtcdTLSCert.GetValue(),
+			c.params.EtcdCfg.EtcdTLSKey.GetValue(),
+			c.params.EtcdCfg.EtcdTLSCACert.GetValue(),
+			c.params.EtcdCfg.EtcdTLSMinVersion.GetValue())
 	}
 	if err != nil {
 		log.Fatal("failed to connect to etcd", zap.Error(err))
 	}
 
-	rootPath := getConfigValue(c.ectdRootPath, c.params.EtcdCfg.MetaRootPath, "ectd_root_path")
+	rootPath := getConfigValue(c.ectdRootPath, c.params.EtcdCfg.MetaRootPath.GetValue(), "ectd_root_path")
 	c.etcdKV = etcdkv.NewEtcdKV(etcdCli, rootPath)
 	log.Info("Etcd root path", zap.String("root_path", rootPath))
 }

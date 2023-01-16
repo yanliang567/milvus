@@ -193,8 +193,10 @@ message WatchDmChannelsRequest {
   LoadMetaInfo load_meta = 8;
   int64 replicaID = 9;
   map<int64, data.SegmentInfo> segment_infos = 10;
+  // Deprecated
   // for node down load balance, need to remove offline node in time after every watchDmChannel finish.
   int64 offlineNodeID = 11;
+  int64 version = 12;
 }
 
 message UnsubDmChannelRequest {
@@ -218,6 +220,7 @@ message SegmentLoadInfo {
   repeated FieldIndexInfo index_infos = 11;
   int64 segment_size = 12;
   string insert_channel = 13;
+  internal.MsgPosition start_position = 14;
 }
 
 message FieldIndexInfo {
@@ -434,6 +437,7 @@ message LeaderView {
   string channel = 2;
   map<int64, SegmentDist> segment_dist = 3;
   repeated int64 growing_segmentIDs = 4;
+  map<int64, internal.MsgPosition> growing_segments = 5;
 }
 
 message SegmentDist {

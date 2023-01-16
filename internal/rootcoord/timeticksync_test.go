@@ -21,6 +21,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 
 	"github.com/stretchr/testify/assert"
@@ -28,31 +29,33 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/util/dependency"
+	"github.com/milvus-io/milvus/internal/util/sessionutil"
 )
 
 func TestTimetickSync(t *testing.T) {
 	ctx := context.Background()
 	sourceID := int64(100)
-
 	factory := dependency.NewDefaultFactory(true)
 
 	//chanMap := map[typeutil.UniqueID][]string{
 	//	int64(1): {"rootcoord-dml_0"},
 	//}
 
-	Params.RootCoordCfg.DmlChannelNum = 2
-	Params.CommonCfg.RootCoordDml = "rootcoord-dml"
-	Params.CommonCfg.RootCoordDelta = "rootcoord-delta"
+	paramtable.Get().Save(Params.RootCoordCfg.DmlChannelNum.Key, "2")
+	paramtable.Get().Save(Params.CommonCfg.RootCoordDml.Key, "rootcoord-dml")
+	paramtable.Get().Save(Params.CommonCfg.RootCoordDelta.Key, "rootcoord-delta")
 	ttSync := newTimeTickSync(ctx, sourceID, factory, nil)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
 	t.Run("sendToChannel", func(t *testing.T) {
 		defer wg.Done()
-		ttSync.sendToChannel()
+		result := ttSync.sendToChannel()
+		assert.False(t, result)
 
 		ttSync.sess2ChanTsMap[1] = nil
-		ttSync.sendToChannel()
+		result = ttSync.sendToChannel()
+		assert.False(t, result)
 
 		msg := &internalpb.ChannelTimeTickMsg{
 			Base: &commonpb.MsgBase{
@@ -60,7 +63,8 @@ func TestTimetickSync(t *testing.T) {
 			},
 		}
 		ttSync.sess2ChanTsMap[1] = newChanTsMsg(msg, 1)
-		ttSync.sendToChannel()
+		result = ttSync.sendToChannel()
+		assert.True(t, result)
 	})
 
 	wg.Add(1)
@@ -104,6 +108,61 @@ func TestTimetickSync(t *testing.T) {
 		ret := minTimeTick(tts...)
 		assert.Equal(t, ret, tts[1])
 	})
+	wg.Wait()
+}
+
+func TestMultiTimetickSync(t *testing.T) {
+	ctx := context.Background()
+
+	factory := dependency.NewDefaultFactory(true)
+
+	//chanMap := map[typeutil.UniqueID][]string{
+	//	int64(1): {"rootcoord-dml_0"},
+	//}
+
+	paramtable.Get().Save(Params.RootCoordCfg.DmlChannelNum.Key, "1")
+	paramtable.Get().Save(Params.CommonCfg.RootCoordDml.Key, "rootcoord-dml")
+	paramtable.Get().Save(Params.CommonCfg.RootCoordDelta.Key, "rootcoord-delta")
+	ttSync := newTimeTickSync(ctx, UniqueID(0), factory, nil)
+
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	t.Run("UpdateTimeTick", func(t *testing.T) {
+		defer wg.Done()
+
+		// suppose this is rooit
+		ttSync.addSession(&sessionutil.Session{ServerID: 1})
+
+		// suppose this is proxy1
+		ttSync.addSession(&sessionutil.Session{ServerID: 2})
+
+		msg := &internalpb.ChannelTimeTickMsg{
+			Base: &commonpb.MsgBase{
+				MsgType:  commonpb.MsgType_TimeTick,
+				SourceID: int64(1),
+			},
+			DefaultTimestamp: 100,
+		}
+
+		err := ttSync.updateTimeTick(msg, "1")
+		assert.Nil(t, err)
+
+		msg2 := &internalpb.ChannelTimeTickMsg{
+			Base: &commonpb.MsgBase{
+				MsgType:  commonpb.MsgType_TimeTick,
+				SourceID: int64(2),
+			},
+			DefaultTimestamp: 102,
+		}
+		err = ttSync.updateTimeTick(msg2, "2")
+		assert.Nil(t, err)
+
+		// make sure result works
+		result := <-ttSync.sendChan
+		assert.True(t, len(result) == 2)
+	})
+
 	wg.Wait()
 }
 

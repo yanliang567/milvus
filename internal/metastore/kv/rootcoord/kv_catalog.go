@@ -72,7 +72,7 @@ func batchMultiSaveAndRemoveWithPrefix(snapshot kv.SnapShotKV, maxTxnNum int, sa
 	saveFn := func(partialKvs map[string]string) error {
 		return snapshot.MultiSave(partialKvs, ts)
 	}
-	if err := etcd.SaveByBatch(saves, saveFn); err != nil {
+	if err := etcd.SaveByBatchWithLimit(saves, maxTxnNum/2, saveFn); err != nil {
 		return err
 	}
 
@@ -132,7 +132,7 @@ func (kc *Catalog) CreateCollection(ctx context.Context, coll *model.Collection,
 
 	// Though batchSave is not atomic enough, we can promise the atomicity outside.
 	// Recovering from failure, if we found collection is creating, we should removing all these related meta.
-	return etcd.SaveByBatch(kvs, func(partialKvs map[string]string) error {
+	return etcd.SaveByBatchWithLimit(kvs, maxTxnNum/2, func(partialKvs map[string]string) error {
 		return kc.Snapshot.MultiSave(partialKvs, ts)
 	})
 }
@@ -274,11 +274,8 @@ func (kc *Catalog) listFieldsAfter210(ctx context.Context, collectionID typeutil
 	return fields, nil
 }
 
-func (kc *Catalog) GetCollectionByID(ctx context.Context, collectionID typeutil.UniqueID, ts typeutil.Timestamp) (*model.Collection, error) {
-	collMeta, err := kc.loadCollection(ctx, collectionID, ts)
-	if err != nil {
-		return nil, err
-	}
+func (kc *Catalog) appendPartitionAndFieldsInfo(ctx context.Context, collMeta *pb.CollectionInfo,
+	ts typeutil.Timestamp) (*model.Collection, error) {
 
 	collection := model.UnmarshalCollectionModel(collMeta)
 
@@ -286,19 +283,29 @@ func (kc *Catalog) GetCollectionByID(ctx context.Context, collectionID typeutil.
 		return collection, nil
 	}
 
-	partitions, err := kc.listPartitionsAfter210(ctx, collectionID, ts)
+	partitions, err := kc.listPartitionsAfter210(ctx, collection.CollectionID, ts)
 	if err != nil {
 		return nil, err
 	}
 	collection.Partitions = partitions
 
-	fields, err := kc.listFieldsAfter210(ctx, collectionID, ts)
+	fields, err := kc.listFieldsAfter210(ctx, collection.CollectionID, ts)
 	if err != nil {
 		return nil, err
 	}
 	collection.Fields = fields
 
 	return collection, nil
+}
+
+func (kc *Catalog) GetCollectionByID(ctx context.Context, collectionID typeutil.UniqueID,
+	ts typeutil.Timestamp) (*model.Collection, error) {
+	collMeta, err := kc.loadCollection(ctx, collectionID, ts)
+	if err != nil {
+		return nil, err
+	}
+
+	return kc.appendPartitionAndFieldsInfo(ctx, collMeta, ts)
 }
 
 func (kc *Catalog) CollectionExists(ctx context.Context, collectionID typeutil.UniqueID, ts typeutil.Timestamp) bool {
@@ -501,7 +508,7 @@ func (kc *Catalog) ListCollections(ctx context.Context, ts typeutil.Timestamp) (
 			zap.String("prefix", CollectionMetaPrefix),
 			zap.Uint64("timestamp", ts),
 			zap.Error(err))
-		return nil, nil
+		return nil, err
 	}
 
 	colls := make(map[string]*model.Collection)
@@ -512,7 +519,7 @@ func (kc *Catalog) ListCollections(ctx context.Context, ts typeutil.Timestamp) (
 			log.Warn("unmarshal collection info failed", zap.Error(err))
 			continue
 		}
-		collection, err := kc.GetCollectionByID(ctx, collMeta.GetID(), ts)
+		collection, err := kc.appendPartitionAndFieldsInfo(ctx, &collMeta, ts)
 		if err != nil {
 			return nil, err
 		}
@@ -612,10 +619,10 @@ func (kc *Catalog) save(k string) error {
 
 func (kc *Catalog) remove(k string) error {
 	var err error
-	if _, err = kc.Txn.Load(k); err != nil {
+	if _, err = kc.Txn.Load(k); err != nil && !common.IsKeyNotExistError(err) {
 		return err
 	}
-	if common.IsKeyNotExistError(err) {
+	if err != nil && common.IsKeyNotExistError(err) {
 		return common.NewIgnorableError(fmt.Errorf("the key[%s] isn't existed", k))
 	}
 	return kc.Txn.Remove(k)
@@ -625,7 +632,7 @@ func (kc *Catalog) CreateRole(ctx context.Context, tenant string, entity *milvus
 	k := funcutil.HandleTenantForEtcdKey(RolePrefix, tenant, entity.Name)
 	err := kc.save(k)
 	if err != nil {
-		log.Error("fail to save the role", zap.String("key", k), zap.Error(err))
+		log.Warn("fail to save the role", zap.String("key", k), zap.Error(err))
 	}
 	return err
 }
@@ -716,7 +723,7 @@ func (kc *Catalog) ListRole(ctx context.Context, tenant string, entity *milvuspb
 		roleKey := funcutil.HandleTenantForEtcdKey(RolePrefix, tenant, entity.Name)
 		_, err := kc.Txn.Load(roleKey)
 		if err != nil {
-			log.Error("fail to load a role", zap.String("key", roleKey), zap.Error(err))
+			log.Warn("fail to load a role", zap.String("key", roleKey), zap.Error(err))
 			return results, err
 		}
 		appendRoleResult(entity.Name)
@@ -814,7 +821,7 @@ func (kc *Catalog) AlterGrant(ctx context.Context, tenant string, entity *milvus
 
 	v, err = kc.Txn.Load(k)
 	if err != nil {
-		log.Error("fail to load grant privilege entity", zap.String("key", k), zap.Any("type", operateType), zap.Error(err))
+		log.Warn("fail to load grant privilege entity", zap.String("key", k), zap.Any("type", operateType), zap.Error(err))
 		if funcutil.IsRevoke(operateType) {
 			if common.IsKeyNotExistError(err) {
 				return common.NewIgnorableError(fmt.Errorf("the grant[%s] isn't existed", k))
@@ -837,7 +844,7 @@ func (kc *Catalog) AlterGrant(ctx context.Context, tenant string, entity *milvus
 	k = funcutil.HandleTenantForEtcdKey(GranteeIDPrefix, tenant, fmt.Sprintf("%s/%s", idStr, privilegeName))
 	_, err = kc.Txn.Load(k)
 	if err != nil {
-		log.Error("fail to load the grantee id", zap.String("key", k), zap.Error(err))
+		log.Warn("fail to load the grantee id", zap.String("key", k), zap.Error(err))
 		if !common.IsKeyNotExistError(err) {
 			return err
 		}

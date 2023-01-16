@@ -27,30 +27,25 @@ import (
 	"testing"
 	"time"
 
-	"github.com/milvus-io/milvus/internal/proto/querypb"
-
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
 
-	"github.com/milvus-io/milvus/internal/mocks"
-	"github.com/stretchr/testify/mock"
-
-	"github.com/milvus-io/milvus/internal/allocator"
-	"github.com/milvus-io/milvus/internal/mq/msgstream"
-
-	"github.com/milvus-io/milvus/internal/util/typeutil"
-
 	"github.com/golang/protobuf/proto"
-	"github.com/stretchr/testify/assert"
-
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus-proto/go-api/schemapb"
+	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/common"
+	"github.com/milvus-io/milvus/internal/mocks"
+	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
-
+	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/util/distance"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
 	"github.com/milvus-io/milvus/internal/util/uniquegenerator"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 )
 
 // TODO(dragondriver): add more test cases
@@ -474,7 +469,6 @@ func TestTranslateOutputFields(t *testing.T) {
 }
 
 func TestCreateCollectionTask(t *testing.T) {
-	Params.InitOnce()
 
 	rc := NewRootCoordMock()
 	rc.Start()
@@ -570,7 +564,7 @@ func TestCreateCollectionTask(t *testing.T) {
 		assert.Error(t, err)
 		task.Schema = marshaledSchema
 
-		task.ShardsNum = Params.ProxyCfg.MaxShardNum + 1
+		task.ShardsNum = Params.ProxyCfg.MaxShardNum.GetAsInt32() + 1
 		err = task.PreExecute(ctx)
 		assert.Error(t, err)
 		task.ShardsNum = shardsNum
@@ -582,7 +576,7 @@ func TestCreateCollectionTask(t *testing.T) {
 			Name:        collectionName,
 			Description: "",
 			AutoID:      false,
-			Fields:      make([]*schemapb.FieldSchema, Params.ProxyCfg.MaxFieldNum+1),
+			Fields:      make([]*schemapb.FieldSchema, Params.ProxyCfg.MaxFieldNum.GetAsInt32()+1),
 		}
 		marshaledSchemaWithTooManyFields, err := proto.Marshal(schemaWithTooManyFields)
 		assert.NoError(t, err)
@@ -602,7 +596,7 @@ func TestCreateCollectionTask(t *testing.T) {
 		assert.Error(t, err)
 
 		schema.Name = prefix
-		for i := 0; i < int(Params.ProxyCfg.MaxNameLength); i++ {
+		for i := 0; i < Params.ProxyCfg.MaxNameLength.GetAsInt(); i++ {
 			schema.Name += strconv.Itoa(i % 10)
 		}
 		tooLongNameSchema, err := proto.Marshal(schema)
@@ -701,7 +695,7 @@ func TestCreateCollectionTask(t *testing.T) {
 				schema.Fields[idx].TypeParams = []*commonpb.KeyValuePair{
 					{
 						Key:   "dim",
-						Value: strconv.Itoa(int(Params.ProxyCfg.MaxDimension) + 1),
+						Value: strconv.Itoa(Params.ProxyCfg.MaxDimension.GetAsInt() + 1),
 					},
 				}
 			}
@@ -717,7 +711,7 @@ func TestCreateCollectionTask(t *testing.T) {
 		schema.Fields[1].TypeParams = []*commonpb.KeyValuePair{
 			{
 				Key:   "dim",
-				Value: strconv.Itoa(int(Params.ProxyCfg.MaxDimension) + 1),
+				Value: strconv.Itoa(Params.ProxyCfg.MaxDimension.GetAsInt() + 1),
 			},
 		}
 		binaryTooLargeDimSchema, err := proto.Marshal(schema)
@@ -755,7 +749,6 @@ func TestCreateCollectionTask(t *testing.T) {
 }
 
 func TestHasCollectionTask(t *testing.T) {
-	Params.InitOnce()
 	rc := NewRootCoordMock()
 	rc.Start()
 	defer rc.Stop()
@@ -812,7 +805,7 @@ func TestHasCollectionTask(t *testing.T) {
 	assert.Equal(t, UniqueID(100), task.ID())
 	assert.Equal(t, Timestamp(100), task.BeginTs())
 	assert.Equal(t, Timestamp(100), task.EndTs())
-	assert.Equal(t, Params.ProxyCfg.GetNodeID(), task.GetBase().GetSourceID())
+	assert.Equal(t, paramtable.GetNodeID(), task.GetBase().GetSourceID())
 	// missing collectionID in globalMetaCache
 	err = task.Execute(ctx)
 	assert.Nil(t, err)
@@ -841,7 +834,6 @@ func TestHasCollectionTask(t *testing.T) {
 }
 
 func TestDescribeCollectionTask(t *testing.T) {
-	Params.InitOnce()
 	rc := NewRootCoordMock()
 	rc.Start()
 	defer rc.Stop()
@@ -877,7 +869,7 @@ func TestDescribeCollectionTask(t *testing.T) {
 	assert.Equal(t, UniqueID(100), task.ID())
 	assert.Equal(t, Timestamp(100), task.BeginTs())
 	assert.Equal(t, Timestamp(100), task.EndTs())
-	assert.Equal(t, Params.ProxyCfg.GetNodeID(), task.GetBase().GetSourceID())
+	assert.Equal(t, paramtable.GetNodeID(), task.GetBase().GetSourceID())
 	// missing collectionID in globalMetaCache
 	err := task.Execute(ctx)
 	assert.Nil(t, err)
@@ -904,7 +896,6 @@ func TestDescribeCollectionTask(t *testing.T) {
 }
 
 func TestDescribeCollectionTask_ShardsNum1(t *testing.T) {
-	Params.InitOnce()
 	rc := NewRootCoordMock()
 	rc.Start()
 	defer rc.Stop()
@@ -969,7 +960,6 @@ func TestDescribeCollectionTask_ShardsNum1(t *testing.T) {
 }
 
 func TestDescribeCollectionTask_ShardsNum2(t *testing.T) {
-	Params.InitOnce()
 	rc := NewRootCoordMock()
 	rc.Start()
 	defer rc.Stop()
@@ -1036,7 +1026,6 @@ func TestDescribeCollectionTask_ShardsNum2(t *testing.T) {
 }
 
 func TestCreatePartitionTask(t *testing.T) {
-	Params.InitOnce()
 	rc := NewRootCoordMock()
 	rc.Start()
 	defer rc.Stop()
@@ -1068,7 +1057,7 @@ func TestCreatePartitionTask(t *testing.T) {
 	assert.Equal(t, UniqueID(100), task.ID())
 	assert.Equal(t, Timestamp(100), task.BeginTs())
 	assert.Equal(t, Timestamp(100), task.EndTs())
-	assert.Equal(t, Params.ProxyCfg.GetNodeID(), task.GetBase().GetSourceID())
+	assert.Equal(t, paramtable.GetNodeID(), task.GetBase().GetSourceID())
 	err := task.Execute(ctx)
 	assert.NotNil(t, err)
 
@@ -1083,7 +1072,6 @@ func TestCreatePartitionTask(t *testing.T) {
 }
 
 func TestDropPartitionTask(t *testing.T) {
-	Params.InitOnce()
 	rc := NewRootCoordMock()
 	rc.Start()
 	defer rc.Stop()
@@ -1133,7 +1121,7 @@ func TestDropPartitionTask(t *testing.T) {
 	assert.Equal(t, UniqueID(100), task.ID())
 	assert.Equal(t, Timestamp(100), task.BeginTs())
 	assert.Equal(t, Timestamp(100), task.EndTs())
-	assert.Equal(t, Params.ProxyCfg.GetNodeID(), task.GetBase().GetSourceID())
+	assert.Equal(t, paramtable.GetNodeID(), task.GetBase().GetSourceID())
 	err := task.Execute(ctx)
 	assert.NotNil(t, err)
 
@@ -1192,7 +1180,6 @@ func TestDropPartitionTask(t *testing.T) {
 }
 
 func TestHasPartitionTask(t *testing.T) {
-	Params.InitOnce()
 	rc := NewRootCoordMock()
 	rc.Start()
 	defer rc.Stop()
@@ -1224,7 +1211,7 @@ func TestHasPartitionTask(t *testing.T) {
 	assert.Equal(t, UniqueID(100), task.ID())
 	assert.Equal(t, Timestamp(100), task.BeginTs())
 	assert.Equal(t, Timestamp(100), task.EndTs())
-	assert.Equal(t, Params.ProxyCfg.GetNodeID(), task.GetBase().GetSourceID())
+	assert.Equal(t, paramtable.GetNodeID(), task.GetBase().GetSourceID())
 	err := task.Execute(ctx)
 	assert.NotNil(t, err)
 
@@ -1239,7 +1226,6 @@ func TestHasPartitionTask(t *testing.T) {
 }
 
 func TestShowPartitionsTask(t *testing.T) {
-	Params.InitOnce()
 	rc := NewRootCoordMock()
 	rc.Start()
 	defer rc.Stop()
@@ -1272,7 +1258,7 @@ func TestShowPartitionsTask(t *testing.T) {
 	assert.Equal(t, UniqueID(100), task.ID())
 	assert.Equal(t, Timestamp(100), task.BeginTs())
 	assert.Equal(t, Timestamp(100), task.EndTs())
-	assert.Equal(t, Params.ProxyCfg.GetNodeID(), task.GetBase().GetSourceID())
+	assert.Equal(t, paramtable.GetNodeID(), task.GetBase().GetSourceID())
 	err := task.Execute(ctx)
 	assert.NotNil(t, err)
 
@@ -1295,8 +1281,6 @@ func TestShowPartitionsTask(t *testing.T) {
 }
 func TestTask_Int64PrimaryKey(t *testing.T) {
 	var err error
-
-	Params.InitOnce()
 
 	rc := NewRootCoordMock()
 	rc.Start()
@@ -1359,7 +1343,7 @@ func TestTask_Int64PrimaryKey(t *testing.T) {
 				MsgType:   commonpb.MsgType_CreatePartition,
 				MsgID:     0,
 				Timestamp: 0,
-				SourceID:  Params.ProxyCfg.GetNodeID(),
+				SourceID:  paramtable.GetNodeID(),
 			},
 			DbName:         dbName,
 			CollectionName: collectionName,
@@ -1387,21 +1371,20 @@ func TestTask_Int64PrimaryKey(t *testing.T) {
 	_ = ticker.start()
 	defer ticker.close()
 
-	idAllocator, err := allocator.NewIDAllocator(ctx, rc, Params.ProxyCfg.GetNodeID())
+	idAllocator, err := allocator.NewIDAllocator(ctx, rc, paramtable.GetNodeID())
 	assert.NoError(t, err)
 	_ = idAllocator.Start()
 	defer idAllocator.Close()
 
 	segAllocator, err := newSegIDAssigner(ctx, &mockDataCoord{expireTime: Timestamp(2500)}, getLastTick1)
 	assert.NoError(t, err)
-	segAllocator.Init()
 	_ = segAllocator.Start()
 	defer segAllocator.Close()
 
 	t.Run("insert", func(t *testing.T) {
 		hash := generateHashKeys(nb)
 		task := &insertTask{
-			BaseInsertTask: BaseInsertTask{
+			insertMsg: &BaseInsertTask{
 				BaseMsg: msgstream.BaseMsg{
 					HashValues: hash,
 				},
@@ -1409,7 +1392,7 @@ func TestTask_Int64PrimaryKey(t *testing.T) {
 					Base: &commonpb.MsgBase{
 						MsgType:  commonpb.MsgType_Insert,
 						MsgID:    0,
-						SourceID: Params.ProxyCfg.GetNodeID(),
+						SourceID: paramtable.GetNodeID(),
 					},
 					DbName:         dbName,
 					CollectionName: collectionName,
@@ -1445,7 +1428,7 @@ func TestTask_Int64PrimaryKey(t *testing.T) {
 		}
 
 		for fieldName, dataType := range fieldName2Types {
-			task.FieldsData = append(task.FieldsData, generateFieldData(dataType, fieldName, nb))
+			task.insertMsg.FieldsData = append(task.insertMsg.FieldsData, generateFieldData(dataType, fieldName, nb))
 		}
 
 		assert.NoError(t, task.OnEnqueue())
@@ -1457,14 +1440,14 @@ func TestTask_Int64PrimaryKey(t *testing.T) {
 	t.Run("delete", func(t *testing.T) {
 		task := &deleteTask{
 			Condition: NewTaskCondition(ctx),
-			BaseDeleteTask: msgstream.DeleteMsg{
+			deleteMsg: &msgstream.DeleteMsg{
 				BaseMsg: msgstream.BaseMsg{},
 				DeleteRequest: internalpb.DeleteRequest{
 					Base: &commonpb.MsgBase{
 						MsgType:   commonpb.MsgType_Delete,
 						MsgID:     0,
 						Timestamp: 0,
-						SourceID:  Params.ProxyCfg.GetNodeID(),
+						SourceID:  paramtable.GetNodeID(),
 					},
 					CollectionName: collectionName,
 					PartitionName:  partitionName,
@@ -1497,7 +1480,7 @@ func TestTask_Int64PrimaryKey(t *testing.T) {
 		task.SetID(id)
 		assert.Equal(t, id, task.ID())
 
-		task.Base.MsgType = commonpb.MsgType_Delete
+		task.deleteMsg.Base.MsgType = commonpb.MsgType_Delete
 		assert.Equal(t, commonpb.MsgType_Delete, task.Type())
 
 		ts := Timestamp(time.Now().UnixNano())
@@ -1511,14 +1494,14 @@ func TestTask_Int64PrimaryKey(t *testing.T) {
 
 		task2 := &deleteTask{
 			Condition: NewTaskCondition(ctx),
-			BaseDeleteTask: msgstream.DeleteMsg{
+			deleteMsg: &msgstream.DeleteMsg{
 				BaseMsg: msgstream.BaseMsg{},
 				DeleteRequest: internalpb.DeleteRequest{
 					Base: &commonpb.MsgBase{
 						MsgType:   commonpb.MsgType_Delete,
 						MsgID:     0,
 						Timestamp: 0,
-						SourceID:  Params.ProxyCfg.GetNodeID(),
+						SourceID:  paramtable.GetNodeID(),
 					},
 					CollectionName: collectionName,
 					PartitionName:  partitionName,
@@ -1549,8 +1532,6 @@ func TestTask_Int64PrimaryKey(t *testing.T) {
 
 func TestTask_VarCharPrimaryKey(t *testing.T) {
 	var err error
-
-	Params.InitOnce()
 
 	rc := NewRootCoordMock()
 	rc.Start()
@@ -1614,7 +1595,7 @@ func TestTask_VarCharPrimaryKey(t *testing.T) {
 				MsgType:   commonpb.MsgType_CreatePartition,
 				MsgID:     0,
 				Timestamp: 0,
-				SourceID:  Params.ProxyCfg.GetNodeID(),
+				SourceID:  paramtable.GetNodeID(),
 			},
 			DbName:         dbName,
 			CollectionName: collectionName,
@@ -1642,7 +1623,7 @@ func TestTask_VarCharPrimaryKey(t *testing.T) {
 	_ = ticker.start()
 	defer ticker.close()
 
-	idAllocator, err := allocator.NewIDAllocator(ctx, rc, Params.ProxyCfg.GetNodeID())
+	idAllocator, err := allocator.NewIDAllocator(ctx, rc, paramtable.GetNodeID())
 	assert.NoError(t, err)
 	_ = idAllocator.Start()
 	defer idAllocator.Close()
@@ -1656,7 +1637,7 @@ func TestTask_VarCharPrimaryKey(t *testing.T) {
 	t.Run("insert", func(t *testing.T) {
 		hash := generateHashKeys(nb)
 		task := &insertTask{
-			BaseInsertTask: BaseInsertTask{
+			insertMsg: &BaseInsertTask{
 				BaseMsg: msgstream.BaseMsg{
 					HashValues: hash,
 				},
@@ -1664,7 +1645,7 @@ func TestTask_VarCharPrimaryKey(t *testing.T) {
 					Base: &commonpb.MsgBase{
 						MsgType:  commonpb.MsgType_Insert,
 						MsgID:    0,
-						SourceID: Params.ProxyCfg.GetNodeID(),
+						SourceID: paramtable.GetNodeID(),
 					},
 					DbName:         dbName,
 					CollectionName: collectionName,
@@ -1701,7 +1682,95 @@ func TestTask_VarCharPrimaryKey(t *testing.T) {
 
 		fieldID := common.StartOfUserFieldID
 		for fieldName, dataType := range fieldName2Types {
-			task.FieldsData = append(task.FieldsData, generateFieldData(dataType, fieldName, nb))
+			task.insertMsg.FieldsData = append(task.insertMsg.FieldsData, generateFieldData(dataType, fieldName, nb))
+			fieldID++
+		}
+
+		assert.NoError(t, task.OnEnqueue())
+		assert.NoError(t, task.PreExecute(ctx))
+		assert.NoError(t, task.Execute(ctx))
+		assert.NoError(t, task.PostExecute(ctx))
+	})
+
+	t.Run("upsert", func(t *testing.T) {
+		hash := generateHashKeys(nb)
+		task := &upsertTask{
+			upsertMsg: &msgstream.UpsertMsg{
+				InsertMsg: &BaseInsertTask{
+					BaseMsg: msgstream.BaseMsg{
+						HashValues: hash,
+					},
+					InsertRequest: internalpb.InsertRequest{
+						Base: &commonpb.MsgBase{
+							MsgType:  commonpb.MsgType_Insert,
+							MsgID:    0,
+							SourceID: paramtable.GetNodeID(),
+						},
+						DbName:         dbName,
+						CollectionName: collectionName,
+						PartitionName:  partitionName,
+						NumRows:        uint64(nb),
+						Version:        internalpb.InsertDataVersion_ColumnBased,
+					},
+				},
+				DeleteMsg: &msgstream.DeleteMsg{
+					BaseMsg: msgstream.BaseMsg{
+						HashValues: hash,
+					},
+					DeleteRequest: internalpb.DeleteRequest{
+						Base: &commonpb.MsgBase{
+							MsgType:   commonpb.MsgType_Delete,
+							MsgID:     0,
+							Timestamp: 0,
+							SourceID:  paramtable.GetNodeID(),
+						},
+						DbName:         dbName,
+						CollectionName: collectionName,
+						PartitionName:  partitionName,
+					},
+				},
+			},
+
+			Condition: NewTaskCondition(ctx),
+			req: &milvuspb.UpsertRequest{
+				Base: &commonpb.MsgBase{
+					MsgType:  commonpb.MsgType_Insert,
+					MsgID:    0,
+					SourceID: paramtable.GetNodeID(),
+				},
+				DbName:         dbName,
+				CollectionName: collectionName,
+				PartitionName:  partitionName,
+				HashKeys:       hash,
+				NumRows:        uint32(nb),
+			},
+			ctx: ctx,
+			result: &milvuspb.MutationResult{
+				Status: &commonpb.Status{
+					ErrorCode: commonpb.ErrorCode_Success,
+					Reason:    "",
+				},
+				IDs:          nil,
+				SuccIndex:    nil,
+				ErrIndex:     nil,
+				Acknowledged: false,
+				InsertCnt:    0,
+				DeleteCnt:    0,
+				UpsertCnt:    0,
+				Timestamp:    0,
+			},
+			idAllocator:   idAllocator,
+			segIDAssigner: segAllocator,
+			chMgr:         chMgr,
+			chTicker:      ticker,
+			vChannels:     nil,
+			pChannels:     nil,
+			schema:        nil,
+		}
+
+		fieldID := common.StartOfUserFieldID
+		for fieldName, dataType := range fieldName2Types {
+			task.req.FieldsData = append(task.req.FieldsData, generateFieldData(dataType, fieldName, nb))
 			fieldID++
 		}
 
@@ -1714,14 +1783,14 @@ func TestTask_VarCharPrimaryKey(t *testing.T) {
 	t.Run("delete", func(t *testing.T) {
 		task := &deleteTask{
 			Condition: NewTaskCondition(ctx),
-			BaseDeleteTask: msgstream.DeleteMsg{
+			deleteMsg: &msgstream.DeleteMsg{
 				BaseMsg: msgstream.BaseMsg{},
 				DeleteRequest: internalpb.DeleteRequest{
 					Base: &commonpb.MsgBase{
 						MsgType:   commonpb.MsgType_Delete,
 						MsgID:     0,
 						Timestamp: 0,
-						SourceID:  Params.ProxyCfg.GetNodeID(),
+						SourceID:  paramtable.GetNodeID(),
 					},
 					CollectionName: collectionName,
 					PartitionName:  partitionName,
@@ -1754,7 +1823,7 @@ func TestTask_VarCharPrimaryKey(t *testing.T) {
 		task.SetID(id)
 		assert.Equal(t, id, task.ID())
 
-		task.Base.MsgType = commonpb.MsgType_Delete
+		task.deleteMsg.Base.MsgType = commonpb.MsgType_Delete
 		assert.Equal(t, commonpb.MsgType_Delete, task.Type())
 
 		ts := Timestamp(time.Now().UnixNano())
@@ -1768,14 +1837,14 @@ func TestTask_VarCharPrimaryKey(t *testing.T) {
 
 		task2 := &deleteTask{
 			Condition: NewTaskCondition(ctx),
-			BaseDeleteTask: msgstream.DeleteMsg{
+			deleteMsg: &msgstream.DeleteMsg{
 				BaseMsg: msgstream.BaseMsg{},
 				DeleteRequest: internalpb.DeleteRequest{
 					Base: &commonpb.MsgBase{
 						MsgType:   commonpb.MsgType_Delete,
 						MsgID:     0,
 						Timestamp: 0,
-						SourceID:  Params.ProxyCfg.GetNodeID(),
+						SourceID:  paramtable.GetNodeID(),
 					},
 					CollectionName: collectionName,
 					PartitionName:  partitionName,
@@ -1805,7 +1874,6 @@ func TestTask_VarCharPrimaryKey(t *testing.T) {
 }
 
 func TestCreateAlias_all(t *testing.T) {
-	Params.InitOnce()
 	rc := NewRootCoordMock()
 	rc.Start()
 	defer rc.Stop()
@@ -1847,7 +1915,6 @@ func TestCreateAlias_all(t *testing.T) {
 }
 
 func TestDropAlias_all(t *testing.T) {
-	Params.InitOnce()
 	rc := NewRootCoordMock()
 	rc.Start()
 	defer rc.Stop()
@@ -1886,7 +1953,6 @@ func TestDropAlias_all(t *testing.T) {
 }
 
 func TestAlterAlias_all(t *testing.T) {
-	Params.InitOnce()
 	rc := NewRootCoordMock()
 	rc.Start()
 	defer rc.Stop()
@@ -2125,7 +2191,6 @@ func Test_checkTrain(t *testing.T) {
 func Test_createIndexTask_PreExecute(t *testing.T) {
 	collectionName := "test"
 	fieldName := "test"
-	Params.Init()
 
 	cit := &createIndexTask{
 		req: &milvuspb.CreateIndexRequest{
@@ -2231,7 +2296,6 @@ func Test_createIndexTask_PreExecute(t *testing.T) {
 }
 
 func Test_dropCollectionTask_PreExecute(t *testing.T) {
-	Params.InitOnce()
 	dct := &dropCollectionTask{DropCollectionRequest: &milvuspb.DropCollectionRequest{
 		Base:           &commonpb.MsgBase{},
 		CollectionName: "0xffff", // invalid
@@ -2284,7 +2348,7 @@ func Test_dropCollectionTask_PostExecute(t *testing.T) {
 func Test_loadCollectionTask_Execute(t *testing.T) {
 	rc := newMockRootCoord()
 	qc := NewQueryCoordMock(withValidShardLeaders())
-	ic := newMockIndexCoord()
+	dc := NewDataCoordMock()
 
 	dbName := funcutil.GenRandomStr()
 	collectionName := funcutil.GenRandomStr()
@@ -2324,7 +2388,7 @@ func Test_loadCollectionTask_Execute(t *testing.T) {
 		},
 		ctx:          ctx,
 		queryCoord:   qc,
-		indexCoord:   ic,
+		datacoord:    dc,
 		result:       nil,
 		collectionID: 0,
 	}
@@ -2335,7 +2399,7 @@ func Test_loadCollectionTask_Execute(t *testing.T) {
 	})
 
 	t.Run("indexcoord describe index not success", func(t *testing.T) {
-		ic.DescribeIndexFunc = func(ctx context.Context, request *indexpb.DescribeIndexRequest) (*indexpb.DescribeIndexResponse, error) {
+		dc.DescribeIndexFunc = func(ctx context.Context, request *indexpb.DescribeIndexRequest) (*indexpb.DescribeIndexResponse, error) {
 			return &indexpb.DescribeIndexResponse{
 				Status: &commonpb.Status{
 					ErrorCode: commonpb.ErrorCode_UnexpectedError,
@@ -2349,7 +2413,7 @@ func Test_loadCollectionTask_Execute(t *testing.T) {
 	})
 
 	t.Run("no vector index", func(t *testing.T) {
-		ic.DescribeIndexFunc = func(ctx context.Context, request *indexpb.DescribeIndexRequest) (*indexpb.DescribeIndexResponse, error) {
+		dc.DescribeIndexFunc = func(ctx context.Context, request *indexpb.DescribeIndexRequest) (*indexpb.DescribeIndexResponse, error) {
 			return &indexpb.DescribeIndexResponse{
 				Status: &commonpb.Status{
 					ErrorCode: commonpb.ErrorCode_Success,
@@ -2381,7 +2445,7 @@ func Test_loadCollectionTask_Execute(t *testing.T) {
 func Test_loadPartitionTask_Execute(t *testing.T) {
 	rc := newMockRootCoord()
 	qc := NewQueryCoordMock(withValidShardLeaders())
-	ic := newMockIndexCoord()
+	dc := NewDataCoordMock()
 
 	dbName := funcutil.GenRandomStr()
 	collectionName := funcutil.GenRandomStr()
@@ -2421,7 +2485,7 @@ func Test_loadPartitionTask_Execute(t *testing.T) {
 		},
 		ctx:          ctx,
 		queryCoord:   qc,
-		indexCoord:   ic,
+		datacoord:    dc,
 		result:       nil,
 		collectionID: 0,
 	}
@@ -2432,7 +2496,7 @@ func Test_loadPartitionTask_Execute(t *testing.T) {
 	})
 
 	t.Run("indexcoord describe index not success", func(t *testing.T) {
-		ic.DescribeIndexFunc = func(ctx context.Context, request *indexpb.DescribeIndexRequest) (*indexpb.DescribeIndexResponse, error) {
+		dc.DescribeIndexFunc = func(ctx context.Context, request *indexpb.DescribeIndexRequest) (*indexpb.DescribeIndexResponse, error) {
 			return &indexpb.DescribeIndexResponse{
 				Status: &commonpb.Status{
 					ErrorCode: commonpb.ErrorCode_UnexpectedError,
@@ -2446,7 +2510,7 @@ func Test_loadPartitionTask_Execute(t *testing.T) {
 	})
 
 	t.Run("no vector index", func(t *testing.T) {
-		ic.DescribeIndexFunc = func(ctx context.Context, request *indexpb.DescribeIndexRequest) (*indexpb.DescribeIndexResponse, error) {
+		dc.DescribeIndexFunc = func(ctx context.Context, request *indexpb.DescribeIndexRequest) (*indexpb.DescribeIndexResponse, error) {
 			return &indexpb.DescribeIndexResponse{
 				Status: &commonpb.Status{
 					ErrorCode: commonpb.ErrorCode_Success,

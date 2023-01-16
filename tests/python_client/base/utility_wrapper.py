@@ -18,13 +18,13 @@ class ApiUtilityWrapper:
     ut = utility
     role = None
 
-    def bulk_insert(self, collection_name, files="", partition_name=None, timeout=None,
-                  using="default", check_task=None, check_items=None, **kwargs):
+    def do_bulk_insert(self, collection_name, files="", partition_name=None, timeout=None,
+                       using="default", check_task=None, check_items=None, **kwargs):
         working_tasks = self.get_bulk_insert_working_list()
         log.info(f"before bulk load, there are {len(working_tasks)} working tasks")
         log.info(f"files to load: {files}")
         func_name = sys._getframe().f_code.co_name
-        res, is_succ = api_request([self.ut.bulk_insert, collection_name,
+        res, is_succ = api_request([self.ut.do_bulk_insert, collection_name,
                                     files, partition_name, timeout, using], **kwargs)
         check_result = ResponseChecker(res, func_name, check_task, check_items, is_succ,
                                        collection_name=collection_name, using=using).run()
@@ -143,7 +143,7 @@ class ApiUtilityWrapper:
         pending_tasks = self.get_bulk_insert_pending_list()
         log.info(f"after waiting, there are {len(pending_tasks)} pending tasks")
         log.info(f"task state distribution: {tasks_state_distribution}")
-        log.debug(tasks_state)
+        log.info(tasks_state)
         if len(tasks_state_distribution["success"]) == len(task_ids):
             log.info(f"wait for bulk load tasks completed successfully, cost time: {end-start}")
             return True, tasks_state

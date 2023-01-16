@@ -20,7 +20,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"math"
+	"strconv"
 
 	"go.uber.org/zap"
 
@@ -34,7 +34,6 @@ import (
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
-	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
 const (
@@ -47,7 +46,7 @@ const (
 	// this limitation is to avoid this OOM risk:
 	// for column-based file, we read all its data into memory, if user input a large file, the read() method may
 	// cost extra memory and lear to OOM.
-	MaxFileSize = 1 * 1024 * 1024 * 1024 // 1GB
+	MaxFileSize = 16 * 1024 * 1024 * 1024 // 16GB
 
 	// this limitation is to avoid this OOM risk:
 	// simetimes system segment max size is a large number, a single segment fields data might cause OOM.
@@ -57,7 +56,19 @@ const (
 	// this limitation is to avoid this OOM risk:
 	// if the shard number is a large number, although single segment size is small, but there are lot of in-memory segments,
 	// the total memory size might cause OOM.
-	MaxTotalSizeInMemory = 2 * 1024 * 1024 * 1024 // 2GB
+	// TODO: make it configurable.
+	MaxTotalSizeInMemory = 6 * 1024 * 1024 * 1024 // 6GB
+
+	// progress percent value of persist state
+	ProgressValueForPersist = 90
+
+	// keywords of import task informations
+	FailedReason    = "failed_reason"
+	Files           = "files"
+	CollectionName  = "collection"
+	PartitionName   = "partition"
+	PersistTimeCost = "persist_cost"
+	ProgressPercent = "progress_percent"
 )
 
 // ReportImportAttempts is the maximum # of attempts to retry when import fails.
@@ -78,21 +89,6 @@ type WorkingSegment struct {
 	fieldsStats  []*datapb.FieldBinlog // stats of persisted binlogs
 }
 
-type ImportOptions struct {
-	OnlyValidate bool
-	TsStartPoint uint64
-	TsEndPoint   uint64
-}
-
-func DefaultImportOptions() ImportOptions {
-	options := ImportOptions{
-		OnlyValidate: false,
-		TsStartPoint: 0,
-		TsEndPoint:   math.MaxUint64,
-	}
-	return options
-}
-
 type ImportWrapper struct {
 	ctx              context.Context            // for canceling parse process
 	cancel           context.CancelFunc         // for canceling parse process
@@ -106,10 +102,12 @@ type ImportWrapper struct {
 	createBinlogsFunc CreateBinlogsFunc // function to create binlog for a segment
 	saveSegmentFunc   SaveSegmentFunc   // function to persist a segment
 
-	importResult *rootcoordpb.ImportResult                 // import result
-	reportFunc   func(res *rootcoordpb.ImportResult) error // report import state to rootcoord
+	importResult         *rootcoordpb.ImportResult                 // import result
+	reportFunc           func(res *rootcoordpb.ImportResult) error // report import state to rootcoord
+	reportImportAttempts uint                                      // attempts count if report function get error
 
 	workingSegments map[int]*WorkingSegment // a map shard id to working segments
+	progressPercent int64                   // working progress percent
 }
 
 func NewImportWrapper(ctx context.Context, collectionSchema *schemapb.CollectionSchema, shardNum int32, segmentSize int64,
@@ -138,16 +136,17 @@ func NewImportWrapper(ctx context.Context, collectionSchema *schemapb.Collection
 	ctx, cancel := context.WithCancel(ctx)
 
 	wrapper := &ImportWrapper{
-		ctx:              ctx,
-		cancel:           cancel,
-		collectionSchema: realSchema,
-		shardNum:         shardNum,
-		segmentSize:      segmentSize,
-		rowIDAllocator:   idAlloc,
-		chunkManager:     cm,
-		importResult:     importResult,
-		reportFunc:       reportFunc,
-		workingSegments:  make(map[int]*WorkingSegment),
+		ctx:                  ctx,
+		cancel:               cancel,
+		collectionSchema:     realSchema,
+		shardNum:             shardNum,
+		segmentSize:          segmentSize,
+		rowIDAllocator:       idAlloc,
+		chunkManager:         cm,
+		importResult:         importResult,
+		reportFunc:           reportFunc,
+		reportImportAttempts: ReportImportAttempts,
+		workingSegments:      make(map[int]*WorkingSegment),
 	}
 
 	return wrapper
@@ -156,17 +155,17 @@ func NewImportWrapper(ctx context.Context, collectionSchema *schemapb.Collection
 func (p *ImportWrapper) SetCallbackFunctions(assignSegmentFunc AssignSegmentFunc, createBinlogsFunc CreateBinlogsFunc, saveSegmentFunc SaveSegmentFunc) error {
 	if assignSegmentFunc == nil {
 		log.Error("import wrapper: callback function AssignSegmentFunc is nil")
-		return fmt.Errorf("import wrapper: callback function AssignSegmentFunc is nil")
+		return fmt.Errorf("callback function AssignSegmentFunc is nil")
 	}
 
 	if createBinlogsFunc == nil {
 		log.Error("import wrapper: callback function CreateBinlogsFunc is nil")
-		return fmt.Errorf("import wrapper: callback function CreateBinlogsFunc is nil")
+		return fmt.Errorf("callback function CreateBinlogsFunc is nil")
 	}
 
 	if saveSegmentFunc == nil {
 		log.Error("import wrapper: callback function SaveSegmentFunc is nil")
-		return fmt.Errorf("import wrapper: callback function SaveSegmentFunc is nil")
+		return fmt.Errorf("callback function SaveSegmentFunc is nil")
 	}
 
 	p.assignSegmentFunc = assignSegmentFunc
@@ -178,42 +177,6 @@ func (p *ImportWrapper) SetCallbackFunctions(assignSegmentFunc AssignSegmentFunc
 // Cancel method can be used to cancel parse process
 func (p *ImportWrapper) Cancel() error {
 	p.cancel()
-	return nil
-}
-
-func (p *ImportWrapper) validateColumnBasedFiles(filePaths []string, collectionSchema *schemapb.CollectionSchema) error {
-	requiredFieldNames := make(map[string]interface{})
-	for _, schema := range p.collectionSchema.Fields {
-		if schema.GetIsPrimaryKey() {
-			if !schema.GetAutoID() {
-				requiredFieldNames[schema.GetName()] = nil
-			}
-		} else {
-			requiredFieldNames[schema.GetName()] = nil
-		}
-	}
-
-	// check redundant file
-	fileNames := make(map[string]interface{})
-	for _, filePath := range filePaths {
-		name, _ := GetFileNameAndExt(filePath)
-		fileNames[name] = nil
-		_, ok := requiredFieldNames[name]
-		if !ok {
-			log.Error("import wrapper: the file has no corresponding field in collection", zap.String("fieldName", name))
-			return fmt.Errorf("import wrapper: the file '%s' has no corresponding field in collection", filePath)
-		}
-	}
-
-	// check missed file
-	for name := range requiredFieldNames {
-		_, ok := fileNames[name]
-		if !ok {
-			log.Error("import wrapper: there is no file corresponding to field", zap.String("fieldName", name))
-			return fmt.Errorf("import wrapper: there is no file corresponding to field '%s'", name)
-		}
-	}
-
 	return nil
 }
 
@@ -232,8 +195,8 @@ func (p *ImportWrapper) fileValidation(filePaths []string) (bool, error) {
 
 		// only allow json file or numpy file
 		if fileType != JSONFileExt && fileType != NumpyFileExt {
-			log.Error("import wrapper: unsupportted file type", zap.String("filePath", filePath))
-			return false, fmt.Errorf("import wrapper: unsupportted file type: '%s'", filePath)
+			log.Error("import wrapper: unsupported file type", zap.String("filePath", filePath))
+			return false, fmt.Errorf("unsupported file type: '%s'", filePath)
 		}
 
 		// we use the first file to determine row-based or column-based
@@ -246,12 +209,12 @@ func (p *ImportWrapper) fileValidation(filePaths []string) (bool, error) {
 		if rowBased {
 			if fileType != JSONFileExt {
 				log.Error("import wrapper: unsupported file type for row-based mode", zap.String("filePath", filePath))
-				return rowBased, fmt.Errorf("import wrapper: unsupported file type for row-based mode: '%s'", filePath)
+				return rowBased, fmt.Errorf("unsupported file type for row-based mode: '%s'", filePath)
 			}
 		} else {
 			if fileType != NumpyFileExt {
 				log.Error("import wrapper: unsupported file type for column-based mode", zap.String("filePath", filePath))
-				return rowBased, fmt.Errorf("import wrapper: unsupported file type for column-based mode: '%s'", filePath)
+				return rowBased, fmt.Errorf("unsupported file type for column-based mode: '%s'", filePath)
 			}
 		}
 
@@ -259,46 +222,29 @@ func (p *ImportWrapper) fileValidation(filePaths []string) (bool, error) {
 		_, ok := fileNames[name]
 		if ok {
 			log.Error("import wrapper: duplicate file name", zap.String("filePath", filePath))
-			return rowBased, fmt.Errorf("import wrapper: duplicate file: '%s'", filePath)
+			return rowBased, fmt.Errorf("duplicate file: '%s'", filePath)
 		}
 		fileNames[name] = struct{}{}
 
 		// check file size, single file size cannot exceed MaxFileSize
-		// TODO add context
-		size, err := p.chunkManager.Size(context.TODO(), filePath)
+		size, err := p.chunkManager.Size(p.ctx, filePath)
 		if err != nil {
 			log.Error("import wrapper: failed to get file size", zap.String("filePath", filePath), zap.Error(err))
-			return rowBased, fmt.Errorf("import wrapper: failed to get file size of '%s'", filePath)
+			return rowBased, fmt.Errorf("failed to get file size of '%s', error:%w", filePath, err)
 		}
 
 		// empty file
 		if size == 0 {
 			log.Error("import wrapper: file size is zero", zap.String("filePath", filePath))
-			return rowBased, fmt.Errorf("import wrapper: the file '%s' size is zero", filePath)
+			return rowBased, fmt.Errorf("the file '%s' size is zero", filePath)
 		}
 
 		if size > MaxFileSize {
 			log.Error("import wrapper: file size exceeds the maximum size", zap.String("filePath", filePath),
 				zap.Int64("fileSize", size), zap.Int64("MaxFileSize", MaxFileSize))
-			return rowBased, fmt.Errorf("import wrapper: the file '%s' size exceeds the maximum size: %d bytes", filePath, MaxFileSize)
+			return rowBased, fmt.Errorf("the file '%s' size exceeds the maximum size: %d bytes", filePath, MaxFileSize)
 		}
 		totalSize += size
-	}
-
-	// especially for column-base, total size of files cannot exceed MaxTotalSizeInMemory
-	if totalSize > MaxTotalSizeInMemory {
-		log.Error("import wrapper: total size of files exceeds the maximum size", zap.Int64("totalSize", totalSize), zap.Int64("MaxTotalSize", MaxTotalSizeInMemory))
-		return rowBased, fmt.Errorf("import wrapper: total size(%d bytes) of all files exceeds the maximum size: %d bytes", totalSize, MaxTotalSizeInMemory)
-	}
-
-	// check redundant files for column-based import
-	// if the field is primary key and autoid is false, the file is required
-	// any redundant file is not allowed
-	if !rowBased {
-		err := p.validateColumnBasedFiles(filePaths, p.collectionSchema)
-		if err != nil {
-			return rowBased, err
-		}
 	}
 
 	return rowBased, nil
@@ -309,10 +255,10 @@ func (p *ImportWrapper) fileValidation(filePaths []string) (bool, error) {
 // if onlyValidate is true, this process only do validation, no data generated, flushFunc will not be called
 func (p *ImportWrapper) Import(filePaths []string, options ImportOptions) error {
 	log.Info("import wrapper: begin import", zap.Any("filePaths", filePaths), zap.Any("options", options))
+
 	// data restore function to import milvus native binlog files(for backup/restore tools)
 	// the backup/restore tool provide two paths for a partition, the first path is binlog path, the second is deltalog path
-	if p.isBinlogImport(filePaths) {
-		// TODO: handle the timestamp end point passed from client side, currently use math.MaxUint64
+	if options.IsBackup && p.isBinlogImport(filePaths) {
 		return p.doBinlogImport(filePaths, options.TsStartPoint, options.TsEndPoint)
 	}
 
@@ -322,6 +268,7 @@ func (p *ImportWrapper) Import(filePaths []string, options ImportOptions) error 
 		return err
 	}
 
+	tr := timerecord.NewTimeRecorder("Import task")
 	if rowBased {
 		// parse and consume row-based files
 		// for row-based files, the JSONRowConsumer will generate autoid for primary key, and split rows into segments
@@ -343,107 +290,57 @@ func (p *ImportWrapper) Import(filePaths []string, options ImportOptions) error 
 			triggerGC()
 		}
 	} else {
-		// parse and consume column-based files
-		// for column-based files, the XXXColumnConsumer only output map[string]storage.FieldData
-		// after all columns are parsed/consumed, we need to combine map[string]storage.FieldData into one
-		// and use splitFieldsData() to split fields data into segments according to shard number
-		fieldsData := initSegmentData(p.collectionSchema)
-		if fieldsData == nil {
-			log.Error("import wrapper: failed to initialize FieldData list")
-			return fmt.Errorf("import wrapper: failed to initialize FieldData list")
+		// parse and consume column-based files(currently support numpy)
+		// for column-based files, the NumpyParser will generate autoid for primary key, and split rows into segments
+		// according to shard number, so the flushFunc will be called in the NumpyParser
+		flushFunc := func(fields map[storage.FieldID]storage.FieldData, shardID int) error {
+			printFieldsDataInfo(fields, "import wrapper: prepare to flush binlog data", filePaths)
+			return p.flushFunc(fields, shardID)
 		}
-
-		rowCount := 0
-
-		// function to combine column data into fieldsData
-		combineFunc := func(fields map[storage.FieldID]storage.FieldData) error {
-			if len(fields) == 0 {
-				return nil
-			}
-
-			printFieldsDataInfo(fields, "import wrapper: combine field data", nil)
-			tr := timerecord.NewTimeRecorder("combine field data")
-			defer tr.Elapse("finished")
-
-			for k, v := range fields {
-				// ignore 0 row field
-				if v.RowNum() == 0 {
-					log.Warn("import wrapper: empty FieldData ignored", zap.Int64("fieldID", k))
-					continue
-				}
-
-				// ignore internal fields: RowIDField and TimeStampField
-				if k == common.RowIDField || k == common.TimeStampField {
-					log.Warn("import wrapper: internal fields should not be provided", zap.Int64("fieldID", k))
-					continue
-				}
-
-				// each column should be only combined once
-				data, ok := fieldsData[k]
-				if ok && data.RowNum() > 0 {
-					return fmt.Errorf("the field %d is duplicated", k)
-				}
-
-				// check the row count. only count non-zero row fields
-				if rowCount > 0 && rowCount != v.RowNum() {
-					return fmt.Errorf("the field %d row count %d doesn't equal others row count: %d", k, v.RowNum(), rowCount)
-				}
-				rowCount = v.RowNum()
-
-				// assign column data to fieldsData
-				fieldsData[k] = v
-			}
-
-			return nil
-		}
-
-		// parse/validate/consume data
-		for i := 0; i < len(filePaths); i++ {
-			filePath := filePaths[i]
-			_, fileType := GetFileNameAndExt(filePath)
-			log.Info("import wrapper:  column-based file ", zap.Any("filePath", filePath), zap.Any("fileType", fileType))
-
-			if fileType == NumpyFileExt {
-				err = p.parseColumnBasedNumpy(filePath, options.OnlyValidate, combineFunc)
-
-				if err != nil {
-					log.Error("import wrapper: failed to parse column-based numpy file", zap.Error(err), zap.String("filePath", filePath))
-					return err
-				}
-			}
-			// no need to check else, since the fileValidation() already do this
-		}
-
-		// trigger after read finished
-		triggerGC()
-
-		// split fields data into segments
-		err := p.splitFieldsData(fieldsData, SingleBlockSize)
+		parser, err := NewNumpyParser(p.ctx, p.collectionSchema, p.rowIDAllocator, p.shardNum, SingleBlockSize,
+			p.chunkManager, flushFunc, p.updateProgressPercent)
 		if err != nil {
 			return err
 		}
 
-		// trigger after write finished
+		err = parser.Parse(filePaths)
+		if err != nil {
+			return err
+		}
+
+		p.importResult.AutoIds = append(p.importResult.AutoIds, parser.IDRange()...)
+
+		// trigger after parse finished
 		triggerGC()
 	}
 
-	return p.reportPersisted()
+	return p.reportPersisted(p.reportImportAttempts, tr)
 }
 
 // reportPersisted notify the rootcoord to mark the task state to be ImportPersisted
-func (p *ImportWrapper) reportPersisted() error {
+func (p *ImportWrapper) reportPersisted(reportAttempts uint, tr *timerecord.TimeRecorder) error {
 	// force close all segments
 	err := p.closeAllWorkingSegments()
 	if err != nil {
 		return err
 	}
 
+	if tr != nil {
+		ts := tr.Elapse("persist finished").Seconds()
+		p.importResult.Infos = append(p.importResult.Infos,
+			&commonpb.KeyValuePair{Key: PersistTimeCost, Value: strconv.FormatFloat(ts, 'f', 2, 64)})
+	}
+
 	// report file process state
 	p.importResult.State = commonpb.ImportState_ImportPersisted
+	progressValue := strconv.Itoa(ProgressValueForPersist)
+	UpdateKVInfo(&p.importResult.Infos, ProgressPercent, progressValue)
+
+	log.Info("import wrapper: report import result", zap.Any("importResult", p.importResult))
 	// persist state task is valuable, retry more times in case fail this task only because of network error
 	reportErr := retry.Do(p.ctx, func() error {
 		return p.reportFunc(p.importResult)
-	}, retry.Attempts(ReportImportAttempts))
+	}, retry.Attempts(reportAttempts))
 	if reportErr != nil {
 		log.Warn("import wrapper: fail to report import state to RootCoord", zap.Error(reportErr))
 		return reportErr
@@ -454,23 +351,40 @@ func (p *ImportWrapper) reportPersisted() error {
 // isBinlogImport is to judge whether it is binlog import operation
 // For internal usage by the restore tool: https://github.com/zilliztech/milvus-backup
 // This tool exports data from a milvus service, and call bulkload interface to import native data into another milvus service.
-// This tool provides two paths: one is data log path of a partition,the other is delta log path of this partition.
+// This tool provides two paths: one is insert log path of a partition,the other is delta log path of this partition.
 // This method checks the filePaths, if the file paths is exist and not a file, we say it is native import.
 func (p *ImportWrapper) isBinlogImport(filePaths []string) bool {
-	// must contains the insert log path, and the delta log path is optional
-	if len(filePaths) != 1 && len(filePaths) != 2 {
-		log.Info("import wrapper: paths count is not 1 or 2, not binlog import", zap.Int("len", len(filePaths)))
+	// must contains the insert log path, and the delta log path is optional to be empty string
+	if len(filePaths) != 2 {
+		log.Info("import wrapper: paths count is not 2, not binlog import", zap.Int("len", len(filePaths)))
 		return false
 	}
 
-	for i := 0; i < len(filePaths); i++ {
-		filePath := filePaths[i]
-		_, fileType := GetFileNameAndExt(filePath)
+	checkFunc := func(filePath string) bool {
 		// contains file extension, is not a path
+		_, fileType := GetFileNameAndExt(filePath)
 		if len(fileType) != 0 {
 			log.Info("import wrapper: not a path, not binlog import", zap.String("filePath", filePath), zap.String("fileType", fileType))
 			return false
 		}
+		return true
+	}
+
+	// the first path is insert log path
+	filePath := filePaths[0]
+	if len(filePath) == 0 {
+		log.Info("import wrapper: the first path is empty string, not binlog import")
+		return false
+	}
+
+	if !checkFunc(filePath) {
+		return false
+	}
+
+	// the second path is delta log path
+	filePath = filePaths[1]
+	if len(filePath) > 0 && !checkFunc(filePath) {
+		return false
 	}
 
 	log.Info("import wrapper: do binlog import")
@@ -479,12 +393,14 @@ func (p *ImportWrapper) isBinlogImport(filePaths []string) bool {
 
 // doBinlogImport is the entry of binlog import operation
 func (p *ImportWrapper) doBinlogImport(filePaths []string, tsStartPoint uint64, tsEndPoint uint64) error {
+	tr := timerecord.NewTimeRecorder("Import task")
+
 	flushFunc := func(fields map[storage.FieldID]storage.FieldData, shardID int) error {
 		printFieldsDataInfo(fields, "import wrapper: prepare to flush binlog data", filePaths)
 		return p.flushFunc(fields, shardID)
 	}
 	parser, err := NewBinlogParser(p.ctx, p.collectionSchema, p.shardNum, SingleBlockSize, p.chunkManager, flushFunc,
-		tsStartPoint, tsEndPoint)
+		p.updateProgressPercent, tsStartPoint, tsEndPoint)
 	if err != nil {
 		return err
 	}
@@ -494,343 +410,59 @@ func (p *ImportWrapper) doBinlogImport(filePaths []string, tsStartPoint uint64, 
 		return err
 	}
 
-	return p.reportPersisted()
+	return p.reportPersisted(p.reportImportAttempts, tr)
 }
 
 // parseRowBasedJSON is the entry of row-based json import operation
 func (p *ImportWrapper) parseRowBasedJSON(filePath string, onlyValidate bool) error {
 	tr := timerecord.NewTimeRecorder("json row-based parser: " + filePath)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	// for minio storage, chunkManager will download file into local memory
 	// for local storage, chunkManager open the file directly
-	file, err := p.chunkManager.Reader(ctx, filePath)
+	file, err := p.chunkManager.Reader(p.ctx, filePath)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
-	// parse file
-	reader := bufio.NewReader(file)
-	parser := NewJSONParser(p.ctx, p.collectionSchema)
-	var consumer *JSONRowConsumer
-	if !onlyValidate {
-		flushFunc := func(fields map[storage.FieldID]storage.FieldData, shardID int) error {
-			var filePaths = []string{filePath}
-			printFieldsDataInfo(fields, "import wrapper: prepare to flush binlogs", filePaths)
-			return p.flushFunc(fields, shardID)
-		}
-
-		consumer, err = NewJSONRowConsumer(p.collectionSchema, p.rowIDAllocator, p.shardNum, SingleBlockSize, flushFunc)
-		if err != nil {
-			return err
-		}
-	}
-
-	validator, err := NewJSONRowValidator(p.collectionSchema, consumer)
+	size, err := p.chunkManager.Size(p.ctx, filePath)
 	if err != nil {
 		return err
 	}
 
-	err = parser.ParseRows(reader, validator)
+	// parse file
+	reader := bufio.NewReader(file)
+	parser := NewJSONParser(p.ctx, p.collectionSchema, p.updateProgressPercent)
+
+	// if only validate, we input a empty flushFunc so that the consumer do nothing but only validation.
+	var flushFunc ImportFlushFunc
+	if onlyValidate {
+		flushFunc = func(fields map[storage.FieldID]storage.FieldData, shardID int) error {
+			return nil
+		}
+	} else {
+		flushFunc = func(fields map[storage.FieldID]storage.FieldData, shardID int) error {
+			var filePaths = []string{filePath}
+			printFieldsDataInfo(fields, "import wrapper: prepare to flush binlogs", filePaths)
+			return p.flushFunc(fields, shardID)
+		}
+	}
+
+	consumer, err := NewJSONRowConsumer(p.collectionSchema, p.rowIDAllocator, p.shardNum, SingleBlockSize, flushFunc)
+	if err != nil {
+		return err
+	}
+
+	err = parser.ParseRows(&IOReader{r: reader, fileSize: size}, consumer)
 	if err != nil {
 		return err
 	}
 
 	// for row-based files, auto-id is generated within JSONRowConsumer
-	if consumer != nil {
-		p.importResult.AutoIds = append(p.importResult.AutoIds, consumer.IDRange()...)
-	}
+	p.importResult.AutoIds = append(p.importResult.AutoIds, consumer.IDRange()...)
 
 	tr.Elapse("parsed")
 	return nil
-}
-
-// parseColumnBasedNumpy is the entry of column-based numpy import operation
-func (p *ImportWrapper) parseColumnBasedNumpy(filePath string, onlyValidate bool,
-	combineFunc func(fields map[storage.FieldID]storage.FieldData) error) error {
-	tr := timerecord.NewTimeRecorder("numpy parser: " + filePath)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	fileName, _ := GetFileNameAndExt(filePath)
-
-	// for minio storage, chunkManager will download file into local memory
-	// for local storage, chunkManager open the file directly
-	file, err := p.chunkManager.Reader(ctx, filePath)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	var id storage.FieldID
-	var found = false
-	for _, field := range p.collectionSchema.Fields {
-		if field.GetName() == fileName {
-			id = field.GetFieldID()
-			found = true
-			break
-		}
-	}
-
-	// if the numpy file name is not mapping to a field name, ignore it
-	if !found {
-		return nil
-	}
-
-	// the numpy parser return a storage.FieldData, here construct a map[string]storage.FieldData to combine
-	flushFunc := func(field storage.FieldData) error {
-		fields := make(map[storage.FieldID]storage.FieldData)
-		fields[id] = field
-		return combineFunc(fields)
-	}
-
-	// for numpy file, we say the file name(without extension) is the filed name
-	parser := NewNumpyParser(p.ctx, p.collectionSchema, flushFunc)
-	err = parser.Parse(file, fileName, onlyValidate)
-	if err != nil {
-		return err
-	}
-
-	tr.Elapse("parsed")
-	return nil
-}
-
-// appendFunc defines the methods to append data to storage.FieldData
-func (p *ImportWrapper) appendFunc(schema *schemapb.FieldSchema) func(src storage.FieldData, n int, target storage.FieldData) error {
-	switch schema.DataType {
-	case schemapb.DataType_Bool:
-		return func(src storage.FieldData, n int, target storage.FieldData) error {
-			arr := target.(*storage.BoolFieldData)
-			arr.Data = append(arr.Data, src.GetRow(n).(bool))
-			arr.NumRows[0]++
-			return nil
-		}
-	case schemapb.DataType_Float:
-		return func(src storage.FieldData, n int, target storage.FieldData) error {
-			arr := target.(*storage.FloatFieldData)
-			arr.Data = append(arr.Data, src.GetRow(n).(float32))
-			arr.NumRows[0]++
-			return nil
-		}
-	case schemapb.DataType_Double:
-		return func(src storage.FieldData, n int, target storage.FieldData) error {
-			arr := target.(*storage.DoubleFieldData)
-			arr.Data = append(arr.Data, src.GetRow(n).(float64))
-			arr.NumRows[0]++
-			return nil
-		}
-	case schemapb.DataType_Int8:
-		return func(src storage.FieldData, n int, target storage.FieldData) error {
-			arr := target.(*storage.Int8FieldData)
-			arr.Data = append(arr.Data, src.GetRow(n).(int8))
-			arr.NumRows[0]++
-			return nil
-		}
-	case schemapb.DataType_Int16:
-		return func(src storage.FieldData, n int, target storage.FieldData) error {
-			arr := target.(*storage.Int16FieldData)
-			arr.Data = append(arr.Data, src.GetRow(n).(int16))
-			arr.NumRows[0]++
-			return nil
-		}
-	case schemapb.DataType_Int32:
-		return func(src storage.FieldData, n int, target storage.FieldData) error {
-			arr := target.(*storage.Int32FieldData)
-			arr.Data = append(arr.Data, src.GetRow(n).(int32))
-			arr.NumRows[0]++
-			return nil
-		}
-	case schemapb.DataType_Int64:
-		return func(src storage.FieldData, n int, target storage.FieldData) error {
-			arr := target.(*storage.Int64FieldData)
-			arr.Data = append(arr.Data, src.GetRow(n).(int64))
-			arr.NumRows[0]++
-			return nil
-		}
-	case schemapb.DataType_BinaryVector:
-		return func(src storage.FieldData, n int, target storage.FieldData) error {
-			arr := target.(*storage.BinaryVectorFieldData)
-			arr.Data = append(arr.Data, src.GetRow(n).([]byte)...)
-			arr.NumRows[0]++
-			return nil
-		}
-	case schemapb.DataType_FloatVector:
-		return func(src storage.FieldData, n int, target storage.FieldData) error {
-			arr := target.(*storage.FloatVectorFieldData)
-			arr.Data = append(arr.Data, src.GetRow(n).([]float32)...)
-			arr.NumRows[0]++
-			return nil
-		}
-	case schemapb.DataType_String, schemapb.DataType_VarChar:
-		return func(src storage.FieldData, n int, target storage.FieldData) error {
-			arr := target.(*storage.StringFieldData)
-			arr.Data = append(arr.Data, src.GetRow(n).(string))
-			return nil
-		}
-	default:
-		return nil
-	}
-}
-
-// splitFieldsData is to split the in-memory data(parsed from column-based files) into blocks, each block save to a binlog file
-func (p *ImportWrapper) splitFieldsData(fieldsData map[storage.FieldID]storage.FieldData, blockSize int64) error {
-	if len(fieldsData) == 0 {
-		log.Error("import wrapper: fields data is empty")
-		return fmt.Errorf("import wrapper: fields data is empty")
-	}
-
-	tr := timerecord.NewTimeRecorder("import wrapper: split field data")
-	defer tr.Elapse("finished")
-
-	// check existence of each field
-	// check row count, all fields row count must be equal
-	// firstly get the max row count
-	rowCount := 0
-	rowCounter := make(map[string]int)
-	var primaryKey *schemapb.FieldSchema
-	for i := 0; i < len(p.collectionSchema.Fields); i++ {
-		schema := p.collectionSchema.Fields[i]
-		if schema.GetIsPrimaryKey() {
-			primaryKey = schema
-		}
-
-		if !schema.GetAutoID() {
-			v, ok := fieldsData[schema.GetFieldID()]
-			if !ok {
-				log.Error("import wrapper: field not provided", zap.String("fieldName", schema.GetName()))
-				return fmt.Errorf("import wrapper: field '%s' not provided", schema.GetName())
-			}
-			rowCounter[schema.GetName()] = v.RowNum()
-			if v.RowNum() > rowCount {
-				rowCount = v.RowNum()
-			}
-		}
-	}
-	if primaryKey == nil {
-		log.Error("import wrapper: primary key field is not found")
-		return fmt.Errorf("import wrapper: primary key field is not found")
-	}
-
-	for name, count := range rowCounter {
-		if count != rowCount {
-			log.Error("import wrapper: field row count is not equal to other fields row count", zap.String("fieldName", name),
-				zap.Int("rowCount", count), zap.Int("otherRowCount", rowCount))
-			return fmt.Errorf("import wrapper: field '%s' row count %d is not equal to other fields row count: %d", name, count, rowCount)
-		}
-	}
-	log.Info("import wrapper: try to split a block with row count", zap.Int("rowCount", rowCount), zap.Any("rowCountOfEachField", rowCounter))
-
-	primaryData, ok := fieldsData[primaryKey.GetFieldID()]
-	if !ok {
-		log.Error("import wrapper: primary key field is not provided", zap.String("keyName", primaryKey.GetName()))
-		return fmt.Errorf("import wrapper: primary key field is not provided")
-	}
-
-	// generate auto id for primary key and rowid field
-	rowIDBegin, rowIDEnd, err := p.rowIDAllocator.Alloc(uint32(rowCount))
-	if err != nil {
-		log.Error("import wrapper: failed to alloc row ID", zap.Error(err))
-		return err
-	}
-
-	rowIDField := fieldsData[common.RowIDField]
-	rowIDFieldArr := rowIDField.(*storage.Int64FieldData)
-	for i := rowIDBegin; i < rowIDEnd; i++ {
-		rowIDFieldArr.Data = append(rowIDFieldArr.Data, i)
-	}
-
-	if primaryKey.GetAutoID() {
-		log.Info("import wrapper: generating auto-id", zap.Int("rowCount", rowCount), zap.Int64("rowIDBegin", rowIDBegin))
-
-		// reset the primary keys, as we know, only int64 pk can be auto-generated
-		primaryDataArr := &storage.Int64FieldData{
-			NumRows: []int64{int64(rowCount)},
-			Data:    make([]int64, 0, rowCount),
-		}
-		for i := rowIDBegin; i < rowIDEnd; i++ {
-			primaryDataArr.Data = append(primaryDataArr.Data, i)
-		}
-
-		primaryData = primaryDataArr
-		fieldsData[primaryKey.GetFieldID()] = primaryData
-		p.importResult.AutoIds = append(p.importResult.AutoIds, rowIDBegin, rowIDEnd)
-	}
-
-	if primaryData.RowNum() <= 0 {
-		log.Error("import wrapper: primary key not provided", zap.String("keyName", primaryKey.GetName()))
-		return fmt.Errorf("import wrapper: the primary key '%s' not provided", primaryKey.GetName())
-	}
-
-	// prepare segemnts
-	segmentsData := make([]map[storage.FieldID]storage.FieldData, 0, p.shardNum)
-	for i := 0; i < int(p.shardNum); i++ {
-		segmentData := initSegmentData(p.collectionSchema)
-		if segmentData == nil {
-			log.Error("import wrapper: failed to initialize FieldData list")
-			return fmt.Errorf("import wrapper: failed to initialize FieldData list")
-		}
-		segmentsData = append(segmentsData, segmentData)
-	}
-
-	// prepare append functions
-	appendFunctions := make(map[string]func(src storage.FieldData, n int, target storage.FieldData) error)
-	for i := 0; i < len(p.collectionSchema.Fields); i++ {
-		schema := p.collectionSchema.Fields[i]
-		appendFuncErr := p.appendFunc(schema)
-		if appendFuncErr == nil {
-			log.Error("import wrapper: unsupported field data type")
-			return fmt.Errorf("import wrapper: unsupported field data type")
-		}
-		appendFunctions[schema.GetName()] = appendFuncErr
-	}
-
-	// split data into shards
-	for i := 0; i < rowCount; i++ {
-		// hash to a shard number
-		var shard uint32
-		pk := primaryData.GetRow(i)
-		strPK, ok := interface{}(pk).(string)
-		if ok {
-			hash := typeutil.HashString2Uint32(strPK)
-			shard = hash % uint32(p.shardNum)
-		} else {
-			intPK, ok := interface{}(pk).(int64)
-			if !ok {
-				log.Error("import wrapper: primary key field must be int64 or varchar")
-				return fmt.Errorf("import wrapper: primary key field must be int64 or varchar")
-			}
-			hash, _ := typeutil.Hash32Int64(intPK)
-			shard = hash % uint32(p.shardNum)
-		}
-
-		// set rowID field
-		rowIDField := segmentsData[shard][common.RowIDField].(*storage.Int64FieldData)
-		rowIDField.Data = append(rowIDField.Data, rowIDFieldArr.GetRow(i).(int64))
-
-		// append row to shard
-		for k := 0; k < len(p.collectionSchema.Fields); k++ {
-			schema := p.collectionSchema.Fields[k]
-			srcData := fieldsData[schema.GetFieldID()]
-			targetData := segmentsData[shard][schema.GetFieldID()]
-			appendFunc := appendFunctions[schema.GetName()]
-			err := appendFunc(srcData, i, targetData)
-			if err != nil {
-				return err
-			}
-		}
-
-		// when the estimated size is close to blockSize, force flush
-		err = tryFlushBlocks(p.ctx, segmentsData, p.collectionSchema, p.flushFunc, blockSize, MaxTotalSizeInMemory, false)
-		if err != nil {
-			return err
-		}
-	}
-
-	// force flush at the end
-	return tryFlushBlocks(p.ctx, segmentsData, p.collectionSchema, p.flushFunc, blockSize, MaxTotalSizeInMemory, true)
 }
 
 // flushFunc is the callback function for parsers generate segment and save binlog files
@@ -870,7 +502,7 @@ func (p *ImportWrapper) flushFunc(fields map[storage.FieldID]storage.FieldData, 
 		segID, channelName, err := p.assignSegmentFunc(shardID)
 		if err != nil {
 			log.Error("import wrapper: failed to assign a new segment", zap.Error(err), zap.Int("shardID", shardID))
-			return err
+			return fmt.Errorf("failed to assign a new segment for shard id %d, error: %w", shardID, err)
 		}
 
 		segment = &WorkingSegment{
@@ -890,13 +522,25 @@ func (p *ImportWrapper) flushFunc(fields map[storage.FieldID]storage.FieldData, 
 	if err != nil {
 		log.Error("import wrapper: failed to save binlogs", zap.Error(err), zap.Int("shardID", shardID),
 			zap.Int64("segmentID", segment.segmentID), zap.String("targetChannel", segment.targetChName))
-		return err
+		return fmt.Errorf("failed to save binlogs, shard id %d, segment id %d, channel '%s', error: %w",
+			shardID, segment.segmentID, segment.targetChName, err)
 	}
 
 	segment.fieldsInsert = append(segment.fieldsInsert, fieldsInsert...)
 	segment.fieldsStats = append(segment.fieldsStats, fieldsStats...)
 	segment.rowCount += int64(rowNum)
 	segment.memSize += memSize
+
+	// report working progress percent value to rootcoord
+	// if failed to report, ignore the error, the percent value might be improper but the task can be succeed
+	progressValue := strconv.Itoa(int(p.progressPercent))
+	UpdateKVInfo(&p.importResult.Infos, ProgressPercent, progressValue)
+	reportErr := retry.Do(p.ctx, func() error {
+		return p.reportFunc(p.importResult)
+	}, retry.Attempts(p.reportImportAttempts))
+	if reportErr != nil {
+		log.Warn("import wrapper: fail to report working progress percent value to RootCoord", zap.Error(reportErr))
+	}
 
 	return nil
 }
@@ -913,12 +557,13 @@ func (p *ImportWrapper) closeWorkingSegment(segment *WorkingSegment) error {
 
 	err := p.saveSegmentFunc(segment.fieldsInsert, segment.fieldsStats, segment.segmentID, segment.targetChName, segment.rowCount)
 	if err != nil {
-		log.Error("import wrapper: failed to save segment",
+		log.Error("import wrapper: failed to seal segment",
 			zap.Error(err),
 			zap.Int("shardID", segment.shardID),
 			zap.Int64("segmentID", segment.segmentID),
 			zap.String("targetChannel", segment.targetChName))
-		return err
+		return fmt.Errorf("failed to seal segment, shard id %d, segment id %d, channel '%s', error: %w",
+			segment.shardID, segment.segmentID, segment.targetChName, err)
 	}
 
 	return nil
@@ -935,4 +580,12 @@ func (p *ImportWrapper) closeAllWorkingSegments() error {
 	p.workingSegments = make(map[int]*WorkingSegment)
 
 	return nil
+}
+
+func (p *ImportWrapper) updateProgressPercent(percent int64) {
+	// ignore illegal percent value
+	if percent < 0 || percent > 100 {
+		return
+	}
+	p.progressPercent = percent
 }

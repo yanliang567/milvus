@@ -37,6 +37,12 @@ GetSizeOfIdArray(const IdArray& data);
 // Note: this is temporary solution.
 // modify bulk script implement to make process more clear
 std::unique_ptr<DataArray>
+CreateScalarDataArray(int64_t count, const FieldMeta& field_meta);
+
+std::unique_ptr<DataArray>
+CreateVectorDataArray(int64_t count, const FieldMeta& field_meta);
+
+std::unique_ptr<DataArray>
 CreateScalarDataArrayFrom(const void* data_raw, int64_t count, const FieldMeta& field_meta);
 
 std::unique_ptr<DataArray>
@@ -101,7 +107,7 @@ get_deleted_bitmap(int64_t del_barrier,
 
             // insert after delete with same pk, delete will not task effect on this insert record
             // and reset bitmap to 0
-            if (insert_record.timestamps_[insert_row_offset] > delete_timestamp) {
+            if (insert_record.timestamps_[insert_row_offset] >= delete_timestamp) {
                 bitmap->reset(insert_row_offset);
                 continue;
             }

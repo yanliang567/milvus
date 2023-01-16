@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/milvus-io/milvus/internal/proto/indexpb"
+
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
@@ -29,12 +31,12 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/commonpbutil"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/indexparamcheck"
 	"github.com/milvus-io/milvus/internal/util/indexparams"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
@@ -54,7 +56,7 @@ type createIndexTask struct {
 	req        *milvuspb.CreateIndexRequest
 	ctx        context.Context
 	rootCoord  types.RootCoord
-	indexCoord types.IndexCoord
+	datacoord  types.DataCoord
 	queryCoord types.QueryCoord
 	result     *commonpb.Status
 
@@ -115,7 +117,7 @@ func (cit *createIndexTask) parseIndexParams() error {
 
 	for _, kv := range cit.req.GetExtraParams() {
 		if kv.Key == common.IndexParamsKey {
-			params, err := funcutil.ParseIndexParamsMap(kv.Value)
+			params, err := funcutil.JSONToMap(kv.Value)
 			if err != nil {
 				return err
 			}
@@ -129,16 +131,16 @@ func (cit *createIndexTask) parseIndexParams() error {
 
 	if isVecIndex {
 		specifyIndexType, exist := indexParamsMap[common.IndexTypeKey]
-		if Params.AutoIndexConfig.Enable {
+		if Params.AutoIndexConfig.Enable.GetAsBool() {
 			if exist {
 				if specifyIndexType != AutoIndexName {
 					return fmt.Errorf("IndexType should be %s", AutoIndexName)
 				}
 			}
 			log.Debug("create index trigger AutoIndex",
-				zap.String("type", Params.AutoIndexConfig.AutoIndexTypeName))
+				zap.String("type", Params.AutoIndexConfig.AutoIndexTypeName.GetValue()))
 			// override params
-			for k, v := range Params.AutoIndexConfig.IndexParams {
+			for k, v := range Params.AutoIndexConfig.IndexParams.GetAsJSONMap() {
 				indexParamsMap[k] = v
 			}
 		} else {
@@ -152,7 +154,7 @@ func (cit *createIndexTask) parseIndexParams() error {
 			return fmt.Errorf("IndexType not specified")
 		}
 		if indexType == indexparamcheck.IndexDISKANN {
-			err := indexparams.FillDiskIndexParams(&Params, indexParamsMap)
+			err := indexparams.FillDiskIndexParams(Params, indexParamsMap)
 			if err != nil {
 				return err
 			}
@@ -264,7 +266,7 @@ func checkTrain(field *schemapb.FieldSchema, indexParams map[string]string) erro
 
 func (cit *createIndexTask) PreExecute(ctx context.Context) error {
 	cit.req.Base.MsgType = commonpb.MsgType_CreateIndex
-	cit.req.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	cit.req.Base.SourceID = paramtable.GetNodeID()
 
 	collName := cit.req.GetCollectionName()
 
@@ -289,14 +291,6 @@ func (cit *createIndexTask) PreExecute(ctx context.Context) error {
 		return err
 	}
 
-	loaded, err := isCollectionLoaded(ctx, cit.queryCoord, collID)
-	if err != nil {
-		return err
-	}
-
-	if loaded {
-		return fmt.Errorf("create index failed, collection is loaded, please release it first")
-	}
 	return nil
 }
 
@@ -306,7 +300,7 @@ func (cit *createIndexTask) Execute(ctx context.Context) error {
 		zap.Any("indexParams", cit.req.GetExtraParams()))
 
 	if cit.req.GetIndexName() == "" {
-		cit.req.IndexName = Params.CommonCfg.DefaultIndexName + "_" + strconv.FormatInt(cit.fieldSchema.GetFieldID(), 10)
+		cit.req.IndexName = Params.CommonCfg.DefaultIndexName.GetValue() + "_" + strconv.FormatInt(cit.fieldSchema.GetFieldID(), 10)
 	}
 	var err error
 	req := &indexpb.CreateIndexRequest{
@@ -319,7 +313,7 @@ func (cit *createIndexTask) Execute(ctx context.Context) error {
 		UserIndexParams: cit.req.GetExtraParams(),
 		Timestamp:       cit.BeginTs(),
 	}
-	cit.result, err = cit.indexCoord.CreateIndex(ctx, req)
+	cit.result, err = cit.datacoord.CreateIndex(ctx, req)
 	if err != nil {
 		return err
 	}
@@ -336,9 +330,9 @@ func (cit *createIndexTask) PostExecute(ctx context.Context) error {
 type describeIndexTask struct {
 	Condition
 	*milvuspb.DescribeIndexRequest
-	ctx        context.Context
-	indexCoord types.IndexCoord
-	result     *milvuspb.DescribeIndexResponse
+	ctx       context.Context
+	datacoord types.DataCoord
+	result    *milvuspb.DescribeIndexResponse
 
 	collectionID UniqueID
 }
@@ -382,7 +376,7 @@ func (dit *describeIndexTask) OnEnqueue() error {
 
 func (dit *describeIndexTask) PreExecute(ctx context.Context) error {
 	dit.Base.MsgType = commonpb.MsgType_DescribeIndex
-	dit.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	dit.Base.SourceID = paramtable.GetNodeID()
 
 	if err := validateCollectionName(dit.CollectionName); err != nil {
 		return err
@@ -408,7 +402,7 @@ func (dit *describeIndexTask) Execute(ctx context.Context) error {
 		return fmt.Errorf("failed to parse collection schema: %s", err)
 	}
 
-	resp, err := dit.indexCoord.DescribeIndex(ctx, &indexpb.DescribeIndexRequest{CollectionID: dit.collectionID, IndexName: dit.IndexName})
+	resp, err := dit.datacoord.DescribeIndex(ctx, &indexpb.DescribeIndexRequest{CollectionID: dit.collectionID, IndexName: dit.IndexName})
 	if err != nil || resp == nil {
 		return err
 	}
@@ -450,7 +444,7 @@ type dropIndexTask struct {
 	Condition
 	ctx context.Context
 	*milvuspb.DropIndexRequest
-	indexCoord types.IndexCoord
+	dataCoord  types.DataCoord
 	queryCoord types.QueryCoord
 	result     *commonpb.Status
 
@@ -496,7 +490,7 @@ func (dit *dropIndexTask) OnEnqueue() error {
 
 func (dit *dropIndexTask) PreExecute(ctx context.Context) error {
 	dit.Base.MsgType = commonpb.MsgType_DropIndex
-	dit.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	dit.Base.SourceID = paramtable.GetNodeID()
 
 	collName, fieldName := dit.CollectionName, dit.FieldName
 
@@ -530,7 +524,7 @@ func (dit *dropIndexTask) PreExecute(ctx context.Context) error {
 
 func (dit *dropIndexTask) Execute(ctx context.Context) error {
 	var err error
-	dit.result, err = dit.indexCoord.DropIndex(ctx, &indexpb.DropIndexRequest{
+	dit.result, err = dit.dataCoord.DropIndex(ctx, &indexpb.DropIndexRequest{
 		CollectionID: dit.collectionID,
 		PartitionIDs: nil,
 		IndexName:    dit.IndexName,
@@ -553,11 +547,10 @@ func (dit *dropIndexTask) PostExecute(ctx context.Context) error {
 type getIndexBuildProgressTask struct {
 	Condition
 	*milvuspb.GetIndexBuildProgressRequest
-	ctx        context.Context
-	indexCoord types.IndexCoord
-	rootCoord  types.RootCoord
-	dataCoord  types.DataCoord
-	result     *milvuspb.GetIndexBuildProgressResponse
+	ctx       context.Context
+	rootCoord types.RootCoord
+	dataCoord types.DataCoord
+	result    *milvuspb.GetIndexBuildProgressResponse
 
 	collectionID UniqueID
 }
@@ -601,7 +594,7 @@ func (gibpt *getIndexBuildProgressTask) OnEnqueue() error {
 
 func (gibpt *getIndexBuildProgressTask) PreExecute(ctx context.Context) error {
 	gibpt.Base.MsgType = commonpb.MsgType_GetIndexBuildProgress
-	gibpt.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	gibpt.Base.SourceID = paramtable.GetNodeID()
 
 	if err := validateCollectionName(gibpt.CollectionName); err != nil {
 		return err
@@ -619,10 +612,10 @@ func (gibpt *getIndexBuildProgressTask) Execute(ctx context.Context) error {
 	gibpt.collectionID = collectionID
 
 	if gibpt.IndexName == "" {
-		gibpt.IndexName = Params.CommonCfg.DefaultIndexName
+		gibpt.IndexName = Params.CommonCfg.DefaultIndexName.GetValue()
 	}
 
-	resp, err := gibpt.indexCoord.GetIndexBuildProgress(ctx, &indexpb.GetIndexBuildProgressRequest{
+	resp, err := gibpt.dataCoord.GetIndexBuildProgress(ctx, &indexpb.GetIndexBuildProgressRequest{
 		CollectionID: collectionID,
 		IndexName:    gibpt.IndexName,
 	})
@@ -647,10 +640,10 @@ func (gibpt *getIndexBuildProgressTask) PostExecute(ctx context.Context) error {
 type getIndexStateTask struct {
 	Condition
 	*milvuspb.GetIndexStateRequest
-	ctx        context.Context
-	indexCoord types.IndexCoord
-	rootCoord  types.RootCoord
-	result     *milvuspb.GetIndexStateResponse
+	ctx       context.Context
+	dataCoord types.DataCoord
+	rootCoord types.RootCoord
+	result    *milvuspb.GetIndexStateResponse
 
 	collectionID UniqueID
 }
@@ -694,7 +687,7 @@ func (gist *getIndexStateTask) OnEnqueue() error {
 
 func (gist *getIndexStateTask) PreExecute(ctx context.Context) error {
 	gist.Base.MsgType = commonpb.MsgType_GetIndexState
-	gist.Base.SourceID = Params.ProxyCfg.GetNodeID()
+	gist.Base.SourceID = paramtable.GetNodeID()
 
 	if err := validateCollectionName(gist.CollectionName); err != nil {
 		return err
@@ -706,14 +699,14 @@ func (gist *getIndexStateTask) PreExecute(ctx context.Context) error {
 func (gist *getIndexStateTask) Execute(ctx context.Context) error {
 
 	if gist.IndexName == "" {
-		gist.IndexName = Params.CommonCfg.DefaultIndexName
+		gist.IndexName = Params.CommonCfg.DefaultIndexName.GetValue()
 	}
 	collectionID, err := globalMetaCache.GetCollectionID(ctx, gist.CollectionName)
 	if err != nil {
 		return err
 	}
 
-	state, err := gist.indexCoord.GetIndexState(ctx, &indexpb.GetIndexStateRequest{
+	state, err := gist.dataCoord.GetIndexState(ctx, &indexpb.GetIndexStateRequest{
 		CollectionID: collectionID,
 		IndexName:    gist.IndexName,
 	})

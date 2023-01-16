@@ -17,9 +17,10 @@
 package importutil
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
+	"strconv"
 
 	"go.uber.org/zap"
 
@@ -38,92 +39,12 @@ type JSONRowHandler interface {
 
 // Validator is field value validator
 type Validator struct {
-	validateFunc func(obj interface{}) error                          // validate data type function
-	convertFunc  func(obj interface{}, field storage.FieldData) error // convert data function
-	primaryKey   bool                                                 // true for primary key
-	autoID       bool                                                 // only for primary key field
-	isString     bool                                                 // for string field
-	dimension    int                                                  // only for vector field
-	fieldName    string                                               // field name
-}
-
-// JSONRowValidator is row-based json format validator class
-type JSONRowValidator struct {
-	downstream JSONRowHandler                 // downstream processor, typically is a JSONRowComsumer
-	validators map[storage.FieldID]*Validator // validators for each field
-	rowCounter int64                          // how many rows have been validated
-}
-
-func NewJSONRowValidator(collectionSchema *schemapb.CollectionSchema, downstream JSONRowHandler) (*JSONRowValidator, error) {
-	v := &JSONRowValidator{
-		validators: make(map[storage.FieldID]*Validator),
-		downstream: downstream,
-		rowCounter: 0,
-	}
-	err := initValidators(collectionSchema, v.validators)
-	if err != nil {
-		log.Error("JSON row validator: failed to initialize json row-based validator", zap.Error(err))
-		return nil, err
-	}
-	return v, nil
-}
-
-func (v *JSONRowValidator) ValidateCount() int64 {
-	return v.rowCounter
-}
-
-func (v *JSONRowValidator) Handle(rows []map[storage.FieldID]interface{}) error {
-	if v == nil || v.validators == nil || len(v.validators) == 0 {
-		log.Error("JSON row validator is not initialized")
-		return errors.New("JSON row validator is not initialized")
-	}
-
-	// parse completed
-	if rows == nil {
-		log.Info("JSON row validation finished")
-		if v.downstream != nil && !reflect.ValueOf(v.downstream).IsNil() {
-			return v.downstream.Handle(rows)
-		}
-		return nil
-	}
-
-	for i := 0; i < len(rows); i++ {
-		row := rows[i]
-
-		for id, validator := range v.validators {
-			value, ok := row[id]
-			if validator.primaryKey && validator.autoID {
-				// primary key is auto-generated, if user provided it, return error
-				if ok {
-					log.Error("JSON row validator: primary key is auto-generated, no need to provide PK value at the row",
-						zap.String("fieldName", validator.fieldName), zap.Int64("rowNumber", v.rowCounter+int64(i)))
-					return fmt.Errorf("the primary key '%s' is auto-generated, no need to provide PK value at the row %d",
-						validator.fieldName, v.rowCounter+int64(i))
-				}
-				continue
-			}
-			if !ok {
-				log.Error("JSON row validator: field missed at the row",
-					zap.String("fieldName", validator.fieldName), zap.Int64("rowNumber", v.rowCounter+int64(i)))
-				return fmt.Errorf("the field '%s' missed at the row %d", validator.fieldName, v.rowCounter+int64(i))
-			}
-
-			if err := validator.validateFunc(value); err != nil {
-				log.Error("JSON row validator: invalid value at the row", zap.String("fieldName", validator.fieldName),
-					zap.Int64("rowNumber", v.rowCounter+int64(i)), zap.Any("value", value), zap.Error(err))
-				return fmt.Errorf("the field '%s' value at the row %d is invalid, error: %s",
-					validator.fieldName, v.rowCounter+int64(i), err.Error())
-			}
-		}
-	}
-
-	v.rowCounter += int64(len(rows))
-
-	if v.downstream != nil && !reflect.ValueOf(v.downstream).IsNil() {
-		return v.downstream.Handle(rows)
-	}
-
-	return nil
+	convertFunc func(obj interface{}, field storage.FieldData) error // convert data function
+	primaryKey  bool                                                 // true for primary key
+	autoID      bool                                                 // only for primary key field
+	isString    bool                                                 // for string field
+	dimension   int                                                  // only for vector field
+	fieldName   string                                               // field name
 }
 
 // JSONRowConsumer is row-based json format consumer class
@@ -163,7 +84,7 @@ func NewJSONRowConsumer(collectionSchema *schemapb.CollectionSchema, idAlloc *al
 	err := initValidators(collectionSchema, v.validators)
 	if err != nil {
 		log.Error("JSON row consumer: fail to initialize json row-based consumer", zap.Error(err))
-		return nil, fmt.Errorf("fail to initialize json row-based consumer: %v", err)
+		return nil, fmt.Errorf("fail to initialize json row-based consumer, error: %w", err)
 	}
 
 	v.segmentsData = make([]map[storage.FieldID]storage.FieldData, 0, shardNum)
@@ -171,7 +92,7 @@ func NewJSONRowConsumer(collectionSchema *schemapb.CollectionSchema, idAlloc *al
 		segmentData := initSegmentData(collectionSchema)
 		if segmentData == nil {
 			log.Error("JSON row consumer: fail to initialize in-memory segment data", zap.Int("shardID", i))
-			return nil, fmt.Errorf("fail to initialize in-memory segment data for shardID %d", i)
+			return nil, fmt.Errorf("fail to initialize in-memory segment data for shard id %d", i)
 		}
 		v.segmentsData = append(v.segmentsData, segmentData)
 	}
@@ -199,6 +120,10 @@ func NewJSONRowConsumer(collectionSchema *schemapb.CollectionSchema, idAlloc *al
 
 func (v *JSONRowConsumer) IDRange() []int64 {
 	return v.autoIDRange
+}
+
+func (v *JSONRowConsumer) RowCount() int64 {
+	return v.rowCounter
 }
 
 func (v *JSONRowConsumer) flush(force bool) error {
@@ -267,7 +192,7 @@ func (v *JSONRowConsumer) Handle(rows []map[storage.FieldID]interface{}) error {
 	err := v.flush(false)
 	if err != nil {
 		log.Error("JSON row consumer: try flush data but failed", zap.Error(err))
-		return fmt.Errorf("try flush data but failed: %s", err.Error())
+		return fmt.Errorf("try flush data but failed, error: %w", err)
 	}
 
 	// prepare autoid, no matter int64 or varchar pk, we always generate autoid since the hidden field RowIDField requires them
@@ -275,11 +200,15 @@ func (v *JSONRowConsumer) Handle(rows []map[storage.FieldID]interface{}) error {
 	var rowIDBegin typeutil.UniqueID
 	var rowIDEnd typeutil.UniqueID
 	if primaryValidator.autoID {
+		if v.rowIDAllocator == nil {
+			log.Error("JSON row consumer: primary keys is auto-generated but IDAllocator is nil")
+			return fmt.Errorf("primary keys is auto-generated but IDAllocator is nil")
+		}
 		var err error
 		rowIDBegin, rowIDEnd, err = v.rowIDAllocator.Alloc(uint32(len(rows)))
 		if err != nil {
 			log.Error("JSON row consumer: failed to generate primary keys", zap.Int("count", len(rows)), zap.Error(err))
-			return fmt.Errorf("failed to generate %d primary keys: %s", len(rows), err.Error())
+			return fmt.Errorf("failed to generate %d primary keys, error: %w", len(rows), err)
 		}
 		if rowIDEnd-rowIDBegin != int64(len(rows)) {
 			log.Error("JSON row consumer: try to generate primary keys but allocated ids are not enough",
@@ -319,14 +248,22 @@ func (v *JSONRowConsumer) Handle(rows []map[storage.FieldID]interface{}) error {
 				pk = rowIDBegin + int64(i)
 			} else {
 				value := row[v.primaryKey]
-				pk = int64(value.(float64))
+				// parse the pk from a string
+				strValue := string(value.(json.Number))
+				pk, err = strconv.ParseInt(strValue, 10, 64)
+				if err != nil {
+					log.Error("JSON row consumer: failed to parse primary key at the row",
+						zap.String("value", strValue), zap.Int64("rowNumber", v.rowCounter+int64(i)), zap.Error(err))
+					return fmt.Errorf("failed to parse primary key '%s' at the row %d, error: %w",
+						strValue, v.rowCounter+int64(i), err)
+				}
 			}
 
 			hash, err := typeutil.Hash32Int64(pk)
 			if err != nil {
 				log.Error("JSON row consumer: failed to hash primary key at the row",
 					zap.Int64("key", pk), zap.Int64("rowNumber", v.rowCounter+int64(i)), zap.Error(err))
-				return fmt.Errorf("failed to hash primary key %d at the row %d, error: %s", pk, v.rowCounter+int64(i), err.Error())
+				return fmt.Errorf("failed to hash primary key %d at the row %d, error: %w", pk, v.rowCounter+int64(i), err)
 			}
 
 			shard = hash % uint32(v.shardNum)
@@ -349,8 +286,8 @@ func (v *JSONRowConsumer) Handle(rows []map[storage.FieldID]interface{}) error {
 			if err := validator.convertFunc(value, v.segmentsData[shard][name]); err != nil {
 				log.Error("JSON row consumer: failed to convert value for field at the row",
 					zap.String("fieldName", validator.fieldName), zap.Int64("rowNumber", v.rowCounter+int64(i)), zap.Error(err))
-				return fmt.Errorf("failed to convert value for field %s at the row %d,  error: %s",
-					validator.fieldName, v.rowCounter+int64(i), err.Error())
+				return fmt.Errorf("failed to convert value for field '%s' at the row %d,  error: %w",
+					validator.fieldName, v.rowCounter+int64(i), err)
 			}
 		}
 	}

@@ -222,7 +222,7 @@ class TestIndexOperation(TestcaseBase):
         method: create two different indexes with default index name
         expected: create successfully
         """
-        collection_w = self.init_collection_general(prefix, True, is_index=True)[0]
+        collection_w = self.init_collection_general(prefix, True, is_index=False)[0]
         default_index = {"index_type": "IVF_FLAT", "params": {"nlist": 128}, "metric_type": "L2"}
         collection_w.create_index(default_field_name, default_index)
         collection_w.create_index(ct.default_int64_field_name, {})
@@ -234,7 +234,7 @@ class TestIndexOperation(TestcaseBase):
         method: create index on scalar field and load
         expected: raise exception
         """
-        collection_w = self.init_collection_general(prefix, True, is_index=True)[0]
+        collection_w = self.init_collection_general(prefix, True, is_index=False)[0]
         collection_w.create_index(ct.default_int64_field_name, {})
         collection_w.load(check_task=CheckTasks.err_res,
                           check_items={ct.err_code: 1, ct.err_msg: "there is no vector index on collection, "
@@ -909,8 +909,8 @@ class TestNewIndexBase(TestcaseBase):
             assert len(collection_w.indexes) == 1
             collection_w.drop_index(index_name=ct.default_index_name)
             assert len(collection_w.indexes) == 0
-            collection_w.drop_index(index_name=ct.default_index_name, check_task=CheckTasks.err_res,
-                                    check_items={ct.err_code: 0, ct.err_msg: "Index doesn\'t exist."})
+            collection_w.drop_index(index_name=ct.default_index_name)
+            assert len(collection_w.indexes) == 0
 
     @pytest.mark.tags(CaseLabel.L2)
     def test_drop_index_without_connect(self):
@@ -978,8 +978,8 @@ class TestNewIndexBase(TestcaseBase):
             assert len(collection_w.indexes) == 1
             collection_w.drop_index(index_name=ct.default_index_name)
             assert len(collection_w.indexes) == 0
-            collection_w.drop_index(index_name=ct.default_index_name, check_task=CheckTasks.err_res,
-                                    check_items={ct.err_code: 0, ct.err_msg: "Index doesn\'t exist."})
+            collection_w.drop_index(index_name=ct.default_index_name)
+            assert len(collection_w.indexes) == 0
 
     @pytest.mark.tags(CaseLabel.L2)
     def test_drop_index_without_connect_ip(self):
@@ -1039,8 +1039,8 @@ class TestNewIndexBase(TestcaseBase):
         collection_w = self.init_collection_wrap(name=c_name)
         data = cf.gen_default_list_data()
         collection_w.insert(data=data)
-        collection_w.drop_index(index_name=default_field_name, check_task=CheckTasks.err_res,
-                                check_items={ct.err_code: 0, ct.err_msg: "Index doesn\'t exist."})
+        collection_w.drop_index(index_name=default_field_name)
+        assert len(collection_w.indexes) == 0
 
     @pytest.mark.tags(CaseLabel.L1)
     def test_index_collection_with_after_load(self):
@@ -1255,7 +1255,7 @@ class TestIndexInvalid(TestcaseBase):
                 2. drop the index
         expected: raise exception
         """
-        collection_w = self.init_collection_general(prefix, True, is_index=True)[0]
+        collection_w = self.init_collection_general(prefix, True, is_index=False)[0]
         default_index = {"index_type": "IVF_FLAT", "params": {"nlist": 128}, "metric_type": "L2"}
         collection_w.create_index("float_vector", default_index)
         collection_w.load()
@@ -1263,6 +1263,22 @@ class TestIndexInvalid(TestcaseBase):
                                 check_items={"err_code": 1,
                                              "err_msg": "index cannot be dropped, collection is "
                                                         "loaded, please release it first"})
+
+    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.parametrize("n_trees", [-1, 1025, 'a', {34}])
+    def test_annoy_index_with_invalid_params(self, n_trees):
+        """
+        target: test create index with invalid params
+        method: 1. set annoy index param n_trees out of range [1, 1024]
+                2. set annoy index param n_trees type invalid(not int)
+        expected: raise exception
+        """
+        collection_w = self.init_collection_general(prefix, True, is_index=False)[0]
+        index_annoy = {"index_type": "ANNOY", "params": {"n_trees": n_trees}, "metric_type": "L2"}
+        collection_w.create_index("float_vector", index_annoy,
+                                  check_task=CheckTasks.err_res,
+                                  check_items={"err_code": 1,
+                                               "err_msg": "invalid index params"})
 
 
 class TestNewIndexAsync(TestcaseBase):
@@ -1312,6 +1328,9 @@ class TestNewIndexAsync(TestcaseBase):
                                            index_name=ct.default_index_name, _async=_async)
 
         # load and search
+        if _async:
+            res.done()
+            assert len(collection_w.indexes) == 1
         collection_w.load()
         vectors_s = [[random.random() for _ in range(ct.default_dim)] for _ in range(ct.default_nq)]
         search_res, _ = collection_w.search(vectors_s[:ct.default_nq], ct.default_float_vec_field_name,
@@ -1550,7 +1569,8 @@ class TestIndexString(TestcaseBase):
         assert collection_w.has_index(index_name=index_name2)[0] == True
         collection_w.drop_index(index_name=index_name2)
         assert len(collection_w.indexes) == 0
-    
+
+
 class TestIndexDiskann(TestcaseBase):
     """
     ******************************************************************
@@ -1564,7 +1584,7 @@ class TestIndexDiskann(TestcaseBase):
     def call_back(self):
         assert True
 
-    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.tags(CaseLabel.L2)
     def test_create_index_with_diskann_normal(self):
         """
         target: test create index with diskann
@@ -1577,11 +1597,11 @@ class TestIndexDiskann(TestcaseBase):
         collection_w = self.init_collection_wrap(name=c_name)
         data = cf.gen_default_list_data()
         collection_w.insert(data=data)
+        assert collection_w.num_entities == default_nb
         index, _ = self.index_wrap.init_index(collection_w.collection, default_float_vec_field_name, ct.default_diskann_index)
         log.info(self.index_wrap.params)
         cf.assert_equal_index(index, collection_w.indexes[0])
         collection_w.load()
-        assert collection_w.num_entities == default_nb
         vectors = [[random.random() for _ in range(default_dim)] for _ in range(default_nq)]
         search_res, _ = collection_w.search(vectors[:default_nq], default_search_field,
                                             ct.default_diskann_search_params, default_limit,
@@ -1590,7 +1610,7 @@ class TestIndexDiskann(TestcaseBase):
                                             check_items={"nq": default_nq,
                                                          "limit": default_limit})
 
-    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.tags(CaseLabel.L2)
     def test_create_index_with_over_max_dim(self):
         """
         target: test create index with diskann
@@ -1609,7 +1629,7 @@ class TestIndexDiskann(TestcaseBase):
                                   check_items={ct.err_code: 1,
                                                ct.err_msg: "invalid index params"})
 
-    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.tags(CaseLabel.L2)
     def test_create_index_with_diskann_callback(self,_async):
         """
         target: test create index with diskann
@@ -1622,6 +1642,7 @@ class TestIndexDiskann(TestcaseBase):
         collection_w = self.init_collection_wrap(c_name)
         data = cf.gen_default_list_data()
         collection_w.insert(data=data)
+        assert collection_w.num_entities == default_nb
         res, _ = collection_w.create_index(ct.default_float_vec_field_name, ct.default_diskann_index,
                                            index_name=ct.default_index_name, _async=_async,
                                            _callback=self.call_back())
@@ -1637,7 +1658,8 @@ class TestIndexDiskann(TestcaseBase):
                                             check_task=CheckTasks.check_search_results,
                                             check_items={"nq": default_nq,
                                                          "limit": default_limit})
-
+    
+    @pytest.mark.tags(CaseLabel.L2)
     def test_create_diskann_index_drop_with_async(self, _async):
         """
         target: test create index interface
@@ -1648,6 +1670,7 @@ class TestIndexDiskann(TestcaseBase):
         collection_w = self.init_collection_wrap(c_name)
         data = cf.gen_default_list_data()
         collection_w.insert(data=data)
+        assert collection_w.num_entities == default_nb
         res, _ = collection_w.create_index(ct.default_float_vec_field_name, ct.default_diskann_index,
                                            index_name=ct.default_index_name, _async=_async)
         if _async:
@@ -1657,7 +1680,7 @@ class TestIndexDiskann(TestcaseBase):
         collection_w.drop_index(index_name=ct.default_index_name)
         assert len(collection_w.indexes) == 0
 
-    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.tags(CaseLabel.L2)
     def test_create_diskann_index_with_partition(self):
         """
         target: test create index with diskann
@@ -1684,7 +1707,7 @@ class TestIndexDiskann(TestcaseBase):
         assert collection_w.has_index(index_name=field_name)[0] == False
         assert len(collection_w.indexes) == 0
 
-    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.tags(CaseLabel.L2)
     def test_drop_diskann_index_with_noraml(self):
         """
         target: test drop diskann index normal
@@ -1696,6 +1719,7 @@ class TestIndexDiskann(TestcaseBase):
         collection_w = self.init_collection_wrap(name=c_name)
         data = cf.gen_default_list_data()
         collection_w.insert(data=data)
+        assert collection_w.num_entities == default_nb
         collection_w.create_index(default_float_vec_field_name, ct.default_diskann_index, index_name=index_name1)
         collection_w.load()
         assert len(collection_w.indexes) == 1
@@ -1703,7 +1727,7 @@ class TestIndexDiskann(TestcaseBase):
         collection_w.drop_index(index_name=index_name1)
         assert collection_w.has_index(index_name=index_name1)[0] == False
     
-    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.tags(CaseLabel.L2)
     def test_drop_diskann_index_and_create_again(self):
         """
         target: test drop diskann index normal
@@ -1724,7 +1748,7 @@ class TestIndexDiskann(TestcaseBase):
         collection_w.create_index(default_field_name, ct.default_diskann_index)
         assert len(collection_w.indexes) == 1
 
-    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.tags(CaseLabel.L2)
     def test_create_more_than_three_index(self):
         """
         target: test create diskann index 
@@ -1736,6 +1760,7 @@ class TestIndexDiskann(TestcaseBase):
         collection_w = self.init_collection_wrap(name=c_name)
         data = cf.gen_default_list_data()
         collection_w.insert(data=data)
+        assert collection_w.num_entities == default_nb
         collection_w.create_index(default_float_vec_field_name, ct.default_diskann_index, index_name="a")
         assert collection_w.has_index(index_name="a")[0] == True
         collection_w.create_index(default_string_field_name, default_string_index_params, index_name="b")
@@ -1744,7 +1769,7 @@ class TestIndexDiskann(TestcaseBase):
         collection_w.create_index("float", default_params, index_name="c")
         assert collection_w.has_index(index_name="c")[0] == True
    
-    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.tags(CaseLabel.L2)
     def test_drop_diskann_index_with_partition(self):
         """
         target: test drop diskann index normal
@@ -1766,7 +1791,7 @@ class TestIndexDiskann(TestcaseBase):
         collection_w.drop_index()
         assert len(collection_w.indexes) == 0
 
-    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.tags(CaseLabel.L2)
     def test_create_diskann_index_with_binary(self):
         """
         target: test create diskann index with binary
@@ -1783,7 +1808,7 @@ class TestIndexDiskann(TestcaseBase):
                                   check_items={ct.err_code: 1,
                                                ct.err_msg: "field data type BinaryVector don't support the index build type DISKANN"})
 
-    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.tags(CaseLabel.L2)
     def test_create_diskann_index_multithread(self):
         """
         target: test create index interface with multiprocess
@@ -1794,6 +1819,7 @@ class TestIndexDiskann(TestcaseBase):
         collection_w = self.init_collection_wrap(name=c_name)
         data = cf.gen_default_list_data(default_nb)
         collection_w.insert(data=data)
+        assert collection_w.num_entities == default_nb
 
         def build(collection_w):
 
@@ -1808,3 +1834,22 @@ class TestIndexDiskann(TestcaseBase):
             time.sleep(0.2)
         for t in threads:
             t.join()
+
+    @pytest.mark.tags(CaseLabel.L1)
+    @pytest.mark.parametrize("dim", [1,2, 8, 16, 24])
+    def test_create_index_with_small_dim(self, dim):
+        """
+        target: test create index with diskann
+        method: 1.create collection, when the dim of the vector Less than 32
+                2.create diskann index
+        expected: create index raise an error
+        """
+        c_name = cf.gen_unique_str(prefix)
+        fields = [cf.gen_int64_field(is_primary=True), cf.gen_float_field(), cf.gen_string_field(),
+                  cf.gen_float_vec_field(dim=dim)]
+        schema = cf.gen_collection_schema(fields=fields)
+        collection_w = self.init_collection_wrap(name=c_name, schema=schema)
+        collection_w.create_index(default_float_vec_field_name, ct.default_diskann_index,
+                                  check_task=CheckTasks.err_res,
+                                  check_items={ct.err_code: 1,
+                                               ct.err_msg: "invalid index params"})

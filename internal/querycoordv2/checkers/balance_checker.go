@@ -18,6 +18,7 @@ package checkers
 
 import (
 	"context"
+	"time"
 
 	"github.com/milvus-io/milvus/internal/querycoordv2/balance"
 	. "github.com/milvus-io/milvus/internal/querycoordv2/params"
@@ -42,10 +43,21 @@ func (b *BalanceChecker) Description() string {
 
 func (b *BalanceChecker) Check(ctx context.Context) []task.Task {
 	ret := make([]task.Task, 0)
+	if !Params.QueryCoordCfg.AutoBalance.GetAsBool() {
+		return ret
+	}
 	segmentPlans, channelPlans := b.Balance.Balance()
-	tasks := balance.CreateSegmentTasksFromPlans(ctx, b.ID(), Params.QueryCoordCfg.SegmentTaskTimeout, segmentPlans)
+
+	tasks := balance.CreateSegmentTasksFromPlans(ctx, b.ID(), Params.QueryCoordCfg.SegmentTaskTimeout.GetAsDuration(time.Millisecond), segmentPlans)
+	task.SetPriorityWithFunc(func(t task.Task) task.Priority {
+		if t.Priority() == task.TaskPriorityHigh {
+			return task.TaskPriorityHigh
+		}
+		return task.TaskPriorityLow
+	}, tasks...)
 	ret = append(ret, tasks...)
-	tasks = balance.CreateChannelTasksFromPlans(ctx, b.ID(), Params.QueryCoordCfg.ChannelTaskTimeout, channelPlans)
+
+	tasks = balance.CreateChannelTasksFromPlans(ctx, b.ID(), Params.QueryCoordCfg.ChannelTaskTimeout.GetAsDuration(time.Millisecond), channelPlans)
 	ret = append(ret, tasks...)
 	return ret
 }

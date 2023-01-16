@@ -986,6 +986,7 @@ class TestCollectionParams(TestcaseBase):
                                              check_items={exp_name: c_name, exp_schema: schema})
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.xfail(reason="issue #21238")
     def test_create_collection_over_maximum_fields(self):
         """
         target: Test create collection with more than the maximum fields
@@ -1003,7 +1004,7 @@ class TestCollectionParams(TestcaseBase):
         int_fields.append(cf.gen_float_vec_field())
         int_fields.append(cf.gen_int64_field(is_primary=True))
         schema = cf.gen_collection_schema(fields=int_fields)
-        error = {ct.err_code: 1, ct.err_msg: "maximum field's number should be limited to 256"}
+        error = {ct.err_code: 1, ct.err_msg: "maximum field's number should be limited to 64"}
         self.collection_wrap.init_collection(c_name, schema=schema, check_task=CheckTasks.err_res, check_items=error)
 
 
@@ -1689,6 +1690,7 @@ class TestCreateCollectionInvalid(TestcaseBase):
     """
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.xfail(reason="issue #21238")
     def test_create_collection_limit_fields(self):
         """
         target: test create collection with maximum fields
@@ -1708,7 +1710,7 @@ class TestCreateCollectionInvalid(TestcaseBase):
             field_name_tmp = gen_unique_str("field_name")
             field_schema_temp = cf.gen_int64_field(field_name_tmp)
             field_schema_list.append(field_schema_temp)
-        error = {ct.err_code: 1, ct.err_msg: "'maximum field\'s number should be limited to 256'"}
+        error = {ct.err_code: 1, ct.err_msg: "'maximum field\'s number should be limited to 64'"}
         schema, _ = self.collection_schema_wrap.init_collection_schema(fields=field_schema_list)
         self.init_collection_wrap(name=c_name, schema=schema, check_task=CheckTasks.err_res, check_items=error)
 
@@ -2171,7 +2173,7 @@ class TestLoadCollection(TestcaseBase):
         collection_wr.load(check_task=CheckTasks.err_res, check_items=error)
         collection_wr.release(check_task=CheckTasks.err_res, check_items=error)
 
-    @pytest.mark.tags(CaseLabel.L0)
+    @pytest.mark.tags(CaseLabel.L2)
     def test_release_collection_after_drop(self):
         """
         target: test release collection after drop
@@ -2187,6 +2189,33 @@ class TestLoadCollection(TestcaseBase):
         error = {ct.err_code: 0,
                  ct.err_msg: "can't find collection"}
         collection_wr.release(check_task=CheckTasks.err_res, check_items=error)
+
+    @pytest.mark.tags(CaseLabel.L1)
+    def test_load_partition_names_empty(self):
+        """
+        target: test query another partition
+        method: 1. insert entities into two partitions
+                2.query on one partition and query result empty
+        expected: query result is empty
+        """
+        self._connect()
+        collection_w = self.init_collection_wrap(name=cf.gen_unique_str(prefix))
+        partition_w = self.init_partition_wrap(collection_wrap=collection_w)
+
+        # insert [0, half) into partition_w
+        half = ct.default_nb // 2
+        df_partition = cf.gen_default_dataframe_data(nb=half)
+        partition_w.insert(df_partition)
+        # insert [half, nb) into _default
+        df_default = cf.gen_default_dataframe_data(nb=half, start=half)
+        collection_w.insert(df_default)
+        # flush
+        collection_w.num_entities
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
+
+        # load
+        error = {ct.err_code: 0, ct.err_msg: "due to no partition specified"}
+        collection_w.load(partition_names=[], check_task=CheckTasks.err_res, check_items=error)
 
     @pytest.mark.tags(CaseLabel.L0)
     def test_load_partitions_release_collection(self):
@@ -2214,6 +2243,7 @@ class TestLoadCollection(TestcaseBase):
         yield request.param
 
     @pytest.mark.tags(CaseLabel.L2)
+    @pytest.mark.xfail("issue #21618")
     def test_load_replica_non_number(self, get_non_number_replicas):
         """
         target: test load collection with non-number replicas
@@ -2544,10 +2574,47 @@ class TestLoadCollection(TestcaseBase):
         method: create a collection without index, then load
         expected: raise exception
         """
-        collection_w = self.init_collection_general(prefix, True, is_index=True)[0]
+        collection_w = self.init_collection_general(prefix, True, is_index=False)[0]
         collection_w.load(check_task=CheckTasks.err_res,
                           check_items={"err_code": 1,
                                        "err_msg": "index not exist"})
+
+
+class TestDescribeCollection(TestcaseBase):
+    """
+    ******************************************************************
+      The following cases are used to test `collection.describe` function
+    ******************************************************************
+    """
+
+    @pytest.mark.tags(CaseLabel.L2)
+    def test_collection_describe(self):
+        """
+        target: test describe collection
+        method: create a collection and check its information when describe
+        expected: return correct information
+        """
+        self._connect()
+        c_name = cf.gen_unique_str(prefix)
+        collection_w = self.init_collection_wrap(name=c_name)
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
+        description = {'collection_name': c_name, 'auto_id': False, 'description': '',
+                       'fields': [{'field_id': 100, 'name': 'int64', 'description': '', 'type': 5,
+                                   'params': {}, 'is_primary': True, 'auto_id': False},
+                                  {'field_id': 101, 'name': 'float', 'description': '', 'type': 10,
+                                   'params': {}, 'is_primary': False, 'auto_id': False},
+                                  {'field_id': 102, 'name': 'varchar', 'description': '', 'type': 21,
+                                   'params': {'max_length': 65535}, 'is_primary': False, 'auto_id': False},
+                                  {'field_id': 103, 'name': 'float_vector', 'description': '', 'type': 101,
+                                   'params': {'dim': 128}, 'is_primary': False, 'auto_id': False}],
+                       'aliases': [], 'consistency_level': 0, 'properties': []}
+        res = collection_w.describe()[0]
+        del res['collection_id']
+        log.info(res)
+        assert description['fields'] == res['fields'], description['aliases'] == res['aliases']
+        del description['fields'], res['fields'], description['aliases'], res['aliases']
+        del description['properties'], res['properties']
+        assert description == res
 
 
 class TestReleaseAdvanced(TestcaseBase):
@@ -2582,7 +2649,7 @@ class TestReleaseAdvanced(TestcaseBase):
         """
         self._connect()
         partition_num = 1
-        collection_w = self.init_collection_general(prefix, True, 10, partition_num, is_index=True)[0]
+        collection_w = self.init_collection_general(prefix, True, 10, partition_num, is_index=False)[0]
         collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         par = collection_w.partitions
         par_name = par[partition_num].name
@@ -2608,7 +2675,7 @@ class TestReleaseAdvanced(TestcaseBase):
         """
         self._connect()
         partition_num = 1
-        collection_w = self.init_collection_general(prefix, True, 10, partition_num, is_index=True)[0]
+        collection_w = self.init_collection_general(prefix, True, 10, partition_num, is_index=False)[0]
         collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
         par = collection_w.partitions
         par_name = par[partition_num].name
@@ -2663,7 +2730,7 @@ class TestLoadPartition(TestcaseBase):
         self._connect()
         partition_num = 1
         collection_w = self.init_collection_general(prefix, True, ct.default_nb, partition_num,
-                                                    is_binary=True, is_index=True)[0]
+                                                    is_binary=True, is_index=False)[0]
 
         # for metric_type in ct.binary_metrics:
         binary_index["metric_type"] = metric_type

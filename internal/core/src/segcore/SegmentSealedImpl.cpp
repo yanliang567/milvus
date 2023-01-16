@@ -10,11 +10,13 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #include "SegmentSealedImpl.h"
+
+#include "Utils.h"
 #include "common/Consts.h"
+#include "common/FieldMeta.h"
+#include "query/ScalarIndex.h"
 #include "query/SearchBruteForce.h"
 #include "query/SearchOnSealed.h"
-#include "query/ScalarIndex.h"
-#include "Utils.h"
 
 namespace milvus::segcore {
 
@@ -29,6 +31,7 @@ static inline bool
 get_bit(const BitsetType& bitset, FieldId field_id) {
     auto pos = field_id.get() - START_USER_FIELDID;
     AssertInfo(pos >= 0, "invalid field id");
+
     return bitset[pos];
 }
 
@@ -392,7 +395,8 @@ SegmentSealedImpl::check_search(const query::Plan* plan) const {
     AssertInfo(plan->extra_info_opt_.has_value(), "Extra info of search plan doesn't have value");
 
     if (!is_system_field_ready()) {
-        PanicInfo("Segment " + std::to_string(this->id_) + " System Field RowID or Timestamp is not loaded");
+        PanicInfo("failed to load row ID or timestamp, potential missing bin logs or empty segments. Segment ID = " +
+                  std::to_string(this->id_));
     }
 
     auto& request_fields = plan->extra_info_opt_.value().involved_fields_;
@@ -423,10 +427,21 @@ SegmentSealedImpl::bulk_subscript(SystemFieldType system_type,
                                   int64_t count,
                                   void* output) const {
     AssertInfo(is_system_field_ready(), "System field isn't ready when do bulk_insert");
-    AssertInfo(system_type == SystemFieldType::RowId, "System field type of id column is not RowId");
-    AssertInfo(insert_record_.row_ids_.num_chunk() == 1, "num chunk not equal to 1 for sealed segment");
-    auto field_data = insert_record_.row_ids_.get_chunk_data(0);
-    bulk_subscript_impl<int64_t>(field_data, seg_offsets, count, output);
+    switch (system_type) {
+        case SystemFieldType::Timestamp:
+            AssertInfo(insert_record_.timestamps_.num_chunk() == 1,
+                       "num chunk of timestamp not equal to 1 for sealed segment");
+            bulk_subscript_impl<Timestamp>(this->insert_record_.timestamps_.get_chunk_data(0), seg_offsets, count,
+                                           output);
+            break;
+        case SystemFieldType::RowId:
+            AssertInfo(insert_record_.row_ids_.num_chunk() == 1,
+                       "num chunk of rowID not equal to 1 for sealed segment");
+            bulk_subscript_impl<int64_t>(this->insert_record_.row_ids_.get_chunk_data(0), seg_offsets, count, output);
+            break;
+        default:
+            PanicInfo("unknown subscript fields");
+    }
 }
 
 template <typename T>
@@ -461,50 +476,10 @@ SegmentSealedImpl::bulk_subscript_impl(
 std::unique_ptr<DataArray>
 SegmentSealedImpl::fill_with_empty(FieldId field_id, int64_t count) const {
     auto& field_meta = schema_->operator[](field_id);
-    switch (field_meta.get_data_type()) {
-        case DataType::BOOL: {
-            FixedVector<bool> output(count);
-            return CreateScalarDataArrayFrom(output.data(), count, field_meta);
-        }
-        case DataType::INT8: {
-            FixedVector<int8_t> output(count);
-            return CreateScalarDataArrayFrom(output.data(), count, field_meta);
-        }
-        case DataType::INT16: {
-            FixedVector<int16_t> output(count);
-            return CreateScalarDataArrayFrom(output.data(), count, field_meta);
-        }
-        case DataType::INT32: {
-            FixedVector<int32_t> output(count);
-            return CreateScalarDataArrayFrom(output.data(), count, field_meta);
-        }
-        case DataType::INT64: {
-            FixedVector<int64_t> output(count);
-            return CreateScalarDataArrayFrom(output.data(), count, field_meta);
-        }
-        case DataType::FLOAT: {
-            FixedVector<float> output(count);
-            return CreateScalarDataArrayFrom(output.data(), count, field_meta);
-        }
-        case DataType::DOUBLE: {
-            FixedVector<double> output(count);
-            return CreateScalarDataArrayFrom(output.data(), count, field_meta);
-        }
-        case DataType::VARCHAR: {
-            FixedVector<std::string> output(count);
-            return CreateScalarDataArrayFrom(output.data(), count, field_meta);
-        }
-
-        case DataType::VECTOR_FLOAT:
-        case DataType::VECTOR_BINARY: {
-            aligned_vector<char> output(field_meta.get_sizeof() * count);
-            return CreateVectorDataArrayFrom(output.data(), count, field_meta);
-        }
-
-        default: {
-            PanicInfo("unsupported");
-        }
+    if (datatype_is_vector(field_meta.get_data_type())) {
+        return CreateVectorDataArray(count, field_meta);
     }
+    return CreateScalarDataArray(count, field_meta);
 }
 
 std::unique_ptr<DataArray>
@@ -591,8 +566,6 @@ SegmentSealedImpl::bulk_subscript(FieldId field_id, const int64_t* seg_offsets, 
 bool
 SegmentSealedImpl::HasIndex(FieldId field_id) const {
     std::shared_lock lck(mutex_);
-    AssertInfo(!SystemProperty::Instance().IsSystem(field_id),
-               "Field id:" + std::to_string(field_id.get()) + " isn't one of system type when drop index");
     return get_bit(index_ready_bitset_, field_id);
 }
 

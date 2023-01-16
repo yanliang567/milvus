@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"go.uber.org/zap"
 
@@ -35,6 +36,8 @@ import (
 	"github.com/milvus-io/milvus/internal/util/concurrency"
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
+	"github.com/milvus-io/milvus/internal/util/retry"
 )
 
 // dataSyncService controls a flowgraph for a specific collection
@@ -42,20 +45,25 @@ type dataSyncService struct {
 	ctx          context.Context
 	cancelFn     context.CancelFunc
 	fg           *flowgraph.TimeTickedFlowGraph // internal flowgraph processes insert/delta messages
-	flushCh      chan flushMsg                  // chan to notify flush
-	resendTTCh   chan resendTTMsg               // chan to ask for resending DataNode time tick message.
-	channel      Channel                        // channel stores meta of channel
-	idAllocator  allocatorInterface             // id/timestamp allocator
+	flushCh      chan flushMsg
+	resendTTCh   chan resendTTMsg   // chan to ask for resending DataNode time tick message.
+	channel      Channel            // channel stores meta of channel
+	idAllocator  allocatorInterface // id/timestamp allocator
 	msFactory    msgstream.Factory
 	collectionID UniqueID // collection id of vchan for which this data sync service serves
 	vchannelName string
 	dataCoord    types.DataCoord // DataCoord instance to interact with
 	clearSignal  chan<- string   // signal channel to notify flowgraph close for collection/partition drop msg consumed
 
+	delBufferManager *DelBufferManager
 	flushingSegCache *Cache       // a guarding cache stores currently flushing segment ids
 	flushManager     flushManager // flush manager handles flush process
 	chunkManager     storage.ChunkManager
 	compactor        *compactionExecutor // reference to compaction executor
+
+	serverID      int64
+	stopOnce      sync.Once
+	flushListener chan *segmentFlushPack // chan to listen flush event
 }
 
 func newDataSyncService(ctx context.Context,
@@ -70,6 +78,7 @@ func newDataSyncService(ctx context.Context,
 	flushingSegCache *Cache,
 	chunkManager storage.ChunkManager,
 	compactor *compactionExecutor,
+	serverID int64,
 ) (*dataSyncService, error) {
 
 	if channel == nil {
@@ -77,6 +86,12 @@ func newDataSyncService(ctx context.Context,
 	}
 
 	ctx1, cancel := context.WithCancel(ctx)
+
+	delBufferManager := &DelBufferManager{
+		channel:       channel,
+		delMemorySize: 0,
+		delBufHeap:    &PriorityQueue{},
+	}
 
 	service := &dataSyncService{
 		ctx:              ctx1,
@@ -91,9 +106,11 @@ func newDataSyncService(ctx context.Context,
 		vchannelName:     vchan.GetChannelName(),
 		dataCoord:        dataCoord,
 		clearSignal:      clearSignal,
+		delBufferManager: delBufferManager,
 		flushingSegCache: flushingSegCache,
 		chunkManager:     chunkManager,
 		compactor:        compactor,
+		serverID:         serverID,
 	}
 
 	if err := service.initNodes(vchan); err != nil {
@@ -113,16 +130,16 @@ type nodeConfig struct {
 	vChannelName string
 	channel      Channel // Channel info
 	allocator    allocatorInterface
-
+	serverID     int64
 	// defaults
 	parallelConfig
 }
 
 func newParallelConfig() parallelConfig {
-	return parallelConfig{Params.DataNodeCfg.FlowGraphMaxQueueLength, Params.DataNodeCfg.FlowGraphMaxParallelism}
+	return parallelConfig{Params.DataNodeCfg.FlowGraphMaxQueueLength.GetAsInt32(), Params.DataNodeCfg.FlowGraphMaxParallelism.GetAsInt32()}
 }
 
-// start starts the flow graph in datasyncservice
+// start the flow graph in datasyncservice
 func (dsService *dataSyncService) start() {
 	if dsService.fg != nil {
 		log.Info("dataSyncService starting flow graph", zap.Int64("collectionID", dsService.collectionID),
@@ -135,18 +152,20 @@ func (dsService *dataSyncService) start() {
 }
 
 func (dsService *dataSyncService) close() {
-	if dsService.fg != nil {
-		log.Info("dataSyncService closing flowgraph", zap.Int64("collectionID", dsService.collectionID),
-			zap.String("vChanName", dsService.vchannelName))
-		dsService.fg.Close()
-		metrics.DataNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID())).Dec()
-		metrics.DataNodeNumProducers.WithLabelValues(fmt.Sprint(Params.DataNodeCfg.GetNodeID())).Sub(2) // timeTickChannel + deltaChannel
-	}
+	dsService.stopOnce.Do(func() {
+		if dsService.fg != nil {
+			log.Info("dataSyncService closing flowgraph", zap.Int64("collectionID", dsService.collectionID),
+				zap.String("vChanName", dsService.vchannelName))
+			dsService.fg.Close()
+			metrics.DataNodeNumConsumers.WithLabelValues(fmt.Sprint(paramtable.GetNodeID())).Dec()
+			metrics.DataNodeNumProducers.WithLabelValues(fmt.Sprint(paramtable.GetNodeID())).Sub(2) // timeTickChannel + deltaChannel
+		}
 
-	dsService.clearGlobalFlushingCache()
-
-	dsService.cancelFn()
-	dsService.flushManager.close()
+		dsService.clearGlobalFlushingCache()
+		close(dsService.flushCh)
+		dsService.flushManager.close()
+		dsService.cancelFn()
+	})
 }
 
 func (dsService *dataSyncService) clearGlobalFlushingCache() {
@@ -159,8 +178,13 @@ func (dsService *dataSyncService) initNodes(vchanInfo *datapb.VchannelInfo) erro
 	dsService.fg = flowgraph.NewTimeTickedFlowGraph(dsService.ctx)
 	// initialize flush manager for DataSync Service
 	dsService.flushManager = NewRendezvousFlushManager(dsService.idAllocator, dsService.chunkManager, dsService.channel,
-		flushNotifyFunc(dsService), dropVirtualChannelFunc(dsService))
+		flushNotifyFunc(dsService, retry.Attempts(50)), dropVirtualChannelFunc(dsService))
 
+	log.Info("begin to init data sync service", zap.Int64("collection", vchanInfo.CollectionID),
+		zap.String("Chan", vchanInfo.ChannelName),
+		zap.Int64s("unflushed", vchanInfo.GetUnflushedSegmentIds()),
+		zap.Int64s("flushed", vchanInfo.GetFlushedSegmentIds()),
+	)
 	var err error
 	// recover segment checkpoints
 	unflushedSegmentInfos, err := dsService.getSegmentInfos(vchanInfo.GetUnflushedSegmentIds())
@@ -177,7 +201,7 @@ func (dsService *dataSyncService) initNodes(vchanInfo *datapb.VchannelInfo) erro
 	for _, us := range unflushedSegmentInfos {
 		if us.CollectionID != dsService.collectionID ||
 			us.GetInsertChannel() != vchanInfo.ChannelName {
-			log.Warn("Collection ID or ChannelName not compact",
+			log.Warn("Collection ID or ChannelName not match",
 				zap.Int64("Wanted ID", dsService.collectionID),
 				zap.Int64("Actual ID", us.CollectionID),
 				zap.String("Wanted Channel Name", vchanInfo.ChannelName),
@@ -214,7 +238,7 @@ func (dsService *dataSyncService) initNodes(vchanInfo *datapb.VchannelInfo) erro
 	for _, fs := range flushedSegmentInfos {
 		if fs.CollectionID != dsService.collectionID ||
 			fs.GetInsertChannel() != vchanInfo.ChannelName {
-			log.Warn("Collection ID or ChannelName not compact",
+			log.Warn("Collection ID or ChannelName not match",
 				zap.Int64("Wanted ID", dsService.collectionID),
 				zap.Int64("Actual ID", fs.CollectionID),
 				zap.String("Wanted Channel Name", vchanInfo.ChannelName),
@@ -259,6 +283,7 @@ func (dsService *dataSyncService) initNodes(vchanInfo *datapb.VchannelInfo) erro
 		allocator:    dsService.idAllocator,
 
 		parallelConfig: newParallelConfig(),
+		serverID:       dsService.serverID,
 	}
 
 	var dmStreamNode Node
@@ -285,6 +310,7 @@ func (dsService *dataSyncService) initNodes(vchanInfo *datapb.VchannelInfo) erro
 	insertBufferNode, err = newInsertBufferNode(
 		dsService.ctx,
 		dsService.collectionID,
+		dsService.delBufferManager,
 		dsService.flushCh,
 		dsService.resendTTCh,
 		dsService.flushManager,
@@ -296,7 +322,13 @@ func (dsService *dataSyncService) initNodes(vchanInfo *datapb.VchannelInfo) erro
 	}
 
 	var deleteNode Node
-	deleteNode, err = newDeleteNode(dsService.ctx, dsService.flushManager, dsService.clearSignal, c)
+	deleteNode, err = newDeleteNode(dsService.ctx, dsService.flushManager, dsService.delBufferManager, dsService.clearSignal, c)
+	if err != nil {
+		return err
+	}
+
+	var ttNode Node
+	ttNode, err = newTTNode(c, dsService.dataCoord)
 	if err != nil {
 		return err
 	}
@@ -305,6 +337,7 @@ func (dsService *dataSyncService) initNodes(vchanInfo *datapb.VchannelInfo) erro
 	dsService.fg.AddNode(ddNode)
 	dsService.fg.AddNode(insertBufferNode)
 	dsService.fg.AddNode(deleteNode)
+	dsService.fg.AddNode(ttNode)
 
 	// ddStreamNode
 	err = dsService.fg.SetEdges(dmStreamNode.Name(),
@@ -335,10 +368,19 @@ func (dsService *dataSyncService) initNodes(vchanInfo *datapb.VchannelInfo) erro
 
 	//deleteNode
 	err = dsService.fg.SetEdges(deleteNode.Name(),
-		[]string{},
+		[]string{ttNode.Name()},
 	)
 	if err != nil {
 		log.Error("set edges failed in node", zap.String("name", deleteNode.Name()), zap.Error(err))
+		return err
+	}
+
+	// ttNode
+	err = dsService.fg.SetEdges(ttNode.Name(),
+		[]string{},
+	)
+	if err != nil {
+		log.Error("set edges failed in node", zap.String("name", ttNode.Name()), zap.Error(err))
 		return err
 	}
 	return nil
@@ -350,8 +392,7 @@ func (dsService *dataSyncService) getSegmentInfos(segmentIDs []int64) ([]*datapb
 		Base: commonpbutil.NewMsgBase(
 			commonpbutil.WithMsgType(commonpb.MsgType_SegmentInfo),
 			commonpbutil.WithMsgID(0),
-			commonpbutil.WithTimeStamp(0),
-			commonpbutil.WithSourceID(Params.ProxyCfg.GetNodeID()),
+			commonpbutil.WithSourceID(paramtable.GetNodeID()),
 		),
 		SegmentIDs:       segmentIDs,
 		IncludeUnHealthy: true,
@@ -376,7 +417,7 @@ func (dsService *dataSyncService) getChannelLatestMsgID(ctx context.Context, cha
 	}
 	defer dmlStream.Close()
 
-	subName := fmt.Sprintf("datanode-%d-%s-%d", Params.DataNodeCfg.GetNodeID(), channelName, segmentID)
+	subName := fmt.Sprintf("datanode-%d-%s-%d", paramtable.GetNodeID(), channelName, segmentID)
 	log.Debug("dataSyncService register consumer for getChannelLatestMsgID",
 		zap.String("pChannelName", pChannelName),
 		zap.String("subscription", subName),

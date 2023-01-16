@@ -37,11 +37,11 @@ while [ -h "$SOURCE" ]; do # resolve $SOURCE until the file is no longer a symli
   SOURCE="$(readlink "$SOURCE")"
   [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE" # if $SOURCE was a relative symlink, we need to resolve it relative to the path where the symlink file was located
 done
-SCRIPTS_DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+ROOT_DIR="$( cd -P "$( dirname "$SOURCE" )/.." && pwd )"
 
-CPP_SRC_DIR="${SCRIPTS_DIR}/../internal/core"
+CPP_SRC_DIR="${ROOT_DIR}/internal/core"
 
-BUILD_OUTPUT_DIR="${SCRIPTS_DIR}/../cmake_build"
+BUILD_OUTPUT_DIR="${ROOT_DIR}/cmake_build"
 BUILD_TYPE="Release"
 BUILD_UNITTEST="OFF"
 INSTALL_PREFIX="${CPP_SRC_DIR}/output"
@@ -57,8 +57,9 @@ CUDA_ARCH="DEFAULT"
 CUSTOM_THIRDPARTY_PATH=""
 EMBEDDED_MILVUS="OFF"
 BUILD_DISK_ANN="OFF"
+USE_ASAN="OFF"
 
-while getopts "p:d:t:s:f:n:ulrcghzmeb" arg; do
+while getopts "p:d:t:s:f:n:ulrcghzmeba" arg; do
   case $arg in
   f)
     CUSTOM_THIRDPARTY_PATH=$OPTARG
@@ -105,6 +106,10 @@ while getopts "p:d:t:s:f:n:ulrcghzmeb" arg; do
   n)
     BUILD_DISK_ANN=$OPTARG
     ;;
+  a)
+    USE_ASAN="ON"
+    BUILD_TYPE=Debug
+    ;;
   h) # help
     echo "
 
@@ -122,6 +127,7 @@ parameter:
 -e: build without prometheus(default: OFF)
 -s: build with CUDA arch(default:DEFAULT), for example '-gencode=compute_61,code=sm_61;-gencode=compute_75,code=sm_75'
 -b: build embedded milvus(default: OFF)
+-a: build milvus with AddressSanitizer
 -h: help
 
 usage:
@@ -180,17 +186,26 @@ fi
 
 unameOut="$(uname -s)"
 case "${unameOut}" in
-    Darwin*)
-        llvm_prefix="$(brew --prefix llvm)"
-        export CLANG_TOOLS_PATH="${llvm_prefix}/bin"
-        export CC="${llvm_prefix}/bin/clang"
-        export CXX="${llvm_prefix}/bin/clang++"
-        export LDFLAGS="-L${llvm_prefix}/lib -L/usr/local/opt/libomp/lib"
-        export CXXFLAGS="-I${llvm_prefix}/include -I/usr/local/include -I/usr/local/opt/libomp/include"
-        ;;
-          *)   echo "==System:${unameOut}";
+  Darwin*)
+    llvm_prefix="$(brew --prefix llvm)"
+    export CLANG_TOOLS_PATH="${llvm_prefix}/bin"
+    export CC="${llvm_prefix}/bin/clang"
+    export CXX="${llvm_prefix}/bin/clang++"
+    export LDFLAGS="-L${llvm_prefix}/lib -L/usr/local/opt/libomp/lib"
+    export CXXFLAGS="-I${llvm_prefix}/include -I/usr/local/include -I/usr/local/opt/libomp/include"
+    conan install ${CPP_SRC_DIR} --install-folder conan --build=missing -s compiler=clang -s compiler.libcxx=libc++ || { echo 'conan install failed'; exit 1; }
+    ;;
+  Linux*)
+    if [[ `gcc -v 2>&1 | sed -n 's/.*\(--with-default-libstdcxx-abi\)=\(\w*\).*/\2/p'` == "gcc4" ]]; then
+      conan install ${CPP_SRC_DIR} --install-folder conan --build=missing || { echo 'conan install failed'; exit 1; }
+    else 
+      conan install ${CPP_SRC_DIR} --install-folder conan --build=missing -s compiler.libcxx=libstdc++11 || { echo 'conan install failed'; exit 1; }
+    fi 
+    ;;
+  *)   
+    echo "Cannot build on windows"
+    ;;
 esac
-
 
 CMAKE_CMD="cmake \
 ${CMAKE_EXTRA_ARGS} \
@@ -208,33 +223,11 @@ ${CMAKE_EXTRA_ARGS} \
 -DCUSTOM_THIRDPARTY_DOWNLOAD_PATH=${CUSTOM_THIRDPARTY_PATH} \
 -DEMBEDDED_MILVUS=${EMBEDDED_MILVUS} \
 -DBUILD_DISK_ANN=${BUILD_DISK_ANN} \
+-DUSE_ASAN=${USE_ASAN} \
 ${CPP_SRC_DIR}"
 
 echo ${CMAKE_CMD}
 ${CMAKE_CMD} -G "${CMAKE_GENERATOR}"
-
-
-# enable offline build of arrow dependency if files exist.
-arrowDepKeys=(
-"ARROW_JEMALLOC_URL"
-"ARROW_THRIFT_URL"
-"ARROW_UTF8PROC_URL"
-"ARROW_XSIMD_URL"
-"ARROW_ZSTD_URL"
-)
-arrowDepValues=(
-"jemalloc-5.2.1.tar.bz2"
-"thrift-0.13.0.tar.gz"
-"utf8proc-v2.7.0.tar.gz"
-"xsimd-7d1778c3b38d63db7cec7145d939f40bc5d859d1.tar.gz"
-"zstd-v1.5.1.tar.gz"
-)
-for i in "${!arrowDepValues[@]}"; do
-   if test -f "${CUSTOM_THIRDPARTY_PATH}/${arrowDepValues[$i]}"; then
-	echo "${arrowDepValues[$i]} exists."
-	export ${arrowDepKeys[$i]}=${CUSTOM_THIRDPARTY_PATH}/${arrowDepValues[$i]}
-   fi
-done
 
 set
 
@@ -254,14 +247,6 @@ if [[ ${RUN_CPPLINT} == "ON" ]]; then
     exit 1
   fi
   echo "clang-format check passed!"
-
-  # clang-tidy check
-  # make check-clang-tidy || true
-  # if [ $? -ne 0 ]; then
-  #     echo "ERROR! clang-tidy check failed"
-  #     exit 1
-  # fi
-  # echo "clang-tidy check passed!"
 else
   # compile and build
   make -j ${jobs} install || exit 1

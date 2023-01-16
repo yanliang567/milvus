@@ -22,13 +22,15 @@ import (
 	"reflect"
 	"sync"
 
-	"github.com/opentracing/opentracing-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
-	"github.com/milvus-io/milvus/internal/util/trace"
+	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
 type primaryKey = storage.PrimaryKey
@@ -41,28 +43,31 @@ var newVarCharPrimaryKey = storage.NewVarCharPrimaryKey
 // deleteNode is the one of nodes in delta flow graph
 type deleteNode struct {
 	baseNode
-	collectionID UniqueID
-	metaReplica  ReplicaInterface // historical
-	channel      Channel
+	collectionID  UniqueID
+	metaReplica   ReplicaInterface // historical
+	deltaVchannel Channel
+	dmlVchannel   Channel
 }
 
 // Name returns the name of deleteNode
 func (dNode *deleteNode) Name() string {
-	return fmt.Sprintf("dNode-%s", dNode.channel)
+	return fmt.Sprintf("dNode-%s", dNode.deltaVchannel)
+}
+
+func (dNode *deleteNode) IsValidInMsg(in []Msg) bool {
+	if !dNode.baseNode.IsValidInMsg(in) {
+		return false
+	}
+	_, ok := in[0].(*deleteMsg)
+	if !ok {
+		log.Warn("type assertion failed for deleteMsg", zap.String("msgType", reflect.TypeOf(in[0]).Name()), zap.String("name", dNode.Name()))
+		return false
+	}
+	return true
 }
 
 // Operate handles input messages, do delete operations
 func (dNode *deleteNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
-	if in == nil {
-		log.Debug("type assertion failed for deleteMsg because it's nil", zap.String("name", dNode.Name()))
-		return []Msg{}
-	}
-
-	if len(in) != 1 {
-		log.Warn("Invalid operate message input in deleteNode", zap.Int("input length", len(in)), zap.String("name", dNode.Name()))
-		return []Msg{}
-	}
-
 	dMsg, ok := in[0].(*deleteMsg)
 	if !ok {
 		log.Warn("type assertion failed for deleteMsg", zap.String("msgType", reflect.TypeOf(in[0]).Name()), zap.String("name", dNode.Name()))
@@ -75,33 +80,45 @@ func (dNode *deleteNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 		deleteOffset:     map[UniqueID]int64{},
 	}
 
-	var spans []opentracing.Span
+	var spans []trace.Span
 	for _, msg := range dMsg.deleteMessages {
-		sp, ctx := trace.StartSpanFromContext(msg.TraceCtx())
+		ctx, sp := otel.Tracer(typeutil.QueryNodeRole).Start(msg.TraceCtx(), "Delete_Node")
 		spans = append(spans, sp)
 		msg.SetTraceCtx(ctx)
 	}
 
+	defer func() {
+		for _, sp := range spans {
+			sp.End()
+		}
+	}()
+
+	if dMsg.IsCloseMsg() {
+		return []Msg{
+			&serviceTimeMsg{BaseMsg: flowgraph.NewBaseMsg(true)},
+		}
+	}
+
 	// 1. filter segment by bloom filter
 	for i, delMsg := range dMsg.deleteMessages {
-		traceID, _, _ := trace.InfoFromSpan(spans[i])
+		traceID := spans[i].SpanContext().TraceID().String()
 		log.Debug("delete in historical replica",
-			zap.String("channel", dNode.channel),
-			zap.Any("collectionID", delMsg.CollectionID),
-			zap.Any("collectionName", delMsg.CollectionName),
+			zap.String("vchannel", dNode.deltaVchannel),
+			zap.Int64("collectionID", delMsg.CollectionID),
+			zap.String("collectionName", delMsg.CollectionName),
 			zap.Int64("numPKs", delMsg.NumRows),
 			zap.Int("numTS", len(delMsg.Timestamps)),
-			zap.Any("timestampBegin", delMsg.BeginTs()),
-			zap.Any("timestampEnd", delMsg.EndTs()),
-			zap.Any("segmentNum", dNode.metaReplica.getSegmentNum(segmentTypeSealed)),
-			zap.Any("traceID", traceID),
+			zap.Uint64("timestampBegin", delMsg.BeginTs()),
+			zap.Uint64("timestampEnd", delMsg.EndTs()),
+			zap.Int("segmentNum", dNode.metaReplica.getSegmentNum(segmentTypeSealed)),
+			zap.String("traceID", traceID),
 		)
 
 		if dNode.metaReplica.getSegmentNum(segmentTypeSealed) != 0 {
-			err := processDeleteMessages(dNode.metaReplica, segmentTypeSealed, delMsg, delData)
+			err := processDeleteMessages(dNode.metaReplica, segmentTypeSealed, delMsg, delData, dNode.dmlVchannel)
 			if err != nil {
 				// error occurs when missing meta info or unexpected pk type, should not happen
-				err = fmt.Errorf("deleteNode processDeleteMessages failed, collectionID = %d, err = %s, channel = %s", delMsg.CollectionID, err, dNode.channel)
+				err = fmt.Errorf("deleteNode processDeleteMessages failed, collectionID = %d, err = %s, channel = %s", delMsg.CollectionID, err, dNode.deltaVchannel)
 				log.Error(err.Error())
 				panic(err)
 			}
@@ -116,7 +133,7 @@ func (dNode *deleteNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 			log.Warn("failed to get segment",
 				zap.Int64("collectionID", dNode.collectionID),
 				zap.Int64("segmentID", segmentID),
-				zap.String("channel", dNode.channel),
+				zap.String("vchannel", dNode.deltaVchannel),
 			)
 			continue
 		}
@@ -152,9 +169,6 @@ func (dNode *deleteNode) Operate(in []flowgraph.Msg) []flowgraph.Msg {
 	var res Msg = &serviceTimeMsg{
 		timeRange: dMsg.timeRange,
 	}
-	for _, sp := range spans {
-		sp.Finish()
-	}
 
 	return []Msg{res}
 }
@@ -180,23 +194,33 @@ func (dNode *deleteNode) delete(deleteData *deleteData, segmentID UniqueID, wg *
 		return fmt.Errorf("segmentDelete failed, segmentID = %d, err=%w", segmentID, err)
 	}
 
-	log.Debug("Do delete done", zap.Int("len", len(deleteData.deleteIDs[segmentID])), zap.Int64("segmentID", segmentID), zap.Any("SegmentType", targetSegment.segmentType), zap.String("channel", dNode.channel))
+	log.Debug("Do delete done", zap.Int("len", len(deleteData.deleteIDs[segmentID])),
+		zap.Int64("segmentID", segmentID),
+		zap.String("SegmentType", targetSegment.getType().String()),
+		zap.String("vchannel", dNode.deltaVchannel))
 	return nil
 }
 
 // newDeleteNode returns a new deleteNode
-func newDeleteNode(metaReplica ReplicaInterface, collectionID UniqueID, channel Channel) *deleteNode {
-	maxQueueLength := Params.QueryNodeCfg.FlowGraphMaxQueueLength
-	maxParallelism := Params.QueryNodeCfg.FlowGraphMaxParallelism
+func newDeleteNode(metaReplica ReplicaInterface, collectionID UniqueID, deltaVchannel Channel) (*deleteNode, error) {
+	maxQueueLength := Params.QueryNodeCfg.FlowGraphMaxQueueLength.GetAsInt32()
+	maxParallelism := Params.QueryNodeCfg.FlowGraphMaxParallelism.GetAsInt32()
 
 	baseNode := baseNode{}
 	baseNode.SetMaxQueueLength(maxQueueLength)
 	baseNode.SetMaxParallelism(maxParallelism)
 
-	return &deleteNode{
-		baseNode:     baseNode,
-		collectionID: collectionID,
-		metaReplica:  metaReplica,
-		channel:      channel,
+	dmlVChannel, err := funcutil.ConvertChannelName(deltaVchannel, Params.CommonCfg.RootCoordDelta.GetValue(), Params.CommonCfg.RootCoordDml.GetValue())
+	if err != nil {
+		log.Error("failed to convert deltaVChannel to dmlVChannel", zap.String("deltaVChannel", deltaVchannel), zap.Error(err))
+		return nil, err
 	}
+
+	return &deleteNode{
+		baseNode:      baseNode,
+		collectionID:  collectionID,
+		metaReplica:   metaReplica,
+		deltaVchannel: deltaVchannel,
+		dmlVchannel:   dmlVChannel,
+	}, nil
 }

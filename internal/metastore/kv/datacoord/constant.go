@@ -23,6 +23,7 @@ const (
 	SegmentDeltalogPathPrefix = MetaPrefix + "/deltalog"
 	SegmentStatslogPathPrefix = MetaPrefix + "/statslog"
 	ChannelRemovePrefix       = MetaPrefix + "/channel-removal"
+	ChannelCheckpointPrefix   = MetaPrefix + "/channel-cp"
 
 	RemoveFlagTomestone = "removed"
 )

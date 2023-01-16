@@ -2,6 +2,7 @@ package configs
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/milvus-io/milvus/cmd/tools/migration/console"
 	"github.com/milvus-io/milvus/internal/util"
@@ -55,11 +56,11 @@ func (c *RunConfig) show() {
 func (c *RunConfig) init(base *paramtable.BaseTable) {
 	c.base = base
 
-	c.Cmd = c.base.LoadWithDefault("cmd.type", "")
-	c.RunWithBackup = c.base.ParseBool("cmd.runWithBackup", false)
-	c.SourceVersion = c.base.LoadWithDefault("config.sourceVersion", "")
-	c.TargetVersion = c.base.LoadWithDefault("config.targetVersion", "")
-	c.BackupFilePath = c.base.LoadWithDefault("config.backupFilePath", "")
+	c.Cmd = c.base.GetWithDefault("cmd.type", "")
+	c.RunWithBackup, _ = strconv.ParseBool(c.base.GetWithDefault("cmd.runWithBackup", "false"))
+	c.SourceVersion = c.base.GetWithDefault("config.sourceVersion", "")
+	c.TargetVersion = c.base.GetWithDefault("config.targetVersion", "")
+	c.BackupFilePath = c.base.GetWithDefault("config.backupFilePath", "")
 }
 
 type MilvusConfig struct {
@@ -79,29 +80,26 @@ func (c *MilvusConfig) init(base *paramtable.BaseTable) {
 	c.EtcdCfg = &paramtable.EtcdConfig{}
 	c.MysqlCfg = &paramtable.MetaDBConfig{}
 
-	c.MetaStoreCfg.Base = base
-	c.MetaStoreCfg.LoadCfgToMemory()
+	c.MetaStoreCfg.Init(base)
 
-	switch c.MetaStoreCfg.MetaStoreType {
+	switch c.MetaStoreCfg.MetaStoreType.GetValue() {
 	case util.MetaStoreTypeMysql:
-		c.MysqlCfg.Base = base
-		c.MysqlCfg.LoadCfgToMemory()
+		c.MysqlCfg.Init(base)
 	default:
 	}
 
-	c.EtcdCfg.Base = base
-	c.EtcdCfg.LoadCfgToMemory()
+	c.EtcdCfg.Init(base)
 }
 
 func (c *MilvusConfig) String() string {
 	if c == nil {
 		return ""
 	}
-	switch c.MetaStoreCfg.MetaStoreType {
+	switch c.MetaStoreCfg.MetaStoreType.GetValue() {
 	case util.MetaStoreTypeEtcd:
-		return fmt.Sprintf("Type: %s, EndPoints: %v, MetaRootPath: %s", c.MetaStoreCfg.MetaStoreType, c.EtcdCfg.Endpoints, c.EtcdCfg.MetaRootPath)
+		return fmt.Sprintf("Type: %s, EndPoints: %v, MetaRootPath: %s", c.MetaStoreCfg.MetaStoreType.GetValue(), c.EtcdCfg.Endpoints.GetValue(), c.EtcdCfg.MetaRootPath.GetValue())
 	default:
-		return fmt.Sprintf("unsupported meta store: %s", c.MetaStoreCfg.MetaStoreType)
+		return fmt.Sprintf("unsupported meta store: %s", c.MetaStoreCfg.MetaStoreType.GetValue())
 	}
 }
 

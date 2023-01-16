@@ -34,6 +34,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/etcdpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/storage"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -45,7 +46,7 @@ func TestCompactionTaskInnerMethods(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cm := storage.NewLocalChunkManager(storage.RootPath(compactTestDir))
-	defer cm.RemoveWithPrefix(ctx, "")
+	defer cm.RemoveWithPrefix(ctx, cm.RootPath())
 	t.Run("Test getSegmentMeta", func(t *testing.T) {
 		rc := &RootCoordFactory{
 			pkType: schemapb.DataType_Int64,
@@ -273,7 +274,7 @@ func TestCompactionTaskInnerMethods(t *testing.T) {
 		t.Run("Merge without expiration", func(t *testing.T) {
 			alloc := NewAllocatorFactory(1)
 			mockbIO := &binlogIO{cm, alloc}
-			Params.CommonCfg.EntityExpirationTTL = 0
+			paramtable.Get().Save(Params.CommonCfg.EntityExpirationTTL.Key, "0")
 			iData := genInsertDataWithExpiredTS()
 
 			var allPaths [][]string
@@ -305,12 +306,12 @@ func TestCompactionTaskInnerMethods(t *testing.T) {
 		t.Run("Merge without expiration2", func(t *testing.T) {
 			alloc := NewAllocatorFactory(1)
 			mockbIO := &binlogIO{cm, alloc}
-			Params.CommonCfg.EntityExpirationTTL = 0
-			flushInsertBufferSize := Params.DataNodeCfg.FlushInsertBufferSize
+			paramtable.Get().Save(Params.CommonCfg.EntityExpirationTTL.Key, "0")
+			BinLogMaxSize := Params.DataNodeCfg.BinLogMaxSize
 			defer func() {
-				Params.DataNodeCfg.FlushInsertBufferSize = flushInsertBufferSize
+				Params.DataNodeCfg.BinLogMaxSize = BinLogMaxSize
 			}()
-			Params.DataNodeCfg.FlushInsertBufferSize = 128
+			paramtable.Get().Save(Params.DataNodeCfg.BinLogMaxSize.Key, "128")
 			iData := genInsertDataWithExpiredTS()
 			meta := NewMetaFactory().GetCollectionMeta(1, "test", schemapb.DataType_Int64)
 
@@ -385,7 +386,7 @@ func TestCompactionTaskInnerMethods(t *testing.T) {
 		t.Run("Merge with meta error", func(t *testing.T) {
 			alloc := NewAllocatorFactory(1)
 			mockbIO := &binlogIO{cm, alloc}
-			Params.CommonCfg.EntityExpirationTTL = 0
+			paramtable.Get().Save(Params.CommonCfg.EntityExpirationTTL.Key, "0")
 			iData := genInsertDataWithExpiredTS()
 			meta := NewMetaFactory().GetCollectionMeta(1, "test", schemapb.DataType_Int64)
 
@@ -422,7 +423,7 @@ func TestCompactionTaskInnerMethods(t *testing.T) {
 		t.Run("Merge with meta type param error", func(t *testing.T) {
 			alloc := NewAllocatorFactory(1)
 			mockbIO := &binlogIO{cm, alloc}
-			Params.CommonCfg.EntityExpirationTTL = 0
+			paramtable.Get().Save(Params.CommonCfg.EntityExpirationTTL.Key, "0")
 			iData := genInsertDataWithExpiredTS()
 			meta := NewMetaFactory().GetCollectionMeta(1, "test", schemapb.DataType_Int64)
 
@@ -554,14 +555,14 @@ func TestCompactorInterfaceMethods(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cm := storage.NewLocalChunkManager(storage.RootPath(compactTestDir))
-	defer cm.RemoveWithPrefix(ctx, "")
+	defer cm.RemoveWithPrefix(ctx, cm.RootPath())
 	notEmptySegmentBinlogs := []*datapb.CompactionSegmentBinlogs{{
 		SegmentID:           100,
 		FieldBinlogs:        nil,
 		Field2StatslogPaths: nil,
 		Deltalogs:           nil,
 	}}
-	Params.CommonCfg.EntityExpirationTTL = 0 // Turn off auto expiration
+	paramtable.Get().Save(Params.CommonCfg.EntityExpirationTTL.Key, "0") // Turn off auto expiration
 
 	t.Run("Test compact invalid", func(t *testing.T) {
 		invalidAlloc := NewAllocatorFactory(-1)
@@ -691,7 +692,7 @@ func TestCompactorInterfaceMethods(t *testing.T) {
 			}
 
 			alloc.random = false // generated ID = 19530
-			task := newCompactionTask(context.TODO(), mockbIO, mockbIO, channel, mockfm, alloc, plan)
+			task := newCompactionTask(context.TODO(), mockbIO, mockbIO, channel, mockfm, alloc, plan, nil)
 			result, err := task.compact()
 			assert.NoError(t, err)
 			assert.NotNil(t, result)
@@ -822,7 +823,7 @@ func TestCompactorInterfaceMethods(t *testing.T) {
 		}
 
 		alloc.random = false // generated ID = 19530
-		task := newCompactionTask(context.TODO(), mockbIO, mockbIO, channel, mockfm, alloc, plan)
+		task := newCompactionTask(context.TODO(), mockbIO, mockbIO, channel, mockfm, alloc, plan, nil)
 		result, err := task.compact()
 		assert.NoError(t, err)
 		assert.NotNil(t, result)
@@ -836,8 +837,10 @@ func TestCompactorInterfaceMethods(t *testing.T) {
 }
 
 type mockFlushManager struct {
-	sleepSeconds int32
-	returnError  bool
+	sleepSeconds     int32
+	returnError      bool
+	recordFlushedSeg bool
+	flushedSegIDs    []UniqueID
 }
 
 var _ flushManager = (*mockFlushManager)(nil)
@@ -852,6 +855,9 @@ func (mfm *mockFlushManager) flushBufferData(data *BufferData, segmentID UniqueI
 func (mfm *mockFlushManager) flushDelData(data *DelDataBuf, segmentID UniqueID, pos *internalpb.MsgPosition) error {
 	if mfm.returnError {
 		return fmt.Errorf("mock error")
+	}
+	if mfm.recordFlushedSeg {
+		mfm.flushedSegIDs = append(mfm.flushedSegIDs, segmentID)
 	}
 	return nil
 }

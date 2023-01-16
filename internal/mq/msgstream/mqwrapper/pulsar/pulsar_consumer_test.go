@@ -23,8 +23,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/mq/msgstream/mqwrapper"
-	"github.com/streamnative/pulsarctl/pkg/cmdutils"
 	"github.com/streamnative/pulsarctl/pkg/pulsar/utils"
 
 	"github.com/apache/pulsar-client-go/pulsar"
@@ -33,7 +33,7 @@ import (
 
 func TestPulsarConsumer_Subscription(t *testing.T) {
 	pulsarAddress := getPulsarAddress()
-	pc, err := NewClient(pulsar.ClientOptions{URL: pulsarAddress})
+	pc, err := NewClient(DefaultPulsarTenant, DefaultPulsarNamespace, pulsar.ClientOptions{URL: pulsarAddress})
 	assert.Nil(t, err)
 	defer pc.Close()
 
@@ -65,7 +65,7 @@ func Test_PatchEarliestMessageID(t *testing.T) {
 
 func TestComsumeCompressedMessage(t *testing.T) {
 	pulsarAddress := getPulsarAddress()
-	pc, err := NewClient(pulsar.ClientOptions{URL: pulsarAddress})
+	pc, err := NewClient(DefaultPulsarTenant, DefaultPulsarNamespace, pulsar.ClientOptions{URL: pulsarAddress})
 	assert.Nil(t, err)
 	defer pc.Close()
 
@@ -87,6 +87,7 @@ func TestComsumeCompressedMessage(t *testing.T) {
 
 	msg := []byte("test message")
 	compressedMsg := []byte("test compressed message")
+	traceValue := "test compressed message id"
 	_, err = producer.Send(context.Background(), &mqwrapper.ProducerMessage{
 		Payload:    msg,
 		Properties: map[string]string{},
@@ -98,14 +99,17 @@ func TestComsumeCompressedMessage(t *testing.T) {
 	assert.Equal(t, msg, recvMsg.Payload())
 
 	_, err = compressProducer.Send(context.Background(), &mqwrapper.ProducerMessage{
-		Payload:    compressedMsg,
-		Properties: map[string]string{},
+		Payload: compressedMsg,
+		Properties: map[string]string{
+			common.TraceIDKey: traceValue,
+		},
 	})
 	assert.NoError(t, err)
 	recvMsg, err = consumer.Receive(context.Background())
 	assert.NoError(t, err)
 	consumer.Ack(recvMsg)
 	assert.Equal(t, compressedMsg, recvMsg.Payload())
+	assert.Equal(t, traceValue, recvMsg.Properties()[common.TraceIDKey])
 
 	assert.Nil(t, err)
 	assert.NotNil(t, consumer)
@@ -113,7 +117,7 @@ func TestComsumeCompressedMessage(t *testing.T) {
 
 func TestPulsarConsumer_Close(t *testing.T) {
 	pulsarAddress := getPulsarAddress()
-	pc, err := NewClient(pulsar.ClientOptions{URL: pulsarAddress})
+	pc, err := NewClient(DefaultPulsarTenant, DefaultPulsarNamespace, pulsar.ClientOptions{URL: pulsarAddress})
 	assert.Nil(t, err)
 
 	receiveChannel := make(chan pulsar.ConsumerMessage, 100)
@@ -172,13 +176,15 @@ func TestPulsarClientCloseUnsubscribeError(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	webport := Params.LoadWithDefault("pulsar.webport", "80")
-	cmdutils.PulsarCtlConfig.WebServiceURL = "http://" + pulsarURL.Hostname() + ":" + webport
-	admin := cmdutils.NewPulsarClient()
+	webport := Params.GetWithDefault("pulsar.webport", "80")
+	webServiceURL := "http://" + pulsarURL.Hostname() + ":" + webport
+	admin, err := NewAdminClient(webServiceURL, "", "")
+	assert.NoError(t, err)
 	err = admin.Subscriptions().Delete(*topicName, subName, true)
 	if err != nil {
-		cmdutils.PulsarCtlConfig.WebServiceURL = "http://" + pulsarURL.Hostname() + ":" + "8080"
-		admin := cmdutils.NewPulsarClient()
+		webServiceURL = "http://" + pulsarURL.Hostname() + ":" + "8080"
+		admin, err := NewAdminClient(webServiceURL, "", "")
+		assert.NoError(t, err)
 		err = admin.Subscriptions().Delete(*topicName, subName, true)
 		assert.NoError(t, err)
 	}

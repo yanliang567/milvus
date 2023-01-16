@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -13,7 +14,8 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/allocator"
-	"github.com/milvus-io/milvus/internal/kv"
+	memkv "github.com/milvus-io/milvus/internal/kv/mem"
+	"github.com/milvus-io/milvus/internal/kv/mocks"
 	"github.com/milvus-io/milvus/internal/metastore/model"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/etcdpb"
@@ -24,11 +26,19 @@ import (
 	"github.com/milvus-io/milvus/internal/util/etcd"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 )
+
+func TestMain(m *testing.M) {
+	paramtable.Init()
+	rand.Seed(time.Now().UnixNano())
+	os.Exit(m.Run())
+}
 
 func TestRootCoord_CreateCollection(t *testing.T) {
 	t.Run("not healthy", func(t *testing.T) {
@@ -311,6 +321,9 @@ func TestRootCoord_DescribeCollection(t *testing.T) {
 		resp, err := c.DescribeCollection(ctx, &milvuspb.DescribeCollectionRequest{})
 		assert.NoError(t, err)
 		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
+		resp, err = c.DescribeCollectionInternal(ctx, &milvuspb.DescribeCollectionRequest{})
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
 	})
 
 	t.Run("failed to add task", func(t *testing.T) {
@@ -319,6 +332,9 @@ func TestRootCoord_DescribeCollection(t *testing.T) {
 
 		ctx := context.Background()
 		resp, err := c.DescribeCollection(ctx, &milvuspb.DescribeCollectionRequest{})
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
+		resp, err = c.DescribeCollectionInternal(ctx, &milvuspb.DescribeCollectionRequest{})
 		assert.NoError(t, err)
 		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
 	})
@@ -331,6 +347,9 @@ func TestRootCoord_DescribeCollection(t *testing.T) {
 		resp, err := c.DescribeCollection(ctx, &milvuspb.DescribeCollectionRequest{})
 		assert.NoError(t, err)
 		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
+		resp, err = c.DescribeCollectionInternal(ctx, &milvuspb.DescribeCollectionRequest{})
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
 	})
 
 	t.Run("normal case, everything is ok", func(t *testing.T) {
@@ -339,6 +358,9 @@ func TestRootCoord_DescribeCollection(t *testing.T) {
 
 		ctx := context.Background()
 		resp, err := c.DescribeCollection(ctx, &milvuspb.DescribeCollectionRequest{})
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
+		resp, err = c.DescribeCollectionInternal(ctx, &milvuspb.DescribeCollectionRequest{})
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
 	})
@@ -471,6 +493,9 @@ func TestRootCoord_ShowPartitions(t *testing.T) {
 		resp, err := c.ShowPartitions(ctx, &milvuspb.ShowPartitionsRequest{})
 		assert.NoError(t, err)
 		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
+		resp, err = c.ShowPartitionsInternal(ctx, &milvuspb.ShowPartitionsRequest{})
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
 	})
 
 	t.Run("failed to add task", func(t *testing.T) {
@@ -479,6 +504,9 @@ func TestRootCoord_ShowPartitions(t *testing.T) {
 
 		ctx := context.Background()
 		resp, err := c.ShowPartitions(ctx, &milvuspb.ShowPartitionsRequest{})
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
+		resp, err = c.ShowPartitionsInternal(ctx, &milvuspb.ShowPartitionsRequest{})
 		assert.NoError(t, err)
 		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
 	})
@@ -490,6 +518,9 @@ func TestRootCoord_ShowPartitions(t *testing.T) {
 		resp, err := c.ShowPartitions(ctx, &milvuspb.ShowPartitionsRequest{})
 		assert.NoError(t, err)
 		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
+		resp, err = c.ShowPartitionsInternal(ctx, &milvuspb.ShowPartitionsRequest{})
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
 	})
 
 	t.Run("normal case, everything is ok", func(t *testing.T) {
@@ -497,6 +528,9 @@ func TestRootCoord_ShowPartitions(t *testing.T) {
 			withValidScheduler())
 		ctx := context.Background()
 		resp, err := c.ShowPartitions(ctx, &milvuspb.ShowPartitionsRequest{})
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
+		resp, err = c.ShowPartitionsInternal(ctx, &milvuspb.ShowPartitionsRequest{})
 		assert.NoError(t, err)
 		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
 	})
@@ -682,7 +716,7 @@ func TestRootCoord_ShowConfigurations(t *testing.T) {
 	t.Run("normal case", func(t *testing.T) {
 		Params.InitOnce()
 
-		pattern := "Port"
+		pattern := "rootcoord.Port"
 		req := &internalpb.ShowConfigurationsRequest{
 			Base: &commonpb.MsgBase{
 				MsgID: rand.Int63(),
@@ -864,8 +898,7 @@ func TestCore_Import(t *testing.T) {
 }
 
 func TestCore_GetImportState(t *testing.T) {
-	mockKv := &kv.MockMetaKV{}
-	mockKv.InMemKv = sync.Map{}
+	mockKv := memkv.NewMemoryKV()
 	ti1 := &datapb.ImportTaskInfo{
 		Id: 100,
 		State: &datapb.ImportTaskState{
@@ -901,7 +934,7 @@ func TestCore_GetImportState(t *testing.T) {
 	t.Run("normal case", func(t *testing.T) {
 		ctx := context.Background()
 		c := newTestCore(withHealthyCode())
-		c.importManager = newImportManager(ctx, mockKv, nil, nil, nil, nil, nil, nil, nil)
+		c.importManager = newImportManager(ctx, mockKv, nil, nil, nil, nil, nil, nil)
 		resp, err := c.GetImportState(ctx, &milvuspb.GetImportStateRequest{
 			Task: 100,
 		})
@@ -914,27 +947,29 @@ func TestCore_GetImportState(t *testing.T) {
 }
 
 func TestCore_ListImportTasks(t *testing.T) {
-	mockKv := &kv.MockMetaKV{}
-	mockKv.InMemKv = sync.Map{}
+	mockKv := memkv.NewMemoryKV()
 	ti1 := &datapb.ImportTaskInfo{
 		Id:             100,
 		CollectionName: "collection-A",
+		CollectionId:   1,
 		State: &datapb.ImportTaskState{
 			StateCode: commonpb.ImportState_ImportPending,
 		},
-		CreateTs: time.Now().Unix() - 100,
+		CreateTs: time.Now().Unix() - 300,
 	}
 	ti2 := &datapb.ImportTaskInfo{
 		Id:             200,
 		CollectionName: "collection-A",
+		CollectionId:   1,
 		State: &datapb.ImportTaskState{
 			StateCode: commonpb.ImportState_ImportPersisted,
 		},
-		CreateTs: time.Now().Unix() - 100,
+		CreateTs: time.Now().Unix() - 200,
 	}
 	ti3 := &datapb.ImportTaskInfo{
 		Id:             300,
 		CollectionName: "collection-B",
+		CollectionId:   2,
 		State: &datapb.ImportTaskState{
 			StateCode: commonpb.ImportState_ImportPersisted,
 		},
@@ -946,7 +981,7 @@ func TestCore_ListImportTasks(t *testing.T) {
 	assert.NoError(t, err)
 	taskInfo3, err := proto.Marshal(ti3)
 	assert.NoError(t, err)
-	mockKv.Save(BuildImportTaskKey(1), "value")
+	mockKv.Save(BuildImportTaskKey(1), "value") // this item will trigger an error log in importManager.loadFromTaskStore()
 	mockKv.Save(BuildImportTaskKey(100), string(taskInfo1))
 	mockKv.Save(BuildImportTaskKey(200), string(taskInfo2))
 	mockKv.Save(BuildImportTaskKey(300), string(taskInfo3))
@@ -959,19 +994,88 @@ func TestCore_ListImportTasks(t *testing.T) {
 		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
 	})
 
+	verifyTaskFunc := func(task *milvuspb.GetImportStateResponse, taskID int64, colID int64, state commonpb.ImportState) {
+		assert.Equal(t, commonpb.ErrorCode_Success, task.GetStatus().ErrorCode)
+		assert.Equal(t, taskID, task.GetId())
+		assert.Equal(t, state, task.GetState())
+		assert.Equal(t, colID, task.GetCollectionId())
+	}
+
 	t.Run("normal case", func(t *testing.T) {
+		meta := newMockMetaTable()
+		meta.GetCollectionByNameFunc = func(ctx context.Context, collectionName string, ts Timestamp) (*model.Collection, error) {
+			if collectionName == ti1.CollectionName {
+				return &model.Collection{
+					CollectionID: ti1.CollectionId,
+				}, nil
+			} else if collectionName == ti3.CollectionName {
+				return &model.Collection{
+					CollectionID: ti3.CollectionId,
+				}, nil
+			}
+			return nil, errors.New("GetCollectionByName error")
+		}
+
 		ctx := context.Background()
-		c := newTestCore(withHealthyCode())
-		c.importManager = newImportManager(ctx, mockKv, nil, nil, nil, nil, nil, nil, nil)
+		c := newTestCore(withHealthyCode(), withMeta(meta))
+		c.importManager = newImportManager(ctx, mockKv, nil, nil, nil, nil, nil, nil)
+
+		// list all tasks
 		resp, err := c.ListImportTasks(ctx, &milvuspb.ListImportTasksRequest{})
 		assert.NoError(t, err)
 		assert.Equal(t, 3, len(resp.GetTasks()))
 		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
+		verifyTaskFunc(resp.GetTasks()[0], 100, 1, commonpb.ImportState_ImportPending)
+		verifyTaskFunc(resp.GetTasks()[1], 200, 1, commonpb.ImportState_ImportPersisted)
+		verifyTaskFunc(resp.GetTasks()[2], 300, 2, commonpb.ImportState_ImportPersisted)
+
+		// list tasks of collection-A
+		resp, err = c.ListImportTasks(ctx, &milvuspb.ListImportTasksRequest{
+			CollectionName: "collection-A",
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, 2, len(resp.GetTasks()))
+		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
+
+		// list tasks of collection-B
+		resp, err = c.ListImportTasks(ctx, &milvuspb.ListImportTasksRequest{
+			CollectionName: "collection-B",
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, 1, len(resp.GetTasks()))
+		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
+
+		// invalid collection name
+		resp, err = c.ListImportTasks(ctx, &milvuspb.ListImportTasksRequest{
+			CollectionName: "dummy",
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, 0, len(resp.GetTasks()))
+		assert.Equal(t, commonpb.ErrorCode_IllegalCollectionName, resp.GetStatus().GetErrorCode())
+
+		// list the latest 2 tasks
+		resp, err = c.ListImportTasks(ctx, &milvuspb.ListImportTasksRequest{
+			Limit: 2,
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, 2, len(resp.GetTasks()))
+		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
+		verifyTaskFunc(resp.GetTasks()[0], 200, 1, commonpb.ImportState_ImportPersisted)
+		verifyTaskFunc(resp.GetTasks()[1], 300, 2, commonpb.ImportState_ImportPersisted)
+
+		// failed to load tasks from store
+		mockTxnKV := &mocks.TxnKV{}
+		mockTxnKV.EXPECT().LoadWithPrefix(mock.Anything).Return(nil, nil, errors.New("mock error"))
+		c.importManager.taskStore = mockTxnKV
+		resp, err = c.ListImportTasks(ctx, &milvuspb.ListImportTasksRequest{})
+		assert.NoError(t, err)
+		assert.Equal(t, 0, len(resp.GetTasks()))
+		assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp.GetStatus().GetErrorCode())
 	})
 }
 
 func TestCore_ReportImport(t *testing.T) {
-	Params.RootCoordCfg.ImportTaskSubPath = "importtask"
+	paramtable.Get().Save(Params.RootCoordCfg.ImportTaskSubPath.Key, "importtask")
 	var countLock sync.RWMutex
 	var globalCount = typeutil.UniqueID(0)
 	var idAlloc = func(count uint32) (typeutil.UniqueID, typeutil.UniqueID, error) {
@@ -980,8 +1084,7 @@ func TestCore_ReportImport(t *testing.T) {
 		globalCount++
 		return globalCount, 0, nil
 	}
-	mockKv := &kv.MockMetaKV{}
-	mockKv.InMemKv = sync.Map{}
+	mockKv := memkv.NewMemoryKV()
 	ti1 := &datapb.ImportTaskInfo{
 		Id: 100,
 		State: &datapb.ImportTaskState{
@@ -1055,6 +1158,20 @@ func TestCore_ReportImport(t *testing.T) {
 		}, nil
 	}
 
+	callGetSegmentStates := func(ctx context.Context, req *datapb.GetSegmentStatesRequest) (*datapb.GetSegmentStatesResponse, error) {
+		return &datapb.GetSegmentStatesResponse{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_Success,
+			},
+		}, nil
+	}
+
+	callUnsetIsImportingState := func(context.Context, *datapb.UnsetIsImportingStateRequest) (*commonpb.Status, error) {
+		return &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+		}, nil
+	}
+
 	t.Run("not healthy", func(t *testing.T) {
 		ctx := context.Background()
 		c := newTestCore(withAbnormalCode())
@@ -1063,25 +1180,10 @@ func TestCore_ReportImport(t *testing.T) {
 		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetErrorCode())
 	})
 
-	t.Run("report complete import", func(t *testing.T) {
-		ctx := context.Background()
-		c := newTestCore(withHealthyCode())
-		c.importManager = newImportManager(ctx, mockKv, idAlloc, callImportServiceFn, callMarkSegmentsDropped, nil, nil, nil, nil)
-		resp, err := c.ReportImport(ctx, &rootcoordpb.ImportResult{
-			TaskId: 100,
-			State:  commonpb.ImportState_ImportCompleted,
-		})
-		assert.NoError(t, err)
-		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetErrorCode())
-		// Change the state back.
-		err = c.importManager.setImportTaskState(100, commonpb.ImportState_ImportPending)
-		assert.NoError(t, err)
-	})
-
 	t.Run("report complete import with task not found", func(t *testing.T) {
 		ctx := context.Background()
 		c := newTestCore(withHealthyCode())
-		c.importManager = newImportManager(ctx, mockKv, idAlloc, callImportServiceFn, callMarkSegmentsDropped, nil, nil, nil, nil)
+		c.importManager = newImportManager(ctx, mockKv, idAlloc, callImportServiceFn, callMarkSegmentsDropped, callGetSegmentStates, nil, nil)
 		resp, err := c.ReportImport(ctx, &rootcoordpb.ImportResult{
 			TaskId: 101,
 			State:  commonpb.ImportState_ImportCompleted,
@@ -1093,7 +1195,7 @@ func TestCore_ReportImport(t *testing.T) {
 	t.Run("report import started state", func(t *testing.T) {
 		ctx := context.Background()
 		c := newTestCore(withHealthyCode())
-		c.importManager = newImportManager(ctx, mockKv, idAlloc, callImportServiceFn, callMarkSegmentsDropped, nil, nil, nil, nil)
+		c.importManager = newImportManager(ctx, mockKv, idAlloc, callImportServiceFn, callMarkSegmentsDropped, callGetSegmentStates, nil, nil)
 		c.importManager.loadFromTaskStore(true)
 		c.importManager.sendOutTasks(ctx)
 		resp, err := c.ReportImport(ctx, &rootcoordpb.ImportResult{
@@ -1116,7 +1218,7 @@ func TestCore_ReportImport(t *testing.T) {
 			withTtSynchronizer(ticker),
 			withDataCoord(dc))
 		c.broker = newServerBroker(c)
-		c.importManager = newImportManager(ctx, mockKv, idAlloc, callImportServiceFn, callMarkSegmentsDropped, nil, nil, nil, nil)
+		c.importManager = newImportManager(ctx, mockKv, idAlloc, callImportServiceFn, callMarkSegmentsDropped, callGetSegmentStates, nil, callUnsetIsImportingState)
 		c.importManager.loadFromTaskStore(true)
 		c.importManager.sendOutTasks(ctx)
 
@@ -1204,6 +1306,9 @@ func TestCore_sendMinDdlTsAsTt(t *testing.T) {
 		withTtSynchronizer(ticker),
 		withDdlTsLockManager(ddlManager),
 		withScheduler(sched))
+
+	c.stateCode.Store(commonpb.StateCode_Healthy)
+	c.session.ServerID = TestRootCoordID
 	c.sendMinDdlTsAsTt() // no session.
 	ticker.addSession(&sessionutil.Session{ServerID: TestRootCoordID})
 	c.sendMinDdlTsAsTt()
@@ -1237,8 +1342,9 @@ func TestCore_startTimeTickLoop(t *testing.T) {
 		withScheduler(sched))
 	ctx, cancel := context.WithCancel(context.Background())
 	c.ctx = ctx
-	Params.ProxyCfg.TimeTickInterval = time.Millisecond
+	paramtable.Get().Save(Params.ProxyCfg.TimeTickInterval.Key, "1")
 	c.wg.Add(1)
+	c.UpdateStateCode(commonpb.StateCode_Initializing)
 	go c.startTimeTickLoop()
 
 	time.Sleep(time.Millisecond * 4)
@@ -1248,20 +1354,26 @@ func TestCore_startTimeTickLoop(t *testing.T) {
 
 // make sure the main functions work well when EnableActiveStandby=true
 func TestRootcoord_EnableActiveStandby(t *testing.T) {
-	Params.Init()
-	Params.RootCoordCfg.EnableActiveStandby = true
 	randVal := rand.Int()
-	Params.CommonCfg.RootCoordTimeTick = fmt.Sprintf("rootcoord-time-tick-%d", randVal)
-	Params.CommonCfg.RootCoordStatistics = fmt.Sprintf("rootcoord-statistics-%d", randVal)
-	Params.EtcdCfg.MetaRootPath = fmt.Sprintf("/%d/%s", randVal, Params.EtcdCfg.MetaRootPath)
-	Params.EtcdCfg.KvRootPath = fmt.Sprintf("/%d/%s", randVal, Params.EtcdCfg.KvRootPath)
-	Params.CommonCfg.RootCoordSubName = fmt.Sprintf("subname-%d", randVal)
-	Params.CommonCfg.RootCoordDml = fmt.Sprintf("rootcoord-dml-test-%d", randVal)
-	Params.CommonCfg.RootCoordDelta = fmt.Sprintf("rootcoord-delta-test-%d", randVal)
+	Params.Init()
+	Params.BaseTable.Save("etcd.rootPath", fmt.Sprintf("/%d", randVal))
+	paramtable.Get().Save(Params.RootCoordCfg.EnableActiveStandby.Key, "true")
+	paramtable.Get().Save(Params.CommonCfg.RootCoordTimeTick.Key, fmt.Sprintf("rootcoord-time-tick-%d", randVal))
+	paramtable.Get().Save(Params.CommonCfg.RootCoordStatistics.Key, fmt.Sprintf("rootcoord-statistics-%d", randVal))
+	paramtable.Get().Save(Params.CommonCfg.RootCoordSubName.Key, fmt.Sprintf("subname-%d", randVal))
+	paramtable.Get().Save(Params.CommonCfg.RootCoordDml.Key, fmt.Sprintf("rootcoord-dml-test-%d", randVal))
+	paramtable.Get().Save(Params.CommonCfg.RootCoordDelta.Key, fmt.Sprintf("rootcoord-delta-test-%d", randVal))
 
 	ctx := context.Background()
 	coreFactory := dependency.NewDefaultFactory(true)
-	etcdCli, err := etcd.GetEtcdClient(&Params.EtcdCfg)
+	etcdCli, err := etcd.GetEtcdClient(
+		Params.EtcdCfg.UseEmbedEtcd.GetAsBool(),
+		Params.EtcdCfg.EtcdUseSSL.GetAsBool(),
+		Params.EtcdCfg.Endpoints.GetAsStrings(),
+		Params.EtcdCfg.EtcdTLSCert.GetValue(),
+		Params.EtcdCfg.EtcdTLSKey.GetValue(),
+		Params.EtcdCfg.EtcdTLSCACert.GetValue(),
+		Params.EtcdCfg.EtcdTLSMinVersion.GetValue())
 	assert.NoError(t, err)
 	defer etcdCli.Close()
 	core, err := NewCore(ctx, coreFactory)
@@ -1279,11 +1391,11 @@ func TestRootcoord_EnableActiveStandby(t *testing.T) {
 			MsgType:   commonpb.MsgType_DescribeCollection,
 			MsgID:     0,
 			Timestamp: 0,
-			SourceID:  Params.ProxyCfg.GetNodeID(),
+			SourceID:  paramtable.GetNodeID(),
 		},
 		CollectionName: "unexist"})
 	assert.NoError(t, err)
-	assert.Equal(t, commonpb.ErrorCode_UnexpectedError, resp.GetStatus().GetErrorCode())
+	assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetStatus().GetErrorCode())
 	err = core.Stop()
 	assert.NoError(t, err)
 }

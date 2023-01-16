@@ -76,21 +76,24 @@ var (
 			Help:      "count of all stored rows ever",
 		}, []string{})
 
-	DataCoordSyncEpoch = prometheus.NewGaugeVec(
+	DataCoordConsumeDataNodeTimeTickLag = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: milvusNamespace,
 			Subsystem: typeutil.DataCoordRole,
-			Name:      "sync_epoch_time",
-			Help:      "synchronized unix epoch per physical channel",
-		}, []string{channelNameLabelName})
+			Name:      "consume_datanode_tt_lag_ms",
+			Help:      "now time minus tt per physical channel",
+		}, []string{
+			nodeIDLabelName,
+			channelNameLabelName,
+		})
 
 	DataCoordStoredBinlogSize = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: milvusNamespace,
 			Subsystem: typeutil.DataCoordRole,
 			Name:      "stored_binlog_size",
-			Help:      "binlog size of all collections/segments",
-		}, []string{})
+			Help:      "binlog size of segments",
+		}, []string{segmentStateLabelName})
 
 	/* hard to implement, commented now
 	DataCoordSegmentSizeRatio = prometheus.NewHistogramVec(
@@ -137,15 +140,44 @@ var (
 		}, []string{statusLabelName})
 	*/
 
+	// IndexRequestCounter records the number of the index requests.
+	IndexRequestCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.DataCoordRole,
+			Name:      "index_req_count",
+			Help:      "number of building index requests ",
+		}, []string{statusLabelName})
+
+	// IndexTaskNum records the number of index tasks of each type.
+	IndexTaskNum = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.DataCoordRole,
+			Name:      "index_task_count",
+			Help:      "number of index tasks of each type",
+		}, []string{collectionIDLabelName, indexTaskStatusLabelName})
+
+	// IndexNodeNum records the number of IndexNodes managed by IndexCoord.
+	IndexNodeNum = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.DataCoordRole,
+			Name:      "index_node_num",
+			Help:      "number of IndexNodes managed by IndexCoord",
+		}, []string{})
 )
 
-//RegisterDataCoord registers DataCoord metrics
+// RegisterDataCoord registers DataCoord metrics
 func RegisterDataCoord(registry *prometheus.Registry) {
 	registry.MustRegister(DataCoordNumDataNodes)
 	registry.MustRegister(DataCoordNumSegments)
 	registry.MustRegister(DataCoordNumCollections)
 	registry.MustRegister(DataCoordNumStoredRows)
 	registry.MustRegister(DataCoordNumStoredRowsCounter)
-	registry.MustRegister(DataCoordSyncEpoch)
+	registry.MustRegister(DataCoordConsumeDataNodeTimeTickLag)
 	registry.MustRegister(DataCoordStoredBinlogSize)
+	registry.MustRegister(IndexRequestCounter)
+	registry.MustRegister(IndexTaskNum)
+	registry.MustRegister(IndexNodeNum)
 }

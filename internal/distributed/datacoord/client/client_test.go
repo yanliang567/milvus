@@ -33,9 +33,16 @@ func Test_NewClient(t *testing.T) {
 	proxy.Params.InitOnce()
 
 	ctx := context.Background()
-	etcdCli, err := etcd.GetEtcdClient(&proxy.Params.EtcdCfg)
+	etcdCli, err := etcd.GetEtcdClient(
+		Params.EtcdCfg.UseEmbedEtcd.GetAsBool(),
+		Params.EtcdCfg.EtcdUseSSL.GetAsBool(),
+		Params.EtcdCfg.Endpoints.GetAsStrings(),
+		Params.EtcdCfg.EtcdTLSCert.GetValue(),
+		Params.EtcdCfg.EtcdTLSKey.GetValue(),
+		Params.EtcdCfg.EtcdTLSCACert.GetValue(),
+		Params.EtcdCfg.EtcdTLSMinVersion.GetValue())
 	assert.Nil(t, err)
-	client, err := NewClient(ctx, proxy.Params.EtcdCfg.MetaRootPath, etcdCli)
+	client, err := NewClient(ctx, proxy.Params.EtcdCfg.MetaRootPath.GetValue(), etcdCli)
 	assert.Nil(t, err)
 	assert.NotNil(t, client)
 
@@ -128,12 +135,6 @@ func Test_NewClient(t *testing.T) {
 		r24, err := client.UpdateSegmentStatistics(ctx, nil)
 		retCheck(retNotNil, r24, err)
 
-		r25, err := client.AcquireSegmentLock(ctx, nil)
-		retCheck(retNotNil, r25, err)
-
-		r26, err := client.ReleaseSegmentLock(ctx, nil)
-		retCheck(retNotNil, r26, err)
-
 		r27, err := client.SaveImportSegment(ctx, nil)
 		retCheck(retNotNil, r27, err)
 
@@ -145,6 +146,30 @@ func Test_NewClient(t *testing.T) {
 
 		r31, err := client.ShowConfigurations(ctx, nil)
 		retCheck(retNotNil, r31, err)
+
+		r32, err := client.CreateIndex(ctx, nil)
+		retCheck(retNotNil, r32, err)
+
+		r33, err := client.DescribeIndex(ctx, nil)
+		retCheck(retNotNil, r33, err)
+
+		r34, err := client.DropIndex(ctx, nil)
+		retCheck(retNotNil, r34, err)
+
+		r35, err := client.GetIndexState(ctx, nil)
+		retCheck(retNotNil, r35, err)
+
+		r36, err := client.GetIndexBuildProgress(ctx, nil)
+		retCheck(retNotNil, r36, err)
+
+		r37, err := client.GetIndexInfos(ctx, nil)
+		retCheck(retNotNil, r37, err)
+
+		r38, err := client.GetSegmentIndexState(ctx, nil)
+		retCheck(retNotNil, r38, err)
+
+		r39, err := client.UpdateChannelCheckpoint(ctx, nil)
+		retCheck(retNotNil, r39, err)
 
 		{
 			ret, err := client.BroadcastAlteredCollection(ctx, nil)

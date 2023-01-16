@@ -27,7 +27,9 @@ import (
 	"strconv"
 	"time"
 
+	"go.uber.org/multierr"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/schemapb"
@@ -46,14 +48,15 @@ import (
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/hardware"
 	"github.com/milvus-io/milvus/internal/util/indexparamcheck"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
 	"github.com/panjf2000/ants/v2"
 )
 
 const (
-	requestConcurrencyLevelLimit = 8
-	UsedDiskMemoryRatio          = 6
+	UsedDiskMemoryRatio = 4
 )
 
 var (
@@ -71,8 +74,6 @@ type segmentLoader struct {
 
 	ioPool  *concurrency.Pool
 	cpuPool *concurrency.Pool
-	// cgoPool for all cgo invocation
-	cgoPool *concurrency.Pool
 
 	factory msgstream.Factory
 }
@@ -86,9 +87,9 @@ func (loader *segmentLoader) getFieldType(segment *Segment, fieldID FieldID) (sc
 	return coll.getFieldType(fieldID)
 }
 
-func (loader *segmentLoader) LoadSegment(ctx context.Context, req *querypb.LoadSegmentsRequest, segmentType segmentType) error {
+func (loader *segmentLoader) LoadSegment(ctx context.Context, req *querypb.LoadSegmentsRequest, segmentType segmentType) ([]UniqueID, error) {
 	if req.Base == nil {
-		return fmt.Errorf("nil base message when load segment, collectionID = %d", req.CollectionID)
+		return nil, fmt.Errorf("nil base message when load segment, collectionID = %d", req.CollectionID)
 	}
 
 	log := log.With(zap.Int64("collectionID", req.CollectionID), zap.String("segmentType", segmentType.String()))
@@ -97,7 +98,7 @@ func (loader *segmentLoader) LoadSegment(ctx context.Context, req *querypb.LoadS
 
 	if segmentNum == 0 {
 		log.Warn("find no valid segment target, skip load segment", zap.Any("request", req))
-		return nil
+		return nil, nil
 	}
 
 	log.Info("segmentLoader start loading...", zap.Any("segmentNum", segmentNum))
@@ -112,10 +113,7 @@ func (loader *segmentLoader) LoadSegment(ctx context.Context, req *querypb.LoadS
 		}
 		return minValue
 	}
-	concurrencyLevel := min(loader.cpuPool.Cap(),
-		len(req.Infos),
-		requestConcurrencyLevelLimit)
-
+	concurrencyLevel := min(runtime.GOMAXPROCS(0), len(req.Infos))
 	for ; concurrencyLevel > 1; concurrencyLevel /= 2 {
 		err := loader.checkSegmentSize(req.CollectionID, req.Infos, concurrencyLevel)
 		if err == nil {
@@ -125,16 +123,19 @@ func (loader *segmentLoader) LoadSegment(ctx context.Context, req *querypb.LoadS
 
 	err := loader.checkSegmentSize(req.CollectionID, req.Infos, concurrencyLevel)
 	if err != nil {
-		log.Error("load failed, OOM if loaded",
+		log.Warn("load failed, OOM if loaded",
 			zap.Int64("loadSegmentRequest msgID", req.Base.MsgID),
 			zap.Error(err))
-		return err
+		return nil, err
 	}
 
-	newSegments := make(map[UniqueID]*Segment, len(req.Infos))
-	segmentGC := func() {
-		for _, s := range newSegments {
-			deleteSegment(s)
+	newSegments := make(map[UniqueID]*Segment, segmentNum)
+	loadDoneSegmentIDSet := typeutil.NewConcurrentSet[int64]()
+	segmentGC := func(force bool) {
+		for id, s := range newSegments {
+			if force || !loadDoneSegmentIDSet.Contain(id) {
+				deleteSegment(s)
+			}
 		}
 		debug.FreeOSMemory()
 	}
@@ -147,18 +148,18 @@ func (loader *segmentLoader) LoadSegment(ctx context.Context, req *querypb.LoadS
 
 		collection, err := loader.metaReplica.getCollectionByID(collectionID)
 		if err != nil {
-			segmentGC()
-			return err
+			segmentGC(true)
+			return nil, err
 		}
 
-		segment, err := newSegment(collection, segmentID, partitionID, collectionID, vChannelID, segmentType, req.GetVersion(), loader.cgoPool)
+		segment, err := newSegment(collection, segmentID, partitionID, collectionID, vChannelID, segmentType, req.GetVersion(), info.StartPosition)
 		if err != nil {
 			log.Error("load segment failed when create new segment",
 				zap.Int64("partitionID", partitionID),
 				zap.Int64("segmentID", segmentID),
 				zap.Error(err))
-			segmentGC()
-			return err
+			segmentGC(true)
+			return nil, err
 		}
 
 		newSegments[segmentID] = segment
@@ -180,7 +181,8 @@ func (loader *segmentLoader) LoadSegment(ctx context.Context, req *querypb.LoadS
 			return err
 		}
 
-		metrics.QueryNodeLoadSegmentLatency.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID())).Observe(float64(tr.ElapseSpan().Milliseconds()))
+		loadDoneSegmentIDSet.Insert(segmentID)
+		metrics.QueryNodeLoadSegmentLatency.WithLabelValues(fmt.Sprint(paramtable.GetNodeID())).Observe(float64(tr.ElapseSpan().Milliseconds()))
 
 		return nil
 	}
@@ -190,29 +192,35 @@ func (loader *segmentLoader) LoadSegment(ctx context.Context, req *querypb.LoadS
 	log.Info("start to load segments in parallel",
 		zap.Int("segmentNum", segmentNum),
 		zap.Int("concurrencyLevel", concurrencyLevel))
-	err = funcutil.ProcessFuncParallel(segmentNum,
+	loadErr := funcutil.ProcessFuncParallel(segmentNum,
 		concurrencyLevel, loadFileFunc, "loadSegmentFunc")
-	if err != nil {
-		segmentGC()
-		return err
-	}
-
-	// set segment to meta replica
-	for _, s := range newSegments {
-		err = loader.metaReplica.setSegment(s)
+	// set segment which has been loaded done to meta replica
+	failedSetMetaSegmentIDs := make([]UniqueID, 0)
+	for _, id := range loadDoneSegmentIDSet.Collect() {
+		segment := newSegments[id]
+		err = loader.metaReplica.setSegment(segment)
 		if err != nil {
 			log.Error("load segment failed, set segment to meta failed",
-				zap.Int64("collectionID", s.collectionID),
-				zap.Int64("partitionID", s.partitionID),
-				zap.Int64("segmentID", s.segmentID),
+				zap.Int64("collectionID", segment.collectionID),
+				zap.Int64("partitionID", segment.partitionID),
+				zap.Int64("segmentID", segment.segmentID),
 				zap.Int64("loadSegmentRequest msgID", req.Base.MsgID),
 				zap.Error(err))
-			segmentGC()
-			return err
+			failedSetMetaSegmentIDs = append(failedSetMetaSegmentIDs, id)
+			loadDoneSegmentIDSet.Remove(id)
 		}
 	}
+	if len(failedSetMetaSegmentIDs) > 0 {
+		err = fmt.Errorf("load segment failed, set segment to meta failed, segmentIDs: %v", failedSetMetaSegmentIDs)
+	}
 
-	return nil
+	err = multierr.Combine(loadErr, err)
+	if err != nil {
+		segmentGC(false)
+		return loadDoneSegmentIDSet.Collect(), err
+	}
+
+	return loadDoneSegmentIDSet.Collect(), nil
 }
 
 func (loader *segmentLoader) loadFiles(ctx context.Context, segment *Segment,
@@ -334,7 +342,7 @@ func (loader *segmentLoader) loadGrowingSegmentFields(ctx context.Context, segme
 
 	_, _, insertData, err := iCodec.Deserialize(blobs)
 	if err != nil {
-		log.Warn(err.Error())
+		log.Warn("failed to deserialize", zap.Int64("segment", segment.segmentID), zap.Error(err))
 		return err
 	}
 
@@ -363,15 +371,15 @@ func (loader *segmentLoader) loadGrowingSegmentFields(ctx context.Context, segme
 }
 
 func (loader *segmentLoader) loadSealedSegmentFields(ctx context.Context, segment *Segment, fields []*datapb.FieldBinlog, loadInfo *querypb.SegmentLoadInfo) error {
-	// Load fields concurrently
-	futures := make([]*concurrency.Future, 0, len(fields))
+	runningGroup, groupCtx := errgroup.WithContext(ctx)
 	for _, field := range fields {
-		future := loader.loadSealedFieldAsync(ctx, segment, field, loadInfo)
-
-		futures = append(futures, future)
+		fieldBinLog := field
+		runningGroup.Go(func() error {
+			// reload data from dml channel
+			return loader.loadSealedField(groupCtx, segment, fieldBinLog, loadInfo)
+		})
 	}
-
-	err := concurrency.AwaitAll(futures...)
+	err := runningGroup.Wait()
 	if err != nil {
 		return err
 	}
@@ -386,35 +394,35 @@ func (loader *segmentLoader) loadSealedSegmentFields(ctx context.Context, segmen
 }
 
 // async load field of sealed segment
-func (loader *segmentLoader) loadSealedFieldAsync(ctx context.Context, segment *Segment, field *datapb.FieldBinlog, loadInfo *querypb.SegmentLoadInfo) *concurrency.Future {
+func (loader *segmentLoader) loadSealedField(ctx context.Context, segment *Segment, field *datapb.FieldBinlog, loadInfo *querypb.SegmentLoadInfo) error {
 	iCodec := storage.InsertCodec{}
 
 	// Avoid consuming too much memory if no CPU worker ready,
 	// acquire a CPU worker before load field binlogs
-	return loader.cpuPool.Submit(func() (interface{}, error) {
-		futures := loader.loadFieldBinlogsAsync(ctx, field)
+	futures := loader.loadFieldBinlogsAsync(ctx, field)
 
-		blobs := make([]*storage.Blob, len(futures))
-		for index, future := range futures {
-			if !future.OK() {
-				return nil, future.Err()
-			}
+	err := concurrency.AwaitAll(futures...)
+	if err != nil {
+		return err
+	}
 
-			blob := future.Value().(*storage.Blob)
-			blobs[index] = blob
-		}
+	blobs := make([]*storage.Blob, len(futures))
+	for index, future := range futures {
+		blob := future.Value().(*storage.Blob)
+		blobs[index] = blob
+	}
 
-		insertData := storage.InsertData{
-			Data: make(map[int64]storage.FieldData),
-		}
-		_, _, _, err := iCodec.DeserializeInto(blobs, int(loadInfo.GetNumOfRows()), &insertData)
-		if err != nil {
-			log.Warn(err.Error())
-			return nil, err
-		}
+	insertData := storage.InsertData{
+		Data: make(map[int64]storage.FieldData),
+	}
+	_, _, _, err = iCodec.DeserializeInto(blobs, int(loadInfo.GetNumOfRows()), &insertData)
 
-		return nil, loader.loadSealedSegments(segment, &insertData)
-	})
+	if err != nil {
+		log.Warn("failed to load sealed field", zap.Int64("SegmentId", segment.segmentID), zap.Error(err))
+		return err
+	}
+
+	return loader.loadSealedSegments(segment, &insertData)
 }
 
 // Load binlogs concurrently into memory from KV storage asyncly
@@ -461,25 +469,24 @@ func (loader *segmentLoader) loadIndexedFieldData(ctx context.Context, segment *
 }
 
 func (loader *segmentLoader) loadFieldIndexData(ctx context.Context, segment *Segment, indexInfo *querypb.FieldIndexInfo) error {
+	log := log.With(zap.Int64("segment", segment.ID()))
 	indexBuffer := make([][]byte, 0, len(indexInfo.IndexFilePaths))
 	filteredPaths := make([]string, 0, len(indexInfo.IndexFilePaths))
 	futures := make([]*concurrency.Future, 0, len(indexInfo.IndexFilePaths))
 	indexCodec := storage.NewIndexFileBinlogCodec()
 
+	// TODO, remove the load index info froam
 	for _, indexPath := range indexInfo.IndexFilePaths {
 		// get index params when detecting indexParamPrefix
 		if path.Base(indexPath) == storage.IndexParamsKey {
-			indexParamsFuture := loader.ioPool.Submit(func() (interface{}, error) {
-				log.Info("load index params file", zap.String("path", indexPath))
-				return loader.cm.Read(ctx, indexPath)
-			})
-
-			indexParamsBlob, err := indexParamsFuture.Await()
+			log.Info("load index params file", zap.String("path", indexPath))
+			indexParamsBlob, err := loader.cm.Read(ctx, indexPath)
 			if err != nil {
 				return err
 			}
 
-			_, indexParams, _, _, err := indexCodec.Deserialize([]*storage.Blob{{Key: storage.IndexParamsKey, Value: indexParamsBlob.([]byte)}})
+			// indexParams is small, skip cpu pooling
+			_, indexParams, _, _, err := indexCodec.Deserialize([]*storage.Blob{{Key: storage.IndexParamsKey, Value: indexParamsBlob}})
 			if err != nil {
 				return err
 			}
@@ -504,30 +511,41 @@ func (loader *segmentLoader) loadFieldIndexData(ctx context.Context, segment *Se
 	}
 
 	indexParams := funcutil.KeyValuePair2Map(indexInfo.IndexParams)
+	// load on disk index
 	if indexParams["index_type"] == indexparamcheck.IndexDISKANN {
 		return segment.segmentLoadIndexData(nil, indexInfo, fieldType)
 	}
-
+	// load in memory index
 	for _, p := range indexInfo.IndexFilePaths {
 		indexPath := p
-		indexFuture := loader.cpuPool.Submit(func() (interface{}, error) {
-			indexBlobFuture := loader.ioPool.Submit(func() (interface{}, error) {
-				log.Info("load index file", zap.String("path", indexPath))
-				data, err := loader.cm.Read(ctx, indexPath)
-				if err != nil {
-					log.Warn("failed to load index file", zap.String("path", indexPath), zap.Error(err))
-					return nil, err
-				}
-				return data, nil
-			})
-
-			indexBlob, err := indexBlobFuture.Await()
+		indexFuture := loader.ioPool.Submit(func() (interface{}, error) {
+			log.Info("load index file", zap.String("path", indexPath))
+			data, err := loader.cm.Read(ctx, indexPath)
 			if err != nil {
+				log.Warn("failed to load index file",
+					zap.String("path", indexPath),
+					zap.Error(err),
+				)
 				return nil, err
 			}
+			result, err := loader.cpuPool.Submit(func() (interface{}, error) {
+				blobs, _, _, _, err := indexCodec.Deserialize([]*storage.Blob{{Key: path.Base(indexPath), Value: data}})
+				if err != nil {
+					log.Warn("failed to decode index file",
+						zap.String("file", indexPath),
+						zap.Error(err),
+					)
+					return nil, err
+				}
 
-			data, _, _, _, err := indexCodec.Deserialize([]*storage.Blob{{Key: path.Base(indexPath), Value: indexBlob.([]byte)}})
-			return data, err
+				// it's certain blobs has only one item
+				result := blobs[0].GetValue()
+				// force invoke gc
+				debug.FreeOSMemory()
+				return result, nil
+			}).Await()
+
+			return result, err
 		})
 
 		futures = append(futures, indexFuture)
@@ -538,9 +556,9 @@ func (loader *segmentLoader) loadFieldIndexData(ctx context.Context, segment *Se
 		return err
 	}
 
-	for _, index := range futures {
-		blobs := index.Value().([]*storage.Blob)
-		indexBuffer = append(indexBuffer, blobs[0].Value)
+	for _, future := range futures {
+		bs := future.Value().([]byte)
+		indexBuffer = append(indexBuffer, bs)
 	}
 
 	return segment.segmentLoadIndexData(indexBuffer, indexInfo, fieldType)
@@ -689,25 +707,27 @@ func (loader *segmentLoader) loadDeltaLogs(ctx context.Context, segment *Segment
 	return nil
 }
 
-func (loader *segmentLoader) FromDmlCPLoadDelete(ctx context.Context, collectionID int64, position *internalpb.MsgPosition) error {
+func (loader *segmentLoader) FromDmlCPLoadDelete(ctx context.Context, collectionID int64, position *internalpb.MsgPosition,
+	segmentIDs []int64) error {
 	startTs := time.Now()
-	stream, err := loader.factory.NewMsgStream(ctx)
+	stream, err := loader.factory.NewTtMsgStream(ctx)
 	if err != nil {
 		return err
 	}
 
 	defer func() {
-		metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID())).Dec()
+		metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(paramtable.GetNodeID())).Dec()
 		stream.Close()
 	}()
 
+	vchannelName := position.ChannelName
 	pChannelName := funcutil.ToPhysicalChannel(position.ChannelName)
 	position.ChannelName = pChannelName
 
 	ts, _ := tsoutil.ParseTS(position.Timestamp)
 
 	// Random the subname in case we trying to load same delta at the same time
-	subName := fmt.Sprintf("querynode-delta-loader-%d-%d-%d", Params.QueryNodeCfg.GetNodeID(), collectionID, rand.Int())
+	subName := fmt.Sprintf("querynode-delta-loader-%d-%d-%d", paramtable.GetNodeID(), collectionID, rand.Int())
 	log.Info("from dml check point load delete", zap.Any("position", position), zap.String("subName", subName), zap.Time("positionTs", ts))
 	stream.AsConsumer([]string{pChannelName}, subName, mqwrapper.SubscriptionPositionUnknown)
 	// make sure seek position is earlier than
@@ -726,12 +746,11 @@ func (loader *segmentLoader) FromDmlCPLoadDelete(ctx context.Context, collection
 		return nil
 	}
 
-	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(Params.QueryNodeCfg.GetNodeID())).Inc()
+	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(paramtable.GetNodeID())).Inc()
 	err = stream.Seek([]*internalpb.MsgPosition{position})
 	if err != nil {
 		return err
 	}
-	stream.Start()
 
 	delData := &deleteData{
 		deleteIDs:        make(map[UniqueID][]primaryKey),
@@ -740,7 +759,12 @@ func (loader *segmentLoader) FromDmlCPLoadDelete(ctx context.Context, collection
 	}
 
 	log.Info("start read delta msg from seek position to last position",
-		zap.Int64("collectionID", collectionID), zap.String("channel", pChannelName), zap.Any("seekPos", position), zap.Any("lastMsg", lastMsgID))
+		zap.Int64("collectionID", collectionID),
+		zap.String("channel", pChannelName),
+		zap.String("seekPos", position.String()),
+		zap.Any("lastMsg", lastMsgID), // use any in case of nil
+	)
+
 	hasMore := true
 	for hasMore {
 		select {
@@ -755,7 +779,7 @@ func (loader *segmentLoader) FromDmlCPLoadDelete(ctx context.Context, collection
 					position.GetMsgID())
 				log.Warn("fail to read delta msg",
 					zap.String("pChannelName", pChannelName),
-					zap.ByteString("msgID", position.GetMsgID()),
+					zap.Binary("msgID", position.GetMsgID()),
 					zap.Error(err),
 				)
 				return err
@@ -771,34 +795,45 @@ func (loader *segmentLoader) FromDmlCPLoadDelete(ctx context.Context, collection
 					if dmsg.CollectionID != collectionID {
 						continue
 					}
-					err = processDeleteMessages(loader.metaReplica, segmentTypeSealed, dmsg, delData)
+					err = processDeleteMessages(loader.metaReplica, segmentTypeSealed, dmsg, delData, vchannelName)
 					if err != nil {
 						// TODO: panic?
 						// error occurs when missing meta info or unexpected pk type, should not happen
-						err = fmt.Errorf("deleteNode processDeleteMessages failed, collectionID = %d, err = %s", dmsg.CollectionID, err)
-						log.Error(err.Error())
+						err = fmt.Errorf("processDeleteMessages failed, collectionID = %d, err = %s", dmsg.CollectionID, err)
+						log.Error("FromDmlCPLoadDelete failed to process delete message", zap.Error(err))
 						return err
 					}
 				}
-
-				ret, err := lastMsgID.LessOrEqualThan(tsMsg.Position().MsgID)
-				if err != nil {
-					log.Warn("check whether current MsgID less than last MsgID failed",
-						zap.Int64("collectionID", collectionID), zap.String("channel", pChannelName), zap.Error(err))
-					return err
-				}
-
-				if ret {
-					hasMore = false
-					break
-				}
+			}
+			ret, err := lastMsgID.LessOrEqualThan(msgPack.EndPositions[0].MsgID)
+			if err != nil {
+				log.Warn("check whether current MsgID less than last MsgID failed",
+					zap.Int64("collectionID", collectionID),
+					zap.String("channel", pChannelName),
+					zap.Error(err),
+				)
+				return err
+			}
+			if ret {
+				hasMore = false
+				break
 			}
 		}
 	}
 
-	log.Info("All data has been read, there is no more data", zap.Int64("collectionID", collectionID),
-		zap.String("channel", pChannelName), zap.Any("msgID", position.GetMsgID()))
+	log.Info("All data has been read, there is no more data",
+		zap.Int64("collectionID", collectionID),
+		zap.String("channel", pChannelName),
+		zap.Binary("msgID", position.GetMsgID()),
+	)
+
+	segmentIDSet := typeutil.NewUniqueSet(segmentIDs...)
+
 	for segmentID, pks := range delData.deleteIDs {
+		// ignore non target segment
+		if !segmentIDSet.Contain(segmentID) {
+			continue
+		}
 		segment, err := loader.metaReplica.getSegmentByID(segmentID, segmentTypeSealed)
 		if err != nil {
 			log.Warn("failed to get segment", zap.Int64("segment", segmentID), zap.Error(err))
@@ -834,8 +869,7 @@ func GetStorageSizeByIndexInfo(indexInfo *querypb.FieldIndexInfo) (uint64, uint6
 	}
 	if indexType == indexparamcheck.IndexDISKANN {
 		neededMemSize := indexInfo.IndexSize / UsedDiskMemoryRatio
-		neededDiskSize := indexInfo.IndexSize - neededMemSize
-		return uint64(neededMemSize), uint64(neededDiskSize), nil
+		return uint64(neededMemSize), uint64(indexInfo.IndexSize), nil
 	}
 
 	return uint64(indexInfo.IndexSize), 0, nil
@@ -909,7 +943,7 @@ func (loader *segmentLoader) checkSegmentSize(collectionID UniqueID, segmentLoad
 
 	// when load segment, data will be copied from go memory to c++ memory
 	memLoadingUsage := usedMemAfterLoad + uint64(
-		float64(maxSegmentSize)*float64(concurrency)*Params.QueryNodeCfg.LoadMemoryUsageFactor)
+		float64(maxSegmentSize)*float64(concurrency)*Params.QueryNodeCfg.LoadMemoryUsageFactor.GetAsFloat())
 	log.Info("predict memory and disk usage while loading (in MiB)",
 		zap.Int64("collectionID", collectionID),
 		zap.Int("concurrency", concurrency),
@@ -917,22 +951,23 @@ func (loader *segmentLoader) checkSegmentSize(collectionID UniqueID, segmentLoad
 		zap.Uint64("memUsageAfterLoad", toMB(usedMemAfterLoad)),
 		zap.Uint64("diskUsageAfterLoad", toMB(usedLocalSizeAfterLoad)))
 
-	if memLoadingUsage > uint64(float64(totalMem)*Params.QueryNodeCfg.OverloadedMemoryThresholdPercentage) {
-		return fmt.Errorf("load segment failed, OOM if load, collectionID = %d, maxSegmentSize = %v MB, concurrency = %d, usedMemAfterLoad = %v MB, totalMem = %v MB, thresholdFactor = %f",
+	if memLoadingUsage > uint64(float64(totalMem)*Params.QueryNodeCfg.OverloadedMemoryThresholdPercentage.GetAsFloat()) {
+		return fmt.Errorf("%w, load segment failed, OOM if load, collectionID = %d, maxSegmentSize = %v MB, concurrency = %d, usedMemAfterLoad = %v MB, totalMem = %v MB, thresholdFactor = %f",
+			ErrInsufficientMemory,
 			collectionID,
 			toMB(maxSegmentSize),
 			concurrency,
 			toMB(usedMemAfterLoad),
 			toMB(totalMem),
-			Params.QueryNodeCfg.OverloadedMemoryThresholdPercentage)
+			Params.QueryNodeCfg.OverloadedMemoryThresholdPercentage.GetAsFloat())
 	}
 
-	if usedLocalSizeAfterLoad > uint64(float64(Params.QueryNodeCfg.DiskCapacityLimit)*Params.QueryNodeCfg.MaxDiskUsagePercentage) {
+	if usedLocalSizeAfterLoad > uint64(Params.QueryNodeCfg.DiskCapacityLimit.GetAsFloat()*Params.QueryNodeCfg.MaxDiskUsagePercentage.GetAsFloat()) {
 		return fmt.Errorf("load segment failed, disk space is not enough, collectionID = %d, usedDiskAfterLoad = %v MB, totalDisk = %v MB, thresholdFactor = %f",
 			collectionID,
 			toMB(usedLocalSizeAfterLoad),
-			toMB(uint64(Params.QueryNodeCfg.DiskCapacityLimit)),
-			Params.QueryNodeCfg.MaxDiskUsagePercentage)
+			toMB(uint64(Params.QueryNodeCfg.DiskCapacityLimit.GetAsFloat())),
+			Params.QueryNodeCfg.MaxDiskUsagePercentage.GetAsFloat())
 	}
 
 	return nil
@@ -942,21 +977,17 @@ func newSegmentLoader(
 	metaReplica ReplicaInterface,
 	etcdKV *etcdkv.EtcdKV,
 	cm storage.ChunkManager,
-	factory msgstream.Factory,
-	pool *concurrency.Pool) *segmentLoader {
+	factory msgstream.Factory) *segmentLoader {
 
 	cpuNum := runtime.GOMAXPROCS(0)
-	// This error is not nil only if the options of creating pool is invalid
-	cpuPool, err := concurrency.NewPool(cpuNum, ants.WithPreAlloc(true))
-	if err != nil {
-		log.Error("failed to create goroutine pool for segment loader",
-			zap.Error(err))
-		panic(err)
-	}
-
-	ioPoolSize := cpuNum * 2
+	ioPoolSize := cpuNum * 8
+	// make sure small machines could load faster
 	if ioPoolSize < 32 {
 		ioPoolSize = 32
+	}
+	// limit the number of concurrency
+	if ioPoolSize > 256 {
+		ioPoolSize = 256
 	}
 	ioPool, err := concurrency.NewPool(ioPoolSize, ants.WithPreAlloc(true))
 	if err != nil {
@@ -964,10 +995,16 @@ func newSegmentLoader(
 			zap.Error(err))
 		panic(err)
 	}
+	cpuPool, err := concurrency.NewPool(cpuNum, ants.WithPreAlloc(true))
+	if err != nil {
+		log.Error("failed to create cpu goroutine pool for segment loader", zap.Error(err))
+		panic(err)
+	}
 
 	log.Info("SegmentLoader created",
-		zap.Int("cpu-pool-size", cpuNum),
-		zap.Int("io-pool-size", ioPoolSize))
+		zap.Int("ioPoolSize", ioPoolSize),
+		zap.Int("cpuPoolSize", cpuNum),
+	)
 
 	loader := &segmentLoader{
 		metaReplica: metaReplica,
@@ -978,7 +1015,6 @@ func newSegmentLoader(
 		// init them later
 		ioPool:  ioPool,
 		cpuPool: cpuPool,
-		cgoPool: pool,
 
 		factory: factory,
 	}

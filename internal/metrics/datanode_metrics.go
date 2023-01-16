@@ -17,6 +17,8 @@
 package metrics
 
 import (
+	"fmt"
+
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -74,25 +76,40 @@ var (
 			nodeIDLabelName,
 		})
 
-	DataNodeTimeSync = prometheus.NewGaugeVec(
+	DataNodeConsumeTimeTickLag = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: milvusNamespace,
 			Subsystem: typeutil.DataNodeRole,
-			Name:      "sync_epoch_time",
-			Help:      "synchronized unix epoch per physical channel",
+			Name:      "consume_tt_lag_ms",
+			Help:      "now time minus tt per physical channel",
 		}, []string{
 			nodeIDLabelName,
+			msgTypeLabelName,
+			collectionIDLabelName,
+		})
+
+	DataNodeProduceTimeTickLag = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.DataNodeRole,
+			Name:      "produce_tt_lag_ms",
+			Help:      "now time minus tt pts per physical channel",
+		}, []string{
+			nodeIDLabelName,
+			collectionIDLabelName,
 			channelNameLabelName,
 		})
 
-	DataNodeNumUnflushedSegments = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
+	DataNodeConsumeMsgCount = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
 			Namespace: milvusNamespace,
 			Subsystem: typeutil.DataNodeRole,
-			Name:      "unflushed_segment_num",
-			Help:      "number of unflushed segments",
+			Name:      "consume_msg_count",
+			Help:      "count of consumed msg",
 		}, []string{
 			nodeIDLabelName,
+			msgTypeLabelName,
+			collectionIDLabelName,
 		})
 
 	DataNodeEncodeBufferLatency = prometheus.NewHistogramVec( // TODO: arguably
@@ -163,30 +180,69 @@ var (
 			statusLabelName,
 		})
 
-	// DataNodeConsumeCounter counts the bytes DataNode consumed from message storage.
-	DataNodeConsumeCounter = prometheus.NewCounterVec(
+	// DataNodeConsumeBytesCount counts the bytes DataNode consumed from message storage.
+	DataNodeConsumeBytesCount = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: milvusNamespace,
 			Subsystem: typeutil.DataNodeRole,
 			Name:      "consume_counter",
 			Help:      "",
 		}, []string{nodeIDLabelName, msgTypeLabelName})
+
+	DataNodeForwardDeleteMsgTimeTaken = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: milvusNamespace,
+			Subsystem: typeutil.DataNodeRole,
+			Name:      "forward_delete_msg_time_taken_ms",
+			Help:      "forward delete message time taken",
+			Buckets:   buckets, // unit: ms
+		}, []string{nodeIDLabelName})
 )
 
-//RegisterDataNode registers DataNode metrics
+// RegisterDataNode registers DataNode metrics
 func RegisterDataNode(registry *prometheus.Registry) {
 	registry.MustRegister(DataNodeNumFlowGraphs)
 	registry.MustRegister(DataNodeConsumeMsgRowsCount)
 	registry.MustRegister(DataNodeFlushedSize)
 	registry.MustRegister(DataNodeNumConsumers)
 	registry.MustRegister(DataNodeNumProducers)
-	registry.MustRegister(DataNodeTimeSync)
-	registry.MustRegister(DataNodeNumUnflushedSegments)
+	registry.MustRegister(DataNodeConsumeTimeTickLag)
 	registry.MustRegister(DataNodeEncodeBufferLatency)
 	registry.MustRegister(DataNodeSave2StorageLatency)
 	registry.MustRegister(DataNodeFlushBufferCount)
 	registry.MustRegister(DataNodeAutoFlushBufferCount)
 	registry.MustRegister(DataNodeCompactionLatency)
 	registry.MustRegister(DataNodeFlushReqCounter)
-	registry.MustRegister(DataNodeConsumeCounter)
+	registry.MustRegister(DataNodeConsumeMsgCount)
+	registry.MustRegister(DataNodeProduceTimeTickLag)
+	registry.MustRegister(DataNodeConsumeBytesCount)
+	registry.MustRegister(DataNodeForwardDeleteMsgTimeTaken)
+}
+
+func CleanupDataNodeCollectionMetrics(nodeID int64, collectionID int64, channel string) {
+	DataNodeConsumeTimeTickLag.
+		Delete(
+			prometheus.Labels{
+				nodeIDLabelName:       fmt.Sprint(nodeID),
+				msgTypeLabelName:      AllLabel,
+				collectionIDLabelName: fmt.Sprint(collectionID),
+			})
+
+	DataNodeProduceTimeTickLag.
+		Delete(
+			prometheus.Labels{
+				nodeIDLabelName:       fmt.Sprint(nodeID),
+				collectionIDLabelName: fmt.Sprint(collectionID),
+				channelNameLabelName:  channel,
+			})
+
+	for _, label := range []string{AllLabel, DeleteLabel, InsertLabel} {
+		DataNodeConsumeMsgCount.
+			Delete(
+				prometheus.Labels{
+					nodeIDLabelName:       fmt.Sprint(nodeID),
+					msgTypeLabelName:      label,
+					collectionIDLabelName: fmt.Sprint(collectionID),
+				})
+	}
 }
