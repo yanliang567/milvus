@@ -292,6 +292,10 @@ func (s *proxyTestServer) GetVersion(ctx context.Context, request *milvuspb.GetV
 	}, nil
 }
 
+func (s *proxyTestServer) RenameCollection(ctx context.Context, request *milvuspb.RenameCollectionRequest) (*commonpb.Status, error) {
+	return s.Proxy.RenameCollection(ctx, request)
+}
+
 func (s *proxyTestServer) GetComponentStates(ctx context.Context, request *milvuspb.GetComponentStatesRequest) (*milvuspb.ComponentStates, error) {
 	return s.Proxy.GetComponentStates(ctx)
 }
@@ -470,10 +474,10 @@ func TestProxy(t *testing.T) {
 	testServer := newProxyTestServer(proxy)
 	wg.Add(1)
 
-	base := paramtable.BaseTable{}
-	base.Init(0)
+	base := &paramtable.ComponentParam{}
+	base.Init()
 	var p paramtable.GrpcServerConfig
-	p.Init(typeutil.ProxyRole, &base)
+	p.Init(typeutil.ProxyRole, &base.BaseTable)
 	testServer.Proxy.SetAddress(p.GetAddress())
 	assert.Equal(t, p.GetAddress(), testServer.Proxy.GetAddress())
 

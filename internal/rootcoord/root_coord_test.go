@@ -704,6 +704,46 @@ func TestRootCoord_InvalidateCollectionMetaCache(t *testing.T) {
 	})
 }
 
+func TestRootCoord_RenameCollection(t *testing.T) {
+	t.Run("not healthy", func(t *testing.T) {
+		ctx := context.Background()
+		c := newTestCore(withAbnormalCode())
+		resp, err := c.RenameCollection(ctx, &milvuspb.RenameCollectionRequest{})
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetErrorCode())
+	})
+
+	t.Run("add task failed", func(t *testing.T) {
+		c := newTestCore(withHealthyCode(),
+			withInvalidScheduler())
+
+		ctx := context.Background()
+		resp, err := c.RenameCollection(ctx, &milvuspb.RenameCollectionRequest{})
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetErrorCode())
+	})
+
+	t.Run("execute task failed", func(t *testing.T) {
+		c := newTestCore(withHealthyCode(),
+			withTaskFailScheduler())
+
+		ctx := context.Background()
+		resp, err := c.RenameCollection(ctx, &milvuspb.RenameCollectionRequest{})
+		assert.NoError(t, err)
+		assert.NotEqual(t, commonpb.ErrorCode_Success, resp.GetErrorCode())
+	})
+
+	t.Run("run ok", func(t *testing.T) {
+		c := newTestCore(withHealthyCode(),
+			withValidScheduler())
+
+		ctx := context.Background()
+		resp, err := c.RenameCollection(ctx, &milvuspb.RenameCollectionRequest{})
+		assert.NoError(t, err)
+		assert.Equal(t, commonpb.ErrorCode_Success, resp.GetErrorCode())
+	})
+}
+
 func TestRootCoord_ShowConfigurations(t *testing.T) {
 	t.Run("not healthy", func(t *testing.T) {
 		ctx := context.Background()
@@ -714,7 +754,7 @@ func TestRootCoord_ShowConfigurations(t *testing.T) {
 	})
 
 	t.Run("normal case", func(t *testing.T) {
-		Params.InitOnce()
+		Params.Init()
 
 		pattern := "rootcoord.Port"
 		req := &internalpb.ShowConfigurationsRequest{

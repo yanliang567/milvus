@@ -88,16 +88,17 @@ type ComponentParam struct {
 	IntegrationTestCfg integrationTestConfig
 }
 
-// InitOnce initialize once
-func (p *ComponentParam) InitOnce() {
+// Init initialize once
+func (p *ComponentParam) Init() {
 	p.once.Do(func() {
-		p.Init()
+		p.init()
 	})
 }
 
-// Init initialize the global param table
-func (p *ComponentParam) Init() {
-	p.ServiceParam.Init()
+// init initialize the global param table
+
+func (p *ComponentParam) init() {
+	p.ServiceParam.init()
 
 	p.CommonCfg.init(&p.BaseTable)
 	p.QuotaConfig.init(&p.BaseTable)
@@ -578,6 +579,7 @@ type rootCoordConfig struct {
 	MinSegmentSizeToEnableIndex ParamItem `refreshable:"true"`
 	ImportTaskExpiration        ParamItem `refreshable:"true"`
 	ImportTaskRetention         ParamItem `refreshable:"true"`
+	ImportMaxPendingTaskCount   ParamItem `refreshable:"true"`
 	ImportTaskSubPath           ParamItem `refreshable:"true"`
 	EnableActiveStandby         ParamItem `refreshable:"false"`
 }
@@ -624,6 +626,13 @@ func (p *rootCoordConfig) init(base *BaseTable) {
 		DefaultValue: "importtask",
 	}
 	p.ImportTaskSubPath.Init(base.mgr)
+
+	p.ImportMaxPendingTaskCount = ParamItem{
+		Key:          "rootCoord.importMaxPendingTaskCount",
+		Version:      "2.2.2",
+		DefaultValue: strconv.Itoa(65535),
+	}
+	p.ImportMaxPendingTaskCount.Init(base.mgr)
 
 	p.EnableActiveStandby = ParamItem{
 		Key:          "rootCoord.enableActiveStandby",

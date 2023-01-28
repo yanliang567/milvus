@@ -53,8 +53,8 @@ type ServiceParam struct {
 	MinioCfg        MinioConfig
 }
 
-func (p *ServiceParam) Init() {
-	p.BaseTable.Init(10)
+func (p *ServiceParam) init() {
+	p.BaseTable.init(10)
 
 	p.LocalStorageCfg.Init(&p.BaseTable)
 	p.MetaStoreCfg.Init(&p.BaseTable)
@@ -604,14 +604,14 @@ func (p *MinioConfig) Init(base *BaseTable) {
 	p.AccessKeyID = ParamItem{
 		Key:          "minio.accessKeyID",
 		Version:      "2.0.0",
-		PanicIfEmpty: true,
+		PanicIfEmpty: false, // tmp fix, need to be conditional
 	}
 	p.AccessKeyID.Init(base.mgr)
 
 	p.SecretAccessKey = ParamItem{
 		Key:          "minio.secretAccessKey",
 		Version:      "2.0.0",
-		PanicIfEmpty: true,
+		PanicIfEmpty: false, // tmp fix, need to be conditional
 	}
 	p.SecretAccessKey.Init(base.mgr)
 
