@@ -17,11 +17,19 @@ def get_dim(collection):
     return dim
 
 
+def get_vector_field_name(collection):
+    fields = collection.schema.fields
+    for field in fields:
+        if field.dtype == DataType.FLOAT_VECTOR:
+            vector_field_name = field.name
+    return vector_field_name
+
+
 def delete_entities(collection, nb, search_params, rounds):
     dim = get_dim(collection=collection)
     auto_id = collection.schema.auto_id
     primary_field_name = collection.primary_field.name
-    vector_field_name = collection._get_vector_field()
+    vector_field_name = get_vector_field_name(collection=collection)
     if auto_id:
         for r in range(rounds):
             search_vector = [[random.random() for _ in range(dim)] for _ in range(1)]
