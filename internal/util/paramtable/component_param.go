@@ -210,9 +210,9 @@ type commonConfig struct {
 func (p *commonConfig) init(base *BaseTable) {
 	// must init cluster prefix first
 	p.ClusterPrefix = ParamItem{
-		Key:          "common.chanNamePrefix.cluster",
+		Key:          "msgChannel.chanNamePrefix.cluster",
 		Version:      "2.1.0",
-		FallbackKeys: []string{"msgChannel.chanNamePrefix.cluster"},
+		FallbackKeys: []string{"common.chanNamePrefix.cluster"},
 		PanicIfEmpty: true,
 	}
 	p.ClusterPrefix.Init(base.mgr)
@@ -221,9 +221,9 @@ func (p *commonConfig) init(base *BaseTable) {
 		return strings.Join([]string{p.ClusterPrefix.GetValue(), prefix}, "-")
 	}
 	p.ProxySubName = ParamItem{
-		Key:          "common.subNamePrefix.proxySubNamePrefix",
+		Key:          "msgChannel.subNamePrefix.proxySubNamePrefix",
 		Version:      "2.1.0",
-		FallbackKeys: []string{"msgChannel.subNamePrefix.proxySubNamePrefix"},
+		FallbackKeys: []string{"common.subNamePrefix.proxySubNamePrefix"},
 		PanicIfEmpty: true,
 		Formatter:    chanNamePrefix,
 	}
@@ -231,27 +231,27 @@ func (p *commonConfig) init(base *BaseTable) {
 
 	// --- rootcoord ---
 	p.RootCoordTimeTick = ParamItem{
-		Key:          "common.chanNamePrefix.rootCoordTimeTick",
+		Key:          "msgChannel.chanNamePrefix.rootCoordTimeTick",
 		Version:      "2.1.0",
-		FallbackKeys: []string{"msgChannel.chanNamePrefix.rootCoordTimeTick"},
+		FallbackKeys: []string{"common.chanNamePrefix.rootCoordTimeTick"},
 		PanicIfEmpty: true,
 		Formatter:    chanNamePrefix,
 	}
 	p.RootCoordTimeTick.Init(base.mgr)
 
 	p.RootCoordStatistics = ParamItem{
-		Key:          "common.chanNamePrefix.rootCoordStatistics",
+		Key:          "msgChannel.chanNamePrefix.rootCoordStatistics",
 		Version:      "2.1.0",
-		FallbackKeys: []string{"msgChannel.chanNamePrefix.rootCoordStatistics"},
+		FallbackKeys: []string{"common.chanNamePrefix.rootCoordStatistics"},
 		PanicIfEmpty: true,
 		Formatter:    chanNamePrefix,
 	}
 	p.RootCoordStatistics.Init(base.mgr)
 
 	p.RootCoordDml = ParamItem{
-		Key:          "common.chanNamePrefix.rootCoordDml",
+		Key:          "msgChannel.chanNamePrefix.rootCoordDml",
 		Version:      "2.1.0",
-		FallbackKeys: []string{"msgChannel.chanNamePrefix.rootCoordDml"},
+		FallbackKeys: []string{"common.chanNamePrefix.rootCoordDml"},
 		PanicIfEmpty: true,
 		Formatter:    chanNamePrefix,
 		Doc:          "It is not refreshable currently",
@@ -259,9 +259,9 @@ func (p *commonConfig) init(base *BaseTable) {
 	p.RootCoordDml.Init(base.mgr)
 
 	p.RootCoordDelta = ParamItem{
-		Key:          "common.chanNamePrefix.rootCoordDelta",
+		Key:          "msgChannel.chanNamePrefix.rootCoordDelta",
 		Version:      "2.1.0",
-		FallbackKeys: []string{"msgChannel.chanNamePrefix.rootCoordDelta"},
+		FallbackKeys: []string{"common.chanNamePrefix.rootCoordDelta"},
 		PanicIfEmpty: true,
 		Formatter:    chanNamePrefix,
 		Doc:          "It is not refreshable currently",
@@ -269,9 +269,9 @@ func (p *commonConfig) init(base *BaseTable) {
 	p.RootCoordDelta.Init(base.mgr)
 
 	p.RootCoordSubName = ParamItem{
-		Key:          "common.subNamePrefix.rootCoordSubNamePrefix",
+		Key:          "msgChannel.subNamePrefix.rootCoordSubNamePrefix",
 		Version:      "2.1.0",
-		FallbackKeys: []string{"msgChannel.subNamePrefix.rootCoordSubNamePrefix"},
+		FallbackKeys: []string{"common.subNamePrefix.rootCoordSubNamePrefix"},
 		PanicIfEmpty: true,
 		Formatter:    chanNamePrefix,
 		Doc:          "It is deprecated",
@@ -279,9 +279,9 @@ func (p *commonConfig) init(base *BaseTable) {
 	p.RootCoordSubName.Init(base.mgr)
 
 	p.QueryCoordSearch = ParamItem{
-		Key:          "common.chanNamePrefix.search",
+		Key:          "msgChannel.chanNamePrefix.search",
 		Version:      "2.1.0",
-		FallbackKeys: []string{"msgChannel.chanNamePrefix.search"},
+		FallbackKeys: []string{"common.chanNamePrefix.search"},
 		PanicIfEmpty: true,
 		Formatter:    chanNamePrefix,
 		Doc:          "It is deprecated",
@@ -289,9 +289,9 @@ func (p *commonConfig) init(base *BaseTable) {
 	p.QueryCoordSearch.Init(base.mgr)
 
 	p.QueryCoordSearchResult = ParamItem{
-		Key:          "common.chanNamePrefix.searchResult",
+		Key:          "msgChannel.chanNamePrefix.searchResult",
 		Version:      "2.1.0",
-		FallbackKeys: []string{"msgChannel.chanNamePrefix.searchResult"},
+		FallbackKeys: []string{"common.chanNamePrefix.searchResult"},
 		PanicIfEmpty: true,
 		Formatter:    chanNamePrefix,
 		Doc:          "It is deprecated",
@@ -299,61 +299,61 @@ func (p *commonConfig) init(base *BaseTable) {
 	p.QueryCoordSearchResult.Init(base.mgr)
 
 	p.QueryCoordTimeTick = ParamItem{
-		Key:          "common.chanNamePrefix.queryTimeTick",
+		Key:          "msgChannel.chanNamePrefix.queryTimeTick",
 		Version:      "2.1.0",
-		FallbackKeys: []string{"msgChannel.chanNamePrefix.queryTimeTick"},
+		FallbackKeys: []string{"common.chanNamePrefix.queryTimeTick"},
 		PanicIfEmpty: true,
 		Formatter:    chanNamePrefix,
 	}
 	p.QueryCoordTimeTick.Init(base.mgr)
 
 	p.QueryNodeSubName = ParamItem{
-		Key:          "common.subNamePrefix.queryNodeSubNamePrefix",
+		Key:          "msgChannel.subNamePrefix.queryNodeSubNamePrefix",
 		Version:      "2.1.0",
-		FallbackKeys: []string{"msgChannel.subNamePrefix.queryNodeSubNamePrefix"},
+		FallbackKeys: []string{"common.subNamePrefix.queryNodeSubNamePrefix"},
 		PanicIfEmpty: true,
 		Formatter:    chanNamePrefix,
 	}
 	p.QueryNodeSubName.Init(base.mgr)
 
 	p.DataCoordStatistic = ParamItem{
-		Key:          "common.chanNamePrefix.dataCoordStatistic",
+		Key:          "msgChannel.chanNamePrefix.dataCoordStatistic",
 		Version:      "2.1.0",
-		FallbackKeys: []string{"msgChannel.chanNamePrefix.dataCoordStatistic"},
+		FallbackKeys: []string{"common.chanNamePrefix.dataCoordStatistic"},
 		PanicIfEmpty: true,
 		Formatter:    chanNamePrefix,
 	}
 	p.DataCoordStatistic.Init(base.mgr)
 
 	p.DataCoordTimeTick = ParamItem{
-		Key:          "common.chanNamePrefix.dataCoordTimeTick",
+		Key:          "msgChannel.chanNamePrefix.dataCoordTimeTick",
 		Version:      "2.1.0",
-		FallbackKeys: []string{"msgChannel.chanNamePrefix.dataCoordTimeTick"},
+		FallbackKeys: []string{"common.chanNamePrefix.dataCoordTimeTick"},
 		PanicIfEmpty: true,
 		Formatter:    chanNamePrefix,
 	}
 	p.DataCoordTimeTick.Init(base.mgr)
 
 	p.DataCoordSegmentInfo = ParamItem{
-		Key:          "common.chanNamePrefix.dataCoordSegmentInfo",
+		Key:          "msgChannel.chanNamePrefix.dataCoordSegmentInfo",
 		Version:      "2.1.0",
-		FallbackKeys: []string{"msgChannel.chanNamePrefix.dataCoordSegmentInfo"},
+		FallbackKeys: []string{"common.chanNamePrefix.dataCoordSegmentInfo"},
 		PanicIfEmpty: true,
 		Formatter:    chanNamePrefix,
 	}
 	p.DataCoordSegmentInfo.Init(base.mgr)
 
 	p.DataCoordSubName = ParamItem{
-		Key:          "common.subNamePrefix.dataCoordSubNamePrefix",
+		Key:          "msgChannel.subNamePrefix.dataCoordSubNamePrefix",
 		Version:      "2.1.0",
-		FallbackKeys: []string{"msgChannel.subNamePrefix.dataCoordSubNamePrefix"},
+		FallbackKeys: []string{"common.subNamePrefix.dataCoordSubNamePrefix"},
 		PanicIfEmpty: true,
 		Formatter:    chanNamePrefix,
 	}
 	p.DataCoordSubName.Init(base.mgr)
 
 	p.DataCoordWatchSubPath = ParamItem{
-		Key:          "common.subNamePrefix.dataCoordWatchSubPath",
+		Key:          "msgChannel.subNamePrefix.dataCoordWatchSubPath",
 		Version:      "2.1.0",
 		DefaultValue: "channelwatch",
 		PanicIfEmpty: true,
@@ -361,9 +361,9 @@ func (p *commonConfig) init(base *BaseTable) {
 	p.DataCoordWatchSubPath.Init(base.mgr)
 
 	p.DataNodeSubName = ParamItem{
-		Key:          "common.subNamePrefix.dataNodeSubNamePrefix",
+		Key:          "msgChannel.subNamePrefix.dataNodeSubNamePrefix",
 		Version:      "2.1.0",
-		FallbackKeys: []string{"msgChannel.subNamePrefix.dataNodeSubNamePrefix"},
+		FallbackKeys: []string{"common.subNamePrefix.dataNodeSubNamePrefix"},
 		PanicIfEmpty: true,
 		Formatter:    chanNamePrefix,
 	}
@@ -888,8 +888,11 @@ type queryCoordConfig struct {
 	CheckHandoffInterval ParamItem `refreshable:"true"`
 	EnableActiveStandby  ParamItem `refreshable:"false"`
 
-	NextTargetSurviveTime    ParamItem `refreshable:"true"`
-	UpdateNextTargetInterval ParamItem `refreshable:"false"`
+	NextTargetSurviveTime      ParamItem `refreshable:"true"`
+	UpdateNextTargetInterval   ParamItem `refreshable:"false"`
+	CheckNodeInReplicaInterval ParamItem `refreshable:"false"`
+	CheckResourceGroupInterval ParamItem `refreshable:"false"`
+	EnableRGAutoRecover        ParamItem `refreshable:"true"`
 }
 
 func (p *queryCoordConfig) init(base *BaseTable) {
@@ -1040,6 +1043,30 @@ func (p *queryCoordConfig) init(base *BaseTable) {
 		PanicIfEmpty: true,
 	}
 	p.UpdateNextTargetInterval.Init(base.mgr)
+
+	p.CheckNodeInReplicaInterval = ParamItem{
+		Key:          "queryCoord.checkNodeInReplicaInterval",
+		Version:      "2.2.3",
+		DefaultValue: "60",
+		PanicIfEmpty: true,
+	}
+	p.CheckNodeInReplicaInterval.Init(base.mgr)
+
+	p.CheckResourceGroupInterval = ParamItem{
+		Key:          "queryCoord.checkResourceGroupInterval",
+		Version:      "2.2.3",
+		DefaultValue: "30",
+		PanicIfEmpty: true,
+	}
+	p.CheckResourceGroupInterval.Init(base.mgr)
+
+	p.EnableRGAutoRecover = ParamItem{
+		Key:          "queryCoord.enableRGAutoRecover",
+		Version:      "2.2.3",
+		DefaultValue: "true",
+		PanicIfEmpty: true,
+	}
+	p.EnableRGAutoRecover.Init(base.mgr)
 }
 
 // /////////////////////////////////////////////////////////////////////////////
@@ -1575,35 +1602,35 @@ func (p *dataCoordConfig) init(base *BaseTable) {
 	p.EnableActiveStandby.Init(base.mgr)
 
 	p.MinSegmentNumRowsToEnableIndex = ParamItem{
-		Key:          "dataCoord.segment.minSegmentNumRowsToEnableIndex",
+		Key:          "indexCoord.segment.minSegmentNumRowsToEnableIndex",
 		Version:      "2.0.0",
 		DefaultValue: "1024",
 	}
 	p.MinSegmentNumRowsToEnableIndex.Init(base.mgr)
 
 	p.BindIndexNodeMode = ParamItem{
-		Key:          "dataCoord.bindIndexNodeMode.enable",
+		Key:          "indexCoord.bindIndexNodeMode.enable",
 		Version:      "2.0.0",
 		DefaultValue: "false",
 	}
 	p.BindIndexNodeMode.Init(base.mgr)
 
 	p.IndexNodeAddress = ParamItem{
-		Key:          "dataCoord.bindIndexNodeMode.address",
+		Key:          "indexCoord.bindIndexNodeMode.address",
 		Version:      "2.0.0",
 		DefaultValue: "localhost:22930",
 	}
 	p.IndexNodeAddress.Init(base.mgr)
 
 	p.WithCredential = ParamItem{
-		Key:          "dataCoord.bindIndexNodeMode.withCred",
+		Key:          "indexCoord.bindIndexNodeMode.withCred",
 		Version:      "2.0.0",
 		DefaultValue: "false",
 	}
 	p.WithCredential.Init(base.mgr)
 
 	p.IndexNodeID = ParamItem{
-		Key:          "dataCoord.bindIndexNodeMode.nodeID",
+		Key:          "indexCoord.bindIndexNodeMode.nodeID",
 		Version:      "2.0.0",
 		DefaultValue: "0",
 	}

@@ -14,24 +14,51 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package meta
+package lifetime
 
-import "github.com/milvus-io/milvus/internal/querycoordv2/session"
+import (
+	"testing"
+	"time"
 
-type Meta struct {
-	*CollectionManager
-	*ReplicaManager
-	*ResourceManager
+	"github.com/stretchr/testify/suite"
+)
+
+type LifetimeSuite struct {
+	suite.Suite
 }
 
-func NewMeta(
-	idAllocator func() (int64, error),
-	store Store,
-	nodeMgr *session.NodeManager,
-) *Meta {
-	return &Meta{
-		NewCollectionManager(store),
-		NewReplicaManager(idAllocator, store),
-		NewResourceManager(store, nodeMgr),
+func (s *LifetimeSuite) TestNormal() {
+	l := NewLifetime[int32](0)
+	isHealthy := func(state int32) bool { return state == 0 }
+
+	state := l.GetState()
+	s.EqualValues(0, state)
+
+	s.True(l.Add(isHealthy))
+
+	l.SetState(1)
+	s.False(l.Add(isHealthy))
+
+	signal := make(chan struct{})
+	go func() {
+		l.Wait()
+		close(signal)
+	}()
+
+	select {
+	case <-signal:
+		s.FailNow("signal closed before all tasks done")
+	default:
 	}
+
+	l.Done()
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		s.FailNow("signal not closed after all tasks done")
+	}
+}
+
+func TestLifetime(t *testing.T) {
+	suite.Run(t, new(LifetimeSuite))
 }
