@@ -14,36 +14,38 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-namespace milvus::index {
-template <typename T>
-struct IndexStructure {
-    IndexStructure() : a_(0), idx_(0) {
-    }
-    explicit IndexStructure(const T a) : a_(a), idx_(0) {
-    }
-    IndexStructure(const T a, const size_t idx) : a_(a), idx_(idx) {
-    }
-    bool
-    operator<(const IndexStructure& b) const {
-        return a_ < b.a_;
-    }
-    bool
-    operator<=(const IndexStructure& b) const {
-        return a_ <= b.a_;
-    }
-    bool
-    operator>(const IndexStructure& b) const {
-        return a_ > b.a_;
-    }
-    bool
-    operator>=(const IndexStructure& b) const {
-        return a_ >= b.a_;
-    }
-    bool
-    operator==(const IndexStructure& b) const {
-        return a_ == b.a_;
-    }
-    T a_;
-    int32_t idx_;
-};
-}  // namespace milvus::index
+package querynode
+
+import (
+	"testing"
+
+	"github.com/milvus-io/milvus/internal/proto/planpb"
+	"github.com/stretchr/testify/suite"
+)
+
+type SearchTaskSuite struct {
+	suite.Suite
+}
+
+func (s *SearchTaskSuite) TestMerge() {
+	plan := &planpb.PlanNode{
+		Node: &planpb.PlanNode_VectorAnns{},
+	}
+
+	s1 := &searchTask{
+		NQ:   1,
+		TopK: 1000,
+		plan: plan,
+	}
+	s2 := &searchTask{
+		NQ:   1,
+		TopK: 1,
+		plan: plan,
+	}
+
+	s.Equal(s1.CanMergeWith(s2), s2.CanMergeWith(s1))
+}
+
+func TestSearchTask(t *testing.T) {
+	suite.Run(t, new(SearchTaskSuite))
+}

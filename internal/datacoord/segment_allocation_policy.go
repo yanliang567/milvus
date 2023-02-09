@@ -130,7 +130,7 @@ func sealByLifetimePolicy(lifetime time.Duration) segmentSealPolicy {
 func sealByMaxBinlogFileNumberPolicy(maxBinlogFileNumber int) segmentSealPolicy {
 	return func(segment *SegmentInfo, ts Timestamp) bool {
 		logFileCounter := 0
-		for _, fieldBinlog := range segment.Binlogs {
+		for _, fieldBinlog := range segment.GetStatslogs() {
 			logFileCounter += len(fieldBinlog.GetBinlogs())
 		}
 
@@ -185,7 +185,6 @@ const flushInterval = 2 * time.Second
 
 func flushPolicyV1(segment *SegmentInfo, t Timestamp) bool {
 	return segment.GetState() == commonpb.SegmentState_Sealed &&
-		segment.GetLastExpireTime() <= t &&
 		time.Since(segment.lastFlushTime) >= flushInterval &&
-		segment.currRows != 0
+		(segment.GetLastExpireTime() <= t && segment.currRows != 0 || (segment.IsImporting))
 }

@@ -207,11 +207,13 @@ func (s *Server) ShowPartitions(ctx context.Context, req *querypb.ShowPartitions
 func (s *Server) LoadCollection(ctx context.Context, req *querypb.LoadCollectionRequest) (*commonpb.Status, error) {
 	log := log.Ctx(ctx).With(
 		zap.Int64("collectionID", req.GetCollectionID()),
+		zap.Int32("replicaNumber", req.GetReplicaNumber()),
+		zap.Strings("resourceGroups", req.GetResourceGroups()),
+		zap.Bool("refreshMode", req.GetRefresh()),
 	)
 
 	log.Info("load collection request received",
 		zap.Any("schema", req.Schema),
-		zap.Int32("replicaNumber", req.ReplicaNumber),
 		zap.Int64s("fieldIndexes", lo.Values(req.GetFieldIndexID())),
 	)
 	metrics.QueryCoordLoadCount.WithLabelValues(metrics.TotalLabel).Inc()
@@ -301,11 +303,11 @@ func (s *Server) LoadPartitions(ctx context.Context, req *querypb.LoadPartitions
 		zap.Int64("collectionID", req.GetCollectionID()),
 		zap.Int32("replicaNumber", req.GetReplicaNumber()),
 		zap.Strings("resourceGroups", req.GetResourceGroups()),
+		zap.Bool("refreshMode", req.GetRefresh()),
 	)
 
 	log.Info("received load partitions request",
 		zap.Any("schema", req.Schema),
-		zap.Int32("replicaNumber", req.ReplicaNumber),
 		zap.Int64s("partitions", req.GetPartitionIDs()))
 	metrics.QueryCoordLoadCount.WithLabelValues(metrics.TotalLabel).Inc()
 
@@ -354,7 +356,7 @@ func (s *Server) checkResourceGroup(collectionID int64, resourceGroups []string)
 	if len(resourceGroups) != 0 {
 		collectionUsedRG := s.meta.ReplicaManager.GetResourceGroupByCollection(collectionID)
 		for _, rgName := range resourceGroups {
-			if !collectionUsedRG.Contain(rgName) {
+			if len(collectionUsedRG) > 0 && !collectionUsedRG.Contain(rgName) {
 				return ErrLoadUseWrongRG
 			}
 		}

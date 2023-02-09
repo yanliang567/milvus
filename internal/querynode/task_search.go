@@ -56,7 +56,6 @@ type searchTask struct {
 	otherTasks       []*searchTask
 	cpuOnce          sync.Once
 	plan             *planpb.PlanNode
-	qInfo            *planpb.QueryInfo
 }
 
 func (s *searchTask) PreExecute(ctx context.Context) error {
@@ -67,21 +66,6 @@ func (s *searchTask) PreExecute(ctx context.Context) error {
 		rateCol.rtCounter.increaseQueueTime(t)
 	}
 	s.combinePlaceHolderGroups()
-	return nil
-}
-
-func (s *searchTask) init() error {
-	if s.iReq.GetSerializedExprPlan() != nil {
-		s.plan = &planpb.PlanNode{}
-		err := proto.Unmarshal(s.iReq.GetSerializedExprPlan(), s.plan)
-		if err != nil {
-			return err
-		}
-		switch s.plan.GetNode().(type) {
-		case *planpb.PlanNode_VectorAnns:
-			s.qInfo = s.plan.GetVectorAnns().GetQueryInfo()
-		}
-	}
 	return nil
 }
 
@@ -348,12 +332,16 @@ func (s *searchTask) CanMergeWith(t readTask) bool {
 		return false
 	}
 
-	pre := s.NQ * s.TopK * 1.0
-	newTopK := s.TopK
-	if newTopK < s2.TopK {
-		newTopK = s2.TopK
+	pre := s.NQ * s.TopK
+	if s2.NQ*s2.TopK < pre {
+		pre = s2.NQ * s2.TopK
 	}
-	after := (s.NQ + s2.NQ) * newTopK
+
+	maxTopk := s.TopK
+	if maxTopk < s2.TopK {
+		maxTopk = s2.TopK
+	}
+	after := (s.NQ + s2.NQ) * maxTopk
 
 	if pre == 0 {
 		return false
@@ -424,10 +412,6 @@ func newSearchTask(ctx context.Context, src *querypb.SearchRequest) (*searchTask
 		OrigNQs:          []int64{src.Req.GetNq()},
 		PlaceholderGroup: src.Req.GetPlaceholderGroup(),
 		MetricType:       src.Req.GetMetricType(),
-	}
-	err := target.init()
-	if err != nil {
-		return nil, err
 	}
 	return target, nil
 }

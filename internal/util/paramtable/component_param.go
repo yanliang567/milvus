@@ -143,6 +143,10 @@ func (p *ComponentParam) GetAll() map[string]string {
 	return p.mgr.GetConfigs()
 }
 
+func (p *ComponentParam) Watch(key string, watcher config.EventHandler) {
+	p.mgr.Dispatcher.Register(key, watcher)
+}
+
 // /////////////////////////////////////////////////////////////////////////////
 // --- common ---
 type commonConfig struct {
@@ -173,8 +177,8 @@ type commonConfig struct {
 	DataCoordWatchSubPath ParamItem `refreshable:"false"`
 	DataNodeSubName       ParamItem `refreshable:"false"`
 
-	DefaultPartitionName ParamItem `refreshable:"true"`
-	DefaultIndexName     ParamItem `refreshable:"true"`
+	DefaultPartitionName ParamItem `refreshable:"false"`
+	DefaultIndexName     ParamItem `refreshable:"false"`
 	RetentionDuration    ParamItem `refreshable:"true"`
 	EntityExpirationTTL  ParamItem `refreshable:"true"`
 
@@ -214,6 +218,7 @@ func (p *commonConfig) init(base *BaseTable) {
 		Version:      "2.1.0",
 		FallbackKeys: []string{"common.chanNamePrefix.cluster"},
 		PanicIfEmpty: true,
+		Forbidden:    true,
 	}
 	p.ClusterPrefix.Init(base.mgr)
 
@@ -373,6 +378,7 @@ func (p *commonConfig) init(base *BaseTable) {
 		Key:          "common.defaultPartitionName",
 		Version:      "2.0.0",
 		DefaultValue: "_default",
+		Forbidden:    true,
 	}
 	p.DefaultPartitionName.Init(base.mgr)
 
@@ -380,6 +386,7 @@ func (p *commonConfig) init(base *BaseTable) {
 		Key:          "common.defaultIndexName",
 		Version:      "2.0.0",
 		DefaultValue: "_default_idx",
+		Forbidden:    true,
 	}
 	p.DefaultIndexName.Init(base.mgr)
 
@@ -745,7 +752,7 @@ func (p *proxyConfig) init(base *BaseTable) {
 
 	p.MaxShardNum = ParamItem{
 		Key:          "proxy.maxShardNum",
-		DefaultValue: "256",
+		DefaultValue: "64",
 		Version:      "2.0.0",
 		PanicIfEmpty: true,
 	}
@@ -1055,7 +1062,7 @@ func (p *queryCoordConfig) init(base *BaseTable) {
 	p.CheckResourceGroupInterval = ParamItem{
 		Key:          "queryCoord.checkResourceGroupInterval",
 		Version:      "2.2.3",
-		DefaultValue: "30",
+		DefaultValue: "10",
 		PanicIfEmpty: true,
 	}
 	p.CheckResourceGroupInterval.Init(base.mgr)
@@ -1395,10 +1402,11 @@ type dataCoordConfig struct {
 	GCDropTolerance         ParamItem `refreshable:"false"`
 	EnableActiveStandby     ParamItem `refreshable:"false"`
 
-	BindIndexNodeMode ParamItem `refreshable:"false"`
-	IndexNodeAddress  ParamItem `refreshable:"false"`
-	WithCredential    ParamItem `refreshable:"false"`
-	IndexNodeID       ParamItem `refreshable:"false"`
+	BindIndexNodeMode          ParamItem `refreshable:"false"`
+	IndexNodeAddress           ParamItem `refreshable:"false"`
+	WithCredential             ParamItem `refreshable:"false"`
+	IndexNodeID                ParamItem `refreshable:"false"`
+	IndexTaskSchedulerInterval ParamItem `refreshable:"false"`
 
 	MinSegmentNumRowsToEnableIndex ParamItem `refreshable:"true"`
 }
@@ -1408,7 +1416,7 @@ func (p *dataCoordConfig) init(base *BaseTable) {
 	p.MaxWatchDuration = ParamItem{
 		Key:          "dataCoord.channel.maxWatchDuration",
 		Version:      "2.2.1",
-		DefaultValue: "60",
+		DefaultValue: "600",
 	}
 	p.MaxWatchDuration.Init(base.mgr)
 
@@ -1463,8 +1471,8 @@ func (p *dataCoordConfig) init(base *BaseTable) {
 
 	p.SegmentMaxBinlogFileNumber = ParamItem{
 		Key:          "dataCoord.segment.maxBinlogFileNumber",
-		Version:      "2.0.0",
-		DefaultValue: "256",
+		Version:      "2.2.0",
+		DefaultValue: "16",
 	}
 	p.SegmentMaxBinlogFileNumber.Init(base.mgr)
 
@@ -1520,7 +1528,7 @@ func (p *dataCoordConfig) init(base *BaseTable) {
 	p.CompactionTimeoutInSeconds = ParamItem{
 		Key:          "dataCoord.compaction.timeout",
 		Version:      "2.0.0",
-		DefaultValue: "180",
+		DefaultValue: "300",
 	}
 	p.CompactionTimeoutInSeconds.Init(base.mgr)
 
@@ -1555,7 +1563,7 @@ func (p *dataCoordConfig) init(base *BaseTable) {
 	p.SingleCompactionDeltalogMaxNum = ParamItem{
 		Key:          "dataCoord.compaction.single.deltalog.maxnum",
 		Version:      "2.0.0",
-		DefaultValue: "1000",
+		DefaultValue: "200",
 	}
 	p.SingleCompactionDeltalogMaxNum.Init(base.mgr)
 
@@ -1590,7 +1598,7 @@ func (p *dataCoordConfig) init(base *BaseTable) {
 	p.GCDropTolerance = ParamItem{
 		Key:          "dataCoord.gc.dropTolerance",
 		Version:      "2.0.0",
-		DefaultValue: "86400",
+		DefaultValue: "3600",
 	}
 	p.GCDropTolerance.Init(base.mgr)
 
@@ -1635,6 +1643,12 @@ func (p *dataCoordConfig) init(base *BaseTable) {
 		DefaultValue: "0",
 	}
 	p.IndexNodeID.Init(base.mgr)
+	p.IndexTaskSchedulerInterval = ParamItem{
+		Key:          "indexCoord.scheduler.interval",
+		Version:      "2.0.0",
+		DefaultValue: "1000",
+	}
+	p.IndexTaskSchedulerInterval.Init(base.mgr)
 }
 
 // /////////////////////////////////////////////////////////////////////////////

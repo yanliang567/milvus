@@ -355,12 +355,14 @@ func (s *Session) getCompleteKey() string {
 // RegisterService will save a key-value in etcd
 // key: metaRootPath + "/services" + "/ServerName-ServerID"
 // value: json format
-// {
-//   ServerID   int64  `json:"ServerID,omitempty"`
-//	 ServerName string `json:"ServerName,omitempty"`
-//	 Address    string `json:"Address,omitempty"`
-//   Exclusive  bool   `json:"Exclusive,omitempty"`
-// }
+//
+//	{
+//	    ServerID   int64  `json:"ServerID,omitempty"`
+//	    ServerName string `json:"ServerName,omitempty"`
+//	    Address    string `json:"Address,omitempty"`
+//	    Exclusive  bool   `json:"Exclusive,omitempty"`
+//	}
+//
 // Exclusive means whether this service can exist two at the same time, if so,
 // it is false. Otherwise, set it to true.
 func (s *Session) registerService() (<-chan *clientv3.LeaseKeepAliveResponse, error) {
@@ -410,12 +412,7 @@ func (s *Session) registerService() (<-chan *clientv3.LeaseKeepAliveResponse, er
 
 		keepAliveCtx, keepAliveCancel := context.WithCancel(context.Background())
 		s.keepAliveCancel = func() {
-			// delete the session key to make roll update faster
-			// ignore the resp and error handle, just delete
-			_, _ = s.etcdCli.Delete(keepAliveCtx, completeKey)
-			if s.enableActiveStandBy && !s.isStandby.Load().(bool) {
-				_, _ = s.etcdCli.Delete(keepAliveCtx, s.activeKey)
-			}
+			s.Revoke(time.Second)
 			keepAliveCancel()
 		}
 		ch, err = s.etcdCli.KeepAlive(keepAliveCtx, resp.ID)
@@ -776,8 +773,9 @@ func (s *Session) updateStandby(b bool) {
 // 3, If 2. return true, this service becomes ACTIVE. Exit STANDBY mode.
 // 4, If 2. return false, which means an ACTIVE service already exist.
 //    Start watching the active key. Whenever active key disappears, STANDBY node will go backup to 2.
+//
 // activateFunc is the function to re-active the service.
-func (s *Session) ProcessActiveStandBy(activateFunc func()) error {
+func (s *Session) ProcessActiveStandBy(activateFunc func() error) error {
 	s.activeKey = path.Join(s.metaRoot, DefaultServiceRoot, s.ServerName)
 
 	// try to register to the active_key.
@@ -859,7 +857,7 @@ func (s *Session) ProcessActiveStandBy(activateFunc func()) error {
 	s.updateStandby(false)
 	log.Info(fmt.Sprintf("serverName: %v quit STANDBY mode, this node will become ACTIVE", s.ServerName))
 	if activateFunc != nil {
-		activateFunc()
+		return activateFunc()
 	}
 	return nil
 }
