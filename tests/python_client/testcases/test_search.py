@@ -1,6 +1,7 @@
 import multiprocessing
 import numbers
 import random
+import numpy
 
 import pytest
 import pandas as pd
@@ -1048,6 +1049,42 @@ class TestCollectionSearch(TestcaseBase):
         for hits in search_res:
             ids = hits.ids
             assert sorted(list(set(ids))) == sorted(ids)
+
+    @pytest.mark.tags(CaseLabel.L1)
+    def test_accurate_search_with_multi_segments(self, dim):
+        """
+        target: search collection with multi segments accurately
+        method: insert and flush twice
+        expect: result pk should be [19,9,18]
+        """
+        # 1. create a collection
+        nb = 10
+        fields = [cf.gen_int64_field("int64"), cf.gen_float_vec_field(dim=dim)]
+        schema = cf.gen_collection_schema(fields=fields, primary_field="int64")
+        collection_w = self.init_collection_wrap(schema=schema)
+
+        # 2. insert data and flush twice
+        for r in range(2):
+            pks = pd.Series(data=[r*nb+i for i in range(0, nb)])
+            vectors = [[i*2+r for _ in range(dim)] for i in range(0, nb)]
+            dataframe = pd.DataFrame({"int64": pks,
+                                    ct.default_float_vec_field_name: vectors})
+            collection_w.insert(dataframe)
+            collection_w.flush()
+            
+        # 3. search
+        collection_w.create_index(ct.default_float_vec_field_name, index_params=ct.default_flat_index)
+        collection_w.load()
+        vectors = [[20 for _ in range(dim)]]
+        collection_w.search(vectors, default_search_field,
+                            default_search_params, 3,
+                            check_task=CheckTasks.check_search_results,
+                            check_items={
+                                    "nq": 1,
+                                    "limit": 3,
+                                    "ids": [19,9,18]
+                                })
+
 
     @pytest.mark.tags(CaseLabel.L1)
     def test_search_with_empty_vectors(self, dim, auto_id, _async):
@@ -3991,7 +4028,7 @@ class TestsearchPagination(TestcaseBase):
             ids = hits.ids
             assert set(ids).issubset(filter_ids_set)
         res_distance = res[0].distances[offset:]
-        assert sorted(search_res[0].distances) == sorted(res_distance)
+        assert sorted(search_res[0].distances, key=numpy.float32) == sorted(res_distance, key=numpy.float32)
         assert set(search_res[0].ids) == set(res[0].ids[offset:])
 
     @pytest.mark.tags(CaseLabel.L2)
@@ -4033,7 +4070,7 @@ class TestsearchPagination(TestcaseBase):
             res.done()
             res = res.result()
         res_distance = res[0].distances[offset:]
-        assert sorted(search_res[0].distances) == sorted(res_distance)
+        assert sorted(search_res[0].distances, key=float) == sorted(res_distance, key=float)
         assert set(search_res[0].ids) == set(res[0].ids[offset:])
 
     @pytest.mark.tags(CaseLabel.L2)
@@ -4204,7 +4241,7 @@ class TestsearchPagination(TestcaseBase):
                 res.done()
                 res = res.result()
             res_distance = res[0].distances[offset:]
-            assert sorted(search_res[0].distances) == sorted(res_distance)
+            assert sorted(search_res[0].distances, key=float) == sorted(res_distance, key=float)
             assert set(search_res[0].ids) == set(res[0].ids[offset:])
 
 
@@ -4301,10 +4338,8 @@ class  TestsearchDiskann(TestcaseBase):
         default_index = {"index_type": "DISKANN", "metric_type":"L2", "params": {}}
         collection_w.create_index(ct.default_float_vec_field_name, default_index)
         collection_w.load()
-       
 
-       
-        default_search_params ={"metric_type": "L2", "params": {"search_list": 30}}
+        default_search_params = {"metric_type": "L2", "params": {"search_list": 30}}
         vectors = [[random.random() for _ in range(dim)] for _ in range(default_nq)]
         output_fields = [default_int64_field_name, default_float_field_name,  default_string_field_name]
         collection_w.search(vectors[:default_nq], default_search_field,
@@ -4338,7 +4373,7 @@ class  TestsearchDiskann(TestcaseBase):
         default_index = {"index_type": "DISKANN", "metric_type":"L2", "params": {}}
         collection_w.create_index(ct.default_float_vec_field_name, default_index)
         collection_w.load()
-        default_search_params ={"metric_type": "L2", "params": {"search_list": search_list}}
+        default_search_params = {"metric_type": "L2", "params": {"search_list": search_list}}
         vectors = [[random.random() for _ in range(dim)] for _ in range(default_nq)]
         output_fields = [default_int64_field_name, default_float_field_name,  default_string_field_name]
         collection_w.search(vectors[:default_nq], default_search_field,
@@ -4369,7 +4404,7 @@ class  TestsearchDiskann(TestcaseBase):
         default_index = {"index_type": "DISKANN", "metric_type":"L2", "params": {}}
         collection_w.create_index(ct.default_float_vec_field_name, default_index)
         collection_w.load()
-        default_search_params ={"metric_type": "L2", "params": {"search_list": search_list}}
+        default_search_params = {"metric_type": "L2", "params": {"search_list": search_list}}
         vectors = [[random.random() for _ in range(dim)] for _ in range(default_nq)]
         output_fields = [default_int64_field_name, default_float_field_name,  default_string_field_name]
         collection_w.search(vectors[:default_nq], default_search_field,
@@ -4412,6 +4447,7 @@ class  TestsearchDiskann(TestcaseBase):
                             check_items={"err_code": 1,
                                          "err_msg": "fail to search on all shard leaders"}
                             )
+
     @pytest.mark.tags(CaseLabel.L2)
     def test_search_with_diskann_with_string_pk(self, dim):
         """
@@ -4442,7 +4478,6 @@ class  TestsearchDiskann(TestcaseBase):
                                          "ids": insert_ids,
                                          "limit": default_limit}
                             )
-
 
     @pytest.mark.tags(CaseLabel.L2)
     def test_search_with_delete_data(self, dim, auto_id, _async):
@@ -4484,8 +4519,7 @@ class  TestsearchDiskann(TestcaseBase):
                                          "limit": default_limit,
                                          "_async": _async}  
                             )
-        
-    
+
     @pytest.mark.tags(CaseLabel.L2)
     def test_search_with_diskann_and_more_index(self, dim, auto_id, _async):
         """
@@ -4503,7 +4537,7 @@ class  TestsearchDiskann(TestcaseBase):
         collection_w.create_index(ct.default_float_vec_field_name, default_index, index_name=index_name1)
         index_params_one = {}
         collection_w.create_index("float", index_params_one, index_name="a")
-        index_param_two ={}
+        index_param_two = {}
         collection_w.create_index("varchar", index_param_two, index_name="b")
         
         collection_w.load()
@@ -4557,7 +4591,6 @@ class  TestsearchDiskann(TestcaseBase):
         default_expr = "int64 in [1, 2, 3, 4]"
 
         limit = 4
-
 
         default_search_params ={"metric_type": "L2", "params": {"nprobe": 64}}
         vectors = [[random.random() for _ in range(dim)] for _ in range(default_nq)]
