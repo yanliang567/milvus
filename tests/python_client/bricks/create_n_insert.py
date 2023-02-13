@@ -10,6 +10,8 @@ LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 DATE_FORMAT = "%m/%d/%Y %H:%M:%S %p"
 
 nb = 50000
+insert_times = 100   # insert times
+shards = 2  # shards number
 dim = 128
 auto_id = True
 index_params_dict = {
@@ -17,26 +19,8 @@ index_params_dict = {
     "DISKANN": {"index_type": "DISKANN", "metric_type": "IP", "params": {}}
 }
 
-if __name__ == '__main__':
-    host = sys.argv[1]  # host address
-    collection_name = str(sys.argv[2])  # collection name
-    index_type = str(sys.argv[3])  # index type
-    shards = 2          # shards number
-    insert_times = 20   # insert times
 
-    port = 19530
-    log_name = f"prepare_{collection_name}"
-
-    file_handler = logging.FileHandler(filename=f"/tmp/{log_name}.log")
-    stdout_handler = logging.StreamHandler(stream=sys.stdout)
-    handlers = [file_handler, stdout_handler]
-    logging.basicConfig(level=logging.DEBUG, format=LOG_FORMAT, datefmt=DATE_FORMAT, handlers=handlers)
-    logger = logging.getLogger('LOGGER_NAME')
-
-    logging.info("start")
-    connections.add_connection(default={"host": host, "port": 19530})
-    connections.connect('default')
-
+def create_n_insert(collection_name, index_type):
     id_field = FieldSchema(name="id", dtype=DataType.INT64, description="auto primary id")
     age_field = FieldSchema(name="age", dtype=DataType.INT64, description="age")
     embedding_field = FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim)
@@ -74,6 +58,28 @@ if __name__ == '__main__':
         logging.info(f"index {idx.params} already exists")
 
     collection.load()
+
+
+if __name__ == '__main__':
+    host = sys.argv[1]  # host address
+    name = str(sys.argv[2])  # collection name
+    index = str(sys.argv[3])  # index type
+
+    port = 19530
+    log_name = f"prepare_{name}"
+
+    file_handler = logging.FileHandler(filename=f"/tmp/{log_name}.log")
+    stdout_handler = logging.StreamHandler(stream=sys.stdout)
+    handlers = [file_handler, stdout_handler]
+    logging.basicConfig(level=logging.DEBUG, format=LOG_FORMAT, datefmt=DATE_FORMAT, handlers=handlers)
+    logger = logging.getLogger('LOGGER_NAME')
+
+    logging.info("start")
+    connections.add_connection(default={"host": host, "port": 19530})
+    connections.connect('default')
+
+    create_n_insert(collection_name=name, index_type=index)
+
     logging.info("collection prepared completed")
 
 
