@@ -11,14 +11,9 @@ LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 DATE_FORMAT = "%m/%d/%Y %H:%M:%S %p"
 
 
-def search(collection_name, field_name, search_params, nq, topk, threads_num, switcher, timeout):
+def search(collection, field_name, search_params, nq, topk, threads_num, timeout):
     threads_num = int(threads_num)
     interval_count = 1000
-    collection_nameBB = collection_name + "_BB"
-    alias = "collection_alias"
-    utility.drop_alias(alias)
-    utility.create_alias(collection_name=collection_name, alias=alias)
-    collection = Collection(alias)
 
     def search_th(col, thread_no):
         search_latency = []
@@ -61,8 +56,8 @@ def search(collection_name, field_name, search_params, nq, topk, threads_num, sw
             search_vectors = [[random.random() for _ in range(dim)] for _ in range(nq)]
             t1 = time.time()
             try:
-                res = collection.search(data=search_vectors, anns_field=field_name,
-                                  output_fields="",
+                collection.search(data=search_vectors, anns_field=field_name,
+                                  # output_fields="",
                                   param=search_params, limit=topk)
 
             except Exception as e:
@@ -77,21 +72,16 @@ def search(collection_name, field_name, search_params, nq, topk, threads_num, sw
                 logging.info(f"collection {collection.description} search {interval_count} times single thread: cost {total}, qps {qps}, avg {avg}, p99 {p99} ")
                 count = 0
                 search_latency = []
-                if switcher:
-                    name = collection_nameBB if collection_name == collection.description else collection_name
-                    utility.alter_alias(name, alias)
-                    collection = Collection(alias)
 
 
 if __name__ == '__main__':
     host = sys.argv[1]
-    collection_name = sys.argv[2]       # collection mame
+    name = sys.argv[2]                  # collection mame/alias
     th = int(sys.argv[3])               # search thread num
-    switch_alias = bool(int(sys.argv[4]))    # if search with switch alias
-    timeout = int(sys.argv[5])          # search timeout, permanently if 0
+    timeout = int(sys.argv[4])          # search timeout, permanently if 0
     port = 19530
 
-    file_handler = logging.FileHandler(filename=f"/tmp/search_{collection_name}.log")
+    file_handler = logging.FileHandler(filename=f"/tmp/search_{name}.log")
     stdout_handler = logging.StreamHandler(stream=sys.stdout)
     handlers = [file_handler, stdout_handler]
     logging.basicConfig(level=logging.DEBUG, format=LOG_FORMAT, datefmt=DATE_FORMAT, handlers=handlers)
@@ -105,15 +95,11 @@ if __name__ == '__main__':
     nprobe = 16
 
     # check and get the collection info
-    if not utility.has_collection(collection_name=collection_name):
-        logging.error(f"collection: {collection_name} does not exit")
+    if not utility.has_collection(collection_name=name):
+        logging.error(f"collection: {name} does not exit")
         exit(0)
 
-    collection_nameBB = collection_name + "_BB"
-    logging.info(f"switch_alias: {switch_alias}")
-    switcher = switch_alias and utility.has_collection(collection_name=collection_nameBB)
-    logging.info(f"switcher: {switcher}")
-    collection = Collection(name=collection_name)
+    collection = Collection(name=name)
     fields = collection.schema.fields
     for field in fields:
         if field.dtype == DataType.FLOAT_VECTOR:
@@ -122,7 +108,7 @@ if __name__ == '__main__':
             break
 
     if not collection.has_index():
-        logging.error(f"collection: {collection_name} has no index")
+        logging.error(f"collection: {name} has no index")
         exit(0)
     idx = collection.index()
     metric_type = idx.params.get("metric_type")
@@ -144,23 +130,17 @@ if __name__ == '__main__':
     t1 = time.time()
     num = collection.num_entities
     t2 = round(time.time() - t1, 3)
-    logging.info(f"assert {collection_name} flushed num_entities {num}: {t2}")
+    logging.info(f"assert {name} flushed num_entities {num}: {t2}")
 
-    logging.info(utility.index_building_progress(collection_name))
+    logging.info(utility.index_building_progress(name))
 
     # load collection
     t1 = time.time()
     collection.load()
     t2 = round(time.time() - t1, 3)
-    logging.info(f"assert load {collection_name}: {t2}")
-
-    if switcher:
-        collectionBB = Collection(collection_nameBB)
-        num = collectionBB.num_entities
-        logging.info(f"assert {collection_nameBB} flushed num_entities {num}: {t2}")
-        collectionBB.load()
+    logging.info(f"assert load {name}: {t2}")
 
     logging.info(f"search start: nq{nq}_top{topk}_threads{th}")
-    search(collection_name, vector_field_name, search_params, nq, topk, th, switcher, timeout)
+    search(collection, vector_field_name, search_params, nq, topk, th, timeout)
     logging.info(f"search completed ")
 
