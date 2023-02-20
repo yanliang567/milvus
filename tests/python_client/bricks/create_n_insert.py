@@ -14,13 +14,9 @@ insert_times = 100   # insert times
 shards = 2  # shards number
 dim = 128
 auto_id = True
-index_params_dict = {
-    "HNSW": {"index_type": "HNSW", "metric_type": "IP", "params": {"M": 8, "efConstruction": 96}},
-    "DISKANN": {"index_type": "DISKANN", "metric_type": "IP", "params": {}}
-}
 
 
-def create_n_insert(collection_name, index_type):
+def create_n_insert(collection_name, index_type, metric_type="L2"):
     id_field = FieldSchema(name="id", dtype=DataType.INT64, description="auto primary id")
     age_field = FieldSchema(name="age", dtype=DataType.INT64, description="age")
     embedding_field = FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim)
@@ -30,6 +26,10 @@ def create_n_insert(collection_name, index_type):
     collection = Collection(name=collection_name, schema=schema, shards_num=shards)
     logging.info(f"create {collection_name} successfully")
 
+    index_params_dict = {
+        "HNSW": {"index_type": "HNSW", "metric_type": metric_type, "params": {"M": 8, "efConstruction": 96}},
+        "DISKANN": {"index_type": "DISKANN", "metric_type": metric_type, "params": {}}
+    }
     index_params = index_params_dict.get(index_type.upper(), None)
     if index_params is None:
         logging.error(f"index type {index_type} no supported")
@@ -57,14 +57,12 @@ def create_n_insert(collection_name, index_type):
         idx = collection.index()
         logging.info(f"index {idx.params} already exists")
 
-    collection.load()
-
 
 if __name__ == '__main__':
     host = sys.argv[1]  # host address
     name = str(sys.argv[2])  # collection name
     index = str(sys.argv[3])  # index type
-
+    metric = str(sys.argv[4])  # metric type, L2 or IP
     port = 19530
     log_name = f"prepare_{name}"
 
@@ -78,7 +76,11 @@ if __name__ == '__main__':
     connections.add_connection(default={"host": host, "port": 19530})
     connections.connect('default')
 
-    create_n_insert(collection_name=name, index_type=index)
+    create_n_insert(collection_name=name, index_type=index, metric_type=metric)
+
+    # load the collection
+    # c = Collection(name=name)
+    # c.load()
 
     logging.info("collection prepared completed")
 

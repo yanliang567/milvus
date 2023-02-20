@@ -28,7 +28,9 @@ if __name__ == '__main__':
     has_bb = utility.has_collection(collection_name=f'{c_name}_bb')
 
     collection_name = f'{c_name}_bb' if has_aa else f'{c_name}_aa'
-    create_n_insert.create_n_insert(collection_name=collection_name,index_type='hnsw')
+    create_n_insert.create_n_insert(collection_name=collection_name, index_type='hnsw')
+    c = Collection(name=collection_name)
+    c.load()
     terminate = f'{c_name}_aa' if has_aa else f'{c_name}_bb'
 
     # alter alias
