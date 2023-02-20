@@ -186,10 +186,6 @@ func TestDataNode(t *testing.T) {
 	})
 
 	t.Run("Test BackGroundGC", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		node := newIDLEDataNodeMock(ctx, schemapb.DataType_Int64)
-		defer node.Stop()
-
 		vchanNameCh := make(chan string)
 		node.clearSignal = vchanNameCh
 		go node.BackGroundGC(vchanNameCh)
@@ -206,7 +202,7 @@ func TestDataNode(t *testing.T) {
 
 		for i, test := range testDataSyncs {
 			if i <= 2 {
-				err = node.flowgraphManager.addAndStart(node, &datapb.VchannelInfo{CollectionID: 1, ChannelName: test.dmChannelName}, nil)
+				err = node.flowgraphManager.addAndStart(node, &datapb.VchannelInfo{CollectionID: 1, ChannelName: test.dmChannelName}, nil, genTestTickler())
 				assert.Nil(t, err)
 				vchanNameCh <- test.dmChannelName
 			}
@@ -277,9 +273,8 @@ func TestWatchChannel(t *testing.T) {
 			UnflushedSegmentIds: []int64{},
 		}
 		info := &datapb.ChannelWatchInfo{
-			State:     datapb.ChannelWatchState_ToWatch,
-			Vchan:     vchan,
-			TimeoutTs: time.Now().Add(time.Minute).UnixNano(),
+			State: datapb.ChannelWatchState_ToWatch,
+			Vchan: vchan,
 		}
 		val, err := proto.Marshal(info)
 		assert.Nil(t, err)
@@ -336,9 +331,8 @@ func TestWatchChannel(t *testing.T) {
 			UnflushedSegmentIds: []int64{},
 		}
 		info := &datapb.ChannelWatchInfo{
-			State:     datapb.ChannelWatchState_ToRelease,
-			Vchan:     vchan,
-			TimeoutTs: time.Now().Add(time.Minute).UnixNano(),
+			State: datapb.ChannelWatchState_ToRelease,
+			Vchan: vchan,
 		}
 		val, err := proto.Marshal(info)
 		assert.Nil(t, err)
@@ -400,9 +394,8 @@ func TestWatchChannel(t *testing.T) {
 		m.Run()
 
 		info = datapb.ChannelWatchInfo{
-			Vchan:     &datapb.VchannelInfo{ChannelName: ch},
-			State:     datapb.ChannelWatchState_Uncomplete,
-			TimeoutTs: time.Now().Add(time.Minute).UnixNano(),
+			Vchan: &datapb.VchannelInfo{ChannelName: ch},
+			State: datapb.ChannelWatchState_Uncomplete,
 		}
 		bs, err = proto.Marshal(&info)
 		assert.NoError(t, err)
@@ -441,9 +434,8 @@ func TestWatchChannel(t *testing.T) {
 		}
 
 		info := datapb.ChannelWatchInfo{
-			Vchan:     &datapb.VchannelInfo{ChannelName: ch},
-			State:     datapb.ChannelWatchState_Uncomplete,
-			TimeoutTs: time.Now().Add(time.Minute).UnixNano(),
+			Vchan: &datapb.VchannelInfo{ChannelName: ch},
+			State: datapb.ChannelWatchState_Uncomplete,
 		}
 		bs, err := proto.Marshal(&info)
 		assert.NoError(t, err)
@@ -464,8 +456,7 @@ func TestWatchChannel(t *testing.T) {
 				DroppedSegments:     []*datapb.SegmentInfo{{ID: 3}},
 				UnflushedSegmentIds: []int64{1},
 			},
-			State:     datapb.ChannelWatchState_Uncomplete,
-			TimeoutTs: time.Now().Add(time.Minute).UnixNano(),
+			State: datapb.ChannelWatchState_Uncomplete,
 		}
 		bs, err := proto.Marshal(&info)
 		assert.NoError(t, err)

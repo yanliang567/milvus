@@ -12,7 +12,7 @@ allure-pytest==2.7.0
 pytest-print==0.2.1
 pytest-level==0.1.1
 pytest-xdist==2.5.0
-pymilvus==2.3.0.dev34
+pymilvus==2.3.0.dev38
 pytest-rerunfailures==9.1.1
 git+https://github.com/Projectplace/pytest-tags
 ndg-httpsclient
@@ -31,7 +31,7 @@ pytest-random-order
 python-benedict==0.24.3
 timeout-decorator==0.5.0
 
-# for bulk load test
+# for bulk insert test
 minio==7.1.5
 
 # for benchmark
@@ -39,3 +39,6 @@ h5py==3.7.0
 
 # for log
 loguru==0.6.0
+
+# util
+psutil==5.8.0

@@ -1009,6 +1009,7 @@ func (s *Server) TransferNode(ctx context.Context, req *milvuspb.TransferNodeReq
 	log := log.Ctx(ctx).With(
 		zap.String("source", req.GetSourceResourceGroup()),
 		zap.String("target", req.GetTargetResourceGroup()),
+		zap.Int32("numNode", req.GetNumNode()),
 	)
 
 	log.Info("transfer node between resource group request received")
@@ -1027,7 +1028,7 @@ func (s *Server) TransferNode(ctx context.Context, req *milvuspb.TransferNodeReq
 			fmt.Sprintf("the target resource group[%s] doesn't exist", req.GetTargetResourceGroup()), meta.ErrRGNotExist), nil
 	}
 
-	err := s.meta.ResourceManager.TransferNode(req.GetSourceResourceGroup(), req.GetTargetResourceGroup())
+	err := s.meta.ResourceManager.TransferNode(req.GetSourceResourceGroup(), req.GetTargetResourceGroup(), int(req.GetNumNode()))
 	if err != nil {
 		log.Warn(ErrTransferNodeFailed.Error(), zap.Error(err))
 		return utils.WrapStatus(commonpb.ErrorCode_UnexpectedError, ErrTransferNodeFailed.Error(), err), nil
@@ -1059,12 +1060,19 @@ func (s *Server) TransferReplica(ctx context.Context, req *querypb.TransferRepli
 			fmt.Sprintf("the target resource group[%s] doesn't exist", req.GetTargetResourceGroup()), meta.ErrRGNotExist), nil
 	}
 
+	replicas := s.meta.ReplicaManager.GetByCollectionAndRG(req.GetCollectionID(), req.GetTargetResourceGroup())
+	if len(replicas) > 0 {
+		return utils.WrapStatus(commonpb.ErrorCode_IllegalArgument,
+			fmt.Sprintf("found [%d] replicas of same collection in target resource group[%s], dynamically increase replica num is unsupported",
+				len(replicas), req.GetSourceResourceGroup())), nil
+	}
+
 	// for now, we don't support to transfer replica of same collection to same resource group
-	replicas := s.meta.ReplicaManager.GetByCollectionAndRG(req.GetCollectionID(), req.GetSourceResourceGroup())
+	replicas = s.meta.ReplicaManager.GetByCollectionAndRG(req.GetCollectionID(), req.GetSourceResourceGroup())
 	if len(replicas) < int(req.GetNumReplica()) {
 		return utils.WrapStatus(commonpb.ErrorCode_IllegalArgument,
-			fmt.Sprintf("found [%d] replicas of collection[%d] in source resource group[%s]",
-				len(replicas), req.GetCollectionID(), req.GetSourceResourceGroup())), nil
+			fmt.Sprintf("only found [%d] replicas in source resource group[%s]",
+				len(replicas), req.GetSourceResourceGroup())), nil
 	}
 
 	err := s.transferReplica(req.GetTargetResourceGroup(), replicas[:req.GetNumReplica()])

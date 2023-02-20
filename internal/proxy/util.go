@@ -117,7 +117,7 @@ func validateCollectionNameOrAlias(entity, entityType string) error {
 
 func ValidateResourceGroupName(entity string) error {
 	if entity == "" {
-		return fmt.Errorf("resource group name %s should not be empty", entity)
+		return errors.New("resource group name couldn't be empty")
 	}
 
 	invalidMsg := fmt.Sprintf("Invalid resource group name %s.", entity)
@@ -634,8 +634,8 @@ func parseGuaranteeTs(ts, tMax typeutil.Timestamp) typeutil.Timestamp {
 	case strongTS:
 		ts = tMax
 	case boundedTS:
-		ratio := time.Duration(-Params.CommonCfg.GracefulTime.GetAsInt64())
-		ts = tsoutil.AddPhysicalDurationOnTs(tMax, ratio*time.Millisecond)
+		ratio := Params.CommonCfg.GracefulTime.GetAsDuration(time.Millisecond)
+		ts = tsoutil.AddPhysicalDurationOnTs(tMax, -ratio)
 	}
 	return ts
 }
