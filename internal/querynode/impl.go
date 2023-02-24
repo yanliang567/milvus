@@ -42,6 +42,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/util/commonpbutil"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
@@ -235,17 +236,15 @@ func (node *QueryNode) getStatisticsWithDmlChannel(ctx context.Context, req *que
 	defer cancel()
 
 	var results []*internalpb.GetStatisticsResponse
-	var streamingResult *internalpb.GetStatisticsResponse
 	var errCluster error
 
-	withStreaming := func(ctx context.Context) error {
+	withStreaming := func(ctx context.Context) (error, *internalpb.GetStatisticsResponse) {
 		streamingTask := newStatistics(ctx, req, querypb.DataScope_Streaming, qs, waitCanDo)
 		err := streamingTask.Execute(ctx)
 		if err != nil {
-			return err
+			return err, nil
 		}
-		streamingResult = streamingTask.Ret
-		return nil
+		return nil, streamingTask.Ret
 	}
 
 	// shard leader dispatches request to its shard cluster
@@ -262,7 +261,6 @@ func (node *QueryNode) getStatisticsWithDmlChannel(ctx context.Context, req *que
 	tr.Elapse(fmt.Sprintf("start reduce statistic result, traceID = %s, fromSharedLeader = %t, vChannel = %s, segmentIDs = %v",
 		traceID, req.GetFromShardLeader(), dmlChannel, req.GetSegmentIDs()))
 
-	results = append(results, streamingResult)
 	ret, err := reduceStatisticResponse(results)
 	if err != nil {
 		failRet.Status.Reason = err.Error()
@@ -280,7 +278,7 @@ func (node *QueryNode) getStatisticsWithDmlChannel(ctx context.Context, req *que
 
 // WatchDmChannels create consumers on dmChannels to receive Incremental data，which is the important part of real-time query
 func (node *QueryNode) WatchDmChannels(ctx context.Context, in *querypb.WatchDmChannelsRequest) (*commonpb.Status, error) {
-	nodeID := node.GetSession().ServerID
+	nodeID := paramtable.GetNodeID()
 	// check node healthy
 	if !node.lifetime.Add(commonpbutil.IsHealthy) {
 		err := fmt.Errorf("query node %d is not ready", nodeID)
@@ -371,7 +369,7 @@ func (node *QueryNode) WatchDmChannels(ctx context.Context, in *querypb.WatchDmC
 
 func (node *QueryNode) UnsubDmChannel(ctx context.Context, req *querypb.UnsubDmChannelRequest) (*commonpb.Status, error) {
 	// check node healthy
-	nodeID := node.GetSession().ServerID
+	nodeID := paramtable.GetNodeID()
 	if !node.lifetime.Add(commonpbutil.IsHealthyOrStopping) {
 		err := fmt.Errorf("query node %d is not ready", nodeID)
 		status := &commonpb.Status{
@@ -429,7 +427,7 @@ func (node *QueryNode) UnsubDmChannel(ctx context.Context, req *querypb.UnsubDmC
 
 // LoadSegments load historical data into query node, historical data can be vector data or index
 func (node *QueryNode) LoadSegments(ctx context.Context, in *querypb.LoadSegmentsRequest) (*commonpb.Status, error) {
-	nodeID := node.GetSession().ServerID
+	nodeID := paramtable.GetNodeID()
 	// check node healthy
 	if !node.lifetime.Add(commonpbutil.IsHealthy) {
 		err := fmt.Errorf("query node %d is not ready", nodeID)
@@ -610,7 +608,7 @@ func (node *QueryNode) ReleasePartitions(ctx context.Context, in *querypb.Releas
 
 // ReleaseSegments remove the specified segments from query node according segmentIDs, partitionIDs, and collectionID
 func (node *QueryNode) ReleaseSegments(ctx context.Context, in *querypb.ReleaseSegmentsRequest) (*commonpb.Status, error) {
-	nodeID := node.GetSession().ServerID
+	nodeID := paramtable.GetNodeID()
 	if !node.lifetime.Add(commonpbutil.IsHealthyOrStopping) {
 		err := fmt.Errorf("query node %d is not ready", nodeID)
 		status := &commonpb.Status{
@@ -707,7 +705,7 @@ func filterSegmentInfo(segmentInfos []*querypb.SegmentInfo, segmentIDs map[int64
 
 // Search performs replica search tasks.
 func (node *QueryNode) Search(ctx context.Context, req *querypb.SearchRequest) (*internalpb.SearchResults, error) {
-	nodeID := node.GetSession().ServerID
+	nodeID := paramtable.GetNodeID()
 	if !node.IsStandAlone && req.GetReq().GetBase().GetTargetID() != nodeID {
 		return &internalpb.SearchResults{
 			Status: &commonpb.Status{
@@ -789,7 +787,7 @@ func (node *QueryNode) Search(ctx context.Context, req *querypb.SearchRequest) (
 }
 
 func (node *QueryNode) searchWithDmlChannel(ctx context.Context, req *querypb.SearchRequest, dmlChannel string) (*internalpb.SearchResults, error) {
-	nodeID := node.GetSession().ServerID
+	nodeID := paramtable.GetNodeID()
 	metrics.QueryNodeSQCount.WithLabelValues(fmt.Sprint(nodeID), metrics.SearchLabel, metrics.TotalLabel).Inc()
 	failRet := &internalpb.SearchResults{
 		Status: &commonpb.Status{
@@ -877,38 +875,17 @@ func (node *QueryNode) searchWithDmlChannel(ctx context.Context, req *querypb.Se
 
 	var (
 		searchCtx, cancel = context.WithCancel(ctx)
-
-		results         []*internalpb.SearchResults
-		streamingResult *internalpb.SearchResults
-		errCluster      error
+		results           []*internalpb.SearchResults
+		errCluster        error
 	)
 	defer cancel()
 
-	withStreaming := func(ctx context.Context) error {
-		streamingTask, err := newSearchTask(searchCtx, req)
-		if err != nil {
-			return err
-		}
-		streamingTask.QS = qs
-		streamingTask.DataScope = querypb.DataScope_Streaming
-		err = node.scheduler.AddReadTask(searchCtx, streamingTask)
-		if err != nil {
-			return err
-		}
-		err = streamingTask.WaitToFinish()
-		if err != nil {
-			return err
-		}
-		metrics.QueryNodeSQLatencyInQueue.WithLabelValues(fmt.Sprint(nodeID),
-			metrics.SearchLabel).Observe(float64(streamingTask.queueDur.Milliseconds()))
-		metrics.QueryNodeReduceLatency.WithLabelValues(fmt.Sprint(nodeID),
-			metrics.SearchLabel).Observe(float64(streamingTask.reduceDur.Milliseconds()))
-		streamingResult = streamingTask.Ret
-		return nil
-	}
-
 	// shard leader dispatches request to its shard cluster
-	results, errCluster = cluster.Search(searchCtx, req, withStreaming)
+	var withStreamingFunc searchWithStreaming
+	if !req.Req.IgnoreGrowing {
+		withStreamingFunc = getSearchWithStreamingFunc(searchCtx, req, node, qs, nodeID)
+	}
+	results, errCluster = cluster.Search(searchCtx, req, withStreamingFunc)
 	if errCluster != nil {
 		log.Ctx(ctx).Warn("search shard cluster failed", zap.String("vChannel", dmlChannel), zap.Error(errCluster))
 		failRet.Status.Reason = errCluster.Error()
@@ -917,7 +894,6 @@ func (node *QueryNode) searchWithDmlChannel(ctx context.Context, req *querypb.Se
 
 	tr.CtxElapse(ctx, fmt.Sprintf("do search done in shard cluster, vChannel = %s, segmentIDs = %v", dmlChannel, req.GetSegmentIDs()))
 
-	results = append(results, streamingResult)
 	ret, err2 := reduceSearchResults(ctx, results, req.Req.GetNq(), req.Req.GetTopk(), req.Req.GetMetricType())
 	if err2 != nil {
 		failRet.Status.Reason = err2.Error()
@@ -936,7 +912,7 @@ func (node *QueryNode) searchWithDmlChannel(ctx context.Context, req *querypb.Se
 }
 
 func (node *QueryNode) queryWithDmlChannel(ctx context.Context, req *querypb.QueryRequest, dmlChannel string) (*internalpb.RetrieveResults, error) {
-	nodeID := node.GetSession().ServerID
+	nodeID := paramtable.GetNodeID()
 	metrics.QueryNodeSQCount.WithLabelValues(fmt.Sprint(nodeID), metrics.QueryLabel, metrics.TotalLabel).Inc()
 	failRet := &internalpb.RetrieveResults{
 		Status: &commonpb.Status{
@@ -1028,32 +1004,14 @@ func (node *QueryNode) queryWithDmlChannel(ctx context.Context, req *querypb.Que
 	defer cancel()
 
 	var results []*internalpb.RetrieveResults
-	var streamingResult *internalpb.RetrieveResults
-
-	withStreaming := func(ctx context.Context) error {
-		streamingTask := newQueryTask(queryCtx, req)
-		streamingTask.DataScope = querypb.DataScope_Streaming
-		streamingTask.QS = qs
-		err := node.scheduler.AddReadTask(queryCtx, streamingTask)
-
-		if err != nil {
-			return err
-		}
-		err = streamingTask.WaitToFinish()
-		if err != nil {
-			return err
-		}
-		metrics.QueryNodeSQLatencyInQueue.WithLabelValues(fmt.Sprint(nodeID),
-			metrics.QueryLabel).Observe(float64(streamingTask.queueDur.Milliseconds()))
-		metrics.QueryNodeReduceLatency.WithLabelValues(fmt.Sprint(nodeID),
-			metrics.QueryLabel).Observe(float64(streamingTask.reduceDur.Milliseconds()))
-		streamingResult = streamingTask.Ret
-		return nil
-	}
-
 	var errCluster error
+	var withStreamingFunc queryWithStreaming
+
+	if !req.Req.IgnoreGrowing {
+		withStreamingFunc = getQueryWithStreamingFunc(queryCtx, req, node, qs, nodeID)
+	}
 	// shard leader dispatches request to its shard cluster
-	results, errCluster = cluster.Query(queryCtx, req, withStreaming)
+	results, errCluster = cluster.Query(queryCtx, req, withStreamingFunc)
 	if errCluster != nil {
 		log.Ctx(ctx).Warn("failed to query cluster",
 			zap.Int64("collectionID", req.Req.GetCollectionID()),
@@ -1065,7 +1023,6 @@ func (node *QueryNode) queryWithDmlChannel(ctx context.Context, req *querypb.Que
 	tr.CtxElapse(ctx, fmt.Sprintf("start reduce query result, fromSharedLeader = %t, vChannel = %s, segmentIDs = %v",
 		req.GetFromShardLeader(), dmlChannel, req.GetSegmentIDs()))
 
-	results = append(results, streamingResult)
 	ret, err2 := mergeInternalRetrieveResultsAndFillIfEmpty(ctx, results, req.Req.GetLimit(), req.GetReq().GetOutputFieldsId(), qs.collection.Schema())
 	if err2 != nil {
 		failRet.Status.Reason = err2.Error()
@@ -1091,7 +1048,7 @@ func (node *QueryNode) Query(ctx context.Context, req *querypb.QueryRequest) (*i
 		zap.Uint64("guaranteeTimestamp", req.Req.GetGuaranteeTimestamp()),
 		zap.Uint64("timeTravel", req.GetReq().GetTravelTimestamp()))
 
-	nodeID := node.GetSession().ServerID
+	nodeID := paramtable.GetNodeID()
 	if req.GetReq().GetBase().GetTargetID() != nodeID {
 		return &internalpb.RetrieveResults{
 			Status: &commonpb.Status{
@@ -1194,7 +1151,7 @@ func (node *QueryNode) SyncReplicaSegments(ctx context.Context, req *querypb.Syn
 
 // ShowConfigurations returns the configurations of queryNode matching req.Pattern
 func (node *QueryNode) ShowConfigurations(ctx context.Context, req *internalpb.ShowConfigurationsRequest) (*internalpb.ShowConfigurationsResponse, error) {
-	nodeID := node.GetSession().ServerID
+	nodeID := paramtable.GetNodeID()
 	if !node.lifetime.Add(commonpbutil.IsHealthyOrStopping) {
 		log.Warn("QueryNode.ShowConfigurations failed",
 			zap.Int64("nodeId", nodeID),
@@ -1231,7 +1188,7 @@ func (node *QueryNode) ShowConfigurations(ctx context.Context, req *internalpb.S
 
 // GetMetrics return system infos of the query node, such as total memory, memory usage, cpu usage ...
 func (node *QueryNode) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest) (*milvuspb.GetMetricsResponse, error) {
-	nodeID := node.GetSession().ServerID
+	nodeID := paramtable.GetNodeID()
 	if !node.lifetime.Add(commonpbutil.IsHealthyOrStopping) {
 		log.Ctx(ctx).Warn("QueryNode.GetMetrics failed",
 			zap.Int64("nodeId", nodeID),
@@ -1296,10 +1253,10 @@ func (node *QueryNode) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsR
 }
 
 func (node *QueryNode) GetDataDistribution(ctx context.Context, req *querypb.GetDataDistributionRequest) (*querypb.GetDataDistributionResponse, error) {
-	nodeID := node.GetSession().ServerID
+	nodeID := paramtable.GetNodeID()
 	log := log.With(
-		zap.Int64("msg-id", req.GetBase().GetMsgID()),
-		zap.Int64("node-id", nodeID),
+		zap.Int64("msgID", req.GetBase().GetMsgID()),
+		zap.Int64("nodeID", nodeID),
 	)
 	if !node.lifetime.Add(commonpbutil.IsHealthyOrStopping) {
 		log.Warn("QueryNode.GetMetrics failed",
@@ -1391,7 +1348,7 @@ func (node *QueryNode) GetDataDistribution(ctx context.Context, req *querypb.Get
 
 func (node *QueryNode) SyncDistribution(ctx context.Context, req *querypb.SyncDistributionRequest) (*commonpb.Status, error) {
 	log := log.Ctx(ctx).With(zap.Int64("collectionID", req.GetCollectionID()), zap.String("channel", req.GetChannel()))
-	nodeID := node.GetSession().ServerID
+	nodeID := paramtable.GetNodeID()
 	// check node healthy
 	if !node.lifetime.Add(commonpbutil.IsHealthyOrStopping) {
 		err := fmt.Errorf("query node %d is not ready", nodeID)

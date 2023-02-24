@@ -27,10 +27,12 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
 	"github.com/milvus-io/milvus/internal/kv"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
+	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/querycoordv2/balance"
+	"github.com/milvus-io/milvus/internal/querycoordv2/dist"
 	"github.com/milvus-io/milvus/internal/querycoordv2/job"
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	"github.com/milvus-io/milvus/internal/querycoordv2/observers"
@@ -73,7 +75,8 @@ type ServiceSuite struct {
 	taskScheduler  *task.MockScheduler
 	balancer       balance.Balance
 
-	distMgr *meta.DistributionManager
+	distMgr        *meta.DistributionManager
+	distController *dist.MockController
 
 	// Test object
 	server *Server
@@ -156,6 +159,7 @@ func (suite *ServiceSuite) SetupTest() {
 	)
 	meta.GlobalFailedLoadCache = meta.NewFailedLoadCache()
 	suite.distMgr = meta.NewDistributionManager()
+	suite.distController = dist.NewMockController(suite.T())
 
 	suite.server = &Server{
 		kv:                  suite.kv,
@@ -172,6 +176,8 @@ func (suite *ServiceSuite) SetupTest() {
 		jobScheduler:        suite.jobScheduler,
 		taskScheduler:       suite.taskScheduler,
 		balancer:            suite.balancer,
+		distController:      suite.distController,
+		ctx:                 context.Background(),
 	}
 	suite.server.collectionObserver = observers.NewCollectionObserver(
 		suite.server.dist,
@@ -469,6 +475,16 @@ func (suite *ServiceSuite) TestTransferNode() {
 	suite.NoError(err)
 	err = server.meta.ResourceManager.AddResourceGroup("rg2")
 	suite.NoError(err)
+	suite.meta.CollectionManager.PutCollection(utils.CreateTestCollection(1, 2))
+	suite.meta.ReplicaManager.Put(meta.NewReplica(
+		&querypb.Replica{
+			ID:            1,
+			CollectionID:  1,
+			Nodes:         []int64{},
+			ResourceGroup: "rg1",
+		},
+		typeutil.NewUniqueSet(),
+	))
 	// test transfer node
 	resp, err := server.TransferNode(ctx, &milvuspb.TransferNodeRequest{
 		SourceResourceGroup: meta.DefaultResourceGroupName,
@@ -480,6 +496,26 @@ func (suite *ServiceSuite) TestTransferNode() {
 	nodes, err := server.meta.ResourceManager.GetNodes("rg1")
 	suite.NoError(err)
 	suite.Len(nodes, 1)
+	nodesInReplica := server.meta.ReplicaManager.Get(1).GetNodes()
+	suite.Len(nodesInReplica, 1)
+
+	suite.meta.ReplicaManager.Put(meta.NewReplica(
+		&querypb.Replica{
+			ID:            2,
+			CollectionID:  1,
+			Nodes:         []int64{},
+			ResourceGroup: "rg2",
+		},
+		typeutil.NewUniqueSet(),
+	))
+	resp, err = server.TransferNode(ctx, &milvuspb.TransferNodeRequest{
+		SourceResourceGroup: "rg1",
+		TargetResourceGroup: "rg2",
+		NumNode:             1,
+	})
+	suite.NoError(err)
+	suite.Equal(commonpb.ErrorCode_IllegalArgument, resp.ErrorCode)
+	suite.Contains(resp.Reason, "can't transfer node")
 
 	// test transfer node meet non-exist source rg
 	resp, err = server.TransferNode(ctx, &milvuspb.TransferNodeRequest{
@@ -533,11 +569,20 @@ func (suite *ServiceSuite) TestTransferNode() {
 	suite.NoError(err)
 	suite.Equal(commonpb.ErrorCode_UnexpectedError, resp.ErrorCode)
 
+	resp, err = server.TransferNode(ctx, &milvuspb.TransferNodeRequest{
+		SourceResourceGroup: meta.DefaultResourceGroupName,
+		TargetResourceGroup: "rg1",
+		NumNode:             -1,
+	})
+	suite.NoError(err)
+	suite.Equal(commonpb.ErrorCode_IllegalArgument, resp.ErrorCode)
+
 	// server unhealthy
 	server.status.Store(commonpb.StateCode_Abnormal)
 	resp, err = server.TransferNode(ctx, &milvuspb.TransferNodeRequest{
 		SourceResourceGroup: meta.DefaultResourceGroupName,
 		TargetResourceGroup: "rg1",
+		NumNode:             3,
 	})
 	suite.NoError(err)
 	suite.Equal(commonpb.ErrorCode_UnexpectedError, resp.ErrorCode)
@@ -577,6 +622,15 @@ func (suite *ServiceSuite) TestTransferReplica() {
 		TargetResourceGroup: "rgg",
 		CollectionID:        1,
 		NumReplica:          2,
+	})
+	suite.NoError(err)
+	suite.Equal(resp.ErrorCode, commonpb.ErrorCode_IllegalArgument)
+
+	resp, err = suite.server.TransferReplica(ctx, &querypb.TransferReplicaRequest{
+		SourceResourceGroup: meta.DefaultResourceGroupName,
+		TargetResourceGroup: "rg1",
+		CollectionID:        1,
+		NumReplica:          0,
 	})
 	suite.NoError(err)
 	suite.Equal(resp.ErrorCode, commonpb.ErrorCode_IllegalArgument)
@@ -655,6 +709,15 @@ func (suite *ServiceSuite) TestLoadCollectionFailed() {
 		suite.Contains(resp.Reason, job.ErrLoadParameterMismatched.Error())
 	}
 
+	req := &querypb.LoadCollectionRequest{
+		CollectionID:   0,
+		ReplicaNumber:  2,
+		ResourceGroups: []string{meta.DefaultResourceGroupName, "rg"},
+	}
+	resp, err := server.LoadCollection(ctx, req)
+	suite.NoError(err)
+	suite.Equal(commonpb.ErrorCode_IllegalArgument, resp.ErrorCode)
+
 	// Test load with partitions loaded
 	for _, collection := range suite.collections {
 		if suite.loadTypes[collection] != querypb.LoadType_LoadPartition {
@@ -713,13 +776,22 @@ func (suite *ServiceSuite) TestLoadPartition() {
 		suite.Equal(commonpb.ErrorCode_Success, resp.ErrorCode)
 	}
 
+	req := &querypb.LoadPartitionsRequest{
+		CollectionID:   suite.collections[0],
+		PartitionIDs:   suite.partitions[suite.collections[0]],
+		ResourceGroups: []string{meta.DefaultResourceGroupName, "rg"},
+	}
+	resp, err := server.LoadPartitions(ctx, req)
+	suite.NoError(err)
+	suite.Equal(commonpb.ErrorCode_IllegalArgument, resp.ErrorCode)
+
 	// Test when server is not healthy
 	server.UpdateStateCode(commonpb.StateCode_Initializing)
-	req := &querypb.LoadPartitionsRequest{
+	req = &querypb.LoadPartitionsRequest{
 		CollectionID: suite.collections[0],
 		PartitionIDs: suite.partitions[suite.collections[0]],
 	}
-	resp, err := server.LoadPartitions(ctx, req)
+	resp, err = server.LoadPartitions(ctx, req)
 	suite.NoError(err)
 	suite.Contains(resp.Reason, ErrNotHealthy.Error())
 }
@@ -1502,6 +1574,38 @@ func (suite *ServiceSuite) TestGetShardLeadersFailed() {
 		suite.NoError(err)
 		suite.Equal(commonpb.ErrorCode_NoReplicaAvailable, resp.Status.ErrorCode)
 	}
+}
+
+func (suite *ServiceSuite) TestHandleNodeUp() {
+	server := suite.server
+	suite.server.meta.CollectionManager.PutCollection(utils.CreateTestCollection(1, 1))
+	suite.server.meta.ReplicaManager.Put(meta.NewReplica(
+		&querypb.Replica{
+			ID:            1,
+			CollectionID:  1,
+			Nodes:         []int64{},
+			ResourceGroup: meta.DefaultResourceGroupName,
+		},
+		typeutil.NewUniqueSet(),
+	))
+
+	suite.taskScheduler.EXPECT().AddExecutor(mock.Anything)
+	suite.distController.EXPECT().StartDistInstance(mock.Anything, mock.Anything)
+
+	suite.nodeMgr.Add(session.NewNodeInfo(111, "localhost"))
+	server.handleNodeUp(111)
+	nodes := suite.server.meta.ReplicaManager.Get(1).GetNodes()
+	suite.Len(nodes, 1)
+	suite.Equal(int64(111), nodes[0])
+	log.Info("handleNodeUp")
+
+	// when more rg exist, new node shouldn't be assign to replica in default rg in handleNodeUp
+	suite.server.meta.ResourceManager.AddResourceGroup("rg")
+	suite.nodeMgr.Add(session.NewNodeInfo(222, "localhost"))
+	server.handleNodeUp(222)
+	nodes = suite.server.meta.ReplicaManager.Get(1).GetNodes()
+	suite.Len(nodes, 1)
+	suite.Equal(int64(111), nodes[0])
 }
 
 func (suite *ServiceSuite) loadAll() {
