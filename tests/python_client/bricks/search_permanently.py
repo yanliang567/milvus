@@ -81,7 +81,7 @@ if __name__ == '__main__':
     name = sys.argv[2]                  # collection mame/alias
     th = int(sys.argv[3])               # search thread num
     timeout = int(sys.argv[4])          # search timeout, permanently if 0
-    ignore_growing = bool(sys.argv[4])  # ignore_growing, default False
+    ignore_growing = bool(sys.argv[5])  # ignore_growing, default False
     port = 19530
 
     file_handler = logging.FileHandler(filename=f"/tmp/search_{name}.log")
