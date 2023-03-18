@@ -14,27 +14,40 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package meta
+package typeutil
 
 import (
-	"errors"
 	"fmt"
+	"math"
 )
 
-var (
-	// Read errors
-	ErrCollectionNotFound = errors.New("CollectionNotFound")
-	ErrPartitionNotFound  = errors.New("PartitionNotFound")
-	ErrReplicaNotFound    = errors.New("ReplicaNotFound")
+func VerifyFloat(value float64) error {
+	// not allow not-a-number and infinity
+	if math.IsNaN(value) || math.IsInf(value, -1) || math.IsInf(value, 1) {
+		return fmt.Errorf("value '%f' is not a number or infinity", value)
+	}
 
-	// Store errors
-	ErrStoreCollectionFailed = errors.New("StoreCollectionFailed")
-	ErrStoreReplicaFailed    = errors.New("StoreReplicaFailed")
+	return nil
+}
 
-	// Index errors
-	ErrIndexNotExist = errors.New("IndexNotExist")
-)
+func VerifyFloats32(values []float32) error {
+	for _, f := range values {
+		err := VerifyFloat(float64(f))
+		if err != nil {
+			return err
+		}
+	}
 
-func WrapErrIndexNotExist(segmentID int64) error {
-	return fmt.Errorf("%w(segmentID=%d)", ErrIndexNotExist, segmentID)
+	return nil
+}
+
+func VerifyFloats64(values []float64) error {
+	for _, f := range values {
+		err := VerifyFloat(f)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

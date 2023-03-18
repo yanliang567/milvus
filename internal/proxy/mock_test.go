@@ -65,10 +65,16 @@ func newMockTimestampAllocatorInterface() timestampAllocatorInterface {
 }
 
 type mockTsoAllocator struct {
+	mu        sync.Mutex
+	logicPart uint32
 }
 
-func (tso *mockTsoAllocator) AllocOne() (Timestamp, error) {
-	return Timestamp(time.Now().UnixNano()), nil
+func (tso *mockTsoAllocator) AllocOne(ctx context.Context) (Timestamp, error) {
+	tso.mu.Lock()
+	defer tso.mu.Unlock()
+	tso.logicPart++
+	physical := uint64(time.Now().UnixMilli())
+	return (physical << 18) + uint64(tso.logicPart), nil
 }
 
 func newMockTsoAllocator() tsoAllocator {
@@ -182,17 +188,6 @@ type mockDmlTask struct {
 
 func (m *mockDmlTask) getChannels() ([]vChan, error) {
 	return m.vchans, nil
-}
-
-func (m *mockDmlTask) getPChanStats() (map[pChan]pChanStatistics, error) {
-	ret := make(map[pChan]pChanStatistics)
-	for _, pchan := range m.pchans {
-		ret[pchan] = pChanStatistics{
-			minTs: m.ts,
-			maxTs: m.ts,
-		}
-	}
-	return ret, nil
 }
 
 func newMockDmlTask(ctx context.Context) *mockDmlTask {

@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cockroachdb/errors"
 	"github.com/lingdor/stackerror"
 	"github.com/stretchr/testify/assert"
 )
@@ -28,7 +29,7 @@ func TestDo(t *testing.T) {
 	testFn := func() error {
 		if n < 3 {
 			n++
-			return fmt.Errorf("some error")
+			return errors.New("some error")
 		}
 		return nil
 	}
@@ -41,12 +42,13 @@ func TestAttempts(t *testing.T) {
 	ctx := context.Background()
 
 	testFn := func() error {
-		return fmt.Errorf("some error")
+		t.Log("executed")
+		return errors.New("some error")
 	}
 
 	err := Do(ctx, testFn, Attempts(1))
 	assert.NotNil(t, err)
-	fmt.Println(err)
+	t.Log(err)
 }
 
 func TestMaxSleepTime(t *testing.T) {
@@ -58,7 +60,7 @@ func TestMaxSleepTime(t *testing.T) {
 
 	err := Do(ctx, testFn, Attempts(3), MaxSleepTime(200*time.Millisecond))
 	assert.NotNil(t, err)
-	fmt.Println(err)
+	t.Log(err)
 }
 
 func TestSleep(t *testing.T) {
@@ -70,7 +72,7 @@ func TestSleep(t *testing.T) {
 
 	err := Do(ctx, testFn, Attempts(3), Sleep(500*time.Millisecond))
 	assert.NotNil(t, err)
-	fmt.Println(err)
+	t.Log(err)
 }
 
 func TestAllError(t *testing.T) {
@@ -82,21 +84,23 @@ func TestAllError(t *testing.T) {
 
 	err := Do(ctx, testFn, Attempts(3))
 	assert.NotNil(t, err)
-	fmt.Println(err)
+	t.Log(err)
 }
 
 func TestUnRecoveryError(t *testing.T) {
 	attempts := 0
 	ctx := context.Background()
 
+	mockErr := errors.New("some error")
 	testFn := func() error {
 		attempts++
-		return Unrecoverable(fmt.Errorf("some error"))
+		return Unrecoverable(mockErr)
 	}
 
 	err := Do(ctx, testFn, Attempts(3))
 	assert.NotNil(t, err)
 	assert.Equal(t, attempts, 1)
+	assert.True(t, errors.Is(err, mockErr))
 }
 
 func TestContextDeadline(t *testing.T) {
@@ -109,7 +113,7 @@ func TestContextDeadline(t *testing.T) {
 
 	err := Do(ctx, testFn)
 	assert.NotNil(t, err)
-	fmt.Println(err)
+	t.Log(err)
 }
 
 func TestContextCancel(t *testing.T) {
@@ -126,5 +130,5 @@ func TestContextCancel(t *testing.T) {
 
 	err := Do(ctx, testFn)
 	assert.NotNil(t, err)
-	fmt.Println(err)
+	t.Log(err)
 }

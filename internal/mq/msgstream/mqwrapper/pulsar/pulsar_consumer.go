@@ -24,10 +24,10 @@ import (
 	"unsafe"
 
 	"github.com/milvus-io/milvus/internal/mq/msgstream/mqwrapper"
+	"github.com/milvus-io/milvus/internal/util/retry"
 
 	"github.com/apache/pulsar-client-go/pulsar"
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/util/retry"
 	"go.uber.org/zap"
 )
 
@@ -120,6 +120,13 @@ func (pc *Consumer) Close() {
 				// this is the hack due to pulsar didn't handle error as expected
 				if strings.Contains(err.Error(), "Consumer not found") {
 					log.Warn("failed to find consumer, skip unsubscribe",
+						zap.String("subscription", pc.Subscription()),
+						zap.Error(err))
+					return nil
+				}
+				// Pulsar will automatically clean up subscriptions without consumers, so we can ignore this type of error.
+				if strings.Contains(err.Error(), "connection closed") {
+					log.Warn("connection closed, skip unsubscribe",
 						zap.String("subscription", pc.Subscription()),
 						zap.Error(err))
 					return nil

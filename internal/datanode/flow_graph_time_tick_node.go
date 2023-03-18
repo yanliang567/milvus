@@ -24,9 +24,9 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/milvus-io/milvus-proto/go-api/msgpb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/commonpbutil"
 	"github.com/milvus-io/milvus/internal/util/flowgraph"
@@ -72,6 +72,12 @@ func (ttn *ttNode) IsValidInMsg(in []Msg) bool {
 func (ttn *ttNode) Operate(in []Msg) []Msg {
 	fgMsg := in[0].(*flowGraphMsg)
 	if fgMsg.IsCloseMsg() {
+		if len(fgMsg.endPositions) > 0 {
+			log.Info("flowgraph is closing, force update channel CP",
+				zap.Uint64("endTs", fgMsg.endPositions[0].GetTimestamp()),
+				zap.String("channel", fgMsg.endPositions[0].GetChannelName()))
+			ttn.updateChannelCP(fgMsg.endPositions[0])
+		}
 		return in
 	}
 
@@ -84,7 +90,7 @@ func (ttn *ttNode) Operate(in []Msg) []Msg {
 	return []Msg{}
 }
 
-func (ttn *ttNode) updateChannelCP(ttPos *internalpb.MsgPosition) {
+func (ttn *ttNode) updateChannelCP(ttPos *msgpb.MsgPosition) {
 	channelPos := ttn.channel.getChannelCheckpoint(ttPos)
 	if channelPos == nil || channelPos.MsgID == nil {
 		log.Warn("updateChannelCP failed, get nil check point", zap.String("vChannel", ttn.vChannelName))
@@ -107,7 +113,10 @@ func (ttn *ttNode) updateChannelCP(ttPos *internalpb.MsgPosition) {
 		return
 	}
 
-	log.Info("UpdateChannelCheckpoint success", zap.String("channel", ttn.vChannelName), zap.Time("channelCPTs", channelCPTs))
+	log.Info("UpdateChannelCheckpoint success",
+		zap.String("channel", ttn.vChannelName),
+		zap.Uint64("cpTs", channelPos.Timestamp),
+		zap.Time("cpTime", channelCPTs))
 }
 
 func newTTNode(config *nodeConfig, dc types.DataCoord) (*ttNode, error) {

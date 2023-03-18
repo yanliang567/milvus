@@ -10,12 +10,12 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/msgpb"
 	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/planpb"
 	"github.com/milvus-io/milvus/internal/util/commonpbutil"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
@@ -76,26 +76,6 @@ func (dt *deleteTask) SetTs(ts Timestamp) {
 func (dt *deleteTask) OnEnqueue() error {
 	dt.deleteMsg.Base = commonpbutil.NewMsgBase()
 	return nil
-}
-
-func (dt *deleteTask) getPChanStats() (map[pChan]pChanStatistics, error) {
-	ret := make(map[pChan]pChanStatistics)
-
-	channels, err := dt.getChannels()
-	if err != nil {
-		return ret, err
-	}
-
-	beginTs := dt.BeginTs()
-	endTs := dt.EndTs()
-
-	for _, channel := range channels {
-		ret[channel] = pChanStatistics{
-			minTs: beginTs,
-			maxTs: endTs,
-		}
-	}
-	return ret, nil
 }
 
 func (dt *deleteTask) getChannels() ([]pChan, error) {
@@ -272,7 +252,7 @@ func (dt *deleteTask) Execute(ctx context.Context) (err error) {
 		ts := dt.deleteMsg.Timestamps[index]
 		_, ok := result[key]
 		if !ok {
-			sliceRequest := internalpb.DeleteRequest{
+			sliceRequest := msgpb.DeleteRequest{
 				Base: commonpbutil.NewMsgBase(
 					commonpbutil.WithMsgType(commonpb.MsgType_Delete),
 					commonpbutil.WithMsgID(dt.deleteMsg.Base.MsgID),

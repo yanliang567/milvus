@@ -18,12 +18,13 @@ package task
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
+	"github.com/cockroachdb/errors"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
+	"github.com/milvus-io/milvus/internal/util/merr"
 	. "github.com/milvus-io/milvus/internal/util/typeutil"
 	"go.uber.org/atomic"
 )
@@ -36,19 +37,12 @@ const (
 	TaskStatusStarted
 	TaskStatusSucceeded
 	TaskStatusCanceled
-	TaskStatusStale
 )
 
 const (
 	TaskPriorityLow    int32 = iota // for balance checker
 	TaskPriorityNormal              // for segment checker
 	TaskPriorityHigh                // for channel checker
-)
-
-var (
-	ErrEmptyActions              = errors.New("actions could not be empty")
-	ErrActionsTypeInconsistent   = errors.New("actions have inconsistent type")
-	ErrActionsTargetInconsistent = errors.New("actions have inconsistent target channel/segment")
 )
 
 var (
@@ -66,16 +60,16 @@ type Task interface {
 	Status() Status
 	SetStatus(status Status)
 	Err() error
-	SetErr(err error)
 	Priority() Priority
 	SetPriority(priority Priority)
 
-	Cancel()
+	Cancel(err error)
 	Wait() error
 	Actions() []Action
 	Step() int
 	StepUp() int
 	IsFinished(dist *meta.DistributionManager) bool
+	SetReason(reason string)
 	String() string
 }
 
@@ -97,6 +91,7 @@ type baseTask struct {
 	err      error
 	actions  []Action
 	step     int
+	reason   string
 }
 
 func newBaseTask(ctx context.Context, sourceID, collectionID, replicaID UniqueID, shard string) *baseTask {
@@ -162,16 +157,21 @@ func (task *baseTask) SetPriority(priority Priority) {
 }
 
 func (task *baseTask) Err() error {
-	return task.err
+	select {
+	case <-task.doneCh:
+		return task.err
+	default:
+		return nil
+	}
 }
 
-func (task *baseTask) SetErr(err error) {
-	task.err = err
-}
-
-func (task *baseTask) Cancel() {
-	if task.canceled.CAS(false, true) {
+func (task *baseTask) Cancel(err error) {
+	if task.canceled.CompareAndSwap(false, true) {
 		task.cancel()
+		if task.Status() != TaskStatusSucceeded {
+			task.SetStatus(TaskStatusCanceled)
+		}
+		task.err = err
 		close(task.doneCh)
 	}
 }
@@ -201,6 +201,10 @@ func (task *baseTask) IsFinished(distMgr *meta.DistributionManager) bool {
 	return task.Step() >= len(task.Actions())
 }
 
+func (task *baseTask) SetReason(reason string) {
+	task.reason = reason
+}
+
 func (task *baseTask) String() string {
 	var actionsStr string
 	for i, action := range task.actions {
@@ -214,9 +218,10 @@ func (task *baseTask) String() string {
 		}
 	}
 	return fmt.Sprintf(
-		"[id=%d] [type=%v] [collectionID=%d] [replicaID=%d] [priority=%d] [actionsCount=%d] [actions=%s]",
+		"[id=%d] [type=%v] [reason=%s] [collectionID=%d] [replicaID=%d] [priority=%d] [actionsCount=%d] [actions=%s]",
 		task.id,
 		GetTaskType(task),
+		task.reason,
 		task.collectionID,
 		task.replicaID,
 		task.priority,
@@ -241,7 +246,7 @@ func NewSegmentTask(ctx context.Context,
 	replicaID UniqueID,
 	actions ...Action) (*SegmentTask, error) {
 	if len(actions) == 0 {
-		return nil, ErrEmptyActions
+		return nil, errors.WithStack(merr.WrapErrParameterInvalid("non-empty actions", "no action"))
 	}
 
 	segmentID := int64(-1)
@@ -249,13 +254,13 @@ func NewSegmentTask(ctx context.Context,
 	for _, action := range actions {
 		action, ok := action.(*SegmentAction)
 		if !ok {
-			return nil, ErrActionsTypeInconsistent
+			return nil, errors.WithStack(merr.WrapErrParameterInvalid("SegmentAction", "other action", "all actions must be with the same type"))
 		}
 		if segmentID == -1 {
 			segmentID = action.SegmentID()
 			shard = action.Shard()
 		} else if segmentID != action.SegmentID() {
-			return nil, ErrActionsTargetInconsistent
+			return nil, errors.WithStack(merr.WrapErrParameterInvalid(segmentID, action.SegmentID(), "all actions must operate the same segment"))
 		}
 	}
 
@@ -293,19 +298,19 @@ func NewChannelTask(ctx context.Context,
 	replicaID UniqueID,
 	actions ...Action) (*ChannelTask, error) {
 	if len(actions) == 0 {
-		return nil, ErrEmptyActions
+		return nil, errors.WithStack(merr.WrapErrParameterInvalid("non-empty actions", "no action"))
 	}
 
 	channel := ""
 	for _, action := range actions {
-		channelAction, ok := action.(interface{ ChannelName() string })
+		channelAction, ok := action.(*ChannelAction)
 		if !ok {
-			return nil, ErrActionsTypeInconsistent
+			return nil, errors.WithStack(merr.WrapErrParameterInvalid("ChannelAction", "other action", "all actions must be with the same type"))
 		}
 		if channel == "" {
 			channel = channelAction.ChannelName()
 		} else if channel != channelAction.ChannelName() {
-			return nil, ErrActionsTargetInconsistent
+			return nil, errors.WithStack(merr.WrapErrParameterInvalid(channel, channelAction.ChannelName(), "all actions must operate the same segment"))
 		}
 	}
 

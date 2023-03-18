@@ -4,9 +4,9 @@ import (
 	"context"
 
 	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/msgpb"
 	"github.com/milvus-io/milvus/internal/metastore/model"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
@@ -109,14 +109,15 @@ type DataCoordCatalog interface {
 	AlterSegment(ctx context.Context, newSegment *datapb.SegmentInfo, oldSegment *datapb.SegmentInfo) error
 	SaveDroppedSegmentsInBatch(ctx context.Context, segments []*datapb.SegmentInfo) error
 	DropSegment(ctx context.Context, segment *datapb.SegmentInfo) error
-	RevertAlterSegmentsAndAddNewSegment(ctx context.Context, segments []*datapb.SegmentInfo, removalSegment *datapb.SegmentInfo) error
 
+	MarkChannelAdded(ctx context.Context, channel string) error
 	MarkChannelDeleted(ctx context.Context, channel string) error
-	IsChannelDropped(ctx context.Context, channel string) bool
+	ShouldDropChannel(ctx context.Context, channel string) bool
+	ChannelExists(ctx context.Context, channel string) bool
 	DropChannel(ctx context.Context, channel string) error
 
-	ListChannelCheckpoint(ctx context.Context) (map[string]*internalpb.MsgPosition, error)
-	SaveChannelCheckpoint(ctx context.Context, vChannel string, pos *internalpb.MsgPosition) error
+	ListChannelCheckpoint(ctx context.Context) (map[string]*msgpb.MsgPosition, error)
+	SaveChannelCheckpoint(ctx context.Context, vChannel string, pos *msgpb.MsgPosition) error
 	DropChannelCheckpoint(ctx context.Context, vChannel string) error
 
 	CreateIndex(ctx context.Context, index *model.Index) error

@@ -75,11 +75,14 @@ minio:
   # For more information, refer to
   # aws: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use.html
   # gcp: https://cloud.google.com/storage/docs/access-control/iam
+  # aliyun (ack): https://www.alibabacloud.com/help/en/container-service-for-kubernetes/latest/use-rrsa-to-enforce-access-control 
+  # aliyun (ecs): https://www.alibabacloud.com/help/en/elastic-compute-service/latest/attach-an-instance-ram-role
   useIAM: false
-  # Cloud Provider of S3. Supports: "aws", "gcp". 
+  # Cloud Provider of S3. Supports: "aws", "gcp", "aliyun". 
   # You can use "aws" for other cloud provider supports S3 API with signature v4, e.g.: minio
   # You can use "gcp" for other cloud provider supports S3 API with signature v2
-  # When useIAM enabled, only "aws" & "gcp" is supported for now
+  # You can use "aliyun" for other cloud provider uses virtual host style bucket 
+  # When useIAM enabled, only "aws", "gcp", "aliyun" is supported for now
   cloudProvider: aws
   # Custom endpoint for fetch IAM role credentials. when useIAM is true & cloudProvider is "aws".
   # Leave it empty if you want to use AWS default endpoint
@@ -112,7 +115,7 @@ rocksmq:
   # please adjust in embedded Milvus: /tmp/milvus/rdb_data
   path: /var/lib/milvus/rdb_data
   lrucacheratio: 0.06 # rocksdb cache memory ratio
-  rocksmqPageSize: 2147483648 # 2 GB, 2 * 1024 * 1024 * 1024 bytes, The size of each page of messages in rocksmq
+  rocksmqPageSize: 268435456 # 256 MB, 256 * 1024 * 1024 bytes, The size of each page of messages in rocksmq
   retentionTimeInMinutes: 7200 # 5 days, 5 * 24 * 60 minutes, The retention time of the message in rocksmq.
   retentionSizeInMB: 8192 # 8 GB, 8 * 1024 MB, The retention size of the message in rocksmq.
   compactionInterval: 86400 # 1 day, trigger rocksdb compaction every day to remove deleted data
@@ -307,6 +310,10 @@ dataNode:
     serverMaxRecvSize: 536870912
     clientMaxSendSize: 268435456
     clientMaxRecvSize: 268435456
+  memory:
+    forceSyncEnable: true # `true` to force sync if memory usage is too high
+    forceSyncThreshold: 0.6 # forceSync only take effects when memory usage ratio > forceSyncThreshold. note that should set it a small value like 0.2 for standalone deployment 
+    forceSyncSegmentRatio: 0.3 # ratio of segments to sync, top largest forceSyncSegmentRatio segments will be synced
 
 # Configures the system log output.
 log:
@@ -389,7 +396,7 @@ common:
     superUsers: root
     tlsMode: 0
   session:
-    ttl: 60 # ttl value when session granting a lease to register service
+    ttl: 20 # ttl value when session granting a lease to register service
     retryTimes: 30 # retry times when session sending etcd requests
 
 # QuotaConfig, configurations of Milvus quota and limits.

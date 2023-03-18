@@ -18,10 +18,11 @@ package querycoordv2
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/cockroachdb/errors"
 
 	"github.com/samber/lo"
 	"go.uber.org/zap"
@@ -36,6 +37,7 @@ import (
 	"github.com/milvus-io/milvus/internal/querycoordv2/task"
 	"github.com/milvus-io/milvus/internal/querycoordv2/utils"
 	"github.com/milvus-io/milvus/internal/util/hardware"
+	"github.com/milvus-io/milvus/internal/util/merr"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
@@ -147,19 +149,19 @@ func (s *Server) balanceSegments(ctx context.Context, req *querypb.LoadBalanceRe
 		)
 
 		if err != nil {
-			log.Warn("Create segment task for balance failed",
+			log.Warn("create segment task for balance failed",
 				zap.Int64("collection", req.GetCollectionID()),
 				zap.Int64("replica", replica.GetID()),
 				zap.String("channel", plan.Segment.InsertChannel),
-				zap.Int64("From", srcNode),
-				zap.Int64("To", plan.To),
+				zap.Int64("from", srcNode),
+				zap.Int64("to", plan.To),
 				zap.Error(err),
 			)
 			continue
 		}
 		err = s.taskScheduler.Add(task)
 		if err != nil {
-			task.Cancel()
+			task.Cancel(err)
 			return err
 		}
 		tasks = append(tasks, task)
@@ -189,7 +191,7 @@ func (s *Server) getSystemInfoMetrics(
 				CreatedTime: paramtable.GetCreateTime().String(),
 				UpdatedTime: paramtable.GetUpdateTime().String(),
 				Type:        typeutil.QueryCoordRole,
-				ID:          s.session.ServerID,
+				ID:          paramtable.GetNodeID(),
 			},
 			SystemConfigurations: metricsinfo.QueryCoordConfiguration{
 				SearchChannelPrefix:       Params.CommonCfg.QueryCoordSearch.GetValue(),
@@ -236,14 +238,14 @@ func (s *Server) fillMetricsWithNodes(topo *metricsinfo.QueryClusterTopology, no
 			continue
 		}
 
-		if metric.resp.Status.ErrorCode != commonpb.ErrorCode_Success {
+		if metric.resp.GetStatus().GetErrorCode() != commonpb.ErrorCode_Success {
 			log.Warn("invalid metrics of query node was found",
-				zap.Any("error_code", metric.resp.Status.ErrorCode),
-				zap.Any("error_reason", metric.resp.Status.Reason))
+				zap.Any("error_code", metric.resp.GetStatus().GetErrorCode()),
+				zap.Any("error_reason", metric.resp.GetStatus().GetReason()))
 			topo.ConnectedNodes = append(topo.ConnectedNodes, metricsinfo.QueryNodeInfos{
 				BaseComponentInfos: metricsinfo.BaseComponentInfos{
 					HasError:    true,
-					ErrorReason: metric.resp.Status.Reason,
+					ErrorReason: metric.resp.GetStatus().GetReason(),
 					Name:        metric.resp.ComponentName,
 					ID:          int64(uniquegenerator.GetUniqueIntGeneratorIns().GetInt()),
 				},
@@ -318,7 +320,7 @@ func (s *Server) fillReplicaInfo(replica *meta.Replica, withShardNodes bool) (*m
 	if len(channels) == 0 {
 		msg := "failed to get channels, collection not loaded"
 		log.Warn(msg)
-		return nil, utils.WrapError(msg, meta.ErrCollectionNotFound)
+		return nil, merr.WrapErrCollectionNotFound(replica.GetCollectionID(), msg)
 	}
 	var segments []*meta.Segment
 	if withShardNodes {

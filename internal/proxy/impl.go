@@ -18,19 +18,21 @@ package proxy
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"sync"
 
+	"github.com/cockroachdb/errors"
 	"github.com/golang/protobuf/proto"
+	"github.com/samber/lo"
 	"go.opentelemetry.io/otel"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
+	"github.com/milvus-io/milvus-proto/go-api/msgpb"
 	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
@@ -48,6 +50,7 @@ import (
 	"github.com/milvus-io/milvus/internal/util/logutil"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
+	"github.com/milvus-io/milvus/internal/util/ratelimitutil"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
@@ -2041,7 +2044,7 @@ func (node *Proxy) Insert(ctx context.Context, request *milvuspb.InsertRequest) 
 			BaseMsg: msgstream.BaseMsg{
 				HashValues: request.HashKeys,
 			},
-			InsertRequest: internalpb.InsertRequest{
+			InsertRequest: msgpb.InsertRequest{
 				Base: commonpbutil.NewMsgBase(
 					commonpbutil.WithMsgType(commonpb.MsgType_Insert),
 					commonpbutil.WithMsgID(0),
@@ -2051,7 +2054,7 @@ func (node *Proxy) Insert(ctx context.Context, request *milvuspb.InsertRequest) 
 				PartitionName:  request.PartitionName,
 				FieldsData:     request.FieldsData,
 				NumRows:        uint64(request.NumRows),
-				Version:        internalpb.InsertDataVersion_ColumnBased,
+				Version:        msgpb.InsertDataVersion_ColumnBased,
 				// RowData: transfer column based request to this
 			},
 		},
@@ -2170,7 +2173,7 @@ func (node *Proxy) Delete(ctx context.Context, request *milvuspb.DeleteRequest) 
 			BaseMsg: msgstream.BaseMsg{
 				HashValues: request.HashKeys,
 			},
-			DeleteRequest: internalpb.DeleteRequest{
+			DeleteRequest: msgpb.DeleteRequest{
 				Base: commonpbutil.NewMsgBase(
 					commonpbutil.WithMsgType(commonpb.MsgType_Delete),
 					commonpbutil.WithMsgID(0),
@@ -2340,6 +2343,11 @@ func (node *Proxy) Upsert(ctx context.Context, request *milvuspb.UpsertRequest) 
 			zap.Error(err))
 		metrics.ProxyFunctionCall.WithLabelValues(strconv.FormatInt(paramtable.GetNodeID(), 10), method,
 			metrics.FailLabel).Inc()
+		// Not every error case changes the status internally
+		// change status there to handle it
+		if it.result.Status.ErrorCode == commonpb.ErrorCode_Success {
+			it.result.Status.ErrorCode = commonpb.ErrorCode_UnexpectedError
+		}
 		return constructFailedResponse(err, it.result.Status.ErrorCode), nil
 	}
 
@@ -3357,8 +3365,8 @@ func (node *Proxy) GetProxyMetrics(ctx context.Context, req *milvuspb.GetMetrics
 			}, nil
 		}
 
-		log.Debug("Proxy.GetProxyMetrics",
-			zap.String("metricType", metricType))
+		//log.Debug("Proxy.GetProxyMetrics",
+		//	zap.String("metricType", metricType))
 
 		return proxyMetrics, nil
 	}
@@ -4326,7 +4334,13 @@ func (node *Proxy) SetRates(ctx context.Context, request *proxypb.SetRatesReques
 		return resp, nil
 	}
 	node.multiRateLimiter.SetQuotaStates(request.GetStates(), request.GetCodes())
-	log.Info("current rates in proxy", zap.Int64("proxyNodeID", paramtable.GetNodeID()), zap.Any("rates", request.GetRates()))
+	rateStrs := lo.FilterMap(request.GetRates(), func(r *internalpb.Rate, _ int) (string, bool) {
+		return fmt.Sprintf("rateType:%s, rate:%s", r.GetRt().String(), ratelimitutil.Limit(r.GetR()).String()),
+			ratelimitutil.Limit(r.GetR()) != ratelimitutil.Inf
+	})
+	if len(rateStrs) > 0 {
+		log.RatedInfo(30, "current rates in proxy", zap.Int64("proxyNodeID", paramtable.GetNodeID()), zap.Strings("rates", rateStrs))
+	}
 	if len(request.GetStates()) != 0 {
 		for i := range request.GetStates() {
 			log.Warn("Proxy set quota states", zap.String("state", request.GetStates()[i].String()), zap.String("reason", request.GetCodes()[i].String()))

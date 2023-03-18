@@ -29,8 +29,12 @@ namespace spb = proto::schema;
 static SchemaPtr
 getStandardSchema() {
     auto schema = std::make_shared<Schema>();
-    schema->AddDebugField("FloatVectorField", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
-    schema->AddDebugField("BinaryVectorField", DataType::VECTOR_BINARY, 16, knowhere::metric::JACCARD);
+    schema->AddDebugField(
+        "FloatVectorField", DataType::VECTOR_FLOAT, 16, knowhere::metric::L2);
+    schema->AddDebugField("BinaryVectorField",
+                          DataType::VECTOR_BINARY,
+                          16,
+                          knowhere::metric::JACCARD);
     schema->AddDebugField("Int64Field", DataType::INT64);
     schema->AddDebugField("Int32Field", DataType::INT32);
     schema->AddDebugField("Int16Field", DataType::INT16);
@@ -660,4 +664,27 @@ vector_anns: <
 
     auto ref_plan = CreatePlan(*schema, dsl_text);
     plan->check_identical(*ref_plan);
+}
+
+TEST(PlanProtoTest, Predicates) {
+    auto schema = getStandardSchema();
+    auto age_fid = schema->AddDebugField("age1", DataType::INT64);
+
+    planpb::PlanNode plan_node_proto;
+    auto expr =
+        plan_node_proto.mutable_predicates()->mutable_unary_range_expr();
+    expr->set_op(planpb::Equal);
+    auto column_info = expr->mutable_column_info();
+    column_info->set_data_type(proto::schema::DataType::Int64);
+    column_info->set_field_id(age_fid.get());
+    auto value = expr->mutable_value();
+    value->set_int64_val(1000);
+
+    std::string binary;
+    plan_node_proto.SerializeToString(&binary);
+
+    auto plan =
+        CreateRetrievePlanByExpr(*schema, binary.c_str(), binary.size());
+    ASSERT_TRUE(plan->plan_node_->predicate_.has_value());
+    ASSERT_FALSE(plan->plan_node_->is_count);
 }

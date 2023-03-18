@@ -24,10 +24,12 @@ package querynode
 #include "segcore/plan_c.h"
 */
 import "C"
+
 import (
-	"errors"
 	"fmt"
 	"unsafe"
+
+	"github.com/cockroachdb/errors"
 
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"

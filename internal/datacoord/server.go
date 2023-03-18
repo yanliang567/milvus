@@ -18,7 +18,6 @@ package datacoord
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -27,7 +26,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/blang/semver/v4"
+	semver "github.com/blang/semver/v4"
+	"github.com/cockroachdb/errors"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 
@@ -60,7 +60,7 @@ import (
 
 const (
 	connEtcdMaxRetryTime = 100
-	allPartitionID       = 0 // paritionID means no filtering
+	allPartitionID       = 0 // partitionID means no filtering
 )
 
 var (
@@ -80,7 +80,9 @@ type (
 )
 
 type dataNodeCreatorFunc func(ctx context.Context, addr string) (types.DataNode, error)
+
 type indexNodeCreatorFunc func(ctx context.Context, addr string) (types.IndexNode, error)
+
 type rootCoordCreatorFunc func(ctx context.Context, metaRootPath string, etcdClient *clientv3.Client) (types.RootCoord, error)
 
 // makes sure Server implements `DataCoord`
@@ -248,7 +250,7 @@ func (s *Server) Register() error {
 		}
 	}
 	go s.session.LivenessCheck(s.serverLoopCtx, func() {
-		logutil.Logger(s.ctx).Error("disconnected from etcd and exited", zap.Int64("serverID", s.session.ServerID))
+		logutil.Logger(s.ctx).Error("disconnected from etcd and exited", zap.Int64("serverID", paramtable.GetNodeID()))
 		if err := s.Stop(); err != nil {
 			logutil.Logger(s.ctx).Fatal("failed to stop server", zap.Error(err))
 		}
@@ -452,6 +454,16 @@ func (s *Server) initGarbageCollection(cli storage.ChunkManager) {
 		checkInterval:    Params.DataCoordCfg.GCInterval.GetAsDuration(time.Second),
 		missingTolerance: Params.DataCoordCfg.GCMissingTolerance.GetAsDuration(time.Second),
 		dropTolerance:    Params.DataCoordCfg.GCDropTolerance.GetAsDuration(time.Second),
+		collValidator: func(collID int64) bool {
+			resp, err := s.rootCoordClient.DescribeCollectionInternal(context.Background(), &milvuspb.DescribeCollectionRequest{
+				Base:         commonpbutil.NewMsgBase(),
+				CollectionID: collID,
+			})
+			if err != nil {
+				log.Warn("failed to check collection id", zap.Int64("collID", collID), zap.Error(err))
+			}
+			return resp.GetStatus().GetErrorCode() == commonpb.ErrorCode_Success
+		},
 	})
 }
 
@@ -661,32 +673,46 @@ func (s *Server) handleTimetickMessage(ctx context.Context, ttMsg *msgstream.Dat
 	}
 	err = s.cluster.Flush(s.ctx, ttMsg.GetBase().GetSourceID(), ch, finfo)
 	if err != nil {
-		log.Warn("handle")
+		log.Warn("failed to handle flush", zap.Any("source", ttMsg.GetBase().GetSourceID()), zap.Error(err))
 		return err
 	}
 
 	return nil
 }
 
-func (s *Server) updateSegmentStatistics(stats []*datapb.SegmentStats) {
+func (s *Server) updateSegmentStatistics(stats []*commonpb.SegmentStats) {
 	for _, stat := range stats {
+		segment := s.meta.GetSegment(stat.GetSegmentID())
+		if segment == nil {
+			log.Warn("skip updating row number for not exist segment",
+				zap.Int64("segment ID", stat.GetSegmentID()),
+				zap.Int64("new value", stat.GetNumRows()))
+			continue
+		}
+
+		if isFlushState(segment.GetState()) {
+			log.Warn("skip updating row number for flushed segment",
+				zap.Int64("segment ID", stat.GetSegmentID()),
+				zap.Int64("new value", stat.GetNumRows()))
+			continue
+		}
+
 		// Log if # of rows is updated.
-		if s.meta.GetSegmentUnsafe(stat.GetSegmentID()) != nil &&
-			s.meta.GetSegmentUnsafe(stat.GetSegmentID()).GetNumOfRows() != stat.GetNumRows() {
+		if segment.currRows < stat.GetNumRows() {
 			log.Info("Updating segment number of rows",
 				zap.Int64("segment ID", stat.GetSegmentID()),
-				zap.Int64("old value", s.meta.GetSegmentUnsafe(stat.GetSegmentID()).GetNumOfRows()),
+				zap.Int64("old value", s.meta.GetSegment(stat.GetSegmentID()).GetNumOfRows()),
 				zap.Int64("new value", stat.GetNumRows()),
 			)
+			s.meta.SetCurrentRows(stat.GetSegmentID(), stat.GetNumRows())
 		}
-		s.meta.SetCurrentRows(stat.GetSegmentID(), stat.GetNumRows())
 	}
 }
 
 func (s *Server) getFlushableSegmentsInfo(flushableIDs []int64) []*SegmentInfo {
 	res := make([]*SegmentInfo, 0, len(flushableIDs))
 	for _, id := range flushableIDs {
-		sinfo := s.meta.GetSegment(id)
+		sinfo := s.meta.GetHealthySegment(id)
 		if sinfo == nil {
 			log.Error("get segment from meta error", zap.Int64("id", id))
 			continue
@@ -709,7 +735,7 @@ func (s *Server) startWatchService(ctx context.Context) {
 
 func (s *Server) stopServiceWatch() {
 	// ErrCompacted is handled inside SessionWatcher, which means there is some other error occurred, closing server.
-	logutil.Logger(s.ctx).Error("watch service channel closed", zap.Int64("serverID", s.session.ServerID))
+	logutil.Logger(s.ctx).Error("watch service channel closed", zap.Int64("serverID", paramtable.GetNodeID()))
 	go s.Stop()
 	if s.session.TriggerKill {
 		if p, err := os.FindProcess(os.Getpid()); err == nil {
@@ -853,7 +879,7 @@ func (s *Server) startFlushLoop(ctx context.Context) {
 // 2. notify RootCoord segment is flushed
 // 3. change segment state to `Flushed` in meta
 func (s *Server) postFlush(ctx context.Context, segmentID UniqueID) error {
-	segment := s.meta.GetSegment(segmentID)
+	segment := s.meta.GetHealthySegment(segmentID)
 	if segment == nil {
 		return errors.New("segment not found, might be a faked segemnt, ignore post flush")
 	}
@@ -911,6 +937,7 @@ func (s *Server) Stop() error {
 		s.stopCompactionTrigger()
 		s.stopCompactionHandler()
 	}
+	s.indexBuilder.Stop()
 	return nil
 }
 
@@ -981,6 +1008,7 @@ func (s *Server) loadCollectionFromRootCoord(ctx context.Context, collectionID i
 		Partitions:     presp.PartitionIDs,
 		StartPositions: resp.GetStartPositions(),
 		Properties:     properties,
+		CreatedAt:      resp.GetCreatedTimestamp(),
 	}
 	s.meta.AddCollection(collInfo)
 	return nil
@@ -994,7 +1022,16 @@ func (s *Server) reCollectSegmentStats(ctx context.Context) {
 	nodes := s.sessionManager.getLiveNodeIDs()
 	log.Info("re-collecting segment stats from DataNodes",
 		zap.Int64s("DataNode IDs", nodes))
-	for _, node := range nodes {
-		s.cluster.ReCollectSegmentStats(ctx, node)
+
+	reCollectFunc := func() error {
+		err := s.cluster.ReCollectSegmentStats(ctx)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+
+	if err := retry.Do(ctx, reCollectFunc, retry.Attempts(20), retry.Sleep(time.Millisecond*100), retry.MaxSleepTime(5*time.Second)); err != nil {
+		panic(err)
 	}
 }

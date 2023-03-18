@@ -17,10 +17,11 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"sync"
+
+	"github.com/cockroachdb/errors"
 
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/spf13/cast"
@@ -30,7 +31,7 @@ import (
 
 type FileSource struct {
 	sync.RWMutex
-	file    string
+	files   []string
 	configs map[string]string
 
 	configRefresher refresher
@@ -38,7 +39,7 @@ type FileSource struct {
 
 func NewFileSource(fileInfo *FileInfo) *FileSource {
 	fs := &FileSource{
-		file:    fileInfo.Filepath,
+		files:   fileInfo.Files,
 		configs: make(map[string]string),
 	}
 	fs.configRefresher = newRefresher(fileInfo.RefreshInterval, fs.loadFromFile)
@@ -94,46 +95,45 @@ func (fs *FileSource) SetEventHandler(eh EventHandler) {
 }
 func (fs *FileSource) loadFromFile() error {
 	yamlReader := viper.New()
-	configFile := fs.file
-	if _, err := os.Stat(configFile); err != nil {
-		return errors.New("cannot access config file: " + configFile)
-	}
-
-	yamlReader.SetConfigFile(configFile)
-	if err := yamlReader.ReadInConfig(); err != nil {
-		log.Warn("Read config failed", zap.Error(err))
-		return err
-	}
-
 	newConfig := make(map[string]string)
-	for _, key := range yamlReader.AllKeys() {
-		val := yamlReader.Get(key)
-		str, err := cast.ToStringE(val)
-		if err != nil {
-			switch val := val.(type) {
-			case []any:
-				str = str[:0]
-				for _, v := range val {
-					ss, err := cast.ToStringE(v)
-					if err != nil {
-						log.Warn("cast to string failed", zap.Any("value", v))
-					}
-					if str == "" {
-						str = ss
-					} else {
-						str = str + "," + ss
-					}
-				}
-
-			default:
-				log.Warn("val is not a slice", zap.Any("value", val))
-				continue
-			}
+	for _, configFile := range fs.files {
+		if _, err := os.Stat(configFile); err != nil {
+			continue
 		}
-		newConfig[key] = str
-		newConfig[formatKey(key)] = str
-	}
 
+		yamlReader.SetConfigFile(configFile)
+		if err := yamlReader.ReadInConfig(); err != nil {
+			return errors.Wrap(err, "Read config failed: "+configFile)
+		}
+
+		for _, key := range yamlReader.AllKeys() {
+			val := yamlReader.Get(key)
+			str, err := cast.ToStringE(val)
+			if err != nil {
+				switch val := val.(type) {
+				case []any:
+					str = str[:0]
+					for _, v := range val {
+						ss, err := cast.ToStringE(v)
+						if err != nil {
+							log.Warn("cast to string failed", zap.Any("value", v))
+						}
+						if str == "" {
+							str = ss
+						} else {
+							str = str + "," + ss
+						}
+					}
+
+				default:
+					log.Warn("val is not a slice", zap.Any("value", val))
+					continue
+				}
+			}
+			newConfig[key] = str
+			newConfig[formatKey(key)] = str
+		}
+	}
 	fs.Lock()
 	defer fs.Unlock()
 	err := fs.configRefresher.fireEvents(fs.GetSourceName(), fs.configs, newConfig)

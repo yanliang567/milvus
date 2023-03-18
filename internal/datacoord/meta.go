@@ -30,6 +30,7 @@ import (
 	"golang.org/x/exp/maps"
 
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/msgpb"
 	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/log"
@@ -37,9 +38,9 @@ import (
 	"github.com/milvus-io/milvus/internal/metastore/model"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util/metautil"
+	"github.com/milvus-io/milvus/internal/util/segmentutil"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
@@ -49,9 +50,9 @@ type meta struct {
 	sync.RWMutex
 	ctx          context.Context
 	catalog      metastore.DataCoordCatalog
-	collections  map[UniqueID]*collectionInfo       // collection id to collection info
-	segments     *SegmentsInfo                      // segment id to segment info
-	channelCPs   map[string]*internalpb.MsgPosition // vChannel -> channel checkpoint/see position
+	collections  map[UniqueID]*collectionInfo  // collection id to collection info
+	segments     *SegmentsInfo                 // segment id to segment info
+	channelCPs   map[string]*msgpb.MsgPosition // vChannel -> channel checkpoint/see position
 	chunkManager storage.ChunkManager
 
 	// collectionIndexes records which indexes are on the collection
@@ -75,6 +76,7 @@ type collectionInfo struct {
 	Partitions     []int64
 	StartPositions []*commonpb.KeyDataPair
 	Properties     map[string]string
+	CreatedAt      Timestamp
 }
 
 // NewMeta creates meta from provided `kv.TxnKV`
@@ -84,7 +86,7 @@ func newMeta(ctx context.Context, catalog metastore.DataCoordCatalog, chunkManag
 		catalog:              catalog,
 		collections:          make(map[UniqueID]*collectionInfo),
 		segments:             NewSegmentsInfo(),
-		channelCPs:           make(map[string]*internalpb.MsgPosition),
+		channelCPs:           make(map[string]*msgpb.MsgPosition),
 		chunkManager:         chunkManager,
 		indexes:              make(map[UniqueID]map[UniqueID]*model.Index),
 		buildID2SegmentIndex: make(map[UniqueID]*model.SegmentIndex),
@@ -314,9 +316,9 @@ func (m *meta) DropSegment(segmentID UniqueID) error {
 	return nil
 }
 
-// GetSegment returns segment info with provided id
+// GetHealthySegment returns segment info with provided id
 // if not segment is found, nil will be returned
-func (m *meta) GetSegment(segID UniqueID) *SegmentInfo {
+func (m *meta) GetHealthySegment(segID UniqueID) *SegmentInfo {
 	m.RLock()
 	defer m.RUnlock()
 	segment := m.segments.GetSegment(segID)
@@ -326,10 +328,10 @@ func (m *meta) GetSegment(segID UniqueID) *SegmentInfo {
 	return nil
 }
 
-// GetSegmentUnsafe returns segment info with provided id
+// GetSegment returns segment info with provided id
 // include the unhealthy segment
 // if not segment is found, nil will be returned
-func (m *meta) GetSegmentUnsafe(segID UniqueID) *SegmentInfo {
+func (m *meta) GetSegment(segID UniqueID) *SegmentInfo {
 	m.RLock()
 	defer m.RUnlock()
 	return m.segments.GetSegment(segID)
@@ -440,10 +442,6 @@ func (m *meta) UpdateFlushSegmentsInfo(
 	defer m.Unlock()
 
 	segment := m.segments.GetSegment(segmentID)
-	if importing {
-		m.segments.SetRowCount(segmentID, segment.currRows)
-		segment = m.segments.GetSegment(segmentID)
-	}
 	if segment == nil || !isSegmentHealthy(segment) {
 		log.Warn("meta update: update flush segments info - segment not found",
 			zap.Int64("segment ID", segmentID),
@@ -532,20 +530,46 @@ func (m *meta) UpdateFlushSegmentsInfo(
 		s.StartPosition = pos.GetStartPosition()
 		modSegments[pos.GetSegmentID()] = s
 	}
-	for _, cp := range checkpoints {
-		s := getClonedSegment(cp.GetSegmentID())
-		if s == nil {
-			continue
-		}
 
-		if s.DmlPosition != nil && s.DmlPosition.Timestamp >= cp.Position.Timestamp {
-			// segment position in etcd is larger than checkpoint, then dont change it
-			continue
+	if importing {
+		s := clonedSegment
+		count := segmentutil.CalcRowCountFromBinLog(s.SegmentInfo)
+		if count != segment.currRows {
+			log.Info("check point reported inconsistent with bin log row count",
+				zap.Int64("segment ID", segment.GetID()),
+				zap.Int64("current rows (wrong)", segment.currRows),
+				zap.Int64("segment bin log row count (correct)", count))
 		}
+		s.NumOfRows = count
+		modSegments[segmentID] = s
+	} else {
+		for _, cp := range checkpoints {
+			if cp.SegmentID != segmentID {
+				// Don't think this is gonna to happen, ignore for now.
+				log.Warn("checkpoint in segment is not same as flush segment to update, igreo", zap.Int64("current", segmentID), zap.Int64("checkpoint segment", cp.SegmentID))
+				continue
+			}
+			s := clonedSegment
 
-		s.DmlPosition = cp.GetPosition()
-		s.NumOfRows = cp.GetNumOfRows()
-		modSegments[cp.GetSegmentID()] = s
+			if s.DmlPosition != nil && s.DmlPosition.Timestamp >= cp.Position.Timestamp {
+				log.Warn("checkpoint in segment is larger than reported", zap.Any("current", s.GetDmlPosition()), zap.Any("reported", cp.GetPosition()))
+				// segment position in etcd is larger than checkpoint, then dont change it
+				continue
+			}
+
+			count := segmentutil.CalcRowCountFromBinLog(s.SegmentInfo)
+			// count should smaller than or equal to cp reported
+			if count != cp.NumOfRows {
+				log.Info("check point reported inconsistent with bin log row count",
+					zap.Int64("segment ID", segment.GetID()),
+					zap.Int64("check point (wrong)", cp.NumOfRows),
+					zap.Int64("segment bin log row count (correct)", count))
+			}
+			s.NumOfRows = count
+
+			s.DmlPosition = cp.GetPosition()
+			modSegments[cp.GetSegmentID()] = s
+		}
 	}
 	segments := make([]*datapb.SegmentInfo, 0, len(modSegments))
 	for _, seg := range modSegments {
@@ -683,7 +707,7 @@ func (m *meta) mergeDropSegment(seg2Drop *SegmentInfo) (*SegmentInfo, *segMetric
 // since the channel unwatching operation is not atomic here
 // ** the removal flag is always with last batch
 // ** the last batch must contains at least one segment
-//  1. when failure occurs between batches, failover mechanism will continue with the earlist  checkpoint of this channel
+//  1. when failure occurs between batches, failover mechanism will continue with the earliest  checkpoint of this channel
 //     since the flag is not marked so DataNode can re-consume the drop collection msg
 //  2. when failure occurs between save meta and unwatch channel, the removal flag shall be check before let datanode watch this channel
 func (m *meta) batchSaveDropSegments(channel string, modSegments map[int64]*SegmentInfo) error {
@@ -956,7 +980,7 @@ func (m *meta) PrepareCompleteCompactionMutation(compactionLogs []*datapb.Compac
 		}
 	}
 
-	var startPosition, dmlPosition *internalpb.MsgPosition
+	var startPosition, dmlPosition *msgpb.MsgPosition
 	for _, s := range modSegments {
 		if dmlPosition == nil ||
 			s.GetDmlPosition() != nil && s.GetDmlPosition().GetTimestamp() < dmlPosition.GetTimestamp() {
@@ -1042,11 +1066,18 @@ func (m *meta) copyDeltaFiles(binlogs []*datapb.FieldBinlog, collectionID, parti
 	return ret, nil
 }
 
-func (m *meta) alterMetaStoreAfterCompaction(modSegments []*SegmentInfo, newSegment *SegmentInfo) error {
-	var modSegIDs []int64
-	for _, seg := range modSegments {
-		modSegIDs = append(modSegIDs, seg.GetID())
+func (m *meta) alterMetaStoreAfterCompaction(segmentCompactTo *SegmentInfo, segmentsCompactFrom []*SegmentInfo) error {
+	modInfos := make([]*datapb.SegmentInfo, len(segmentsCompactFrom))
+	for i := range segmentsCompactFrom {
+		modInfos[i] = segmentsCompactFrom[i].SegmentInfo
 	}
+	newSegment := segmentCompactTo.SegmentInfo
+
+	modSegIDs := lo.Map(modInfos, func(segment *datapb.SegmentInfo, _ int) int64 { return segment.GetID() })
+	if newSegment.GetNumOfRows() == 0 {
+		newSegment.State = commonpb.SegmentState_Dropped
+	}
+
 	log.Info("meta update: alter meta store for compaction updates",
 		zap.Int64s("compact from segments (segments to be updated as dropped)", modSegIDs),
 		zap.Int64("new segmentId", newSegment.GetID()),
@@ -1055,54 +1086,28 @@ func (m *meta) alterMetaStoreAfterCompaction(modSegments []*SegmentInfo, newSegm
 		zap.Int("delta logs", len(newSegment.GetDeltalogs())),
 		zap.Int64("compact to segment", newSegment.GetID()))
 
-	m.Lock()
-	defer m.Unlock()
-
-	modInfos := lo.Map(modSegments, func(item *SegmentInfo, _ int) *datapb.SegmentInfo {
-		return item.SegmentInfo
-	})
-
-	if err := m.catalog.AlterSegmentsAndAddNewSegment(m.ctx, modInfos, newSegment.SegmentInfo); err != nil {
+	err := m.catalog.AlterSegmentsAndAddNewSegment(m.ctx, modInfos, newSegment)
+	if err != nil {
+		log.Warn("fail to alter segments and new segment", zap.Error(err))
 		return err
 	}
 
-	for _, s := range modSegments {
-		m.segments.SetSegment(s.GetID(), s)
+	var compactFromIDs []int64
+	for _, v := range segmentsCompactFrom {
+		compactFromIDs = append(compactFromIDs, v.GetID())
 	}
-
-	if newSegment.GetNumOfRows() > 0 {
-		m.segments.SetSegment(newSegment.GetID(), newSegment)
-	}
-
-	return nil
-}
-
-func (m *meta) revertAlterMetaStoreAfterCompaction(oldSegments []*SegmentInfo, removalSegment *SegmentInfo) error {
-	log.Info("meta update: revert metastore after compaction failure",
-		zap.Int64("collectionID", removalSegment.CollectionID),
-		zap.Int64("partitionID", removalSegment.PartitionID),
-		zap.Int64("compactedTo (segment to remove)", removalSegment.ID),
-		zap.Int64s("compactedFrom (segments to add back)", removalSegment.GetCompactionFrom()),
-	)
-
+	log.Info("meta update: alter in memory meta after compaction",
+		zap.Int64("compact to segment ID", segmentCompactTo.GetID()),
+		zap.Int64s("compact from segment IDs", compactFromIDs))
 	m.Lock()
 	defer m.Unlock()
-
-	oldSegmentInfos := lo.Map(oldSegments, func(item *SegmentInfo, _ int) *datapb.SegmentInfo {
-		return item.SegmentInfo
-	})
-
-	if err := m.catalog.RevertAlterSegmentsAndAddNewSegment(m.ctx, oldSegmentInfos, removalSegment.SegmentInfo); err != nil {
-		return err
-	}
-
-	for _, s := range oldSegments {
+	for _, s := range segmentsCompactFrom {
 		m.segments.SetSegment(s.GetID(), s)
 	}
-
-	if removalSegment.GetNumOfRows() > 0 {
-		m.segments.DropSegment(removalSegment.GetID())
-	}
+	m.segments.SetSegment(segmentCompactTo.GetID(), segmentCompactTo)
+	log.Info("meta update: alter in memory meta after compaction - complete",
+		zap.Int64("compact to segment ID", segmentCompactTo.GetID()),
+		zap.Int64s("compact from segment IDs", compactFromIDs))
 	return nil
 }
 
@@ -1232,7 +1237,7 @@ func (m *meta) GetCompactionTo(segmentID int64) *SegmentInfo {
 }
 
 // UpdateChannelCheckpoint updates and saves channel checkpoint.
-func (m *meta) UpdateChannelCheckpoint(vChannel string, pos *internalpb.MsgPosition) error {
+func (m *meta) UpdateChannelCheckpoint(vChannel string, pos *msgpb.MsgPosition) error {
 	if pos == nil {
 		return fmt.Errorf("channelCP is nil, vChannel=%s", vChannel)
 	}
@@ -1248,18 +1253,21 @@ func (m *meta) UpdateChannelCheckpoint(vChannel string, pos *internalpb.MsgPosit
 		}
 		m.channelCPs[vChannel] = pos
 		ts, _ := tsoutil.ParseTS(pos.Timestamp)
-		log.Debug("UpdateChannelCheckpoint done", zap.String("vChannel", vChannel), zap.Time("time", ts))
+		log.Debug("UpdateChannelCheckpoint done",
+			zap.String("vChannel", vChannel),
+			zap.Uint64("ts", pos.Timestamp),
+			zap.Time("time", ts))
 	}
 	return nil
 }
 
-func (m *meta) GetChannelCheckpoint(vChannel string) *internalpb.MsgPosition {
+func (m *meta) GetChannelCheckpoint(vChannel string) *msgpb.MsgPosition {
 	m.RLock()
 	defer m.RUnlock()
 	if m.channelCPs[vChannel] == nil {
 		return nil
 	}
-	return proto.Clone(m.channelCPs[vChannel]).(*internalpb.MsgPosition)
+	return proto.Clone(m.channelCPs[vChannel]).(*msgpb.MsgPosition)
 }
 
 func (m *meta) DropChannelCheckpoint(vChannel string) error {

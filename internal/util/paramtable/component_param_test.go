@@ -164,6 +164,8 @@ func TestComponentParam(t *testing.T) {
 		t.Logf("AccessLog.MaxBackups: %d", Params.AccessLog.MaxBackups.GetAsInt64())
 
 		t.Logf("AccessLog.MaxDays: %d", Params.AccessLog.RotatedTime.GetAsInt64())
+
+		t.Logf("ShardLeaderCacheInterval: %d", Params.ShardLeaderCacheInterval.GetAsInt64())
 	})
 
 	// t.Run("test proxyConfig panic", func(t *testing.T) {
@@ -354,6 +356,13 @@ func TestComponentParam(t *testing.T) {
 		assert.Equal(t, Params.GracefulStopTimeout.GetAsInt64(), int64(50))
 	})
 
+	t.Run("channel config priority", func(t *testing.T) {
+		Params := params.CommonCfg
+		params.Save(Params.RootCoordDml.Key, "dml1")
+		params.Save(Params.RootCoordDml.FallbackKeys[0], "dml2")
+
+		assert.Equal(t, "by-dev-dml1", Params.RootCoordDml.GetValue())
+	})
 }
 
 func TestForbiddenItem(t *testing.T) {

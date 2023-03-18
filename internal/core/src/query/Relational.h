@@ -11,14 +11,14 @@
 
 #pragma once
 
+#include <functional>
+#include <string>
+
+#include "common/Utils.h"
 #include "common/VectorTrait.h"
 #include "exceptions/EasyAssert.h"
 #include "query/Expr.h"
-#include "common/Utils.h"
 #include "query/Utils.h"
-
-#include <functional>
-#include <string>
 
 namespace milvus::query {
 template <typename Op, typename T, typename U>
@@ -50,7 +50,10 @@ struct Relational {
     template <typename T, typename U>
     bool
     operator()(const T& t, const U& u) const {
-        return RelationalImpl<Op, T, U>(t, u, typename TagDispatchTrait<T>::Tag{}, typename TagDispatchTrait<U>::Tag{});
+        return RelationalImpl<Op, T, U>(t,
+                                        u,
+                                        typename TagDispatchTrait<T>::Tag{},
+                                        typename TagDispatchTrait<U>::Tag{});
     }
 
     template <typename... T>

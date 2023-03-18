@@ -18,10 +18,11 @@ package datacoord
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/cockroachdb/errors"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -285,7 +286,7 @@ func getDeltaLogPath(rootPath string, segmentID typeutil.UniqueID) string {
 
 func TestCompactionPlanHandler_handleMergeCompactionResult(t *testing.T) {
 	mockDataNode := &mocks.DataNode{}
-	mockDataNode.EXPECT().SyncSegments(mock.Anything, mock.Anything).Run(func(ctx context.Context, req *datapb.SyncSegmentsRequest) {}).Return(&commonpb.Status{ErrorCode: commonpb.ErrorCode_Success}, nil)
+	call := mockDataNode.EXPECT().SyncSegments(mock.Anything, mock.Anything).Run(func(ctx context.Context, req *datapb.SyncSegmentsRequest) {}).Return(&commonpb.Status{ErrorCode: commonpb.ErrorCode_Success}, nil)
 
 	dataNodeID := UniqueID(111)
 
@@ -411,6 +412,11 @@ func TestCompactionPlanHandler_handleMergeCompactionResult(t *testing.T) {
 	has, err = c.meta.HasSegments([]UniqueID{1, 2, 3})
 	require.NoError(t, err)
 	require.True(t, has)
+
+	call.Unset()
+	call = mockDataNode.EXPECT().SyncSegments(mock.Anything, mock.Anything).Run(func(ctx context.Context, req *datapb.SyncSegmentsRequest) {}).Return(&commonpb.Status{ErrorCode: commonpb.ErrorCode_UnexpectedError}, nil)
+	err = c.handleMergeCompactionResult(plan, compactionResult2)
+	assert.Error(t, err)
 }
 
 func TestCompactionPlanHandler_completeCompaction(t *testing.T) {
@@ -619,7 +625,7 @@ func TestCompactionPlanHandler_completeCompaction(t *testing.T) {
 		assert.NoError(t, err)
 
 		segments = meta.GetAllSegmentsUnsafe()
-		assert.Equal(t, len(segments), 2)
+		assert.Equal(t, len(segments), 3)
 
 		for _, segment := range segments {
 			assert.True(t, segment.State == commonpb.SegmentState_Dropped)
@@ -906,6 +912,17 @@ func getFieldBinlogPaths(id int64, paths ...string) *datapb.FieldBinlog {
 	}
 	for _, path := range paths {
 		l.Binlogs = append(l.Binlogs, &datapb.Binlog{LogPath: path})
+	}
+	return l
+}
+
+func getFieldBinlogPathsWithEntry(id int64, entry int64, paths ...string) *datapb.FieldBinlog {
+	l := &datapb.FieldBinlog{
+		FieldID: id,
+		Binlogs: make([]*datapb.Binlog, 0, len(paths)),
+	}
+	for _, path := range paths {
+		l.Binlogs = append(l.Binlogs, &datapb.Binlog{LogPath: path, EntriesNum: entry})
 	}
 	return l
 }

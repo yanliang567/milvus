@@ -18,7 +18,6 @@ package datacoord
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -27,20 +26,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/milvus-io/milvus/internal/proto/indexpb"
-
+	"github.com/cockroachdb/errors"
 	"github.com/golang/protobuf/proto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"golang.org/x/exp/maps"
 
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/msgpb"
 	"github.com/milvus-io/milvus/internal/kv"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/kv/mocks"
 	"github.com/milvus-io/milvus/internal/metastore/model"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
+	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/util/etcd"
 	"github.com/milvus-io/milvus/internal/util/metautil"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
@@ -668,7 +667,7 @@ func TestChannelCP(t *testing.T) {
 	mockVChannel := "fake-by-dev-rootcoord-dml-1-testchannelcp-v0"
 	mockPChannel := "fake-by-dev-rootcoord-dml-1"
 
-	pos := &internalpb.MsgPosition{
+	pos := &msgpb.MsgPosition{
 		ChannelName: mockPChannel,
 		MsgID:       []byte{},
 		Timestamp:   1000,
@@ -710,7 +709,7 @@ func TestChannelCP(t *testing.T) {
 		txn := mocks.NewMetaKv(t)
 		catalog := NewCatalog(txn, rootPath, "")
 		txn.EXPECT().Save(mock.Anything, mock.Anything).Return(errors.New("mock error"))
-		err = catalog.SaveChannelCheckpoint(context.TODO(), mockVChannel, &internalpb.MsgPosition{})
+		err = catalog.SaveChannelCheckpoint(context.TODO(), mockVChannel, &msgpb.MsgPosition{})
 		assert.Error(t, err)
 	})
 
@@ -748,6 +747,27 @@ func Test_MarkChannelDeleted_SaveError(t *testing.T) {
 	catalog := NewCatalog(txn, rootPath, "")
 	err := catalog.MarkChannelDeleted(context.TODO(), "test_channel_1")
 	assert.Error(t, err)
+}
+
+func Test_MarkChannelAdded_SaveError(t *testing.T) {
+	txn := mocks.NewMetaKv(t)
+	txn.EXPECT().
+		Save(mock.Anything, mock.Anything).
+		Return(errors.New("mock error"))
+
+	catalog := NewCatalog(txn, rootPath, "")
+	err := catalog.MarkChannelAdded(context.TODO(), "test_channel_1")
+	assert.Error(t, err)
+}
+
+func Test_ChannelExists_SaveError(t *testing.T) {
+	txn := mocks.NewMetaKv(t)
+	txn.EXPECT().
+		Load(mock.Anything).
+		Return("", errors.New("mock error"))
+
+	catalog := NewCatalog(txn, rootPath, "")
+	assert.False(t, catalog.ChannelExists(context.TODO(), "test_channel_1"))
 }
 
 func Test_parseBinlogKey(t *testing.T) {

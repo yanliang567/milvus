@@ -18,7 +18,6 @@ package msgstream
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -29,23 +28,22 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/confluentinc/confluent-kafka-go/kafka"
-
-	"github.com/milvus-io/milvus/internal/mq/mqimpl/rocksmq/server"
-	"go.uber.org/atomic"
-
 	"github.com/apache/pulsar-client-go/pulsar"
-	pulsarwrapper "github.com/milvus-io/milvus/internal/mq/msgstream/mqwrapper/pulsar"
-	"github.com/milvus-io/milvus/internal/mq/msgstream/mqwrapper/rmq"
+	"github.com/cockroachdb/errors"
+	"github.com/confluentinc/confluent-kafka-go/kafka"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/atomic"
 
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/msgpb"
 	"github.com/milvus-io/milvus/internal/allocator"
 	"github.com/milvus-io/milvus/internal/common"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
+	"github.com/milvus-io/milvus/internal/mq/mqimpl/rocksmq/server"
 	"github.com/milvus-io/milvus/internal/mq/msgstream/mqwrapper"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
+	pulsarwrapper "github.com/milvus-io/milvus/internal/mq/msgstream/mqwrapper/pulsar"
+	"github.com/milvus-io/milvus/internal/mq/msgstream/mqwrapper/rmq"
 	"github.com/milvus-io/milvus/internal/util/etcd"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
@@ -63,6 +61,7 @@ func TestMain(m *testing.M) {
 	mockKafkaCluster, err := kafka.NewMockCluster(1)
 	defer mockKafkaCluster.Close()
 	if err != nil {
+		// nolint
 		fmt.Printf("Failed to create MockCluster: %s\n", err)
 		os.Exit(1)
 	}
@@ -208,7 +207,7 @@ func TestMqMsgStream_ComputeProduceChannelIndexes(t *testing.T) {
 			// not called AsProducer yet
 			insertMsg := &InsertMsg{
 				BaseMsg: generateBaseMsg(),
-				InsertRequest: internalpb.InsertRequest{
+				InsertRequest: msgpb.InsertRequest{
 					Base: &commonpb.MsgBase{
 						MsgType:   commonpb.MsgType_Insert,
 						MsgID:     1,
@@ -271,7 +270,7 @@ func TestMqMsgStream_Produce(t *testing.T) {
 			// Produce before called AsProducer
 			insertMsg := &InsertMsg{
 				BaseMsg: generateBaseMsg(),
-				InsertRequest: internalpb.InsertRequest{
+				InsertRequest: msgpb.InsertRequest{
 					Base: &commonpb.MsgBase{
 						MsgType:   commonpb.MsgType_Insert,
 						MsgID:     1,
@@ -388,7 +387,7 @@ func TestMqMsgStream_SeekNotSubscribed(t *testing.T) {
 			assert.Nil(t, err)
 
 			// seek in not subscribed channel
-			p := []*internalpb.MsgPosition{
+			p := []*msgpb.MsgPosition{
 				{
 					ChannelName: "b",
 				},
@@ -523,7 +522,7 @@ func TestStream_PulsarMsgStream_InsertRepackFunc(t *testing.T) {
 		HashValues:     []uint32{1, 3},
 	}
 
-	insertRequest := internalpb.InsertRequest{
+	insertRequest := msgpb.InsertRequest{
 		Base: &commonpb.MsgBase{
 			MsgType:   commonpb.MsgType_Insert,
 			MsgID:     1,
@@ -579,7 +578,7 @@ func TestStream_PulsarMsgStream_DeleteRepackFunc(t *testing.T) {
 		HashValues:     []uint32{1},
 	}
 
-	deleteRequest := internalpb.DeleteRequest{
+	deleteRequest := msgpb.DeleteRequest{
 		Base: &commonpb.MsgBase{
 			MsgType:   commonpb.MsgType_Delete,
 			MsgID:     1,
@@ -775,7 +774,7 @@ func TestStream_PulsarMsgStream_SeekToLast(t *testing.T) {
 	assert.Nil(t, err)
 
 	// pick a seekPosition
-	var seekPosition *internalpb.MsgPosition
+	var seekPosition *msgpb.MsgPosition
 	for i := 0; i < 10; i++ {
 		result := consumer(ctx, outputStream)
 		assert.Equal(t, result.Msgs[0].ID(), int64(i))
@@ -794,7 +793,7 @@ func TestStream_PulsarMsgStream_SeekToLast(t *testing.T) {
 	defer outputStream2.Close()
 	assert.Nil(t, err)
 
-	err = outputStream2.Seek([]*internalpb.MsgPosition{seekPosition})
+	err = outputStream2.Seek([]*msgpb.MsgPosition{seekPosition})
 	assert.Nil(t, err)
 
 	cnt := 0
@@ -1183,7 +1182,7 @@ func TestStream_MqMsgStream_Seek(t *testing.T) {
 
 	err := inputStream.Produce(msgPack)
 	assert.Nil(t, err)
-	var seekPosition *internalpb.MsgPosition
+	var seekPosition *msgpb.MsgPosition
 	for i := 0; i < 10; i++ {
 		result := consumer(ctx, outputStream)
 		assert.Equal(t, result.Msgs[0].ID(), int64(i))
@@ -1197,7 +1196,7 @@ func TestStream_MqMsgStream_Seek(t *testing.T) {
 	pulsarClient, _ := pulsarwrapper.NewClient(DefaultPulsarTenant, DefaultPulsarNamespace, pulsar.ClientOptions{URL: pulsarAddress})
 	outputStream2, _ := NewMqMsgStream(ctx, 100, 100, pulsarClient, factory.NewUnmarshalDispatcher())
 	outputStream2.AsConsumer(consumerChannels, consumerSubName, mqwrapper.SubscriptionPositionEarliest)
-	outputStream2.Seek([]*internalpb.MsgPosition{seekPosition})
+	outputStream2.Seek([]*msgpb.MsgPosition{seekPosition})
 
 	for i := 6; i < 10; i++ {
 		result := consumer(ctx, outputStream2)
@@ -1228,7 +1227,7 @@ func TestStream_MqMsgStream_SeekInvalidMessage(t *testing.T) {
 
 	err := inputStream.Produce(msgPack)
 	assert.Nil(t, err)
-	var seekPosition *internalpb.MsgPosition
+	var seekPosition *msgpb.MsgPosition
 	for i := 0; i < 10; i++ {
 		result := consumer(ctx, outputStream)
 		assert.Equal(t, result.Msgs[0].ID(), int64(i))
@@ -1244,7 +1243,7 @@ func TestStream_MqMsgStream_SeekInvalidMessage(t *testing.T) {
 	// try to seek to not written position
 	patchMessageID(&messageID, 13)
 
-	p := []*internalpb.MsgPosition{
+	p := []*msgpb.MsgPosition{
 		{
 			ChannelName: seekPosition.ChannelName,
 			Timestamp:   seekPosition.Timestamp,
@@ -1284,7 +1283,7 @@ func TestStream_RMqMsgStream_SeekInvalidMessage(t *testing.T) {
 
 	err := inputStream.Produce(msgPack)
 	assert.Nil(t, err)
-	var seekPosition *internalpb.MsgPosition
+	var seekPosition *msgpb.MsgPosition
 	for i := 0; i < 10; i++ {
 		result := consumer(ctx, outputStream)
 		assert.Equal(t, result.Msgs[0].ID(), int64(i))
@@ -1300,7 +1299,7 @@ func TestStream_RMqMsgStream_SeekInvalidMessage(t *testing.T) {
 	id := common.Endian.Uint64(seekPosition.MsgID) + 10
 	bs := make([]byte, 8)
 	common.Endian.PutUint64(bs, id)
-	p := []*internalpb.MsgPosition{
+	p := []*msgpb.MsgPosition{
 		{
 			ChannelName: seekPosition.ChannelName,
 			Timestamp:   seekPosition.Timestamp,
@@ -1796,7 +1795,7 @@ func getTsMsg(msgType MsgType, reqID UniqueID) TsMsg {
 	}
 	switch msgType {
 	case commonpb.MsgType_Insert:
-		insertRequest := internalpb.InsertRequest{
+		insertRequest := msgpb.InsertRequest{
 			Base: &commonpb.MsgBase{
 				MsgType:   commonpb.MsgType_Insert,
 				MsgID:     reqID,
@@ -1817,7 +1816,7 @@ func getTsMsg(msgType MsgType, reqID UniqueID) TsMsg {
 		}
 		return insertMsg
 	case commonpb.MsgType_Delete:
-		deleteRequest := internalpb.DeleteRequest{
+		deleteRequest := msgpb.DeleteRequest{
 			Base: &commonpb.MsgBase{
 				MsgType:   commonpb.MsgType_Delete,
 				MsgID:     reqID,
@@ -1836,7 +1835,7 @@ func getTsMsg(msgType MsgType, reqID UniqueID) TsMsg {
 		}
 		return deleteMsg
 	case commonpb.MsgType_CreateCollection:
-		createCollectionRequest := internalpb.CreateCollectionRequest{
+		createCollectionRequest := msgpb.CreateCollectionRequest{
 			Base: &commonpb.MsgBase{
 				MsgType:   commonpb.MsgType_CreateCollection,
 				MsgID:     reqID,
@@ -1859,7 +1858,7 @@ func getTsMsg(msgType MsgType, reqID UniqueID) TsMsg {
 		}
 		return createCollectionMsg
 	case commonpb.MsgType_TimeTick:
-		timeTickResult := internalpb.TimeTickMsg{
+		timeTickResult := msgpb.TimeTickMsg{
 			Base: &commonpb.MsgBase{
 				MsgType:   commonpb.MsgType_TimeTick,
 				MsgID:     reqID,
@@ -1884,7 +1883,7 @@ func getTimeTickMsg(reqID UniqueID) TsMsg {
 		EndTimestamp:   0,
 		HashValues:     []uint32{hashValue},
 	}
-	timeTickResult := internalpb.TimeTickMsg{
+	timeTickResult := msgpb.TimeTickMsg{
 		Base: &commonpb.MsgBase{
 			MsgType:   commonpb.MsgType_TimeTick,
 			MsgID:     reqID,
@@ -1934,7 +1933,7 @@ func getInsertMsgUniqueID(ts UniqueID) TsMsg {
 		HashValues:     []uint32{hashValue},
 	}
 
-	insertRequest := internalpb.InsertRequest{
+	insertRequest := msgpb.InsertRequest{
 		Base: &commonpb.MsgBase{
 			MsgType:   commonpb.MsgType_Insert,
 			MsgID:     idCounter.Inc(),

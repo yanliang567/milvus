@@ -27,7 +27,6 @@ package indexnode
 import "C"
 import (
 	"context"
-	"errors"
 	"math/rand"
 	"os"
 	"path"
@@ -35,6 +34,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"github.com/cockroachdb/errors"
 
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
@@ -155,6 +156,11 @@ func (i *IndexNode) initKnowhere() {
 	cCPUNum := C.int(hardware.GetCPUNum())
 	C.InitCpuNum(cCPUNum)
 
+	// init GPU resource
+	cGpuId := C.int32_t(0)
+	cResNum := C.int32_t(1)
+	C.IndexBuilderInitGPU(cGpuId, cResNum)
+
 	initcore.InitLocalStorageConfig(Params)
 }
 
@@ -222,10 +228,10 @@ func (i *IndexNode) Stop() error {
 		} else {
 			i.waitTaskFinish()
 		}
-		i.lifetime.Wait()
 
 		// https://github.com/milvus-io/milvus/issues/12282
 		i.UpdateStateCode(commonpb.StateCode_Abnormal)
+		i.lifetime.Wait()
 		log.Info("Index node abnormal")
 		// cleanup all running tasks
 		deletedTasks := i.deleteAllTasks()

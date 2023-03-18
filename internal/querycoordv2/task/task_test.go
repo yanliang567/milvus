@@ -18,10 +18,11 @@ package task
 
 import (
 	"context"
-	"errors"
 	"math/rand"
 	"testing"
 	"time"
+
+	"github.com/cockroachdb/errors"
 
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/schemapb"
@@ -34,6 +35,7 @@ import (
 	"github.com/milvus-io/milvus/internal/querycoordv2/session"
 	"github.com/milvus-io/milvus/internal/querycoordv2/utils"
 	"github.com/milvus-io/milvus/internal/util/etcd"
+	"github.com/milvus-io/milvus/internal/util/merr"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 	mock "github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
@@ -172,48 +174,6 @@ func (suite *TaskSuite) BeforeTest(suiteName, testName string) {
 	}
 }
 
-func (suite *TaskSuite) TestSubmitDuplicateSubscribeChannelTask() {
-	ctx := context.Background()
-	timeout := 10 * time.Second
-	targetNode := int64(3)
-
-	tasks := []Task{}
-	dmChannels := make([]*datapb.VchannelInfo, 0)
-	for _, channel := range suite.subChannels {
-		dmChannels = append(dmChannels, &datapb.VchannelInfo{
-			CollectionID:        suite.collection,
-			ChannelName:         channel,
-			UnflushedSegmentIds: []int64{suite.growingSegments[channel]},
-		})
-		task, err := NewChannelTask(
-			ctx,
-			timeout,
-			0,
-			suite.collection,
-			suite.replica,
-			NewChannelAction(targetNode, ActionTypeGrow, channel),
-		)
-		suite.NoError(err)
-		tasks = append(tasks, task)
-	}
-
-	views := make([]*meta.LeaderView, 0)
-	for _, channel := range suite.subChannels {
-		views = append(views, &meta.LeaderView{
-			ID:           targetNode,
-			CollectionID: suite.collection,
-			Channel:      channel,
-		})
-	}
-	suite.dist.LeaderViewManager.Update(targetNode, views...)
-
-	for _, task := range tasks {
-		err := suite.scheduler.Add(task)
-		suite.Error(err)
-		suite.ErrorIs(err, ErrTaskAlreadyDone)
-	}
-}
-
 func (suite *TaskSuite) TestSubscribeChannelTask() {
 	ctx := context.Background()
 	timeout := 10 * time.Second
@@ -282,10 +242,6 @@ func (suite *TaskSuite) TestSubscribeChannelTask() {
 	suite.dispatchAndWait(targetNode)
 	suite.AssertTaskNum(len(suite.subChannels), 0, len(suite.subChannels), 0)
 
-	// Other nodes' HB can't trigger the procedure of tasks
-	suite.dispatchAndWait(targetNode + 1)
-	suite.AssertTaskNum(len(suite.subChannels), 0, len(suite.subChannels), 0)
-
 	// Process tasks done
 	// Dist contains channels
 	views := make([]*meta.LeaderView, 0)
@@ -350,10 +306,6 @@ func (suite *TaskSuite) TestUnsubscribeChannelTask() {
 
 	// ProcessTasks
 	suite.dispatchAndWait(targetNode)
-	suite.AssertTaskNum(1, 0, 1, 0)
-
-	// Other nodes' HB can't trigger the procedure of tasks
-	suite.dispatchAndWait(targetNode + 1)
 	suite.AssertTaskNum(1, 0, 1, 0)
 
 	// Update dist
@@ -431,10 +383,6 @@ func (suite *TaskSuite) TestLoadSegmentTask() {
 	suite.dispatchAndWait(targetNode)
 	suite.AssertTaskNum(segmentsNum, 0, 0, segmentsNum)
 
-	// Other nodes' HB can't trigger the procedure of tasks
-	suite.dispatchAndWait(targetNode + 1)
-	suite.AssertTaskNum(segmentsNum, 0, 0, segmentsNum)
-
 	// Process tasks done
 	// Dist contains channels
 	view := &meta.LeaderView{
@@ -455,47 +403,6 @@ func (suite *TaskSuite) TestLoadSegmentTask() {
 	}
 }
 
-func (suite *TaskSuite) TestSubmitDuplicateLoadSegmentTask() {
-	ctx := context.Background()
-	timeout := 10 * time.Second
-	targetNode := int64(3)
-	channel := &datapb.VchannelInfo{
-		CollectionID: suite.collection,
-		ChannelName:  Params.CommonCfg.RootCoordDml.GetValue() + "-test",
-	}
-
-	tasks := []Task{}
-	for _, segment := range suite.loadSegments {
-		task, err := NewSegmentTask(
-			ctx,
-			timeout,
-			0,
-			suite.collection,
-			suite.replica,
-			NewSegmentAction(targetNode, ActionTypeGrow, channel.GetChannelName(), segment),
-		)
-		suite.NoError(err)
-		tasks = append(tasks, task)
-	}
-
-	// Process tasks done
-	// Dist contains channels
-	view := &meta.LeaderView{
-		ID:           targetNode,
-		CollectionID: suite.collection,
-		Segments:     map[int64]*querypb.SegmentDist{},
-	}
-	for _, segment := range suite.loadSegments {
-		view.Segments[segment] = &querypb.SegmentDist{NodeID: targetNode, Version: 0}
-	}
-	suite.dist.LeaderViewManager.Update(targetNode, view)
-
-	for _, task := range tasks {
-		err := suite.scheduler.Add(task)
-		suite.Error(err)
-		suite.ErrorIs(err, ErrTaskAlreadyDone)
-	}
-}
 func (suite *TaskSuite) TestLoadSegmentTaskFailed() {
 	ctx := context.Background()
 	timeout := 10 * time.Second
@@ -555,10 +462,6 @@ func (suite *TaskSuite) TestLoadSegmentTaskFailed() {
 
 	// Process tasks
 	suite.dispatchAndWait(targetNode)
-	suite.AssertTaskNum(segmentsNum, 0, 0, segmentsNum)
-
-	// Other nodes' HB can't trigger the procedure of tasks
-	suite.dispatchAndWait(targetNode + 1)
 	suite.AssertTaskNum(segmentsNum, 0, 0, segmentsNum)
 
 	// Process tasks done
@@ -627,10 +530,6 @@ func (suite *TaskSuite) TestReleaseSegmentTask() {
 	suite.dispatchAndWait(targetNode)
 	suite.AssertTaskNum(segmentsNum, 0, 0, segmentsNum)
 
-	// Other nodes' HB can't trigger the procedure of tasks
-	suite.dispatchAndWait(targetNode + 1)
-	suite.AssertTaskNum(segmentsNum, 0, 0, segmentsNum)
-
 	// Process tasks done
 	suite.dist.LeaderViewManager.Update(targetNode)
 	suite.dispatchAndWait(targetNode)
@@ -680,10 +579,6 @@ func (suite *TaskSuite) TestReleaseGrowingSegmentTask() {
 
 	// Process tasks
 	suite.dispatchAndWait(targetNode)
-	suite.AssertTaskNum(segmentsNum-1, 0, 0, segmentsNum-1)
-
-	// Other nodes' HB can't trigger the procedure of tasks
-	suite.dispatchAndWait(targetNode + 1)
 	suite.AssertTaskNum(segmentsNum-1, 0, 0, segmentsNum-1)
 
 	// Release done
@@ -782,10 +677,6 @@ func (suite *TaskSuite) TestMoveSegmentTask() {
 	suite.dispatchAndWait(leader)
 	suite.AssertTaskNum(segmentsNum, 0, 0, segmentsNum)
 
-	// Other nodes' HB can't trigger the procedure of tasks
-	suite.dispatchAndWait(-1)
-	suite.AssertTaskNum(segmentsNum, 0, 0, segmentsNum)
-
 	// Process tasks, target node contains the segment
 	view = view.Clone()
 	for _, segment := range suite.moveSegments {
@@ -868,13 +759,9 @@ func (suite *TaskSuite) TestTaskCanceled() {
 	suite.dispatchAndWait(targetNode)
 	suite.AssertTaskNum(segmentsNum, 0, 0, segmentsNum)
 
-	// Other nodes' HB can't trigger the procedure of tasks
-	suite.dispatchAndWait(targetNode + 1)
-	suite.AssertTaskNum(segmentsNum, 0, 0, segmentsNum)
-
 	// Cancel all tasks
 	for _, task := range tasks {
-		task.Cancel()
+		task.Cancel(errors.New("mock error"))
 	}
 
 	suite.dispatchAndWait(targetNode)
@@ -951,10 +838,6 @@ func (suite *TaskSuite) TestSegmentTaskStale() {
 	suite.dispatchAndWait(targetNode)
 	suite.AssertTaskNum(segmentsNum, 0, 0, segmentsNum)
 
-	// Other nodes' HB can't trigger the procedure of tasks
-	suite.dispatchAndWait(targetNode + 1)
-	suite.AssertTaskNum(segmentsNum, 0, 0, segmentsNum)
-
 	// Process tasks done
 	// Dist contains channels, first task stale
 	view := &meta.LeaderView{
@@ -980,8 +863,8 @@ func (suite *TaskSuite) TestSegmentTaskStale() {
 
 	for i, task := range tasks {
 		if i == 0 {
-			suite.Equal(TaskStatusStale, task.Status())
-			suite.ErrorIs(ErrTaskStale, task.Err())
+			suite.Equal(TaskStatusCanceled, task.Status())
+			suite.Error(task.Err())
 		} else {
 			suite.Equal(TaskStatusSucceeded, task.Status())
 			suite.NoError(task.Err())
@@ -1023,10 +906,10 @@ func (suite *TaskSuite) TestChannelTaskReplace() {
 		suite.NoError(err)
 		task.SetPriority(TaskPriorityNormal)
 		err = suite.scheduler.Add(task)
-		suite.ErrorIs(err, ErrConflictTaskExisted)
+		suite.Error(err)
 		task.SetPriority(TaskPriorityLow)
 		err = suite.scheduler.Add(task)
-		suite.ErrorIs(err, ErrConflictTaskExisted)
+		suite.Error(err)
 	}
 
 	// Replace the task with one with higher priority
@@ -1050,35 +933,34 @@ func (suite *TaskSuite) TestChannelTaskReplace() {
 
 func (suite *TaskSuite) TestCreateTaskBehavior() {
 	chanelTask, err := NewChannelTask(context.TODO(), 5*time.Second, 0, 0, 0)
-	suite.Error(err)
-	suite.ErrorIs(err, ErrEmptyActions)
+	suite.ErrorIs(err, merr.ErrParameterInvalid)
 	suite.Nil(chanelTask)
 
 	action := NewSegmentAction(0, 0, "", 0)
 	chanelTask, err = NewChannelTask(context.TODO(), 5*time.Second, 0, 0, 0, action)
-	suite.ErrorIs(err, ErrActionsTypeInconsistent)
+	suite.ErrorIs(err, merr.ErrParameterInvalid)
 	suite.Nil(chanelTask)
 
 	action1 := NewChannelAction(0, 0, "fake-channel1")
 	action2 := NewChannelAction(0, 0, "fake-channel2")
 	chanelTask, err = NewChannelTask(context.TODO(), 5*time.Second, 0, 0, 0, action1, action2)
-	suite.ErrorIs(err, ErrActionsTargetInconsistent)
+	suite.ErrorIs(err, merr.ErrParameterInvalid)
 	suite.Nil(chanelTask)
 
 	segmentTask, err := NewSegmentTask(context.TODO(), 5*time.Second, 0, 0, 0)
-	suite.ErrorIs(err, ErrEmptyActions)
+	suite.ErrorIs(err, merr.ErrParameterInvalid)
 	suite.Nil(segmentTask)
 
 	channelAction := NewChannelAction(0, 0, "fake-channel1")
 	segmentTask, err = NewSegmentTask(context.TODO(), 5*time.Second, 0, 0, 0, channelAction)
-	suite.ErrorIs(err, ErrActionsTypeInconsistent)
+	suite.ErrorIs(err, merr.ErrParameterInvalid)
 	suite.Nil(segmentTask)
 
 	segmentAction1 := NewSegmentAction(0, 0, "", 0)
 	segmentAction2 := NewSegmentAction(0, 0, "", 1)
 
 	segmentTask, err = NewSegmentTask(context.TODO(), 5*time.Second, 0, 0, 0, segmentAction1, segmentAction2)
-	suite.ErrorIs(err, ErrActionsTargetInconsistent)
+	suite.ErrorIs(err, merr.ErrParameterInvalid)
 	suite.Nil(segmentTask)
 }
 
@@ -1116,10 +998,10 @@ func (suite *TaskSuite) TestSegmentTaskReplace() {
 		suite.NoError(err)
 		task.SetPriority(TaskPriorityNormal)
 		err = suite.scheduler.Add(task)
-		suite.ErrorIs(err, ErrConflictTaskExisted)
+		suite.Error(err)
 		task.SetPriority(TaskPriorityLow)
 		err = suite.scheduler.Add(task)
-		suite.ErrorIs(err, ErrConflictTaskExisted)
+		suite.Error(err)
 	}
 
 	// Replace the task with one with higher priority
@@ -1187,10 +1069,6 @@ func (suite *TaskSuite) TestNoExecutor() {
 	suite.dispatchAndWait(targetNode)
 	suite.AssertTaskNum(segmentsNum, 0, 0, segmentsNum)
 
-	// Other nodes' HB can't trigger the procedure of tasks
-	suite.dispatchAndWait(targetNode + 1)
-	suite.AssertTaskNum(segmentsNum, 0, 0, segmentsNum)
-
 	// Process tasks done
 	// Dist contains channels
 	view := &meta.LeaderView{
@@ -1203,12 +1081,7 @@ func (suite *TaskSuite) TestNoExecutor() {
 	}
 	suite.dist.LeaderViewManager.Update(targetNode, view)
 	suite.dispatchAndWait(targetNode)
-	suite.AssertTaskNum(segmentsNum, 0, 0, segmentsNum)
-
-	for _, task := range tasks {
-		suite.Equal(TaskStatusStarted, task.Status())
-		suite.NoError(task.Err())
-	}
+	suite.AssertTaskNum(0, 0, 0, 0)
 }
 
 func (suite *TaskSuite) AssertTaskNum(process, wait, channel, segment int) {

@@ -83,20 +83,24 @@ func (c *SegmentChecker) checkReplica(ctx context.Context, replica *meta.Replica
 	// compare with targets to find the lack and redundancy of segments
 	lacks, redundancies := c.getHistoricalSegmentDiff(c.targetMgr, c.dist, c.meta, replica.GetCollectionID(), replica.GetID())
 	tasks := c.createSegmentLoadTasks(ctx, lacks, replica)
+	task.SetReason("lacks of segment", tasks...)
 	ret = append(ret, tasks...)
 
 	tasks = c.createSegmentReduceTasks(ctx, redundancies, replica.GetID(), querypb.DataScope_All)
+	task.SetReason("segment not exists in target", tasks...)
 	ret = append(ret, tasks...)
 
 	// compare inner dists to find repeated loaded segments
 	redundancies = c.findRepeatedHistoricalSegments(c.dist, c.meta, replica.GetID())
 	redundancies = c.filterExistedOnLeader(replica, redundancies)
 	tasks = c.createSegmentReduceTasks(ctx, redundancies, replica.GetID(), querypb.DataScope_All)
+	task.SetReason("redundancies of segment", tasks...)
 	ret = append(ret, tasks...)
 
 	// compare with target to find the lack and redundancy of segments
 	_, redundancies = c.getStreamingSegmentDiff(c.targetMgr, c.dist, c.meta, replica.GetCollectionID(), replica.GetID())
 	tasks = c.createSegmentReduceTasks(ctx, redundancies, replica.GetID(), querypb.DataScope_Streaming)
+	task.SetReason("streaming segment not exists in target", tasks...)
 	ret = append(ret, tasks...)
 
 	return ret
@@ -292,11 +296,11 @@ func (c *SegmentChecker) createSegmentReduceTasks(ctx context.Context, segments 
 		)
 
 		if err != nil {
-			log.Warn("Create segment reduce task failed",
+			log.Warn("create segment reduce task failed",
 				zap.Int64("collection", s.GetCollectionID()),
 				zap.Int64("replica", replicaID),
 				zap.String("channel", s.GetInsertChannel()),
-				zap.Int64("From", s.Node),
+				zap.Int64("from", s.Node),
 				zap.Error(err),
 			)
 			continue

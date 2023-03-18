@@ -22,7 +22,10 @@ import (
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/msgpb"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
@@ -32,7 +35,6 @@ import (
 	"github.com/milvus-io/milvus/internal/util/timerecord"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	"go.uber.org/zap"
 )
 
 var (
@@ -187,6 +189,16 @@ func (t *timetickSync) updateTimeTick(in *internalpb.ChannelTimeTickMsg, reason 
 		return fmt.Errorf("skip ChannelTimeTickMsg from un-recognized session %d", in.Base.SourceID)
 	}
 
+	if in.Base.SourceID == t.sourceID {
+		if prev != nil && in.DefaultTimestamp < prev.defaultTs {
+			log.Warn("timestamp go back", zap.Int64("source id", in.Base.SourceID),
+				zap.Uint64("curr ts", in.DefaultTimestamp),
+				zap.Uint64("prev ts", prev.defaultTs),
+				zap.String("reason", reason))
+			return nil
+		}
+	}
+
 	if prev == nil {
 		t.sess2ChanTsMap[in.Base.SourceID] = newChanTsMsg(in, 1)
 	} else {
@@ -294,7 +306,7 @@ func (t *timetickSync) sendTimeTickToChannel(chanNames []string, ts typeutil.Tim
 		EndTimestamp:   ts,
 		HashValues:     []uint32{0},
 	}
-	timeTickResult := internalpb.TimeTickMsg{
+	timeTickResult := msgpb.TimeTickMsg{
 		Base: commonpbutil.NewMsgBase(
 			commonpbutil.WithMsgType(commonpb.MsgType_TimeTick),
 			commonpbutil.WithMsgID(0),

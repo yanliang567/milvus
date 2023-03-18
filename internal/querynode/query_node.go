@@ -30,7 +30,6 @@ import "C"
 import (
 	"context"
 	"fmt"
-	"github.com/milvus-io/milvus/internal/mq/msgdispatcher"
 	"os"
 	"path"
 	"runtime"
@@ -40,12 +39,14 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/milvus-io/milvus/internal/mq/msgdispatcher"
+
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
-	"github.com/milvus-io/milvus/internal/util/concurrency"
+	"github.com/milvus-io/milvus/internal/util/conc"
 	"github.com/milvus-io/milvus/internal/util/dependency"
 	"github.com/milvus-io/milvus/internal/util/gc"
 	"github.com/milvus-io/milvus/internal/util/hardware"
@@ -55,7 +56,6 @@ import (
 	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/sessionutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	"github.com/panjf2000/ants/v2"
 	"github.com/samber/lo"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
@@ -124,7 +124,7 @@ type QueryNode struct {
 	queryShardService *queryShardService
 
 	// pool for load/release channel
-	taskPool *concurrency.Pool
+	taskPool *conc.Pool
 
 	IsStandAlone bool
 }
@@ -232,7 +232,17 @@ func (node *QueryNode) InitSegcore() {
 	cCPUNum := C.int(hardware.GetCPUNum())
 	C.InitCpuNum(cCPUNum)
 
+	// init GPU resource
+	cGpuId := C.int32_t(0)
+	cResNum := C.int32_t(1)
+	C.SegcoreInitGPU(cGpuId, cResNum)
+
 	initcore.InitLocalStorageConfig(Params)
+
+	mmapDirPath := paramtable.Get().QueryNodeCfg.MmapDirPath.GetValue()
+	if len(mmapDirPath) > 0 {
+		log.Info("mmap enabled", zap.String("dir", mmapDirPath))
+	}
 }
 
 // Init function init historical and streaming module to manage segments
@@ -271,17 +281,8 @@ func (node *QueryNode) Init() error {
 		node.etcdKV = etcdkv.NewEtcdKV(node.etcdCli, Params.EtcdCfg.MetaRootPath.GetValue())
 		log.Info("queryNode try to connect etcd success", zap.Any("MetaRootPath", Params.EtcdCfg.MetaRootPath))
 
-		cpuNum := runtime.GOMAXPROCS(0)
-
-		node.taskPool, err = concurrency.NewPool(cpuNum, ants.WithPreAlloc(true))
-		if err != nil {
-			log.Error("QueryNode init channel pool failed", zap.Error(err))
-			initError = err
-			return
-		}
-
+		node.taskPool = conc.NewDefaultPool()
 		node.metaReplica = newCollectionReplica()
-
 		node.loader = newSegmentLoader(
 			node.metaReplica,
 			node.etcdKV,

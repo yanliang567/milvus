@@ -20,15 +20,17 @@ import (
 	"bytes"
 	"container/list"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
 	"time"
 
+	"github.com/cockroachdb/errors"
+
 	"github.com/milvus-io/milvus/internal/log"
+	"github.com/milvus-io/milvus/internal/storage/aliyun"
 	"github.com/milvus-io/milvus/internal/storage/gcp"
-	"github.com/milvus-io/milvus/internal/util/errorutil"
+	"github.com/milvus-io/milvus/internal/util/merr"
 	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -41,8 +43,9 @@ var (
 )
 
 const (
-	CloudProviderGCP = "gcp"
-	CloudProviderAWS = "aws"
+	CloudProviderGCP    = "gcp"
+	CloudProviderAWS    = "aws"
+	CloudProviderAliyun = "aliyun"
 )
 
 func WrapErrNoSuchKey(key string) error {
@@ -76,8 +79,17 @@ func NewMinioChunkManager(ctx context.Context, opts ...Option) (*MinioChunkManag
 func newMinioChunkManagerWithConfig(ctx context.Context, c *config) (*MinioChunkManager, error) {
 	var creds *credentials.Credentials
 	var newMinioFn = minio.New
+	var bucketLookupType = minio.BucketLookupAuto
 
 	switch c.cloudProvider {
+	case CloudProviderAliyun:
+		// auto doesn't work for aliyun, so we set to dns deliberately
+		bucketLookupType = minio.BucketLookupDNS
+		if c.useIAM {
+			newMinioFn = aliyun.NewMinioClient
+		} else {
+			creds = credentials.NewStaticV4(c.accessKeyID, c.secretAccessKeyID, "")
+		}
 	case CloudProviderGCP:
 		newMinioFn = gcp.NewMinioClient
 		if !c.useIAM {
@@ -91,8 +103,9 @@ func newMinioChunkManagerWithConfig(ctx context.Context, c *config) (*MinioChunk
 		}
 	}
 	minioOpts := &minio.Options{
-		Creds:  creds,
-		Secure: c.useSSL,
+		BucketLookup: bucketLookupType,
+		Creds:        creds,
+		Secure:       c.useSSL,
 	}
 	minIOClient, err := newMinioFn(c.address, minioOpts)
 	// options nil or invalid formatted endpoint, don't need to retry
@@ -200,15 +213,12 @@ func (mcm *MinioChunkManager) Write(ctx context.Context, filePath string, conten
 // MultiWrite saves multiple objects, the path is the key of @kvs.
 // The object value is the value of @kvs.
 func (mcm *MinioChunkManager) MultiWrite(ctx context.Context, kvs map[string][]byte) error {
-	var el errorutil.ErrorList
+	var el error
 	for key, value := range kvs {
 		err := mcm.Write(ctx, key, value)
 		if err != nil {
-			el = append(el, err)
+			el = merr.Combine(el, errors.Wrapf(err, "failed to write %s", key))
 		}
-	}
-	if len(el) == 0 {
-		return nil
 	}
 	return el
 }
@@ -271,19 +281,16 @@ func (mcm *MinioChunkManager) Read(ctx context.Context, filePath string) ([]byte
 }
 
 func (mcm *MinioChunkManager) MultiRead(ctx context.Context, keys []string) ([][]byte, error) {
-	var el errorutil.ErrorList
+	var el error
 	var objectsValues [][]byte
 	for _, key := range keys {
 		objectValue, err := mcm.Read(ctx, key)
 		if err != nil {
-			el = append(el, err)
+			el = merr.Combine(el, errors.Wrapf(err, "failed to read %s", key))
 		}
 		objectsValues = append(objectsValues, objectValue)
 	}
 
-	if len(el) == 0 {
-		return objectsValues, nil
-	}
 	return objectsValues, el
 }
 
@@ -348,15 +355,12 @@ func (mcm *MinioChunkManager) Remove(ctx context.Context, filePath string) error
 
 // MultiRemove deletes a objects with @keys.
 func (mcm *MinioChunkManager) MultiRemove(ctx context.Context, keys []string) error {
-	var el errorutil.ErrorList
+	var el error
 	for _, key := range keys {
 		err := mcm.Remove(ctx, key)
 		if err != nil {
-			el = append(el, err)
+			el = merr.Combine(el, errors.Wrapf(err, "failed to remove %s", key))
 		}
-	}
-	if len(el) == 0 {
-		return nil
 	}
 	return el
 }

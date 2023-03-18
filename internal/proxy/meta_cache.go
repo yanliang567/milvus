@@ -18,15 +18,20 @@ package proxy
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"math/rand"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/cockroachdb/errors"
+	"github.com/samber/lo"
+
+	"github.com/milvus-io/milvus/internal/querycoordv2/params"
 	"github.com/milvus-io/milvus/internal/util/commonpbutil"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
+	"github.com/milvus-io/milvus/internal/util/retry"
 
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
@@ -42,7 +47,6 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/rootcoordpb"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util"
-	"github.com/milvus-io/milvus/internal/util/retry"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
@@ -64,7 +68,8 @@ type Cache interface {
 	// GetCollectionSchema get collection's schema.
 	GetCollectionSchema(ctx context.Context, collectionName string) (*schemapb.CollectionSchema, error)
 	GetShards(ctx context.Context, withCache bool, collectionName string) (map[string][]nodeInfo, error)
-	ClearShards(collectionName string)
+	DeprecateShardCache(collectionName string)
+	expireShardLeaderCache(ctx context.Context)
 	RemoveCollection(ctx context.Context, collectionName string)
 	RemoveCollectionsByID(ctx context.Context, collectionID UniqueID) []string
 	RemovePartition(ctx context.Context, collectionName string, partitionName string)
@@ -95,9 +100,18 @@ func (info *collectionInfo) isCollectionCached() bool {
 	return info != nil && info.collID != UniqueID(0) && info.schema != nil
 }
 
+func (info *collectionInfo) deprecateLeaderCache() {
+	info.leaderMutex.RLock()
+	defer info.leaderMutex.RUnlock()
+	if info.shardLeaders != nil {
+		info.shardLeaders.deprecated.Store(true)
+	}
+}
+
 // shardLeaders wraps shard leader mapping for iteration.
 type shardLeaders struct {
-	idx *atomic.Int64
+	idx        *atomic.Int64
+	deprecated *atomic.Bool
 
 	shardLeaders map[string][]nodeInfo
 }
@@ -110,12 +124,22 @@ type shardLeadersReader struct {
 // Shuffle returns the shuffled shard leader list.
 func (it shardLeadersReader) Shuffle() map[string][]nodeInfo {
 	result := make(map[string][]nodeInfo)
+	rand.Seed(time.Now().UnixNano())
 	for channel, leaders := range it.leaders.shardLeaders {
 		l := len(leaders)
-		shuffled := make([]nodeInfo, 0, len(leaders))
-		for i := 0; i < l; i++ {
-			shuffled = append(shuffled, leaders[(i+int(it.idx))%l])
+		// shuffle all replica at random order
+		shuffled := make([]nodeInfo, l)
+		for i, randIndex := range rand.Perm(l) {
+			shuffled[i] = leaders[randIndex]
 		}
+
+		// make each copy has same probability to be first replica
+		for index, leader := range shuffled {
+			if leader == leaders[int(it.idx)%l] {
+				shuffled[0], shuffled[index] = shuffled[index], shuffled[0]
+			}
+		}
+
 		result[channel] = shuffled
 	}
 	return result
@@ -173,6 +197,7 @@ func InitMetaCache(ctx context.Context, rootCoord types.RootCoord, queryCoord ty
 	}
 	globalMetaCache.InitPolicyInfo(resp.PolicyInfos, resp.UserRoles)
 	log.Info("success to init meta cache", zap.Strings("policy_infos", resp.PolicyInfos))
+	globalMetaCache.expireShardLeaderCache(ctx)
 	return nil
 }
 
@@ -643,7 +668,7 @@ func (m *MetaCache) GetShards(ctx context.Context, withCache bool, collectionNam
 		shardLeaders = info.shardLeaders
 		info.leaderMutex.RUnlock()
 
-		if shardLeaders != nil {
+		if shardLeaders != nil && !shardLeaders.deprecated.Load() {
 			iterator := shardLeaders.GetReader()
 			return iterator.Shuffle(), nil
 		}
@@ -695,6 +720,7 @@ func (m *MetaCache) GetShards(ctx context.Context, withCache bool, collectionNam
 	oldShards := info.shardLeaders
 	info.shardLeaders = &shardLeaders{
 		shardLeaders: shards,
+		deprecated:   atomic.NewBool(false),
 		idx:          atomic.NewInt64(0),
 	}
 	iterator := info.shardLeaders.GetReader()
@@ -728,19 +754,39 @@ func parseShardLeaderList2QueryNode(shardsLeaders []*querypb.ShardLeadersList) m
 	return shard2QueryNodes
 }
 
-// ClearShards clear the shard leader cache of a collection
-func (m *MetaCache) ClearShards(collectionName string) {
+// DeprecateShardCache clear the shard leader cache of a collection
+func (m *MetaCache) DeprecateShardCache(collectionName string) {
 	log.Info("clearing shard cache for collection", zap.String("collectionName", collectionName))
-	m.mu.Lock()
+	m.mu.RLock()
 	info, ok := m.collInfo[collectionName]
+	m.mu.RUnlock()
 	if ok {
-		m.collInfo[collectionName].shardLeaders = nil
+		info.deprecateLeaderCache()
 	}
-	m.mu.Unlock()
-	// delete refcnt in shardClientMgr
-	if ok && info.shardLeaders != nil {
-		_ = m.shardMgr.UpdateShardLeaders(info.shardLeaders.shardLeaders, nil)
-	}
+
+}
+
+func (m *MetaCache) expireShardLeaderCache(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(params.Params.ProxyCfg.ShardLeaderCacheInterval.GetAsDuration(time.Second))
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				log.Info("stop periodically update meta cache")
+				return
+			case <-ticker.C:
+				m.mu.RLock()
+				log.Info("expire all shard leader cache",
+					zap.Strings("collections", lo.Keys(m.collInfo)))
+				for _, info := range m.collInfo {
+					info.deprecateLeaderCache()
+				}
+				m.mu.RUnlock()
+			}
+		}
+	}()
 }
 
 func (m *MetaCache) InitPolicyInfo(info []string, userRoles []string) {

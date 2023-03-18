@@ -18,11 +18,12 @@ package rootcoord
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math/rand"
 	"testing"
 	"time"
+
+	"github.com/cockroachdb/errors"
 
 	"go.uber.org/atomic"
 
@@ -100,6 +101,7 @@ func Test_scheduler_failed_to_set_id(t *testing.T) {
 	ctx := context.Background()
 	s := newScheduler(ctx, idAlloc, tsoAlloc)
 	s.Start()
+	time.Sleep(time.Second)
 	defer s.Stop()
 	task := newMockNormalTask()
 	err := s.AddTask(task)
@@ -118,6 +120,7 @@ func Test_scheduler_failed_to_set_ts(t *testing.T) {
 	ctx := context.Background()
 	s := newScheduler(ctx, idAlloc, tsoAlloc)
 	s.Start()
+	time.Sleep(time.Second)
 	defer s.Stop()
 	task := newMockNormalTask()
 	err := s.AddTask(task)

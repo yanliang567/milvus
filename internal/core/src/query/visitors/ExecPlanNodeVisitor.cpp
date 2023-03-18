@@ -9,12 +9,13 @@
 // is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
+#include "query/generated/ExecPlanNodeVisitor.h"
+
 #include <utility>
 
 #include "query/PlanImpl.h"
-#include "query/generated/ExecPlanNodeVisitor.h"
-#include "query/generated/ExecExprVisitor.h"
 #include "query/SubSearchResult.h"
+#include "query/generated/ExecExprVisitor.h"
 #include "segcore/SegmentGrowing.h"
 #include "utils/Json.h"
 
@@ -28,7 +29,9 @@ class ExecPlanNodeVisitor : PlanNodeVisitor {
     ExecPlanNodeVisitor(const segcore::SegmentInterface& segment,
                         Timestamp timestamp,
                         const PlaceholderGroup& placeholder_group)
-        : segment_(segment), timestamp_(timestamp), placeholder_group_(placeholder_group) {
+        : segment_(segment),
+          timestamp_(timestamp),
+          placeholder_group_(placeholder_group) {
     }
 
     SearchResult
@@ -58,7 +61,10 @@ class ExecPlanNodeVisitor : PlanNodeVisitor {
 static SearchResult
 empty_search_result(int64_t num_queries, SearchInfo& search_info) {
     SearchResult final_result;
-    SubSearchResult result(num_queries, search_info.topk_, search_info.metric_type_, search_info.round_decimal_);
+    SubSearchResult result(num_queries,
+                           search_info.topk_,
+                           search_info.metric_type_,
+                           search_info.round_decimal_);
     final_result.total_nq_ = num_queries;
     final_result.unity_topK_ = search_info.topk_;
     final_result.seg_offsets_ = std::move(result.mutable_seg_offsets());
@@ -71,7 +77,8 @@ void
 ExecPlanNodeVisitor::VectorVisitorImpl(VectorPlanNode& node) {
     // TODO: optimize here, remove the dynamic cast
     assert(!search_result_opt_.has_value());
-    auto segment = dynamic_cast<const segcore::SegmentInternalInterface*>(&segment_);
+    auto segment =
+        dynamic_cast<const segcore::SegmentInternalInterface*>(&segment_);
     AssertInfo(segment, "support SegmentSmallIndex Only");
     SearchResult search_result;
     auto& ph = placeholder_group_->at(0);
@@ -84,14 +91,16 @@ ExecPlanNodeVisitor::VectorVisitorImpl(VectorPlanNode& node) {
 
     // skip all calculation
     if (active_count == 0) {
-        search_result_opt_ = empty_search_result(num_queries, node.search_info_);
+        search_result_opt_ =
+            empty_search_result(num_queries, node.search_info_);
         return;
     }
 
     std::unique_ptr<BitsetType> bitset_holder;
     if (node.predicate_.has_value()) {
         bitset_holder = std::make_unique<BitsetType>(
-            ExecExprVisitor(*segment, active_count, timestamp_).call_child(*node.predicate_.value()));
+            ExecExprVisitor(*segment, active_count, timestamp_)
+                .call_child(*node.predicate_.value()));
         bitset_holder->flip();
     } else {
         bitset_holder = std::make_unique<BitsetType>(active_count, false);
@@ -101,32 +110,62 @@ ExecPlanNodeVisitor::VectorVisitorImpl(VectorPlanNode& node) {
     segment->mask_with_delete(*bitset_holder, active_count, timestamp_);
     // if bitset_holder is all 1's, we got empty result
     if (bitset_holder->all()) {
-        search_result_opt_ = empty_search_result(num_queries, node.search_info_);
+        search_result_opt_ =
+            empty_search_result(num_queries, node.search_info_);
         return;
     }
     BitsetView final_view = *bitset_holder;
-    segment->vector_search(node.search_info_, src_data, num_queries, timestamp_, final_view, search_result);
+    segment->vector_search(node.search_info_,
+                           src_data,
+                           num_queries,
+                           timestamp_,
+                           final_view,
+                           search_result);
 
     search_result_opt_ = std::move(search_result);
+}
+
+std::unique_ptr<RetrieveResult>
+wrap_num_entities(int64_t cnt) {
+    auto retrieve_result = std::make_unique<RetrieveResult>();
+    DataArray arr;
+    arr.set_type(milvus::proto::schema::Int64);
+    auto scalar = arr.mutable_scalars();
+    scalar->mutable_long_data()->mutable_data()->Add(cnt);
+    retrieve_result->field_data_ = {arr};
+    return retrieve_result;
 }
 
 void
 ExecPlanNodeVisitor::visit(RetrievePlanNode& node) {
     assert(!retrieve_result_opt_.has_value());
-    auto segment = dynamic_cast<const segcore::SegmentInternalInterface*>(&segment_);
+    auto segment =
+        dynamic_cast<const segcore::SegmentInternalInterface*>(&segment_);
     AssertInfo(segment, "Support SegmentSmallIndex Only");
     RetrieveResult retrieve_result;
 
     auto active_count = segment->get_active_count(timestamp_);
 
-    if (active_count == 0) {
+    if (active_count == 0 && !node.is_count) {
+        retrieve_result_opt_ = std::move(retrieve_result);
+        return;
+    }
+
+    if (active_count == 0 && node.is_count) {
+        retrieve_result = *(wrap_num_entities(0));
         retrieve_result_opt_ = std::move(retrieve_result);
         return;
     }
 
     BitsetType bitset_holder;
-    if (node.predicate_ != nullptr) {
-        bitset_holder = ExecExprVisitor(*segment, active_count, timestamp_).call_child(*(node.predicate_));
+    // For case that retrieve by expression, bitset will be allocated when expression is being executed.
+    if (node.is_count) {
+        bitset_holder.resize(active_count);
+    }
+
+    if (node.predicate_.has_value() && node.predicate_.value() != nullptr) {
+        bitset_holder = ExecExprVisitor(*segment, active_count, timestamp_)
+                            .call_child(*(node.predicate_.value()));
         bitset_holder.flip();
     }
 
@@ -134,15 +173,23 @@ ExecPlanNodeVisitor::visit(RetrievePlanNode& node) {
 
     segment->mask_with_delete(bitset_holder, active_count, timestamp_);
     // if bitset_holder is all 1's, we got empty result
-    if (bitset_holder.all()) {
+    if (bitset_holder.all() && !node.is_count) {
+        retrieve_result_opt_ = std::move(retrieve_result);
+        return;
+    }
+
+    if (node.is_count) {
+        auto cnt = bitset_holder.size() - bitset_holder.count();
+        retrieve_result = *(wrap_num_entities(cnt));
         retrieve_result_opt_ = std::move(retrieve_result);
         return;
     }
 
     BitsetView final_view = bitset_holder;
     auto seg_offsets = segment->search_ids(final_view, timestamp_);
-    retrieve_result.result_offsets_.assign((int64_t*)seg_offsets.data(),
-                                           (int64_t*)seg_offsets.data() + seg_offsets.size());
+    retrieve_result.result_offsets_.assign(
+        (int64_t*)seg_offsets.data(),
+        (int64_t*)seg_offsets.data() + seg_offsets.size());
     retrieve_result_opt_ = std::move(retrieve_result);
 }
 

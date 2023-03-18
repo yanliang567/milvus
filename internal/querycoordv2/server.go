@@ -18,13 +18,16 @@ package querycoordv2
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/milvus-io/milvus/internal/util/paramtable"
+
+	"github.com/cockroachdb/errors"
 
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
@@ -133,7 +136,7 @@ func (s *Server) Register() error {
 		}
 	}
 	go s.session.LivenessCheck(s.ctx, func() {
-		log.Error("QueryCoord disconnected from etcd, process will exit", zap.Int64("serverID", s.session.ServerID))
+		log.Error("QueryCoord disconnected from etcd, process will exit", zap.Int64("serverID", paramtable.GetNodeID()))
 		if err := s.Stop(); err != nil {
 			log.Fatal("failed to stop server", zap.Error(err))
 		}
@@ -587,7 +590,7 @@ func (s *Server) watchNodes(revision int64) {
 		case event, ok := <-eventChan:
 			if !ok {
 				// ErrCompacted is handled inside SessionWatcher
-				log.Error("Session Watcher channel closed", zap.Int64("serverID", s.session.ServerID))
+				log.Error("Session Watcher channel closed", zap.Int64("serverID", paramtable.GetNodeID()))
 				go s.Stop()
 				if s.session.TriggerKill {
 					if p, err := os.FindProcess(os.Getpid()); err == nil {
@@ -648,11 +651,7 @@ func (s *Server) handleNodeUp(node int64) {
 		zap.String("resourceGroup", rgName),
 	)
 
-	rgs := s.meta.ResourceManager.ListResourceGroups()
-	if len(rgs) == 1 {
-		// only __default_resource_group exists
-		utils.AddNodesToCollectionsInRG(s.meta, meta.DefaultResourceGroupName, node)
-	}
+	utils.AddNodesToCollectionsInRG(s.meta, meta.DefaultResourceGroupName, node)
 }
 
 func (s *Server) handleNodeDown(node int64) {

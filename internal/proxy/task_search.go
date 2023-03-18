@@ -3,10 +3,11 @@ package proxy
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
+
+	"github.com/cockroachdb/errors"
 
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/parser/planparserv2"
@@ -362,7 +363,7 @@ func (t *searchTask) PreExecute(ctx context.Context) error {
 
 	travelTimestamp := t.request.TravelTimestamp
 	if travelTimestamp == 0 {
-		travelTimestamp = typeutil.MaxTimestamp
+		travelTimestamp = t.BeginTs()
 	}
 	err = validateTravelTimestamp(travelTimestamp, t.BeginTs())
 	if err != nil {
@@ -426,7 +427,7 @@ func (t *searchTask) Execute(ctx context.Context) error {
 		log.Warn("first search failed, updating shardleader caches and retry search",
 			zap.Error(err))
 		// invalidate cache first, since ctx may be canceled or timeout here
-		globalMetaCache.ClearShards(t.collectionName)
+		globalMetaCache.DeprecateShardCache(t.collectionName)
 		err = executeSearch(WithoutCache)
 	}
 	if err != nil {
@@ -518,12 +519,14 @@ func (t *searchTask) searchShard(ctx context.Context, nodeID int64, qn types.Que
 			zap.Int64("nodeID", nodeID),
 			zap.Strings("channels", channelIDs),
 			zap.Error(err))
+		globalMetaCache.DeprecateShardCache(t.collectionName)
 		return err
 	}
 	if result.GetStatus().GetErrorCode() == commonpb.ErrorCode_NotShardLeader {
 		log.Ctx(ctx).Warn("QueryNode is not shardLeader",
 			zap.Int64("nodeID", nodeID),
 			zap.Strings("channels", channelIDs))
+		globalMetaCache.DeprecateShardCache(t.collectionName)
 		return errInvalidShardLeaders
 	}
 	if result.GetStatus().GetErrorCode() != commonpb.ErrorCode_Success {

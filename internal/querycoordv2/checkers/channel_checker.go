@@ -79,12 +79,16 @@ func (c *ChannelChecker) checkReplica(ctx context.Context, replica *meta.Replica
 
 	lacks, redundancies := c.getDmChannelDiff(c.targetMgr, c.dist, c.meta, replica.GetCollectionID(), replica.GetID())
 	tasks := c.createChannelLoadTask(ctx, lacks, replica)
+	task.SetReason("lacks of channel", tasks...)
 	ret = append(ret, tasks...)
+
 	tasks = c.createChannelReduceTasks(ctx, redundancies, replica.GetID())
+	task.SetReason("collection released", tasks...)
 	ret = append(ret, tasks...)
 
 	repeated := c.findRepeatedChannels(c.dist, c.meta, replica.GetID())
 	tasks = c.createChannelReduceTasks(ctx, repeated, replica.GetID())
+	task.SetReason("redundancies of channel")
 	ret = append(ret, tasks...)
 
 	// All channel related tasks should be with high priority
@@ -179,9 +183,7 @@ func (c *ChannelChecker) createChannelLoadTask(ctx context.Context, channels []*
 	for i := range plans {
 		plans[i].ReplicaID = replica.GetID()
 	}
-	// log.Debug("try to subscribe channels",
-	// 	zap.Any("channels", channels),
-	// 	zap.Any("plans", plans))
+
 	return balance.CreateChannelTasksFromPlans(ctx, c.ID(), Params.QueryCoordCfg.ChannelTaskTimeout.GetAsDuration(time.Millisecond), plans)
 }
 
@@ -191,11 +193,11 @@ func (c *ChannelChecker) createChannelReduceTasks(ctx context.Context, channels 
 		action := task.NewChannelAction(ch.Node, task.ActionTypeReduce, ch.GetChannelName())
 		task, err := task.NewChannelTask(ctx, Params.QueryCoordCfg.ChannelTaskTimeout.GetAsDuration(time.Millisecond), c.ID(), ch.GetCollectionID(), replicaID, action)
 		if err != nil {
-			log.Warn("Create channel reduce task failed",
+			log.Warn("create channel reduce task failed",
 				zap.Int64("collection", ch.GetCollectionID()),
 				zap.Int64("replica", replicaID),
 				zap.String("channel", ch.GetChannelName()),
-				zap.Int64("From", ch.Node),
+				zap.Int64("from", ch.Node),
 				zap.Error(err),
 			)
 			continue

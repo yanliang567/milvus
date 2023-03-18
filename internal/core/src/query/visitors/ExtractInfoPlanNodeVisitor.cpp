@@ -20,7 +20,8 @@ namespace impl {
 // WILL BE USED BY GENERATOR UNDER suvlim/core_gen/
 class ExtractInfoPlanNodeVisitor : PlanNodeVisitor {
  public:
-    explicit ExtractInfoPlanNodeVisitor(ExtractedPlanInfo& plan_info) : plan_info_(plan_info) {
+    explicit ExtractInfoPlanNodeVisitor(ExtractedPlanInfo& plan_info)
+        : plan_info_(plan_info) {
     }
 
  private:
@@ -50,7 +51,9 @@ void
 ExtractInfoPlanNodeVisitor::visit(RetrievePlanNode& node) {
     // Assert(node.predicate_.has_value());
     ExtractInfoExprVisitor expr_visitor(plan_info_);
-    node.predicate_->accept(expr_visitor);
+    if (node.predicate_.has_value()) {
+        node.predicate_.value()->accept(expr_visitor);
+    }
 }
 
 }  // namespace milvus::query

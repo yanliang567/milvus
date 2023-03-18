@@ -9,6 +9,14 @@ image:
     repository: milvusdb/milvus
     tag: master-latest
     pullPolicy: IfNotPresent
+standalone:
+  resources:
+    limits:
+      cpu: 8
+      memory: 16Gi
+    requests:
+      cpu: 4
+      memory: 8Gi
 
 kafka:
   enabled: false
@@ -17,11 +25,18 @@ kafka:
   defaultReplicationFactor: 2
 
 etcd:
-  replicaCount: 1
+  replicaCount: 3
   image:
+    debug: true
     repository: milvusdb/etcd
     tag: 3.5.5-r2  
 minio:
   mode: standalone
 pulsar:
   enabled: false
+
+extraConfigFiles:
+  user.yaml: |+
+    dataNode:
+      memory:
+        forceSyncEnable: false

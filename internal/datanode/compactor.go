@@ -18,7 +18,6 @@ package datanode
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"path"
@@ -26,6 +25,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/cockroachdb/errors"
 
 	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
@@ -58,6 +59,7 @@ type iterator = storage.Iterator
 type compactor interface {
 	complete()
 	compact() (*datapb.CompactionResult, error)
+	injectDone()
 	stop()
 	getPlanID() UniqueID
 	getCollection() UniqueID
@@ -83,6 +85,7 @@ type compactionTask struct {
 	done         chan struct{}
 	tr           *timerecord.TimeRecorder
 	chunkManager storage.ChunkManager
+	inject       *taskInjection
 }
 
 // check if compactionTask implements compactor
@@ -122,6 +125,7 @@ func (t *compactionTask) complete() {
 func (t *compactionTask) stop() {
 	t.cancel()
 	<-t.done
+	t.injectDone()
 }
 
 func (t *compactionTask) getPlanID() UniqueID {
@@ -257,7 +261,10 @@ func (t *compactionTask) merge(
 
 	isDeletedValue := func(v *storage.Value) bool {
 		ts, ok := delta[v.PK.GetValue()]
-		if ok && uint64(v.Timestamp) <= ts {
+		// insert task and delete task has the same ts when upsert
+		// here should be < instead of <=
+		// to avoid the upsert data to be deleted after compact
+		if ok && uint64(v.Timestamp) < ts {
 			return true
 		}
 		return false
@@ -551,7 +558,12 @@ func (t *compactionTask) compact() (*datapb.CompactionResult, error) {
 			statsLog.LogPath = blobPath
 		}
 	})
-	defer close(ti.injectOver)
+	defer func() {
+		// the injection will be closed if fail to compact
+		if t.inject == nil {
+			close(ti.injectOver)
+		}
+	}()
 
 	t.injectFlush(ti, segIDs...)
 	<-ti.Injected()
@@ -664,12 +676,7 @@ func (t *compactionTask) compact() (*datapb.CompactionResult, error) {
 		Channel:             t.plan.GetChannel(),
 	}
 
-	uninjectStart := time.Now()
-	ti.injectDone(true)
-	uninjectEnd := time.Now()
-	defer func() {
-		log.Info("uninject elapse in ms", zap.Int64("planID", t.plan.GetPlanID()), zap.Float64("elapse", nano2Milli(uninjectEnd.Sub(uninjectStart))))
-	}()
+	t.inject = ti
 
 	log.Info("compaction done",
 		zap.Int64("planID", t.plan.GetPlanID()),
@@ -684,6 +691,15 @@ func (t *compactionTask) compact() (*datapb.CompactionResult, error) {
 	metrics.DataNodeCompactionLatency.WithLabelValues(fmt.Sprint(paramtable.GetNodeID())).Observe(float64(t.tr.ElapseSpan().Milliseconds()))
 
 	return pack, nil
+}
+
+func (t *compactionTask) injectDone() {
+	if t.inject != nil {
+		uninjectStart := time.Now()
+		t.inject.injectDone(true)
+		uninjectEnd := time.Now()
+		log.Info("uninject elapse in ms", zap.Int64("planID", t.plan.GetPlanID()), zap.Float64("elapse", nano2Milli(uninjectEnd.Sub(uninjectStart))))
+	}
 }
 
 // TODO copy maybe expensive, but this seems to be the only convinent way.

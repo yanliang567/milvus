@@ -60,6 +60,7 @@ compact_delta_ratio_reciprocal = 5  # compact_delta_binlog_ratio is 0.2
 compact_retention_duration = 40  # compaction travel time retention range 20s
 max_compaction_interval = 60  # the max time interval (s) from the last compaction
 max_field_num = 64  # Maximum number of fields in a collection
+max_name_length = 255  # Maximum length of name for a collection or alias
 default_replica_num = 1
 IMAGE_REPOSITORY_MILVUS = "harbor.milvus.io/dockerhub/milvusdb/milvus"
 NAMESPACE_CHAOS_TESTING = "chaos-testing"
@@ -92,7 +93,7 @@ get_invalid_strs = [
     "(mn)",
     "中文",
     "%$#",
-    "a".join("a" for i in range(256))]
+    "".join("a" for i in range(max_name_length + 1))]
 
 get_not_string = [
     [],
@@ -256,3 +257,4 @@ class CaseLabel:
     L3 = "L3"
     Loadbalance = "Loadbalance"  # loadbalance testcases which need to be run in multi query nodes
     ClusterOnly = "ClusterOnly"  # For functions only suitable to cluster mode
+    MultiQueryNodes = "MultiQueryNodes"  # for 8 query nodes configs tests, such as resource group

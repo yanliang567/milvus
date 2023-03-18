@@ -29,13 +29,13 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/msgpb"
 	"github.com/milvus-io/milvus/internal/kv"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/metastore/model"
 	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/util"
 	"github.com/milvus-io/milvus/internal/util/etcd"
@@ -45,6 +45,7 @@ import (
 )
 
 var maxEtcdTxnNum = 128
+
 var paginationSize = 2000
 
 type Catalog struct {
@@ -129,22 +130,22 @@ func (kc *Catalog) parseBinlogKey(key string, prefixIdx int) (int64, int64, int6
 	remainedKey := key[prefixIdx:]
 	keyWordGroup := strings.Split(remainedKey, "/")
 	if len(keyWordGroup) < 3 {
-		return 0, 0, 0, fmt.Errorf("parse key: %s faild, trimed key:%s", key, remainedKey)
+		return 0, 0, 0, fmt.Errorf("parse key: %s failed, trimmed key:%s", key, remainedKey)
 	}
 
 	collectionID, err := strconv.ParseInt(keyWordGroup[0], 10, 64)
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("parse key: %s faild, trimed key:%s, %w", key, remainedKey, err)
+		return 0, 0, 0, fmt.Errorf("parse key: %s failed, trimmed key:%s, %w", key, remainedKey, err)
 	}
 
 	partitionID, err := strconv.ParseInt(keyWordGroup[1], 10, 64)
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("parse key: %s faild, trimed key:%s, %w", key, remainedKey, err)
+		return 0, 0, 0, fmt.Errorf("parse key: %s failed, trimmed key:%s, %w", key, remainedKey, err)
 	}
 
 	segmentID, err := strconv.ParseInt(keyWordGroup[2], 10, 64)
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("parse key: %s faild, trimed key:%s, %w", key, remainedKey, err)
+		return 0, 0, 0, fmt.Errorf("parse key: %s failed, trimmed key:%s, %w", key, remainedKey, err)
 	}
 
 	return collectionID, partitionID, segmentID, nil
@@ -386,12 +387,12 @@ func (kc *Catalog) AlterSegmentsAndAddNewSegment(ctx context.Context, segments [
 	}
 
 	if newSegment != nil {
-		if newSegment.GetNumOfRows() > 0 {
-			segmentKvs, err := buildSegmentAndBinlogsKvs(newSegment)
-			if err != nil {
-				return err
-			}
-			maps.Copy(kvs, segmentKvs)
+		segmentKvs, err := buildSegmentAndBinlogsKvs(newSegment)
+		if err != nil {
+			return err
+		}
+		maps.Copy(kvs, segmentKvs)
+		if newSegment.NumOfRows > 0 {
 			kc.collectMetrics(newSegment)
 		}
 	}
@@ -471,6 +472,17 @@ func (kc *Catalog) DropSegment(ctx context.Context, segment *datapb.SegmentInfo)
 	return nil
 }
 
+func (kc *Catalog) MarkChannelAdded(ctx context.Context, channel string) error {
+	key := buildChannelRemovePath(channel)
+	err := kc.MetaKv.Save(key, NonRemoveFlagTomestone)
+	if err != nil {
+		log.Error("failed to mark channel added", zap.String("channel", channel), zap.Error(err))
+		return err
+	}
+	log.Info("NON remove flag tombstone added", zap.String("channel", channel))
+	return nil
+}
+
 func (kc *Catalog) MarkChannelDeleted(ctx context.Context, channel string) error {
 	key := buildChannelRemovePath(channel)
 	err := kc.MetaKv.Save(key, RemoveFlagTomestone)
@@ -478,11 +490,11 @@ func (kc *Catalog) MarkChannelDeleted(ctx context.Context, channel string) error
 		log.Error("Failed to mark channel dropped", zap.String("channel", channel), zap.Error(err))
 		return err
 	}
-
+	log.Info("remove flag tombstone added", zap.String("channel", channel))
 	return nil
 }
 
-func (kc *Catalog) IsChannelDropped(ctx context.Context, channel string) bool {
+func (kc *Catalog) ShouldDropChannel(ctx context.Context, channel string) bool {
 	key := buildChannelRemovePath(channel)
 	v, err := kc.MetaKv.Load(key)
 	if err != nil || v != RemoveFlagTomestone {
@@ -491,22 +503,29 @@ func (kc *Catalog) IsChannelDropped(ctx context.Context, channel string) bool {
 	return true
 }
 
+func (kc *Catalog) ChannelExists(ctx context.Context, channel string) bool {
+	key := buildChannelRemovePath(channel)
+	v, err := kc.MetaKv.Load(key)
+	return err == nil && v == NonRemoveFlagTomestone
+}
+
 // DropChannel removes channel remove flag after whole procedure is finished
 func (kc *Catalog) DropChannel(ctx context.Context, channel string) error {
 	key := buildChannelRemovePath(channel)
+	log.Info("removing channel remove path", zap.String("channel", channel))
 	return kc.MetaKv.Remove(key)
 }
 
-func (kc *Catalog) ListChannelCheckpoint(ctx context.Context) (map[string]*internalpb.MsgPosition, error) {
+func (kc *Catalog) ListChannelCheckpoint(ctx context.Context) (map[string]*msgpb.MsgPosition, error) {
 	keys, values, err := kc.MetaKv.LoadWithPrefix(ChannelCheckpointPrefix)
 	if err != nil {
 		return nil, err
 	}
 
-	channelCPs := make(map[string]*internalpb.MsgPosition)
+	channelCPs := make(map[string]*msgpb.MsgPosition)
 	for i, key := range keys {
 		value := values[i]
-		channelCP := &internalpb.MsgPosition{}
+		channelCP := &msgpb.MsgPosition{}
 		err = proto.Unmarshal([]byte(value), channelCP)
 		if err != nil {
 			log.Error("unmarshal channelCP failed when ListChannelCheckpoint", zap.Error(err))
@@ -520,7 +539,7 @@ func (kc *Catalog) ListChannelCheckpoint(ctx context.Context) (map[string]*inter
 	return channelCPs, nil
 }
 
-func (kc *Catalog) SaveChannelCheckpoint(ctx context.Context, vChannel string, pos *internalpb.MsgPosition) error {
+func (kc *Catalog) SaveChannelCheckpoint(ctx context.Context, vChannel string, pos *msgpb.MsgPosition) error {
 	k := buildChannelCPKey(vChannel)
 	v, err := proto.Marshal(pos)
 	if err != nil {
@@ -966,7 +985,7 @@ func buildFieldStatslogPath(collectionID typeutil.UniqueID, partitionID typeutil
 	return fmt.Sprintf("%s/%d/%d/%d/%d", SegmentStatslogPathPrefix, collectionID, partitionID, segmentID, fieldID)
 }
 
-//buildFlushedSegmentPath common logic mapping segment info to corresponding key of IndexCoord in kv store
+// buildFlushedSegmentPath common logic mapping segment info to corresponding key of IndexCoord in kv store
 // TODO @cai.zhang: remove this
 func buildFlushedSegmentPath(collectionID typeutil.UniqueID, partitionID typeutil.UniqueID, segmentID typeutil.UniqueID) string {
 	return fmt.Sprintf("%s/%d/%d/%d", util.FlushedSegmentPrefix, collectionID, partitionID, segmentID)

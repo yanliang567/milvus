@@ -20,22 +20,19 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
-	"fmt"
 	"math/rand"
 	"strconv"
 	"testing"
 
 	"github.com/golang/protobuf/proto"
-
-	"github.com/milvus-io/milvus-proto/go-api/schemapb"
-	"github.com/milvus-io/milvus/internal/mq/msgstream"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
-
-	"github.com/milvus-io/milvus-proto/go-api/commonpb"
-
-	"github.com/milvus-io/milvus/internal/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/msgpb"
+	"github.com/milvus-io/milvus-proto/go-api/schemapb"
+	"github.com/milvus-io/milvus/internal/common"
+	"github.com/milvus-io/milvus/internal/mq/msgstream"
 )
 
 func TestCheckTsField(t *testing.T) {
@@ -516,7 +513,7 @@ func genRowBasedInsertMsg(numRows, fVecDim, bVecDim int) (msg *msgstream.InsertM
 			HashValues:     nil,
 			MsgPosition:    nil,
 		},
-		InsertRequest: internalpb.InsertRequest{
+		InsertRequest: msgpb.InsertRequest{
 			Base: &commonpb.MsgBase{
 				MsgType:   commonpb.MsgType_Insert,
 				MsgID:     0,
@@ -524,7 +521,7 @@ func genRowBasedInsertMsg(numRows, fVecDim, bVecDim int) (msg *msgstream.InsertM
 				SourceID:  0,
 			},
 			RowData: nil,
-			Version: internalpb.InsertDataVersion_RowBased,
+			Version: msgpb.InsertDataVersion_RowBased,
 		},
 	}
 	pks = make([]int64, 0)
@@ -554,7 +551,7 @@ func genColumnBasedInsertMsg(schema *schemapb.CollectionSchema, numRows, fVecDim
 			HashValues:     nil,
 			MsgPosition:    nil,
 		},
-		InsertRequest: internalpb.InsertRequest{
+		InsertRequest: msgpb.InsertRequest{
 			Base: &commonpb.MsgBase{
 				MsgType:   commonpb.MsgType_Insert,
 				MsgID:     0,
@@ -563,7 +560,7 @@ func genColumnBasedInsertMsg(schema *schemapb.CollectionSchema, numRows, fVecDim
 			},
 			FieldsData: nil,
 			NumRows:    uint64(numRows),
-			Version:    internalpb.InsertDataVersion_ColumnBased,
+			Version:    msgpb.InsertDataVersion_ColumnBased,
 		},
 	}
 	pks = make([]int64, 0)
@@ -1208,6 +1205,6 @@ func TestJson(t *testing.T) {
 	assert.NoError(t, err)
 	ExtraLength := int32(len(ExtraBytes))
 
-	fmt.Print(string(ExtraBytes))
-	fmt.Println(ExtraLength)
+	t.Log(string(ExtraBytes))
+	t.Log(ExtraLength)
 }

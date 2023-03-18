@@ -19,6 +19,7 @@ package datacoord
 import (
 	"context"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +44,8 @@ const (
 	deltaLogPrefix  = `delta_log`
 )
 
+type collectionValidator func(int64) bool
+
 // GcOption garbage collection options
 type GcOption struct {
 	cli              storage.ChunkManager // client
@@ -50,6 +53,7 @@ type GcOption struct {
 	checkInterval    time.Duration        // each interval
 	missingTolerance time.Duration        // key missing in meta tolerance time
 	dropTolerance    time.Duration        // dropped segment related key tolerance time
+	collValidator    collectionValidator  // validates collection id
 }
 
 // garbageCollector handles garbage files in object storage
@@ -111,6 +115,24 @@ func (gc *garbageCollector) work() {
 	}
 }
 
+func (gc *garbageCollector) isCollectionPrefixValid(p string, prefix string) bool {
+	if gc.option.collValidator == nil {
+		return true
+	}
+
+	if !strings.HasPrefix(p, prefix) {
+		return false
+	}
+
+	p = strings.Trim(p[len(prefix):], "/")
+	collectionID, err := strconv.ParseInt(p, 10, 64)
+	if err != nil {
+		return false
+	}
+
+	return gc.option.collValidator(collectionID)
+}
+
 func (gc *garbageCollector) close() {
 	gc.stopOnce.Do(func() {
 		close(gc.closeCh)
@@ -148,46 +170,64 @@ func (gc *garbageCollector) scan() {
 	var removedKeys []string
 
 	for _, prefix := range prefixes {
-		infoKeys, modTimes, err := gc.option.cli.ListWithPrefix(ctx, prefix, true)
+		// list first level prefix, then perform collection id validation
+		collectionPrefixes, _, err := gc.option.cli.ListWithPrefix(ctx, prefix+"/", false)
 		if err != nil {
-			log.Error("failed to list files with prefix",
+			log.Warn("failed to list collection prefix",
 				zap.String("prefix", prefix),
-				zap.String("error", err.Error()),
+				zap.Error(err),
 			)
 		}
-		for i, infoKey := range infoKeys {
-			total++
-			_, has := filesMap[infoKey]
-			if has {
-				valid++
+		for _, collPrefix := range collectionPrefixes {
+			if !gc.isCollectionPrefixValid(collPrefix, prefix) {
+				log.Warn("garbage collector meet invalid collection prefix, ignore it",
+					zap.String("collPrefix", collPrefix),
+					zap.String("prefix", prefix),
+				)
 				continue
 			}
-
-			segmentID, err := storage.ParseSegmentIDByBinlog(gc.option.cli.RootPath(), infoKey)
+			infoKeys, modTimes, err := gc.option.cli.ListWithPrefix(ctx, collPrefix, true)
 			if err != nil {
-				missing++
-				log.Warn("parse segment id error",
-					zap.String("infoKey", infoKey),
-					zap.Error(err))
+				log.Error("failed to list files with collPrefix",
+					zap.String("collPrefix", collPrefix),
+					zap.String("error", err.Error()),
+				)
 				continue
 			}
+			for i, infoKey := range infoKeys {
+				total++
+				_, has := filesMap[infoKey]
+				if has {
+					valid++
+					continue
+				}
 
-			if strings.Contains(prefix, statsLogPrefix) &&
-				segmentMap.Contain(segmentID) {
-				valid++
-				continue
-			}
-
-			// not found in meta, check last modified time exceeds tolerance duration
-			if time.Since(modTimes[i]) > gc.option.missingTolerance {
-				// ignore error since it could be cleaned up next time
-				removedKeys = append(removedKeys, infoKey)
-				err = gc.option.cli.Remove(ctx, infoKey)
+				segmentID, err := storage.ParseSegmentIDByBinlog(gc.option.cli.RootPath(), infoKey)
 				if err != nil {
 					missing++
-					log.Error("failed to remove object",
+					log.Warn("parse segment id error",
 						zap.String("infoKey", infoKey),
 						zap.Error(err))
+					continue
+				}
+
+				if strings.Contains(prefix, statsLogPrefix) &&
+					segmentMap.Contain(segmentID) {
+					valid++
+					continue
+				}
+
+				// not found in meta, check last modified time exceeds tolerance duration
+				if time.Since(modTimes[i]) > gc.option.missingTolerance {
+					// ignore error since it could be cleaned up next time
+					removedKeys = append(removedKeys, infoKey)
+					err = gc.option.cli.Remove(ctx, infoKey)
+					if err != nil {
+						missing++
+						log.Error("failed to remove object",
+							zap.String("infoKey", infoKey),
+							zap.Error(err))
+					}
 				}
 			}
 		}
@@ -239,24 +279,41 @@ func (gc *garbageCollector) clearEtcd() {
 		if !gc.isExpire(segment.GetDroppedAt()) {
 			continue
 		}
-		// segment gc shall only happen when channel cp is after segment dml cp.
-		if segment.GetDmlPosition().GetTimestamp() > channelCPs[segment.GetInsertChannel()] {
-			log.WithRateGroup("GC_FAIL_CP_BEFORE", 1, 60).RatedInfo(60, "dropped segment dml position after channel cp, skip meta gc",
-				zap.Uint64("dmlPosTs", segment.GetDmlPosition().GetTimestamp()),
-				zap.Uint64("channelCpTs", channelCPs[segment.GetInsertChannel()]),
-			)
+		segInsertChannel := segment.GetInsertChannel()
+		// Ignore segments from potentially dropped collection. Check if collection is to be dropped by checking if channel is dropped.
+		// We do this because collection meta drop relies on all segment being GCed.
+		if gc.meta.catalog.ChannelExists(context.Background(), segInsertChannel) &&
+			segment.GetDmlPosition().GetTimestamp() > channelCPs[segInsertChannel] {
+			// segment gc shall only happen when channel cp is after segment dml cp.
+			log.WithRateGroup("GC_FAIL_CP_BEFORE", 1, 60).
+				RatedInfo(60, "dropped segment dml position after channel cp, skip meta gc",
+					zap.Uint64("dmlPosTs", segment.GetDmlPosition().GetTimestamp()),
+					zap.Uint64("channelCpTs", channelCPs[segInsertChannel]),
+				)
 			continue
 		}
 		// For compact A, B -> C, don't GC A or B if C is not indexed,
 		// guarantee replacing A, B with C won't downgrade performance
 		if to, ok := compactTo[segment.GetID()]; ok && !indexedSet.Contain(to.GetID()) {
+			log.WithRateGroup("GC_FAIL_COMPACT_TO_NOT_INDEXED", 1, 60).
+				RatedWarn(60, "skipping GC when compact target segment is not indexed",
+					zap.Int64("segmentID", to.GetID()))
 			continue
 		}
 		logs := getLogs(segment)
-		log.Info("GC segment",
-			zap.Int64("segmentID", segment.GetID()))
+		log.Info("GC segment", zap.Int64("segmentID", segment.GetID()))
 		if gc.removeLogs(logs) {
 			_ = gc.meta.DropSegment(segment.GetID())
+		}
+		if segList := gc.meta.GetSegmentsByChannel(segInsertChannel); len(segList) == 0 &&
+			!gc.meta.catalog.ChannelExists(context.Background(), segInsertChannel) {
+			log.Info("empty channel found during gc, manually cleanup channel checkpoints",
+				zap.String("vChannel", segInsertChannel))
+
+			if err := gc.meta.DropChannelCheckpoint(segInsertChannel); err != nil {
+				// Fail-open as there's nothing to do.
+				log.Warn("failed to drop channel check point during segment garbage collection", zap.Error(err))
+			}
 		}
 	}
 }
@@ -318,7 +375,7 @@ func (gc *garbageCollector) recycleUnusedIndexes() {
 func (gc *garbageCollector) recycleUnusedSegIndexes() {
 	segIndexes := gc.meta.GetAllSegIndexes()
 	for _, segIdx := range segIndexes {
-		if gc.meta.GetSegmentUnsafe(segIdx.SegmentID) == nil || !gc.meta.IsIndexExist(segIdx.CollectionID, segIdx.IndexID) {
+		if gc.meta.GetSegment(segIdx.SegmentID) == nil || !gc.meta.IsIndexExist(segIdx.CollectionID, segIdx.IndexID) {
 			if err := gc.meta.RemoveSegmentIndex(segIdx.CollectionID, segIdx.PartitionID, segIdx.SegmentID, segIdx.IndexID, segIdx.BuildID); err != nil {
 				log.Warn("delete index meta from etcd failed, wait to retry", zap.Int64("buildID", segIdx.BuildID),
 					zap.Int64("segID", segIdx.SegmentID), zap.Int64("nodeID", segIdx.NodeID), zap.Error(err))

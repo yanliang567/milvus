@@ -584,7 +584,7 @@ please adjust in embedded Milvus: /tmp/milvus/rdb_data`,
 		Key:          "rocksmq.rocksmqPageSize",
 		DefaultValue: strconv.FormatInt(256<<20, 10),
 		Version:      "2.0.0",
-		Doc:          "2 GB, 2 * 1024 * 1024 * 1024 bytes, The size of each page of messages in rocksmq",
+		Doc:          "256 MB, 256 * 1024 * 1024 bytes, The size of each page of messages in rocksmq",
 		Export:       true,
 	}
 	r.PageSize.Init(base.mgr)
@@ -721,10 +721,12 @@ func (p *MinioConfig) Init(base *BaseTable) {
 		Key:          "minio.useIAM",
 		DefaultValue: DefaultMinioUseIAM,
 		Version:      "2.0.0",
-		Doc: `Whether to ` + "useIAM" + ` role to access S3/GCS instead of access/secret keys
+		Doc: `Whether to useIAM role to access S3/GCS instead of access/secret keys
 For more information, refer to
 aws: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use.html
-gcp: https://cloud.google.com/storage/docs/access-control/iam`,
+gcp: https://cloud.google.com/storage/docs/access-control/iam
+aliyun (ack): https://www.alibabacloud.com/help/en/container-service-for-kubernetes/latest/use-rrsa-to-enforce-access-control
+aliyun (ecs): https://www.alibabacloud.com/help/en/elastic-compute-service/latest/attach-an-instance-ram-role`,
 		Export: true,
 	}
 	p.UseIAM.Init(base.mgr)
@@ -733,10 +735,11 @@ gcp: https://cloud.google.com/storage/docs/access-control/iam`,
 		Key:          "minio.cloudProvider",
 		DefaultValue: DefaultMinioCloudProvider,
 		Version:      "2.2.0",
-		Doc: `Cloud Provider of S3. Supports: "aws", "gcp". 
+		Doc: `Cloud Provider of S3. Supports: "aws", "gcp", "aliyun". 
 You can use "aws" for other cloud provider supports S3 API with signature v4, e.g.: minio
 You can use "gcp" for other cloud provider supports S3 API with signature v2
-When ` + "useIAM" + ` enabled, only "aws" & "gcp" is supported for now`,
+You can use "aliyun" for other cloud provider uses virtual host style bucket 
+When useIAM enabled, only "aws", "gcp", "aliyun" is supported for now`,
 		Export: true,
 	}
 	p.CloudProvider.Init(base.mgr)

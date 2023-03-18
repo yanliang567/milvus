@@ -18,7 +18,6 @@ package querynode
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math/rand"
 	"path"
@@ -27,11 +26,14 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/cockroachdb/errors"
+	ants "github.com/panjf2000/ants/v2"
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/msgpb"
 	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
@@ -40,19 +42,18 @@ import (
 	"github.com/milvus-io/milvus/internal/mq/msgstream"
 	"github.com/milvus-io/milvus/internal/mq/msgstream/mqwrapper"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/storage"
 	"github.com/milvus-io/milvus/internal/types"
-	"github.com/milvus-io/milvus/internal/util/concurrency"
+	"github.com/milvus-io/milvus/internal/util/conc"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/hardware"
 	"github.com/milvus-io/milvus/internal/util/indexparamcheck"
+	"github.com/milvus-io/milvus/internal/util/merr"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	"github.com/panjf2000/ants/v2"
 )
 
 const (
@@ -72,8 +73,8 @@ type segmentLoader struct {
 	cm     storage.ChunkManager // minio cm
 	etcdKV *etcdkv.EtcdKV
 
-	ioPool  *concurrency.Pool
-	cpuPool *concurrency.Pool
+	ioPool  *conc.Pool
+	cpuPool *conc.Pool
 
 	factory msgstream.Factory
 }
@@ -318,7 +319,7 @@ func (loader *segmentLoader) loadGrowingSegmentFields(ctx context.Context, segme
 	iCodec := storage.InsertCodec{}
 
 	// change all field bin log loading into concurrent
-	loadFutures := make([]*concurrency.Future, 0, len(fieldBinlogs))
+	loadFutures := make([]*conc.Future[any], 0, len(fieldBinlogs))
 	for _, fieldBinlog := range fieldBinlogs {
 		futures := loader.loadFieldBinlogsAsync(ctx, fieldBinlog)
 		loadFutures = append(loadFutures, futures...)
@@ -401,7 +402,7 @@ func (loader *segmentLoader) loadSealedField(ctx context.Context, segment *Segme
 	// acquire a CPU worker before load field binlogs
 	futures := loader.loadFieldBinlogsAsync(ctx, field)
 
-	err := concurrency.AwaitAll(futures...)
+	err := conc.AwaitAll(futures...)
 	if err != nil {
 		return err
 	}
@@ -426,8 +427,8 @@ func (loader *segmentLoader) loadSealedField(ctx context.Context, segment *Segme
 }
 
 // Load binlogs concurrently into memory from KV storage asyncly
-func (loader *segmentLoader) loadFieldBinlogsAsync(ctx context.Context, field *datapb.FieldBinlog) []*concurrency.Future {
-	futures := make([]*concurrency.Future, 0, len(field.Binlogs))
+func (loader *segmentLoader) loadFieldBinlogsAsync(ctx context.Context, field *datapb.FieldBinlog) []*conc.Future[any] {
+	futures := make([]*conc.Future[any], 0, len(field.Binlogs))
 	for i := range field.Binlogs {
 		path := field.Binlogs[i].GetLogPath()
 		future := loader.ioPool.Submit(func() (interface{}, error) {
@@ -472,7 +473,7 @@ func (loader *segmentLoader) loadFieldIndexData(ctx context.Context, segment *Se
 	log := log.With(zap.Int64("segment", segment.ID()))
 	indexBuffer := make([][]byte, 0, len(indexInfo.IndexFilePaths))
 	filteredPaths := make([]string, 0, len(indexInfo.IndexFilePaths))
-	futures := make([]*concurrency.Future, 0, len(indexInfo.IndexFilePaths))
+	futures := make([]*conc.Future[any], 0, len(indexInfo.IndexFilePaths))
 	indexCodec := storage.NewIndexFileBinlogCodec()
 
 	// TODO, remove the load index info froam
@@ -551,7 +552,7 @@ func (loader *segmentLoader) loadFieldIndexData(ctx context.Context, segment *Se
 		futures = append(futures, indexFuture)
 	}
 
-	err = concurrency.AwaitAll(futures...)
+	err = conc.AwaitAll(futures...)
 	if err != nil {
 		return err
 	}
@@ -593,13 +594,13 @@ func (loader *segmentLoader) loadGrowingSegments(segment *Segment,
 		return err
 	}
 	tmpInsertMsg := &msgstream.InsertMsg{
-		InsertRequest: internalpb.InsertRequest{
+		InsertRequest: msgpb.InsertRequest{
 			CollectionID: segment.collectionID,
 			Timestamps:   timestamps,
 			RowIDs:       ids,
 			NumRows:      uint64(numRows),
 			FieldsData:   insertRecord.FieldsData,
-			Version:      internalpb.InsertDataVersion_ColumnBased,
+			Version:      msgpb.InsertDataVersion_ColumnBased,
 		},
 	}
 	pks, err := getPrimaryKeys(tmpInsertMsg, loader.metaReplica)
@@ -702,7 +703,7 @@ func (loader *segmentLoader) loadDeltaLogs(ctx context.Context, segment *Segment
 	return nil
 }
 
-func (loader *segmentLoader) FromDmlCPLoadDelete(ctx context.Context, collectionID int64, position *internalpb.MsgPosition,
+func (loader *segmentLoader) FromDmlCPLoadDelete(ctx context.Context, collectionID int64, position *msgpb.MsgPosition,
 	segmentIDs []int64) error {
 	startTs := time.Now()
 	stream, err := loader.factory.NewTtMsgStream(ctx)
@@ -742,7 +743,7 @@ func (loader *segmentLoader) FromDmlCPLoadDelete(ctx context.Context, collection
 	}
 
 	metrics.QueryNodeNumConsumers.WithLabelValues(fmt.Sprint(paramtable.GetNodeID())).Inc()
-	err = stream.Seek([]*internalpb.MsgPosition{position})
+	err = stream.Seek([]*msgpb.MsgPosition{position})
 	if err != nil {
 		return err
 	}
@@ -947,14 +948,16 @@ func (loader *segmentLoader) checkSegmentSize(collectionID UniqueID, segmentLoad
 		zap.Uint64("diskUsageAfterLoad", toMB(usedLocalSizeAfterLoad)))
 
 	if memLoadingUsage > uint64(float64(totalMem)*Params.QueryNodeCfg.OverloadedMemoryThresholdPercentage.GetAsFloat()) {
-		return fmt.Errorf("%w, load segment failed, OOM if load, collectionID = %d, maxSegmentSize = %v MB, concurrency = %d, usedMemAfterLoad = %v MB, totalMem = %v MB, thresholdFactor = %f",
-			ErrInsufficientMemory,
-			collectionID,
-			toMB(maxSegmentSize),
-			concurrency,
-			toMB(usedMemAfterLoad),
-			toMB(totalMem),
-			Params.QueryNodeCfg.OverloadedMemoryThresholdPercentage.GetAsFloat())
+		err := merr.WrapErrServiceMemoryLimitExceeded(float32(usedMemAfterLoad), float32(totalMem), "failed to load segment, no enough memory")
+		log.Warn("load segment failed, OOM if load",
+			zap.Int64("collectionID", collectionID),
+			zap.Uint64("maxSegmentSize", toMB(maxSegmentSize)),
+			zap.Int("concurrency", concurrency),
+			zap.Uint64("usedMemAfterLoad", toMB(usedMemAfterLoad)),
+			zap.Uint64("totalMem", toMB(totalMem)),
+			zap.Float64("thresholdFactor", Params.QueryNodeCfg.OverloadedMemoryThresholdPercentage.GetAsFloat()),
+		)
+		return err
 	}
 
 	if usedLocalSizeAfterLoad > uint64(Params.QueryNodeCfg.DiskCapacityLimit.GetAsFloat()*Params.QueryNodeCfg.MaxDiskUsagePercentage.GetAsFloat()) {
@@ -984,17 +987,8 @@ func newSegmentLoader(
 	if ioPoolSize > 256 {
 		ioPoolSize = 256
 	}
-	ioPool, err := concurrency.NewPool(ioPoolSize, ants.WithPreAlloc(true))
-	if err != nil {
-		log.Error("failed to create goroutine pool for segment loader",
-			zap.Error(err))
-		panic(err)
-	}
-	cpuPool, err := concurrency.NewPool(cpuNum, ants.WithPreAlloc(true))
-	if err != nil {
-		log.Error("failed to create cpu goroutine pool for segment loader", zap.Error(err))
-		panic(err)
-	}
+	ioPool := conc.NewPool(ioPoolSize, ants.WithPreAlloc(true))
+	cpuPool := conc.NewPool(cpuNum, ants.WithPreAlloc(true))
 
 	log.Info("SegmentLoader created",
 		zap.Int("ioPoolSize", ioPoolSize),

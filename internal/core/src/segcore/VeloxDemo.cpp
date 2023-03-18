@@ -23,9 +23,21 @@
 #include "velox/exec/tests/utils/TempDirectoryPath.h"
 #include "velox/vector/BaseVector.h"
 
-using namespace facebook::velox;
-using namespace facebook::velox::dwio::common;
-using namespace facebook::velox::dwrf;
+namespace filesystems = facebook::velox::filesystems;
+namespace dwio = facebook::velox::dwio;
+namespace dwrf = facebook::velox::dwrf;
+
+using facebook::velox::LocalReadFile;
+using facebook::velox::RowVector;
+using facebook::velox::vector_size_t;
+using facebook::velox::VectorPtr;
+
+using dwio::common::BufferedInput;
+using dwio::common::FileFormat;
+using dwio::common::ReaderOptions;
+using dwio::common::RowReaderOptions;
+
+using dwrf::DwrfReader;
 
 // A temporary program that reads from ORC file and prints its content
 // Used to compare the ORC data read by DWRFReader against apache-orc repo.
@@ -48,9 +60,11 @@ main(int argc, char** argv) {
     ReaderOptions readerOpts{pool.get()};
     // To make DwrfReader reads ORC file, setFileFormat to FileFormat::ORC
     readerOpts.setFileFormat(FileFormat::ORC);
-    auto reader = DwrfReader::create(
-        std::make_unique<BufferedInput>(std::make_shared<LocalReadFile>(filePath), readerOpts.getMemoryPool()),
-        readerOpts);
+    auto reader =
+        DwrfReader::create(std::make_unique<BufferedInput>(
+                               std::make_shared<LocalReadFile>(filePath),
+                               readerOpts.getMemoryPool()),
+                           readerOpts);
 
     VectorPtr batch;
     RowReaderOptions rowReaderOptions;

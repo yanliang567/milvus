@@ -79,6 +79,9 @@ extern PlaceholderValueDefaultTypeInternal _PlaceholderValue_default_instance_;
 class PrivilegeExt;
 struct PrivilegeExtDefaultTypeInternal;
 extern PrivilegeExtDefaultTypeInternal _PrivilegeExt_default_instance_;
+class SegmentStats;
+struct SegmentStatsDefaultTypeInternal;
+extern SegmentStatsDefaultTypeInternal _SegmentStats_default_instance_;
 class Status;
 struct StatusDefaultTypeInternal;
 extern StatusDefaultTypeInternal _Status_default_instance_;
@@ -96,6 +99,7 @@ template<> ::milvus::proto::common::MsgHeader* Arena::CreateMaybeMessage<::milvu
 template<> ::milvus::proto::common::PlaceholderGroup* Arena::CreateMaybeMessage<::milvus::proto::common::PlaceholderGroup>(Arena*);
 template<> ::milvus::proto::common::PlaceholderValue* Arena::CreateMaybeMessage<::milvus::proto::common::PlaceholderValue>(Arena*);
 template<> ::milvus::proto::common::PrivilegeExt* Arena::CreateMaybeMessage<::milvus::proto::common::PrivilegeExt>(Arena*);
+template<> ::milvus::proto::common::SegmentStats* Arena::CreateMaybeMessage<::milvus::proto::common::SegmentStats>(Arena*);
 template<> ::milvus::proto::common::Status* Arena::CreateMaybeMessage<::milvus::proto::common::Status>(Arena*);
 PROTOBUF_NAMESPACE_CLOSE
 namespace milvus {
@@ -754,6 +758,7 @@ class Status final :
   enum : int {
     kReasonFieldNumber = 2,
     kErrorCodeFieldNumber = 1,
+    kCodeFieldNumber = 3,
   };
   // string reason = 2;
   void clear_reason();
@@ -778,6 +783,15 @@ class Status final :
   void _internal_set_error_code(::milvus::proto::common::ErrorCode value);
   public:
 
+  // int32 code = 3;
+  void clear_code();
+  int32_t code() const;
+  void set_code(int32_t value);
+  private:
+  int32_t _internal_code() const;
+  void _internal_set_code(int32_t value);
+  public:
+
   // @@protoc_insertion_point(class_scope:milvus.proto.common.Status)
  private:
   class _Internal;
@@ -788,6 +802,7 @@ class Status final :
   struct Impl_ {
     ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr reason_;
     int error_code_;
+    int32_t code_;
     mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
   union { Impl_ _impl_; };
@@ -2498,6 +2513,165 @@ class PrivilegeExt final :
   union { Impl_ _impl_; };
   friend struct ::TableStruct_common_2eproto;
 };
+// -------------------------------------------------------------------
+
+class SegmentStats final :
+    public ::PROTOBUF_NAMESPACE_ID::Message /* @@protoc_insertion_point(class_definition:milvus.proto.common.SegmentStats) */ {
+ public:
+  inline SegmentStats() : SegmentStats(nullptr) {}
+  ~SegmentStats() override;
+  explicit PROTOBUF_CONSTEXPR SegmentStats(::PROTOBUF_NAMESPACE_ID::internal::ConstantInitialized);
+
+  SegmentStats(const SegmentStats& from);
+  SegmentStats(SegmentStats&& from) noexcept
+    : SegmentStats() {
+    *this = ::std::move(from);
+  }
+
+  inline SegmentStats& operator=(const SegmentStats& from) {
+    CopyFrom(from);
+    return *this;
+  }
+  inline SegmentStats& operator=(SegmentStats&& from) noexcept {
+    if (this == &from) return *this;
+    if (GetOwningArena() == from.GetOwningArena()
+  #ifdef PROTOBUF_FORCE_COPY_IN_MOVE
+        && GetOwningArena() != nullptr
+  #endif  // !PROTOBUF_FORCE_COPY_IN_MOVE
+    ) {
+      InternalSwap(&from);
+    } else {
+      CopyFrom(from);
+    }
+    return *this;
+  }
+
+  static const ::PROTOBUF_NAMESPACE_ID::Descriptor* descriptor() {
+    return GetDescriptor();
+  }
+  static const ::PROTOBUF_NAMESPACE_ID::Descriptor* GetDescriptor() {
+    return default_instance().GetMetadata().descriptor;
+  }
+  static const ::PROTOBUF_NAMESPACE_ID::Reflection* GetReflection() {
+    return default_instance().GetMetadata().reflection;
+  }
+  static const SegmentStats& default_instance() {
+    return *internal_default_instance();
+  }
+  static inline const SegmentStats* internal_default_instance() {
+    return reinterpret_cast<const SegmentStats*>(
+               &_SegmentStats_default_instance_);
+  }
+  static constexpr int kIndexInFileMessages =
+    11;
+
+  friend void swap(SegmentStats& a, SegmentStats& b) {
+    a.Swap(&b);
+  }
+  inline void Swap(SegmentStats* other) {
+    if (other == this) return;
+  #ifdef PROTOBUF_FORCE_COPY_IN_SWAP
+    if (GetOwningArena() != nullptr &&
+        GetOwningArena() == other->GetOwningArena()) {
+   #else  // PROTOBUF_FORCE_COPY_IN_SWAP
+    if (GetOwningArena() == other->GetOwningArena()) {
+  #endif  // !PROTOBUF_FORCE_COPY_IN_SWAP
+      InternalSwap(other);
+    } else {
+      ::PROTOBUF_NAMESPACE_ID::internal::GenericSwap(this, other);
+    }
+  }
+  void UnsafeArenaSwap(SegmentStats* other) {
+    if (other == this) return;
+    GOOGLE_DCHECK(GetOwningArena() == other->GetOwningArena());
+    InternalSwap(other);
+  }
+
+  // implements Message ----------------------------------------------
+
+  SegmentStats* New(::PROTOBUF_NAMESPACE_ID::Arena* arena = nullptr) const final {
+    return CreateMaybeMessage<SegmentStats>(arena);
+  }
+  using ::PROTOBUF_NAMESPACE_ID::Message::CopyFrom;
+  void CopyFrom(const SegmentStats& from);
+  using ::PROTOBUF_NAMESPACE_ID::Message::MergeFrom;
+  void MergeFrom( const SegmentStats& from) {
+    SegmentStats::MergeImpl(*this, from);
+  }
+  private:
+  static void MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const ::PROTOBUF_NAMESPACE_ID::Message& from_msg);
+  public:
+  PROTOBUF_ATTRIBUTE_REINITIALIZES void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  const char* _InternalParse(const char* ptr, ::PROTOBUF_NAMESPACE_ID::internal::ParseContext* ctx) final;
+  uint8_t* _InternalSerialize(
+      uint8_t* target, ::PROTOBUF_NAMESPACE_ID::io::EpsCopyOutputStream* stream) const final;
+  int GetCachedSize() const final { return _impl_._cached_size_.Get(); }
+
+  private:
+  void SharedCtor(::PROTOBUF_NAMESPACE_ID::Arena* arena, bool is_message_owned);
+  void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(SegmentStats* other);
+
+  private:
+  friend class ::PROTOBUF_NAMESPACE_ID::internal::AnyMetadata;
+  static ::PROTOBUF_NAMESPACE_ID::StringPiece FullMessageName() {
+    return "milvus.proto.common.SegmentStats";
+  }
+  protected:
+  explicit SegmentStats(::PROTOBUF_NAMESPACE_ID::Arena* arena,
+                       bool is_message_owned = false);
+  public:
+
+  static const ClassData _class_data_;
+  const ::PROTOBUF_NAMESPACE_ID::Message::ClassData*GetClassData() const final;
+
+  ::PROTOBUF_NAMESPACE_ID::Metadata GetMetadata() const final;
+
+  // nested types ----------------------------------------------------
+
+  // accessors -------------------------------------------------------
+
+  enum : int {
+    kSegmentIDFieldNumber = 1,
+    kNumRowsFieldNumber = 2,
+  };
+  // int64 SegmentID = 1;
+  void clear_segmentid();
+  int64_t segmentid() const;
+  void set_segmentid(int64_t value);
+  private:
+  int64_t _internal_segmentid() const;
+  void _internal_set_segmentid(int64_t value);
+  public:
+
+  // int64 NumRows = 2;
+  void clear_numrows();
+  int64_t numrows() const;
+  void set_numrows(int64_t value);
+  private:
+  int64_t _internal_numrows() const;
+  void _internal_set_numrows(int64_t value);
+  public:
+
+  // @@protoc_insertion_point(class_scope:milvus.proto.common.SegmentStats)
+ private:
+  class _Internal;
+
+  template <typename T> friend class ::PROTOBUF_NAMESPACE_ID::Arena::InternalHelper;
+  typedef void InternalArenaConstructable_;
+  typedef void DestructorSkippable_;
+  struct Impl_ {
+    int64_t segmentid_;
+    int64_t numrows_;
+    mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
+  };
+  union { Impl_ _impl_; };
+  friend struct ::TableStruct_common_2eproto;
+};
 // ===================================================================
 
 static const int kPrivilegeExtObjFieldNumber = 1001;
@@ -2581,6 +2755,26 @@ inline void Status::set_allocated_reason(std::string* reason) {
   }
 #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
   // @@protoc_insertion_point(field_set_allocated:milvus.proto.common.Status.reason)
+}
+
+// int32 code = 3;
+inline void Status::clear_code() {
+  _impl_.code_ = 0;
+}
+inline int32_t Status::_internal_code() const {
+  return _impl_.code_;
+}
+inline int32_t Status::code() const {
+  // @@protoc_insertion_point(field_get:milvus.proto.common.Status.code)
+  return _internal_code();
+}
+inline void Status::_internal_set_code(int32_t value) {
+  
+  _impl_.code_ = value;
+}
+inline void Status::set_code(int32_t value) {
+  _internal_set_code(value);
+  // @@protoc_insertion_point(field_set:milvus.proto.common.Status.code)
 }
 
 // -------------------------------------------------------------------
@@ -3538,9 +3732,55 @@ inline void PrivilegeExt::set_object_name_indexs(int32_t value) {
   // @@protoc_insertion_point(field_set:milvus.proto.common.PrivilegeExt.object_name_indexs)
 }
 
+// -------------------------------------------------------------------
+
+// SegmentStats
+
+// int64 SegmentID = 1;
+inline void SegmentStats::clear_segmentid() {
+  _impl_.segmentid_ = int64_t{0};
+}
+inline int64_t SegmentStats::_internal_segmentid() const {
+  return _impl_.segmentid_;
+}
+inline int64_t SegmentStats::segmentid() const {
+  // @@protoc_insertion_point(field_get:milvus.proto.common.SegmentStats.SegmentID)
+  return _internal_segmentid();
+}
+inline void SegmentStats::_internal_set_segmentid(int64_t value) {
+  
+  _impl_.segmentid_ = value;
+}
+inline void SegmentStats::set_segmentid(int64_t value) {
+  _internal_set_segmentid(value);
+  // @@protoc_insertion_point(field_set:milvus.proto.common.SegmentStats.SegmentID)
+}
+
+// int64 NumRows = 2;
+inline void SegmentStats::clear_numrows() {
+  _impl_.numrows_ = int64_t{0};
+}
+inline int64_t SegmentStats::_internal_numrows() const {
+  return _impl_.numrows_;
+}
+inline int64_t SegmentStats::numrows() const {
+  // @@protoc_insertion_point(field_get:milvus.proto.common.SegmentStats.NumRows)
+  return _internal_numrows();
+}
+inline void SegmentStats::_internal_set_numrows(int64_t value) {
+  
+  _impl_.numrows_ = value;
+}
+inline void SegmentStats::set_numrows(int64_t value) {
+  _internal_set_numrows(value);
+  // @@protoc_insertion_point(field_set:milvus.proto.common.SegmentStats.NumRows)
+}
+
 #ifdef __GNUC__
   #pragma GCC diagnostic pop
 #endif  // __GNUC__
+// -------------------------------------------------------------------
+
 // -------------------------------------------------------------------
 
 // -------------------------------------------------------------------

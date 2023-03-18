@@ -17,8 +17,9 @@
 package config
 
 import (
-	"errors"
 	"strings"
+
+	"github.com/cockroachdb/errors"
 )
 
 var (
@@ -33,8 +34,8 @@ func Init(opts ...Option) (*Manager, error) {
 		opt(o)
 	}
 	sourceManager := NewManager()
-	if o.File != nil {
-		s := NewFileSource(o.File)
+	if o.FileInfo != nil {
+		s := NewFileSource(o.FileInfo)
 		sourceManager.AddSource(s)
 
 	}

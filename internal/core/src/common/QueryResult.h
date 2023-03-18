@@ -38,7 +38,8 @@ struct SearchResult {
         if (topk_per_nq_prefix_sum_.empty()) {
             return 0;
         }
-        AssertInfo(topk_per_nq_prefix_sum_.size() == total_nq_ + 1, "wrong topk_per_nq_prefix_sum_ size");
+        AssertInfo(topk_per_nq_prefix_sum_.size() == total_nq_ + 1,
+                   "wrong topk_per_nq_prefix_sum_ size");
         return topk_per_nq_prefix_sum_[total_nq_];
     }
 
@@ -51,7 +52,7 @@ struct SearchResult {
     std::vector<float> distances_;
     std::vector<int64_t> seg_offsets_;
 
-    // fist fill data during fillPrimaryKey, and then update data after reducing search results
+    // first fill data during fillPrimaryKey, and then update data after reducing search results
     std::vector<PkType> primary_keys_;
     DataType pk_type_;
 

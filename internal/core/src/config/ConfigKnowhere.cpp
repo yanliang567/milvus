@@ -45,7 +45,8 @@ KnowhereInitImpl(const char* conf_file) {
         if (conf_file != nullptr) {
             el::Configurations el_conf(conf_file);
             el::Loggers::reconfigureAllLoggers(el_conf);
-            LOG_SERVER_DEBUG_ << "Config easylogging with yaml file: " << conf_file;
+            LOG_SERVER_DEBUG_ << "Config easylogging with yaml file: "
+                              << conf_file;
         }
         LOG_SERVER_DEBUG_ << "Knowhere init successfully";
 #endif
@@ -74,6 +75,13 @@ KnowhereSetSimdType(const char* value) {
         LOG_SERVER_ERROR_ << e.what();
         PanicInfo(e.what());
     }
+}
+
+void
+KnowhereInitGPU(const int32_t gpu_id, const int32_t res_num) {
+#ifdef MILVUS_GPU_VERSION
+    knowhere::KnowhereConfig::InitGPUResource(gpu_id, res_num);
+#endif
 }
 
 void

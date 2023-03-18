@@ -30,7 +30,8 @@ TEST(Sealed, without_predicate) {
     auto dim = 16;
     auto topK = 5;
     auto metric_type = knowhere::metric::L2;
-    auto fake_id = schema->AddDebugField("fakevec", DataType::VECTOR_FLOAT, dim, metric_type);
+    auto fake_id = schema->AddDebugField(
+        "fakevec", DataType::VECTOR_FLOAT, dim, metric_type);
     auto float_fid = schema->AddDebugField("age", DataType::FLOAT);
     auto i64_fid = schema->AddDebugField("counter", DataType::INT64);
     schema->set_primary_field_id(i64_fid);
@@ -64,12 +65,18 @@ TEST(Sealed, without_predicate) {
     auto query_ptr = vec_col.data() + 4200 * dim;
     auto segment = CreateGrowingSegment(schema);
     segment->PreInsert(N);
-    segment->Insert(0, N, dataset.row_ids_.data(), dataset.timestamps_.data(), dataset.raw_);
+    segment->Insert(0,
+                    N,
+                    dataset.row_ids_.data(),
+                    dataset.timestamps_.data(),
+                    dataset.raw_);
 
     auto plan = CreatePlan(*schema, dsl);
     auto num_queries = 5;
-    auto ph_group_raw = CreatePlaceholderGroupFromBlob(num_queries, 16, query_ptr);
-    auto ph_group = ParsePlaceholderGroup(plan.get(), ph_group_raw.SerializeAsString());
+    auto ph_group_raw =
+        CreatePlaceholderGroupFromBlob(num_queries, 16, query_ptr);
+    auto ph_group =
+        ParsePlaceholderGroup(plan.get(), ph_group_raw.SerializeAsString());
 
     Timestamp time = 1000000;
     std::vector<const PlaceholderGroup*> ph_group_arr = {ph_group.get()};
@@ -81,11 +88,13 @@ TEST(Sealed, without_predicate) {
     create_index_info.metric_type = knowhere::metric::L2;
     create_index_info.index_type = knowhere::IndexEnum::INDEX_FAISS_IVFFLAT;
 
-    auto indexing = milvus::index::IndexFactory::GetInstance().CreateIndex(create_index_info, nullptr);
+    auto indexing = milvus::index::IndexFactory::GetInstance().CreateIndex(
+        create_index_info, nullptr);
 
-    auto build_conf = knowhere::Json{{knowhere::meta::METRIC_TYPE, knowhere::metric::L2},
-                                     {knowhere::meta::DIM, std::to_string(dim)},
-                                     {knowhere::indexparam::NLIST, "100"}};
+    auto build_conf =
+        knowhere::Json{{knowhere::meta::METRIC_TYPE, knowhere::metric::L2},
+                       {knowhere::meta::DIM, std::to_string(dim)},
+                       {knowhere::indexparam::NLIST, "100"}};
 
     auto search_conf = knowhere::Json{{knowhere::indexparam::NPROBE, 10}};
 
@@ -134,7 +143,8 @@ TEST(Sealed, with_predicate) {
     auto dim = 16;
     auto topK = 5;
     auto metric_type = knowhere::metric::L2;
-    auto fake_id = schema->AddDebugField("fakevec", DataType::VECTOR_FLOAT, dim, metric_type);
+    auto fake_id = schema->AddDebugField(
+        "fakevec", DataType::VECTOR_FLOAT, dim, metric_type);
     auto i64_fid = schema->AddDebugField("counter", DataType::INT64);
     schema->set_primary_field_id(i64_fid);
     std::string dsl = R"({
@@ -172,12 +182,18 @@ TEST(Sealed, with_predicate) {
     auto query_ptr = vec_col.data() + 42000 * dim;
     auto segment = CreateGrowingSegment(schema);
     segment->PreInsert(N);
-    segment->Insert(0, N, dataset.row_ids_.data(), dataset.timestamps_.data(), dataset.raw_);
+    segment->Insert(0,
+                    N,
+                    dataset.row_ids_.data(),
+                    dataset.timestamps_.data(),
+                    dataset.raw_);
 
     auto plan = CreatePlan(*schema, dsl);
     auto num_queries = 5;
-    auto ph_group_raw = CreatePlaceholderGroupFromBlob(num_queries, 16, query_ptr);
-    auto ph_group = ParsePlaceholderGroup(plan.get(), ph_group_raw.SerializeAsString());
+    auto ph_group_raw =
+        CreatePlaceholderGroupFromBlob(num_queries, 16, query_ptr);
+    auto ph_group =
+        ParsePlaceholderGroup(plan.get(), ph_group_raw.SerializeAsString());
 
     Timestamp time = 10000000;
     std::vector<const PlaceholderGroup*> ph_group_arr = {ph_group.get()};
@@ -187,11 +203,13 @@ TEST(Sealed, with_predicate) {
     create_index_info.field_type = DataType::VECTOR_FLOAT;
     create_index_info.metric_type = knowhere::metric::L2;
     create_index_info.index_type = knowhere::IndexEnum::INDEX_FAISS_IVFFLAT;
-    auto indexing = milvus::index::IndexFactory::GetInstance().CreateIndex(create_index_info, nullptr);
+    auto indexing = milvus::index::IndexFactory::GetInstance().CreateIndex(
+        create_index_info, nullptr);
 
-    auto build_conf = knowhere::Json{{knowhere::meta::METRIC_TYPE, knowhere::metric::L2},
-                                     {knowhere::meta::DIM, std::to_string(dim)},
-                                     {knowhere::indexparam::NLIST, "100"}};
+    auto build_conf =
+        knowhere::Json{{knowhere::meta::METRIC_TYPE, knowhere::metric::L2},
+                       {knowhere::meta::DIM, std::to_string(dim)},
+                       {knowhere::indexparam::NLIST, "100"}};
 
     auto database = knowhere::GenDataSet(N, dim, vec_col.data());
     indexing->BuildWithDataset(database, build_conf);
@@ -203,7 +221,8 @@ TEST(Sealed, with_predicate) {
     auto query_dataset = knowhere::GenDataSet(num_queries, dim, query_ptr);
 
     auto search_conf =
-        knowhere::Json{{knowhere::meta::METRIC_TYPE, knowhere::metric::L2}, {knowhere::indexparam::NPROBE, 10}};
+        knowhere::Json{{knowhere::meta::METRIC_TYPE, knowhere::metric::L2},
+                       {knowhere::indexparam::NPROBE, 10}};
     milvus::SearchInfo searchInfo;
     searchInfo.topk_ = topK;
     searchInfo.metric_type_ = knowhere::metric::L2;
@@ -237,7 +256,8 @@ TEST(Sealed, with_predicate_filter_all) {
     auto topK = 5;
     // auto metric_type = MetricType::METRIC_L2;
     auto metric_type = knowhere::metric::L2;
-    auto fake_id = schema->AddDebugField("fakevec", DataType::VECTOR_FLOAT, dim, metric_type);
+    auto fake_id = schema->AddDebugField(
+        "fakevec", DataType::VECTOR_FLOAT, dim, metric_type);
     auto i64_fid = schema->AddDebugField("counter", DataType::INT64);
     schema->set_primary_field_id(i64_fid);
     std::string dsl = R"({
@@ -275,8 +295,10 @@ TEST(Sealed, with_predicate_filter_all) {
     auto query_ptr = vec_col.data() + 42000 * dim;
     auto plan = CreatePlan(*schema, dsl);
     auto num_queries = 5;
-    auto ph_group_raw = CreatePlaceholderGroupFromBlob(num_queries, 16, query_ptr);
-    auto ph_group = ParsePlaceholderGroup(plan.get(), ph_group_raw.SerializeAsString());
+    auto ph_group_raw =
+        CreatePlaceholderGroupFromBlob(num_queries, 16, query_ptr);
+    auto ph_group =
+        ParsePlaceholderGroup(plan.get(), ph_group_raw.SerializeAsString());
 
     Timestamp time = 10000000;
     std::vector<const PlaceholderGroup*> ph_group_arr = {ph_group.get()};
@@ -285,11 +307,13 @@ TEST(Sealed, with_predicate_filter_all) {
     create_index_info.field_type = DataType::VECTOR_FLOAT;
     create_index_info.metric_type = knowhere::metric::L2;
     create_index_info.index_type = knowhere::IndexEnum::INDEX_FAISS_IVFFLAT;
-    auto ivf_indexing = milvus::index::IndexFactory::GetInstance().CreateIndex(create_index_info, nullptr);
+    auto ivf_indexing = milvus::index::IndexFactory::GetInstance().CreateIndex(
+        create_index_info, nullptr);
 
-    auto ivf_build_conf = knowhere::Json{{knowhere::meta::DIM, std::to_string(dim)},
-                                         {knowhere::indexparam::NLIST, "100"},
-                                         {knowhere::meta::METRIC_TYPE, knowhere::metric::L2}};
+    auto ivf_build_conf =
+        knowhere::Json{{knowhere::meta::DIM, std::to_string(dim)},
+                       {knowhere::indexparam::NLIST, "100"},
+                       {knowhere::meta::METRIC_TYPE, knowhere::metric::L2}};
 
     auto database = knowhere::GenDataSet(N, dim, vec_col.data());
     ivf_indexing->BuildWithDataset(database, ivf_build_conf);
@@ -311,19 +335,22 @@ TEST(Sealed, with_predicate_filter_all) {
     auto sr = ivf_sealed_segment->Search(plan.get(), ph_group.get(), time);
     EXPECT_EQ(sr->get_total_result_count(), 0);
 
-    auto hnsw_conf = knowhere::Json{{knowhere::meta::DIM, std::to_string(dim)},
-                                    {knowhere::indexparam::HNSW_M, "16"},
-                                    {knowhere::indexparam::EFCONSTRUCTION, "200"},
-                                    {knowhere::indexparam::EF, "200"},
-                                    {knowhere::meta::METRIC_TYPE, knowhere::metric::L2}};
+    auto hnsw_conf =
+        knowhere::Json{{knowhere::meta::DIM, std::to_string(dim)},
+                       {knowhere::indexparam::HNSW_M, "16"},
+                       {knowhere::indexparam::EFCONSTRUCTION, "200"},
+                       {knowhere::indexparam::EF, "200"},
+                       {knowhere::meta::METRIC_TYPE, knowhere::metric::L2}};
 
     create_index_info.field_type = DataType::VECTOR_FLOAT;
     create_index_info.metric_type = knowhere::metric::L2;
     create_index_info.index_type = knowhere::IndexEnum::INDEX_HNSW;
-    auto hnsw_indexing = milvus::index::IndexFactory::GetInstance().CreateIndex(create_index_info, nullptr);
+    auto hnsw_indexing = milvus::index::IndexFactory::GetInstance().CreateIndex(
+        create_index_info, nullptr);
     hnsw_indexing->BuildWithDataset(database, hnsw_conf);
 
-    auto hnsw_vec_index = dynamic_cast<index::VectorIndex*>(hnsw_indexing.get());
+    auto hnsw_vec_index =
+        dynamic_cast<index::VectorIndex*>(hnsw_indexing.get());
     EXPECT_EQ(hnsw_vec_index->Count(), N);
     EXPECT_EQ(hnsw_vec_index->GetDim(), dim);
 
@@ -347,11 +374,15 @@ TEST(Sealed, LoadFieldData) {
     auto N = ROW_COUNT;
     auto metric_type = knowhere::metric::L2;
     auto schema = std::make_shared<Schema>();
-    auto fakevec_id = schema->AddDebugField("fakevec", DataType::VECTOR_FLOAT, dim, metric_type);
+    auto fakevec_id = schema->AddDebugField(
+        "fakevec", DataType::VECTOR_FLOAT, dim, metric_type);
     auto counter_id = schema->AddDebugField("counter", DataType::INT64);
     auto double_id = schema->AddDebugField("double", DataType::DOUBLE);
     auto nothing_id = schema->AddDebugField("nothing", DataType::INT32);
     auto str_id = schema->AddDebugField("str", DataType::VARCHAR);
+    schema->AddDebugField("int8", DataType::INT8);
+    schema->AddDebugField("int16", DataType::INT16);
+    schema->AddDebugField("float", DataType::FLOAT);
     schema->set_primary_field_id(counter_id);
 
     auto dataset = DataGen(schema, N);
@@ -393,12 +424,12 @@ TEST(Sealed, LoadFieldData) {
     auto plan = CreatePlan(*schema, dsl);
     auto num_queries = 5;
     auto ph_group_raw = CreatePlaceholderGroup(num_queries, 16, 1024);
-    auto ph_group = ParsePlaceholderGroup(plan.get(), ph_group_raw.SerializeAsString());
+    auto ph_group =
+        ParsePlaceholderGroup(plan.get(), ph_group_raw.SerializeAsString());
 
     ASSERT_ANY_THROW(segment->Search(plan.get(), ph_group.get(), time));
 
     SealedLoadFieldData(dataset, *segment);
-    segment->DropFieldData(nothing_id);
     segment->Search(plan.get(), ph_group.get(), time);
 
     segment->DropFieldData(fakevec_id);
@@ -415,7 +446,7 @@ TEST(Sealed, LoadFieldData) {
     ASSERT_EQ(segment->num_chunk_index(str_id), 0);
     auto chunk_span1 = segment->chunk_data<int64_t>(counter_id, 0);
     auto chunk_span2 = segment->chunk_data<double>(double_id, 0);
-    auto chunk_span3 = segment->chunk_data<std::string>(str_id, 0);
+    auto chunk_span3 = segment->chunk_data<std::string_view>(str_id, 0);
     auto ref1 = dataset.get_col<int64_t>(counter_id);
     auto ref2 = dataset.get_col<double>(double_id);
     auto ref3 = dataset.get_col(str_id)->scalars().string_data().data();
@@ -431,36 +462,102 @@ TEST(Sealed, LoadFieldData) {
 
     segment->DropIndex(fakevec_id);
     ASSERT_ANY_THROW(segment->Search(plan.get(), ph_group.get(), time));
-    //    segment->LoadIndex(vec_info);
-    //    auto sr2 = segment->Search(plan.get(), ph_group.get(), time);
-    //    auto json2 = SearchResultToJson(*sr);
-    //    ASSERT_EQ(json.dump(-2), json2.dump(-2));
-    //    segment->DropFieldData(double_id);
-    //    ASSERT_ANY_THROW(segment->Search(plan.get(), ph_group.get(), time));
-    // #ifdef __linux__
-    //    auto std_json = Json::parse(R"(
-    //[
-    //	[
-    //		["982->0.000000", "25315->4.742000", "57893->4.758000", "48201->6.075000", "53853->6.223000"],
-    //		["41772->10.111000", "74859->11.790000", "79777->11.842000", "3785->11.983000", "35888->12.193000"],
-    //		["59251->2.543000", "65551->4.454000", "72204->5.332000", "96905->5.479000", "87833->5.765000"],
-    //		["59219->5.458000", "21995->6.078000", "97922->6.764000", "25710->7.158000", "14048->7.294000"],
-    //		["66353->5.696000", "30664->5.881000", "41087->5.917000", "10393->6.633000", "90215->7.202000"]
-    //	]
-    //])");
-    // #else  // for mac
-    //    auto std_json = Json::parse(R"(
-    //[
-    //	[
-    //        ["982->0.000000", "31864->4.270000", "18916->4.651000", "71547->5.125000", "86706->5.991000"],
-    //        ["96984->4.192000", "65514->6.011000", "89328->6.138000", "80284->6.526000", "68218->6.563000"],
-    //        ["30119->2.464000", "82365->4.725000", "74834->5.009000", "79995->5.725000", "33359->5.816000"],
-    //        ["99625->6.129000", "86582->6.900000", "85934->7.792000", "60450->8.087000", "19257->8.530000"],
-    //        ["37759->3.581000", "31292->5.780000", "98124->6.216000", "63535->6.439000", "11707->6.553000"]
-    //    ]
-    //])");
-    // #endif
-    //    ASSERT_EQ(std_json.dump(-2), json.dump(-2));
+}
+
+TEST(Sealed, LoadFieldDataMmap) {
+    auto dim = 16;
+    auto topK = 5;
+    auto N = ROW_COUNT;
+    auto metric_type = knowhere::metric::L2;
+    auto schema = std::make_shared<Schema>();
+    auto fakevec_id = schema->AddDebugField(
+        "fakevec", DataType::VECTOR_FLOAT, dim, metric_type);
+    auto counter_id = schema->AddDebugField("counter", DataType::INT64);
+    auto double_id = schema->AddDebugField("double", DataType::DOUBLE);
+    auto nothing_id = schema->AddDebugField("nothing", DataType::INT32);
+    auto str_id = schema->AddDebugField("str", DataType::VARCHAR);
+    schema->AddDebugField("int8", DataType::INT8);
+    schema->AddDebugField("int16", DataType::INT16);
+    schema->AddDebugField("float", DataType::FLOAT);
+    schema->set_primary_field_id(counter_id);
+
+    auto dataset = DataGen(schema, N);
+
+    auto fakevec = dataset.get_col<float>(fakevec_id);
+
+    auto indexing = GenVecIndexing(N, dim, fakevec.data());
+
+    auto segment = CreateSealedSegment(schema);
+    std::string dsl = R"({
+        "bool": {
+            "must": [
+            {
+                "range": {
+                    "double": {
+                        "GE": -1,
+                        "LT": 1
+                    }
+                }
+            },
+            {
+                "vector": {
+                    "fakevec": {
+                        "metric_type": "L2",
+                        "params": {
+                            "nprobe": 10
+                        },
+                        "query": "$0",
+                        "topk": 5,
+                        "round_decimal": 3
+                    }
+                }
+            } 
+            ]
+        }
+    })";
+
+    Timestamp time = 1000000;
+    auto plan = CreatePlan(*schema, dsl);
+    auto num_queries = 5;
+    auto ph_group_raw = CreatePlaceholderGroup(num_queries, 16, 1024);
+    auto ph_group =
+        ParsePlaceholderGroup(plan.get(), ph_group_raw.SerializeAsString());
+
+    ASSERT_ANY_THROW(segment->Search(plan.get(), ph_group.get(), time));
+
+    SealedLoadFieldData(dataset, *segment, {}, true);
+    segment->Search(plan.get(), ph_group.get(), time);
+
+    segment->DropFieldData(fakevec_id);
+    ASSERT_ANY_THROW(segment->Search(plan.get(), ph_group.get(), time));
+
+    LoadIndexInfo vec_info;
+    vec_info.field_id = fakevec_id.get();
+    vec_info.index = std::move(indexing);
+    vec_info.index_params["metric_type"] = knowhere::metric::L2;
+    segment->LoadIndex(vec_info);
+
+    ASSERT_EQ(segment->num_chunk(), 1);
+    ASSERT_EQ(segment->num_chunk_index(double_id), 0);
+    ASSERT_EQ(segment->num_chunk_index(str_id), 0);
+    auto chunk_span1 = segment->chunk_data<int64_t>(counter_id, 0);
+    auto chunk_span2 = segment->chunk_data<double>(double_id, 0);
+    auto chunk_span3 = segment->chunk_data<std::string_view>(str_id, 0);
+    auto ref1 = dataset.get_col<int64_t>(counter_id);
+    auto ref2 = dataset.get_col<double>(double_id);
+    auto ref3 = dataset.get_col(str_id)->scalars().string_data().data();
+    for (int i = 0; i < N; ++i) {
+        ASSERT_EQ(chunk_span1[i], ref1[i]);
+        ASSERT_EQ(chunk_span2[i], ref2[i]);
+        ASSERT_EQ(chunk_span3[i], ref3[i]);
+    }
+
+    auto sr = segment->Search(plan.get(), ph_group.get(), time);
+    auto json = SearchResultToJson(*sr);
+    std::cout << json.dump(1);
+
+    segment->DropIndex(fakevec_id);
+    ASSERT_ANY_THROW(segment->Search(plan.get(), ph_group.get(), time));
 }
 
 TEST(Sealed, LoadScalarIndex) {
@@ -468,7 +565,8 @@ TEST(Sealed, LoadScalarIndex) {
     auto N = ROW_COUNT;
     auto metric_type = knowhere::metric::L2;
     auto schema = std::make_shared<Schema>();
-    auto fakevec_id = schema->AddDebugField("fakevec", DataType::VECTOR_FLOAT, dim, metric_type);
+    auto fakevec_id = schema->AddDebugField(
+        "fakevec", DataType::VECTOR_FLOAT, dim, metric_type);
     auto counter_id = schema->AddDebugField("counter", DataType::INT64);
     auto double_id = schema->AddDebugField("double", DataType::DOUBLE);
     auto nothing_id = schema->AddDebugField("nothing", DataType::INT32);
@@ -513,19 +611,24 @@ TEST(Sealed, LoadScalarIndex) {
     auto plan = CreatePlan(*schema, dsl);
     auto num_queries = 5;
     auto ph_group_raw = CreatePlaceholderGroup(num_queries, 16, 1024);
-    auto ph_group = ParsePlaceholderGroup(plan.get(), ph_group_raw.SerializeAsString());
+    auto ph_group =
+        ParsePlaceholderGroup(plan.get(), ph_group_raw.SerializeAsString());
 
     LoadFieldDataInfo row_id_info;
-    FieldMeta row_id_field_meta(FieldName("RowID"), RowFieldID, DataType::INT64);
-    auto array = CreateScalarDataArrayFrom(dataset.row_ids_.data(), N, row_id_field_meta);
+    FieldMeta row_id_field_meta(
+        FieldName("RowID"), RowFieldID, DataType::INT64);
+    auto array = CreateScalarDataArrayFrom(
+        dataset.row_ids_.data(), N, row_id_field_meta);
     row_id_info.field_data = array.get();
     row_id_info.row_count = dataset.row_ids_.size();
     row_id_info.field_id = RowFieldID.get();  // field id for RowId
     segment->LoadFieldData(row_id_info);
 
     LoadFieldDataInfo ts_info;
-    FieldMeta ts_field_meta(FieldName("Timestamp"), TimestampFieldID, DataType::INT64);
-    array = CreateScalarDataArrayFrom(dataset.timestamps_.data(), N, ts_field_meta);
+    FieldMeta ts_field_meta(
+        FieldName("Timestamp"), TimestampFieldID, DataType::INT64);
+    array =
+        CreateScalarDataArrayFrom(dataset.timestamps_.data(), N, ts_field_meta);
     ts_info.field_data = array.get();
     ts_info.row_count = dataset.timestamps_.size();
     ts_info.field_id = TimestampFieldID.get();
@@ -543,7 +646,8 @@ TEST(Sealed, LoadScalarIndex) {
     counter_index.field_type = DataType::INT64;
     counter_index.index_params["index_type"] = "sort";
     auto counter_data = dataset.get_col<int64_t>(counter_id);
-    counter_index.index = std::move(GenScalarIndexing<int64_t>(N, counter_data.data()));
+    counter_index.index =
+        std::move(GenScalarIndexing<int64_t>(N, counter_data.data()));
     segment->LoadIndex(counter_index);
 
     LoadIndexInfo double_index;
@@ -551,7 +655,8 @@ TEST(Sealed, LoadScalarIndex) {
     double_index.field_type = DataType::DOUBLE;
     double_index.index_params["index_type"] = "sort";
     auto double_data = dataset.get_col<double>(double_id);
-    double_index.index = std::move(GenScalarIndexing<double>(N, double_data.data()));
+    double_index.index =
+        std::move(GenScalarIndexing<double>(N, double_data.data()));
     segment->LoadIndex(double_index);
 
     LoadIndexInfo nothing_index;
@@ -559,7 +664,8 @@ TEST(Sealed, LoadScalarIndex) {
     nothing_index.field_type = DataType::INT32;
     nothing_index.index_params["index_type"] = "sort";
     auto nothing_data = dataset.get_col<int32_t>(nothing_id);
-    nothing_index.index = std::move(GenScalarIndexing<int32_t>(N, nothing_data.data()));
+    nothing_index.index =
+        std::move(GenScalarIndexing<int32_t>(N, nothing_data.data()));
     segment->LoadIndex(nothing_index);
 
     auto sr = segment->Search(plan.get(), ph_group.get(), time);
@@ -573,7 +679,8 @@ TEST(Sealed, Delete) {
     auto N = 10;
     auto metric_type = knowhere::metric::L2;
     auto schema = std::make_shared<Schema>();
-    auto fakevec_id = schema->AddDebugField("fakevec", DataType::VECTOR_FLOAT, dim, metric_type);
+    auto fakevec_id = schema->AddDebugField(
+        "fakevec", DataType::VECTOR_FLOAT, dim, metric_type);
     auto counter_id = schema->AddDebugField("counter", DataType::INT64);
     auto double_id = schema->AddDebugField("double", DataType::DOUBLE);
     auto nothing_id = schema->AddDebugField("nothing", DataType::INT32);
@@ -616,7 +723,8 @@ TEST(Sealed, Delete) {
     auto plan = CreatePlan(*schema, dsl);
     auto num_queries = 5;
     auto ph_group_raw = CreatePlaceholderGroup(num_queries, 16, 1024);
-    auto ph_group = ParsePlaceholderGroup(plan.get(), ph_group_raw.SerializeAsString());
+    auto ph_group =
+        ParsePlaceholderGroup(plan.get(), ph_group_raw.SerializeAsString());
 
     ASSERT_ANY_THROW(segment->Search(plan.get(), ph_group.get(), time));
 
@@ -639,11 +747,14 @@ TEST(Sealed, Delete) {
     int64_t new_count = 3;
     std::vector<idx_t> new_pks{6, 7, 8};
     auto new_ids = std::make_unique<IdArray>();
-    new_ids->mutable_int_id()->mutable_data()->Add(new_pks.begin(), new_pks.end());
+    new_ids->mutable_int_id()->mutable_data()->Add(new_pks.begin(),
+                                                   new_pks.end());
     std::vector<idx_t> new_timestamps{10, 10, 10};
     auto reserved_offset = segment->PreDelete(new_count);
     ASSERT_EQ(reserved_offset, row_count);
-    segment->Delete(reserved_offset, new_count, new_ids.get(),
+    segment->Delete(reserved_offset,
+                    new_count,
+                    new_ids.get(),
                     reinterpret_cast<const Timestamp*>(new_timestamps.data()));
 }
 
@@ -664,7 +775,8 @@ GenRandomFloatVecs(int N, int dim) {
     srand(time(NULL));
     for (int i = 0; i < N; i++) {
         for (int j = 0; j < dim; j++) {
-            vecs.push_back(static_cast<float>(rand()) / static_cast<float>(RAND_MAX));
+            vecs.push_back(static_cast<float>(rand()) /
+                           static_cast<float>(RAND_MAX));
         }
     }
     return vecs;
@@ -684,7 +796,8 @@ GenQueryVecs(int N, int dim) {
 auto
 transfer_to_fields_data(const std::vector<float>& vecs) {
     auto arr = std::make_unique<DataArray>();
-    *(arr->mutable_vectors()->mutable_float_vector()->mutable_data()) = {vecs.begin(), vecs.end()};
+    *(arr->mutable_vectors()->mutable_float_vector()->mutable_data()) = {
+        vecs.begin(), vecs.end()};
     return arr;
 }
 
@@ -692,7 +805,8 @@ TEST(Sealed, BF) {
     auto schema = std::make_shared<Schema>();
     auto dim = 128;
     auto metric_type = "L2";
-    auto fake_id = schema->AddDebugField("fakevec", DataType::VECTOR_FLOAT, dim, metric_type);
+    auto fake_id = schema->AddDebugField(
+        "fakevec", DataType::VECTOR_FLOAT, dim, metric_type);
     auto i64_fid = schema->AddDebugField("counter", DataType::INT64);
     schema->set_primary_field_id(i64_fid);
 
@@ -722,13 +836,16 @@ TEST(Sealed, BF) {
                                             output_field_ids: 101)") %
                topK;
     auto serialized_expr_plan = fmt.str();
-    auto binary_plan = translate_text_plan_to_binary_plan(serialized_expr_plan.data());
-    auto plan = CreateSearchPlanByExpr(*schema, binary_plan.data(), binary_plan.size());
+    auto binary_plan =
+        translate_text_plan_to_binary_plan(serialized_expr_plan.data());
+    auto plan =
+        CreateSearchPlanByExpr(*schema, binary_plan.data(), binary_plan.size());
 
     auto num_queries = 10;
     auto query = GenQueryVecs(num_queries, dim);
     auto ph_group_raw = CreatePlaceholderGroup(num_queries, dim, query);
-    auto ph_group = ParsePlaceholderGroup(plan.get(), ph_group_raw.SerializeAsString());
+    auto ph_group =
+        ParsePlaceholderGroup(plan.get(), ph_group_raw.SerializeAsString());
 
     auto result = segment->Search(plan.get(), ph_group.get(), MAX_TIMESTAMP);
     auto ves = SearchResultToVector(*result);
@@ -745,7 +862,8 @@ TEST(Sealed, BF_Overflow) {
     auto schema = std::make_shared<Schema>();
     auto dim = 128;
     auto metric_type = "L2";
-    auto fake_id = schema->AddDebugField("fakevec", DataType::VECTOR_FLOAT, dim, metric_type);
+    auto fake_id = schema->AddDebugField(
+        "fakevec", DataType::VECTOR_FLOAT, dim, metric_type);
     auto i64_fid = schema->AddDebugField("counter", DataType::INT64);
     schema->set_primary_field_id(i64_fid);
 
@@ -773,13 +891,16 @@ TEST(Sealed, BF_Overflow) {
                                             output_field_ids: 101)") %
                topK;
     auto serialized_expr_plan = fmt.str();
-    auto binary_plan = translate_text_plan_to_binary_plan(serialized_expr_plan.data());
-    auto plan = CreateSearchPlanByExpr(*schema, binary_plan.data(), binary_plan.size());
+    auto binary_plan =
+        translate_text_plan_to_binary_plan(serialized_expr_plan.data());
+    auto plan =
+        CreateSearchPlanByExpr(*schema, binary_plan.data(), binary_plan.size());
 
     auto num_queries = 10;
     auto query = GenQueryVecs(num_queries, dim);
     auto ph_group_raw = CreatePlaceholderGroup(num_queries, dim, query);
-    auto ph_group = ParsePlaceholderGroup(plan.get(), ph_group_raw.SerializeAsString());
+    auto ph_group =
+        ParsePlaceholderGroup(plan.get(), ph_group_raw.SerializeAsString());
 
     auto result = segment->Search(plan.get(), ph_group.get(), MAX_TIMESTAMP);
     auto ves = SearchResultToVector(*result);
@@ -814,6 +935,8 @@ TEST(Sealed, RealCount) {
     schema->set_primary_field_id(pk);
     auto segment = CreateSealedSegment(schema);
 
+    ASSERT_EQ(0, segment->get_real_count());
+
     int64_t c = 10;
     auto dataset = DataGen(schema, c);
     auto pks = dataset.get_col<int64_t>(pk);
@@ -828,7 +951,8 @@ TEST(Sealed, RealCount) {
     ASSERT_EQ(del_offset1, 0);
     auto del_ids1 = GenPKs(pks.begin(), pks.begin() + half);
     auto del_tss1 = GenTss(half, c);
-    auto status = segment->Delete(del_offset1, half, del_ids1.get(), del_tss1.data());
+    auto status =
+        segment->Delete(del_offset1, half, del_ids1.get(), del_tss1.data());
     ASSERT_TRUE(status.ok());
     ASSERT_EQ(c - half, segment->get_real_count());
 
@@ -836,7 +960,8 @@ TEST(Sealed, RealCount) {
     auto del_offset2 = segment->PreDelete(half);
     ASSERT_EQ(del_offset2, half);
     auto del_tss2 = GenTss(half, c + half);
-    status = segment->Delete(del_offset2, half, del_ids1.get(), del_tss2.data());
+    status =
+        segment->Delete(del_offset2, half, del_ids1.get(), del_tss2.data());
     ASSERT_TRUE(status.ok());
     ASSERT_EQ(c - half, segment->get_real_count());
 

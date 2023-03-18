@@ -18,19 +18,18 @@ package datacoord
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"testing"
 
+	"github.com/cockroachdb/errors"
 	"github.com/golang/protobuf/proto"
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
+	"github.com/milvus-io/milvus-proto/go-api/msgpb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/kv"
 	"github.com/milvus-io/milvus/internal/metastore/kv/datacoord"
 	"github.com/milvus-io/milvus/internal/metastore/model"
 	"github.com/milvus-io/milvus/internal/mocks"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -67,7 +66,7 @@ func TestMetaReloadFromKV(t *testing.T) {
 		).Return([]*datapb.SegmentInfo{}, nil)
 		catalog.On("ListChannelCheckpoint",
 			mock.Anything,
-		).Return(map[string]*internalpb.MsgPosition{}, nil)
+		).Return(map[string]*msgpb.MsgPosition{}, nil)
 		catalog.On("ListIndexes",
 			mock.Anything,
 		).Return(nil, errors.New("error"))
@@ -82,7 +81,7 @@ func TestMetaReloadFromKV(t *testing.T) {
 		).Return([]*datapb.SegmentInfo{}, nil)
 		catalog.On("ListChannelCheckpoint",
 			mock.Anything,
-		).Return(map[string]*internalpb.MsgPosition{}, nil)
+		).Return(map[string]*msgpb.MsgPosition{}, nil)
 		catalog.On("ListIndexes",
 			mock.Anything,
 		).Return([]*model.Index{}, nil)
@@ -108,7 +107,7 @@ func TestMetaReloadFromKV(t *testing.T) {
 
 		catalog.On("ListChannelCheckpoint",
 			mock.Anything,
-		).Return(map[string]*internalpb.MsgPosition{
+		).Return(map[string]*msgpb.MsgPosition{
 			"ch": {
 				ChannelName: "cn",
 				MsgID:       []byte{},
@@ -204,10 +203,10 @@ func TestMeta_Basic(t *testing.T) {
 		assert.Nil(t, err)
 
 		// check GetSegment
-		info0_0 := meta.GetSegment(segID0_0)
+		info0_0 := meta.GetHealthySegment(segID0_0)
 		assert.NotNil(t, info0_0)
 		assert.True(t, proto.Equal(info0_0, segInfo0_0))
-		info1_0 := meta.GetSegment(segID1_0)
+		info1_0 := meta.GetHealthySegment(segID1_0)
 		assert.NotNil(t, info1_0)
 		assert.True(t, proto.Equal(info1_0, segInfo1_0))
 
@@ -239,16 +238,16 @@ func TestMeta_Basic(t *testing.T) {
 		err = meta.SetState(segID0_0, commonpb.SegmentState_Flushed)
 		assert.Nil(t, err)
 
-		info0_0 = meta.GetSegment(segID0_0)
+		info0_0 = meta.GetHealthySegment(segID0_0)
 		assert.NotNil(t, info0_0)
 		assert.EqualValues(t, commonpb.SegmentState_Flushed, info0_0.State)
 
-		info0_0 = meta.GetSegment(segID0_0)
+		info0_0 = meta.GetHealthySegment(segID0_0)
 		assert.NotNil(t, info0_0)
 		assert.Equal(t, true, info0_0.GetIsImporting())
 		err = meta.UnsetIsImporting(segID0_0)
 		assert.NoError(t, err)
-		info0_0 = meta.GetSegment(segID0_0)
+		info0_0 = meta.GetHealthySegment(segID0_0)
 		assert.NotNil(t, info0_0)
 		assert.Equal(t, false, info0_0.GetIsImporting())
 
@@ -256,12 +255,12 @@ func TestMeta_Basic(t *testing.T) {
 		err = meta.UnsetIsImporting(segID1_0)
 		assert.Error(t, err)
 
-		info1_1 := meta.GetSegment(segID1_1)
+		info1_1 := meta.GetHealthySegment(segID1_1)
 		assert.NotNil(t, info1_1)
 		assert.Equal(t, false, info1_1.GetIsImporting())
 		err = meta.UnsetIsImporting(segID1_1)
 		assert.NoError(t, err)
-		info1_1 = meta.GetSegment(segID1_1)
+		info1_1 = meta.GetHealthySegment(segID1_1)
 		assert.NotNil(t, info1_1)
 		assert.Equal(t, false, info1_1.GetIsImporting())
 
@@ -435,23 +434,21 @@ func TestUpdateFlushSegmentsInfo(t *testing.T) {
 		err = meta.AddSegment(segment1)
 		assert.Nil(t, err)
 
-		err = meta.UpdateFlushSegmentsInfo(1, true, false, true, []*datapb.FieldBinlog{getFieldBinlogPaths(1, getInsertLogPath("binlog1", 1))},
+		err = meta.UpdateFlushSegmentsInfo(1, true, false, true, []*datapb.FieldBinlog{getFieldBinlogPathsWithEntry(1, 10, getInsertLogPath("binlog1", 1))},
 			[]*datapb.FieldBinlog{getFieldBinlogPaths(1, getStatsLogPath("statslog1", 1))},
 			[]*datapb.FieldBinlog{{Binlogs: []*datapb.Binlog{{EntriesNum: 1, TimestampFrom: 100, TimestampTo: 200, LogSize: 1000, LogPath: getDeltaLogPath("deltalog1", 1)}}}},
-			[]*datapb.CheckPoint{{SegmentID: 1, NumOfRows: 10}}, []*datapb.SegmentStartPosition{{SegmentID: 1, StartPosition: &internalpb.MsgPosition{MsgID: []byte{1, 2, 3}}}})
+			[]*datapb.CheckPoint{{SegmentID: 1, NumOfRows: 10}}, []*datapb.SegmentStartPosition{{SegmentID: 1, StartPosition: &msgpb.MsgPosition{MsgID: []byte{1, 2, 3}}}})
 		assert.Nil(t, err)
 
-		updated := meta.GetSegment(1)
+		updated := meta.GetHealthySegment(1)
 		expected := &SegmentInfo{SegmentInfo: &datapb.SegmentInfo{
 			ID: 1, State: commonpb.SegmentState_Flushing, NumOfRows: 10,
-			StartPosition: &internalpb.MsgPosition{MsgID: []byte{1, 2, 3}},
+			StartPosition: &msgpb.MsgPosition{MsgID: []byte{1, 2, 3}},
 			Binlogs:       []*datapb.FieldBinlog{getFieldBinlogPaths(1, "binlog0", "binlog1")},
 			Statslogs:     []*datapb.FieldBinlog{getFieldBinlogPaths(1, "statslog0", "statslog1")},
 			Deltalogs:     []*datapb.FieldBinlog{{Binlogs: []*datapb.Binlog{{EntriesNum: 1, TimestampFrom: 100, TimestampTo: 200, LogSize: 1000}}}},
 		}}
 
-		fmt.Println(updated)
-		fmt.Println(expected)
 		assert.Equal(t, updated.StartPosition, expected.StartPosition)
 		assert.Equal(t, updated.DmlPosition, expected.DmlPosition)
 		assert.Equal(t, updated.DmlPosition, expected.DmlPosition)
@@ -482,9 +479,9 @@ func TestUpdateFlushSegmentsInfo(t *testing.T) {
 
 		err = meta.UpdateFlushSegmentsInfo(1, false, false, false, nil, nil, nil, []*datapb.CheckPoint{{SegmentID: 2, NumOfRows: 10}},
 
-			[]*datapb.SegmentStartPosition{{SegmentID: 2, StartPosition: &internalpb.MsgPosition{MsgID: []byte{1, 2, 3}}}})
+			[]*datapb.SegmentStartPosition{{SegmentID: 2, StartPosition: &msgpb.MsgPosition{MsgID: []byte{1, 2, 3}}}})
 		assert.Nil(t, err)
-		assert.Nil(t, meta.GetSegment(2))
+		assert.Nil(t, meta.GetHealthySegment(2))
 	})
 
 	t.Run("test save etcd failed", func(t *testing.T) {
@@ -506,10 +503,10 @@ func TestUpdateFlushSegmentsInfo(t *testing.T) {
 		err = meta.UpdateFlushSegmentsInfo(1, true, false, false, []*datapb.FieldBinlog{getFieldBinlogPaths(1, getInsertLogPath("binlog", 1))},
 			[]*datapb.FieldBinlog{getFieldBinlogPaths(1, getInsertLogPath("statslog", 1))},
 			[]*datapb.FieldBinlog{{Binlogs: []*datapb.Binlog{{EntriesNum: 1, TimestampFrom: 100, TimestampTo: 200, LogSize: 1000, LogPath: getDeltaLogPath("deltalog", 1)}}}},
-			[]*datapb.CheckPoint{{SegmentID: 1, NumOfRows: 10}}, []*datapb.SegmentStartPosition{{SegmentID: 1, StartPosition: &internalpb.MsgPosition{MsgID: []byte{1, 2, 3}}}})
+			[]*datapb.CheckPoint{{SegmentID: 1, NumOfRows: 10}}, []*datapb.SegmentStartPosition{{SegmentID: 1, StartPosition: &msgpb.MsgPosition{MsgID: []byte{1, 2, 3}}}})
 		assert.NotNil(t, err)
 		assert.Equal(t, "mocked fail", err.Error())
-		segmentInfo = meta.GetSegment(1)
+		segmentInfo = meta.GetHealthySegment(1)
 		assert.EqualValues(t, 0, segmentInfo.NumOfRows)
 		assert.Equal(t, commonpb.SegmentState_Growing, segmentInfo.State)
 		assert.Nil(t, segmentInfo.Binlogs)
@@ -558,14 +555,9 @@ func TestMeta_alterMetaStore(t *testing.T) {
 		}},
 	}
 
-	toAlterInfo := lo.Map(toAlter, func(item *datapb.SegmentInfo, _ int) *SegmentInfo {
-		return &SegmentInfo{SegmentInfo: item}
-	})
-
-	err := m.alterMetaStoreAfterCompaction(toAlterInfo, &SegmentInfo{SegmentInfo: newSeg})
-	assert.NoError(t, err)
-
-	err = m.revertAlterMetaStoreAfterCompaction(toAlterInfo, &SegmentInfo{SegmentInfo: newSeg})
+	err := m.alterMetaStoreAfterCompaction(&SegmentInfo{SegmentInfo: newSeg}, lo.Map(toAlter, func(t *datapb.SegmentInfo, _ int) *SegmentInfo {
+		return &SegmentInfo{SegmentInfo: t}
+	}))
 	assert.NoError(t, err)
 }
 
@@ -698,7 +690,7 @@ func Test_meta_SetSegmentCompacting(t *testing.T) {
 				segments: tt.fields.segments,
 			}
 			m.SetSegmentCompacting(tt.args.segmentID, tt.args.compacting)
-			segment := m.GetSegment(tt.args.segmentID)
+			segment := m.GetHealthySegment(tt.args.segmentID)
 			assert.Equal(t, tt.args.compacting, segment.isCompacting)
 		})
 	}
@@ -747,7 +739,7 @@ func Test_meta_SetSegmentImporting(t *testing.T) {
 				segments: tt.fields.segments,
 			}
 			m.SetSegmentCompacting(tt.args.segmentID, tt.args.importing)
-			segment := m.GetSegment(tt.args.segmentID)
+			segment := m.GetHealthySegment(tt.args.segmentID)
 			assert.Equal(t, tt.args.importing, segment.isCompacting)
 		})
 	}
@@ -870,10 +862,10 @@ func TestMeta_GetAllSegments(t *testing.T) {
 		},
 	}
 
-	seg1 := m.GetSegment(1)
-	seg1All := m.GetSegmentUnsafe(1)
-	seg2 := m.GetSegment(2)
-	seg2All := m.GetSegmentUnsafe(2)
+	seg1 := m.GetHealthySegment(1)
+	seg1All := m.GetSegment(1)
+	seg2 := m.GetHealthySegment(2)
+	seg2All := m.GetSegment(2)
 	assert.NotNil(t, seg1)
 	assert.NotNil(t, seg1All)
 	assert.Nil(t, seg2)
@@ -898,7 +890,7 @@ func TestChannelCP(t *testing.T) {
 	mockVChannel := "fake-by-dev-rootcoord-dml-1-testchannelcp-v0"
 	mockPChannel := "fake-by-dev-rootcoord-dml-1"
 
-	pos := &internalpb.MsgPosition{
+	pos := &msgpb.MsgPosition{
 		ChannelName: mockPChannel,
 		MsgID:       []byte{},
 		Timestamp:   1000,

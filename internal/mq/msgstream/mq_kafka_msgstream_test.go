@@ -18,21 +18,18 @@ package msgstream
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"sync"
 	"testing"
 
 	"github.com/confluentinc/confluent-kafka-go/kafka"
-
-	"github.com/milvus-io/milvus/internal/mq/msgstream/mqwrapper"
-
-	kafkawrapper "github.com/milvus-io/milvus/internal/mq/msgstream/mqwrapper/kafka"
+	"github.com/stretchr/testify/assert"
 
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
+	"github.com/milvus-io/milvus-proto/go-api/msgpb"
+	"github.com/milvus-io/milvus/internal/mq/msgstream/mqwrapper"
+	kafkawrapper "github.com/milvus-io/milvus/internal/mq/msgstream/mqwrapper/kafka"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
-	"github.com/stretchr/testify/assert"
 )
 
 //	 Note: kafka does not support get all data when consuming from the earliest position again.
@@ -130,7 +127,7 @@ func TestStream_KafkaMsgStream_SeekToLast(t *testing.T) {
 	assert.Nil(t, err)
 
 	// pick a seekPosition
-	var seekPosition *internalpb.MsgPosition
+	var seekPosition *msgpb.MsgPosition
 	outputStream := getKafkaOutputStream(ctx, kafkaAddress, consumerChannels, consumerSubName, mqwrapper.SubscriptionPositionEarliest)
 	for i := 0; i < 10; i++ {
 		result := consumer(ctx, outputStream)
@@ -148,7 +145,7 @@ func TestStream_KafkaMsgStream_SeekToLast(t *testing.T) {
 	defer outputStream2.Close()
 	assert.Nil(t, err)
 
-	err = outputStream2.Seek([]*internalpb.MsgPosition{seekPosition})
+	err = outputStream2.Seek([]*msgpb.MsgPosition{seekPosition})
 	assert.Nil(t, err)
 
 	cnt := 0
@@ -426,7 +423,7 @@ func TestStream_KafkaTtMsgStream_DataNodeTimetickMsgstream(t *testing.T) {
 				assert.NotNil(t, msgPack)
 
 				if len(msgPack.Msgs) > 0 {
-					fmt.Println("msg===:", msgPack.Msgs[0])
+					t.Log("msg===:", msgPack.Msgs[0])
 					wg.Done()
 					return
 				}

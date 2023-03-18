@@ -18,12 +18,13 @@ package rootcoord
 
 import (
 	"context"
-	"errors"
 	"math/rand"
 	"testing"
 	"time"
 
+	"github.com/cockroachdb/errors"
 	"github.com/milvus-io/milvus/internal/util/retry"
+
 	"github.com/stretchr/testify/assert"
 )
 

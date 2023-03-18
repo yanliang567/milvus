@@ -11,7 +11,7 @@
 # or implied. See the License for the specific language governing permissions and limitations under the License.
 #-------------------------------------------------------------------------------
 
-set( KNOWHERE_VERSION v2.0.0 )
+set( KNOWHERE_VERSION v2.1.0 )
 
 message(STATUS "Building knowhere-${KNOWHERE_SOURCE_VER} from source")
 message(STATUS ${CMAKE_BUILD_TYPE})
@@ -21,6 +21,12 @@ if ( BUILD_DISK_ANN STREQUAL "ON" )
 else ()
     set(WITH_DISKANN OFF CACHE BOOL "" FORCE )
 endif ()
+
+if ( MILVUS_GPU_VERSION STREQUAL "ON" )
+    set(USE_CUDA ON CACHE BOOL "" FORCE )
+    set(WITH_RAFT ON CACHE BOOL "" FORCE )
+endif ()
+
 
 set( CMAKE_PREFIX_PATH ${CONAN_BOOST_ROOT} )
 FetchContent_Declare(

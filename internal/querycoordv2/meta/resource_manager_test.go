@@ -16,9 +16,9 @@
 package meta
 
 import (
-	"errors"
 	"testing"
 
+	"github.com/cockroachdb/errors"
 	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
 	. "github.com/milvus-io/milvus/internal/querycoordv2/params"
@@ -196,8 +196,10 @@ func (suite *ResourceManagerSuite) TestRecover() {
 	err = suite.manager.AddResourceGroup("rg2")
 	suite.NoError(err)
 
-	suite.manager.AssignNode("rg1", 1)
-	suite.manager.AssignNode("rg2", 2)
+	suite.manager.AssignNode(DefaultResourceGroupName, 1)
+	suite.manager.TransferNode(DefaultResourceGroupName, "rg1", 1)
+	suite.manager.AssignNode(DefaultResourceGroupName, 2)
+	suite.manager.TransferNode(DefaultResourceGroupName, "rg2", 1)
 	suite.manager.AssignNode(DefaultResourceGroupName, 3)
 	suite.manager.AssignNode(DefaultResourceGroupName, 4)
 
@@ -214,7 +216,6 @@ func (suite *ResourceManagerSuite) TestRecover() {
 	suite.NoError(err)
 	suite.Equal(1, rg.GetCapacity())
 	suite.True(suite.manager.ContainsNode("rg1", 1))
-	print(suite.manager.GetNodes("rg1"))
 
 	rg, err = suite.manager.GetResourceGroup("rg2")
 	suite.NoError(err)
@@ -320,6 +321,23 @@ func (suite *ResourceManagerSuite) TestAutoRecover() {
 	suite.manager.AutoRecoverResourceGroup("rg")
 	lackNodes = suite.manager.CheckLackOfNode("rg")
 	suite.Equal(lackNodes, 0)
+
+	// test auto recover behavior when all node down
+	suite.manager.nodeMgr.Remove(1)
+	suite.manager.nodeMgr.Remove(2)
+	suite.manager.AutoRecoverResourceGroup("rg")
+	nodes, _ := suite.manager.GetNodes("rg")
+	suite.Len(nodes, 0)
+	nodes, _ = suite.manager.GetNodes(DefaultResourceGroupName)
+	suite.Len(nodes, 0)
+
+	suite.manager.nodeMgr.Add(session.NewNodeInfo(1, "localhost"))
+	suite.manager.HandleNodeUp(1)
+	suite.manager.AutoRecoverResourceGroup("rg")
+	nodes, _ = suite.manager.GetNodes("rg")
+	suite.Len(nodes, 1)
+	nodes, _ = suite.manager.GetNodes(DefaultResourceGroupName)
+	suite.Len(nodes, 0)
 }
 
 func (suite *ResourceManagerSuite) TestDefaultResourceGroup() {

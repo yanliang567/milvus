@@ -18,14 +18,17 @@ package proxy
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/cockroachdb/errors"
+	uatomic "go.uber.org/atomic"
+
 	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/paramtable"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -556,11 +559,11 @@ func TestMetaCache_ClearShards(t *testing.T) {
 	defer qc.Stop()
 
 	t.Run("Clear with no collection info", func(t *testing.T) {
-		globalMetaCache.ClearShards("collection_not_exist")
+		globalMetaCache.DeprecateShardCache("collection_not_exist")
 	})
 
 	t.Run("Clear valid collection empty cache", func(t *testing.T) {
-		globalMetaCache.ClearShards(collectionName)
+		globalMetaCache.DeprecateShardCache(collectionName)
 	})
 
 	t.Run("Clear valid collection valid cache", func(t *testing.T) {
@@ -586,7 +589,7 @@ func TestMetaCache_ClearShards(t *testing.T) {
 		require.Equal(t, 1, len(shards))
 		require.Equal(t, 3, len(shards["channel-1"]))
 
-		globalMetaCache.ClearShards(collectionName)
+		globalMetaCache.DeprecateShardCache(collectionName)
 
 		qc.EXPECT().GetShardLeaders(mock.Anything, mock.Anything).Return(&querypb.GetShardLeadersResponse{
 			Status: &commonpb.Status{
@@ -779,4 +782,141 @@ func TestMetaCache_RemoveCollection(t *testing.T) {
 	assert.True(t, info.isLoaded)
 	// shouldn't access RootCoord again
 	assert.Equal(t, rootCoord.GetAccessCount(), 3)
+}
+
+func TestMetaCache_ExpireShardLeaderCache(t *testing.T) {
+	ctx := context.Background()
+	rootCoord := &MockRootCoordClientInterface{}
+	queryCoord := &types.MockQueryCoord{}
+	shardMgr := newShardClientMgr()
+	err := InitMetaCache(ctx, rootCoord, queryCoord, shardMgr)
+	assert.Nil(t, err)
+
+	paramtable.Init()
+	paramtable.Get().Save(Params.ProxyCfg.ShardLeaderCacheInterval.Key, "1")
+
+	queryCoord.EXPECT().ShowCollections(mock.Anything, mock.Anything).Return(&querypb.ShowCollectionsResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+		},
+		CollectionIDs:       []UniqueID{1},
+		InMemoryPercentages: []int64{100},
+	}, nil)
+
+	queryCoord.EXPECT().GetShardLeaders(mock.Anything, mock.Anything).Return(&querypb.GetShardLeadersResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+		},
+		Shards: []*querypb.ShardLeadersList{
+			{
+				ChannelName: "channel-1",
+				NodeIds:     []int64{1, 2, 3},
+				NodeAddrs:   []string{"localhost:9000", "localhost:9001", "localhost:9002"},
+			},
+		},
+	}, nil).Times(1)
+	nodeInfos, err := globalMetaCache.GetShards(ctx, true, "collection1")
+	assert.NoError(t, err)
+	assert.Len(t, nodeInfos["channel-1"], 3)
+
+	queryCoord.EXPECT().GetShardLeaders(mock.Anything, mock.Anything).Return(&querypb.GetShardLeadersResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+		},
+		Shards: []*querypb.ShardLeadersList{
+			{
+				ChannelName: "channel-1",
+				NodeIds:     []int64{1, 2},
+				NodeAddrs:   []string{"localhost:9000", "localhost:9001"},
+			},
+		},
+	}, nil).Times(1)
+
+	assert.Eventually(t, func() bool {
+		nodeInfos, err := globalMetaCache.GetShards(ctx, true, "collection1")
+		assert.NoError(t, err)
+		return len(nodeInfos["channel-1"]) == 2
+	}, 3*time.Second, 1*time.Second)
+
+	queryCoord.EXPECT().GetShardLeaders(mock.Anything, mock.Anything).Return(&querypb.GetShardLeadersResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+		},
+		Shards: []*querypb.ShardLeadersList{
+			{
+				ChannelName: "channel-1",
+				NodeIds:     []int64{1, 2, 3},
+				NodeAddrs:   []string{"localhost:9000", "localhost:9001", "localhost:9002"},
+			},
+		},
+	}, nil).Times(1)
+
+	assert.Eventually(t, func() bool {
+		nodeInfos, err := globalMetaCache.GetShards(ctx, true, "collection1")
+		assert.NoError(t, err)
+		return len(nodeInfos["channel-1"]) == 3
+	}, 3*time.Second, 1*time.Second)
+
+	queryCoord.EXPECT().GetShardLeaders(mock.Anything, mock.Anything).Return(&querypb.GetShardLeadersResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+		},
+		Shards: []*querypb.ShardLeadersList{
+			{
+				ChannelName: "channel-1",
+				NodeIds:     []int64{1, 2, 3},
+				NodeAddrs:   []string{"localhost:9000", "localhost:9001", "localhost:9002"},
+			},
+			{
+				ChannelName: "channel-2",
+				NodeIds:     []int64{1, 2, 3},
+				NodeAddrs:   []string{"localhost:9000", "localhost:9001", "localhost:9002"},
+			},
+		},
+	}, nil).Times(1)
+
+	assert.Eventually(t, func() bool {
+		nodeInfos, err := globalMetaCache.GetShards(ctx, true, "collection1")
+		assert.NoError(t, err)
+		return len(nodeInfos["channel-1"]) == 3 && len(nodeInfos["channel-2"]) == 3
+	}, 3*time.Second, 1*time.Second)
+}
+
+func TestGlobalMetaCache_ShuffleShardLeaders(t *testing.T) {
+	shards := map[string][]nodeInfo{
+		"channel-1": {
+			{
+				nodeID:  1,
+				address: "localhost:9000",
+			},
+			{
+				nodeID:  2,
+				address: "localhost:9000",
+			},
+			{
+				nodeID:  3,
+				address: "localhost:9000",
+			},
+		},
+	}
+	sl := &shardLeaders{
+		deprecated:   uatomic.NewBool(false),
+		idx:          uatomic.NewInt64(5),
+		shardLeaders: shards,
+	}
+
+	reader := sl.GetReader()
+	result := reader.Shuffle()
+	assert.Len(t, result["channel-1"], 3)
+	assert.Equal(t, int64(1), result["channel-1"][0].nodeID)
+
+	reader = sl.GetReader()
+	result = reader.Shuffle()
+	assert.Len(t, result["channel-1"], 3)
+	assert.Equal(t, int64(2), result["channel-1"][0].nodeID)
+
+	reader = sl.GetReader()
+	result = reader.Shuffle()
+	assert.Len(t, result["channel-1"], 3)
+	assert.Equal(t, int64(3), result["channel-1"][0].nodeID)
 }

@@ -27,8 +27,12 @@ struct SearchResultPair {
     int64_t offset_;
     int64_t offset_rb_;  // right bound
 
-    SearchResultPair(
-        milvus::PkType primary_key, float distance, SearchResult* result, int64_t index, int64_t lb, int64_t rb)
+    SearchResultPair(milvus::PkType primary_key,
+                     float distance,
+                     SearchResult* result,
+                     int64_t index,
+                     int64_t lb,
+                     int64_t rb)
         : primary_key_(primary_key),
           distance_(distance),
           search_result_(result),
@@ -39,6 +43,9 @@ struct SearchResultPair {
 
     bool
     operator>(const SearchResultPair& other) const {
+        if (fabs(distance_ - other.distance_) < 0.000001f) {
+            return primary_key_ < other.primary_key_;
+        }
         return distance_ > other.distance_;
     }
 

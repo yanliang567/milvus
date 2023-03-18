@@ -69,26 +69,6 @@ func (it *insertTask) EndTs() Timestamp {
 	return it.insertMsg.EndTimestamp
 }
 
-func (it *insertTask) getPChanStats() (map[pChan]pChanStatistics, error) {
-	ret := make(map[pChan]pChanStatistics)
-
-	channels, err := it.getChannels()
-	if err != nil {
-		return ret, err
-	}
-
-	beginTs := it.BeginTs()
-	endTs := it.EndTs()
-
-	for _, channel := range channels {
-		ret[channel] = pChanStatistics{
-			minTs: beginTs,
-			maxTs: endTs,
-		}
-	}
-	return ret, nil
-}
-
 func (it *insertTask) getChannels() ([]pChan, error) {
 	collID, err := globalMetaCache.GetCollectionID(it.ctx, it.insertMsg.CollectionName)
 	if err != nil {
@@ -98,6 +78,40 @@ func (it *insertTask) getChannels() ([]pChan, error) {
 }
 
 func (it *insertTask) OnEnqueue() error {
+	return nil
+}
+
+func (it *insertTask) checkVectorFieldData() error {
+	// error won't happen here.
+	helper, _ := typeutil.CreateSchemaHelper(it.schema)
+
+	fields := it.insertMsg.GetFieldsData()
+	for _, field := range fields {
+		if field.GetType() != schemapb.DataType_FloatVector {
+			continue
+		}
+
+		vectorField := field.GetVectors()
+		if vectorField == nil || vectorField.GetFloatVector() == nil {
+			return fmt.Errorf("float vector field '%v' is illegal, array type mismatch", field.GetFieldName())
+		}
+
+		// error won't happen here.
+		f, _ := helper.GetFieldFromName(field.GetFieldName())
+		dim, _ := typeutil.GetDim(f)
+
+		floatArray := vectorField.GetFloatVector()
+
+		// TODO: `NumRows` passed by client may be not trustable.
+		if uint64(len(floatArray.GetData())) != uint64(dim)*it.insertMsg.GetNumRows() {
+			return fmt.Errorf("length of inserted vector (%d) not match dim (%d)", len(floatArray.GetData()), dim)
+		}
+
+		if err := typeutil.VerifyFloats32(floatArray.GetData()); err != nil {
+			return fmt.Errorf("float vector field data is illegal, error: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -184,6 +198,13 @@ func (it *insertTask) PreExecute(ctx context.Context) error {
 	if err = it.insertMsg.CheckAligned(); err != nil {
 		log.Error("field data is not aligned",
 			zap.Error(err))
+		return err
+	}
+
+	// check vector field data
+	err = it.checkVectorFieldData()
+	if err != nil {
+		log.Error("vector field data is illegal", zap.Error(err))
 		return err
 	}
 

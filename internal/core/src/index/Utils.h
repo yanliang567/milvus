@@ -112,7 +112,7 @@ IndexMode
 GetIndexModeFromConfig(const Config& config);
 
 IndexMode
-GetIndexMode(const std::string index_mode);
+GetIndexMode(const std::string_view index_mode);
 
 storage::FieldDataMeta
 GetFieldDataMetaFromConfig(const Config& config);
@@ -121,6 +121,7 @@ storage::IndexMeta
 GetIndexMetaFromConfig(const Config& config);
 
 Config
-ParseConfigFromIndexParams(const std::map<std::string, std::string>& index_params);
+ParseConfigFromIndexParams(
+    const std::map<std::string, std::string>& index_params);
 
 }  // namespace milvus::index

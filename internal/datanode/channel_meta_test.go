@@ -19,21 +19,21 @@ package datanode
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math/rand"
 	"testing"
 
-	"github.com/bits-and-blooms/bloom/v3"
+	bloom "github.com/bits-and-blooms/bloom/v3"
+	"github.com/cockroachdb/errors"
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 
+	"github.com/milvus-io/milvus-proto/go-api/msgpb"
 	"github.com/milvus-io/milvus-proto/go-api/schemapb"
 	"github.com/milvus-io/milvus/internal/common"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/storage"
 )
 
@@ -121,8 +121,8 @@ func TestChannelMeta_InnerFunction(t *testing.T) {
 
 	var err error
 
-	startPos := &internalpb.MsgPosition{ChannelName: "insert-01", Timestamp: Timestamp(100)}
-	endPos := &internalpb.MsgPosition{ChannelName: "insert-01", Timestamp: Timestamp(200)}
+	startPos := &msgpb.MsgPosition{ChannelName: "insert-01", Timestamp: Timestamp(100)}
+	endPos := &msgpb.MsgPosition{ChannelName: "insert-01", Timestamp: Timestamp(200)}
 	err = channel.addSegment(
 		addSegmentReq{
 			segType:     datapb.SegmentType_New,
@@ -145,8 +145,10 @@ func TestChannelMeta_InnerFunction(t *testing.T) {
 	assert.Equal(t, int64(0), seg.numRows)
 	assert.Equal(t, datapb.SegmentType_New, seg.getType())
 
-	channel.updateStatistics(0, 10)
+	channel.updateSegmentRowNumber(0, 10)
 	assert.Equal(t, int64(10), seg.numRows)
+	channel.updateSegmentMemorySize(0, 10)
+	assert.Equal(t, int64(10), seg.memorySize)
 
 	segPos := channel.listNewSegmentsStartPositions()
 	assert.Equal(t, 1, len(segPos))
@@ -322,15 +324,15 @@ func TestChannelMeta_InterfaceMethod(t *testing.T) {
 			inCollID      UniqueID
 			inSegID       UniqueID
 
-			instartPos *internalpb.MsgPosition
+			instartPos *msgpb.MsgPosition
 
 			expectedSegType datapb.SegmentType
 
 			description string
 		}{
 			{isValidCase: false, channelCollID: 1, inCollID: 2, inSegID: 300, description: "input CollID 2 mismatch with channel collID"},
-			{true, 1, 1, 200, new(internalpb.MsgPosition), datapb.SegmentType_New, "nill address for startPos"},
-			{true, 1, 1, 200, &internalpb.MsgPosition{}, datapb.SegmentType_New, "empty struct for startPos"},
+			{true, 1, 1, 200, new(msgpb.MsgPosition), datapb.SegmentType_New, "nill address for startPos"},
+			{true, 1, 1, 200, &msgpb.MsgPosition{}, datapb.SegmentType_New, "empty struct for startPos"},
 		}
 
 		for _, test := range tests {
@@ -344,7 +346,7 @@ func TestChannelMeta_InterfaceMethod(t *testing.T) {
 						collID:      test.inCollID,
 						partitionID: 1,
 						startPos:    test.instartPos,
-						endPos:      &internalpb.MsgPosition{},
+						endPos:      &msgpb.MsgPosition{},
 					})
 				if test.isValidCase {
 					assert.NoError(t, err)
@@ -669,7 +671,7 @@ func TestChannelMeta_InterfaceMethod(t *testing.T) {
 				require.False(t, channel.hasSegment(3, true))
 
 				// tests start
-				err := channel.mergeFlushedSegments(test.inSeg, 100, test.inCompactedFrom)
+				err := channel.mergeFlushedSegments(context.Background(), test.inSeg, 100, test.inCompactedFrom)
 				if test.isValid {
 					assert.NoError(t, err)
 				} else {
@@ -694,6 +696,7 @@ func TestChannelMeta_InterfaceMethod(t *testing.T) {
 	})
 
 }
+
 func TestChannelMeta_UpdatePKRange(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -703,8 +706,8 @@ func TestChannelMeta_UpdatePKRange(t *testing.T) {
 	collID := UniqueID(1)
 	partID := UniqueID(2)
 	chanName := "insert-02"
-	startPos := &internalpb.MsgPosition{ChannelName: chanName, Timestamp: Timestamp(100)}
-	endPos := &internalpb.MsgPosition{ChannelName: chanName, Timestamp: Timestamp(200)}
+	startPos := &msgpb.MsgPosition{ChannelName: chanName, Timestamp: Timestamp(100)}
+	endPos := &msgpb.MsgPosition{ChannelName: chanName, Timestamp: Timestamp(200)}
 
 	cm := storage.NewLocalChunkManager(storage.RootPath(channelMetaNodeTestDir))
 	defer cm.RemoveWithPrefix(ctx, cm.RootPath())
@@ -771,7 +774,7 @@ func TestChannelMeta_ChannelCP(t *testing.T) {
 	}()
 
 	t.Run("get and set", func(t *testing.T) {
-		pos := &internalpb.MsgPosition{
+		pos := &msgpb.MsgPosition{
 			ChannelName: mockPChannel,
 			Timestamp:   1000,
 		}
@@ -784,9 +787,9 @@ func TestChannelMeta_ChannelCP(t *testing.T) {
 	})
 
 	t.Run("set insertBuffer&deleteBuffer then get", func(t *testing.T) {
-		run := func(curInsertPos, curDeletePos *internalpb.MsgPosition,
-			hisInsertPoss, hisDeletePoss []*internalpb.MsgPosition,
-			ttPos, expectedPos *internalpb.MsgPosition) {
+		run := func(curInsertPos, curDeletePos *msgpb.MsgPosition,
+			hisInsertPoss, hisDeletePoss []*msgpb.MsgPosition,
+			ttPos, expectedPos *msgpb.MsgPosition) {
 			segmentID := UniqueID(1)
 			channel := newChannel(mockVChannel, collID, nil, rc, cm)
 			channel.chunkManager = &mockDataCM{}
@@ -833,28 +836,28 @@ func TestChannelMeta_ChannelCP(t *testing.T) {
 			assert.True(t, resPos.Timestamp == expectedPos.Timestamp)
 		}
 
-		run(&internalpb.MsgPosition{Timestamp: 50}, &internalpb.MsgPosition{Timestamp: 60},
-			[]*internalpb.MsgPosition{{Timestamp: 70}}, []*internalpb.MsgPosition{{Timestamp: 120}},
-			&internalpb.MsgPosition{Timestamp: 120}, &internalpb.MsgPosition{Timestamp: 50})
+		run(&msgpb.MsgPosition{Timestamp: 50}, &msgpb.MsgPosition{Timestamp: 60},
+			[]*msgpb.MsgPosition{{Timestamp: 70}}, []*msgpb.MsgPosition{{Timestamp: 120}},
+			&msgpb.MsgPosition{Timestamp: 120}, &msgpb.MsgPosition{Timestamp: 50})
 
-		run(&internalpb.MsgPosition{Timestamp: 50}, &internalpb.MsgPosition{Timestamp: 60},
-			[]*internalpb.MsgPosition{{Timestamp: 70}}, []*internalpb.MsgPosition{{Timestamp: 120}},
-			&internalpb.MsgPosition{Timestamp: 30}, &internalpb.MsgPosition{Timestamp: 50})
+		run(&msgpb.MsgPosition{Timestamp: 50}, &msgpb.MsgPosition{Timestamp: 60},
+			[]*msgpb.MsgPosition{{Timestamp: 70}}, []*msgpb.MsgPosition{{Timestamp: 120}},
+			&msgpb.MsgPosition{Timestamp: 30}, &msgpb.MsgPosition{Timestamp: 50})
 
 		// nil cur buffer
 		run(nil, nil,
-			[]*internalpb.MsgPosition{{Timestamp: 120}}, []*internalpb.MsgPosition{{Timestamp: 110}},
-			&internalpb.MsgPosition{Timestamp: 130}, &internalpb.MsgPosition{Timestamp: 110})
+			[]*msgpb.MsgPosition{{Timestamp: 120}}, []*msgpb.MsgPosition{{Timestamp: 110}},
+			&msgpb.MsgPosition{Timestamp: 130}, &msgpb.MsgPosition{Timestamp: 110})
 
 		// nil history buffer
-		run(&internalpb.MsgPosition{Timestamp: 50}, &internalpb.MsgPosition{Timestamp: 100},
+		run(&msgpb.MsgPosition{Timestamp: 50}, &msgpb.MsgPosition{Timestamp: 100},
 			nil, nil,
-			&internalpb.MsgPosition{Timestamp: 100}, &internalpb.MsgPosition{Timestamp: 50})
+			&msgpb.MsgPosition{Timestamp: 100}, &msgpb.MsgPosition{Timestamp: 50})
 
 		// nil buffer
 		run(nil, nil,
 			nil, nil,
-			&internalpb.MsgPosition{Timestamp: 100}, &internalpb.MsgPosition{Timestamp: 100})
+			&msgpb.MsgPosition{Timestamp: 100}, &msgpb.MsgPosition{Timestamp: 100})
 	})
 }
 
@@ -890,7 +893,7 @@ func (s *ChannelMetaSuite) SetupTest() {
 		segID:       1,
 		collID:      s.collID,
 		partitionID: s.partID,
-		startPos:    &internalpb.MsgPosition{},
+		startPos:    &msgpb.MsgPosition{},
 		endPos:      nil,
 	})
 	s.Require().NoError(err)

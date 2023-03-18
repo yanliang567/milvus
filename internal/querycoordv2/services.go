@@ -18,10 +18,11 @@ package querycoordv2
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/cockroachdb/errors"
 
 	"github.com/milvus-io/milvus-proto/go-api/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/milvuspb"
@@ -33,6 +34,7 @@ import (
 	"github.com/milvus-io/milvus/internal/querycoordv2/meta"
 	"github.com/milvus-io/milvus/internal/querycoordv2/utils"
 	"github.com/milvus-io/milvus/internal/util/errorutil"
+	"github.com/milvus-io/milvus/internal/util/merr"
 	"github.com/milvus-io/milvus/internal/util/metricsinfo"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
 	"github.com/milvus-io/milvus/internal/util/timerecord"
@@ -44,8 +46,6 @@ import (
 )
 
 var (
-	successStatus = utils.WrapStatus(commonpb.ErrorCode_Success, "")
-
 	ErrCreateResourceGroupFailed   = errors.New("failed to create resource group")
 	ErrDropResourceGroupFailed     = errors.New("failed to drop resource group")
 	ErrAddNodeToRGFailed           = errors.New("failed to add node to resource group")
@@ -84,7 +84,7 @@ func (s *Server) ShowCollections(ctx context.Context, req *querypb.ShowCollectio
 	collections := collectionSet.Collect()
 
 	resp := &querypb.ShowCollectionsResponse{
-		Status:                successStatus,
+		Status:                &commonpb.Status{},
 		CollectionIDs:         make([]int64, 0, len(collectionSet)),
 		InMemoryPercentages:   make([]int64, 0, len(collectionSet)),
 		QueryServiceAvailable: make([]bool, 0, len(collectionSet)),
@@ -99,17 +99,20 @@ func (s *Server) ShowCollections(ctx context.Context, req *querypb.ShowCollectio
 				// ignore it
 				continue
 			}
-			status := meta.GlobalFailedLoadCache.Get(collectionID)
-			if status.ErrorCode != commonpb.ErrorCode_Success {
-				log.Warn("show collection failed", zap.String("errCode", status.GetErrorCode().String()), zap.String("reason", status.GetReason()))
+			err := meta.GlobalFailedLoadCache.Get(collectionID)
+			if err != nil {
+				log.Warn("show collection failed", zap.Error(err))
+				status := merr.Status(err)
+				status.ErrorCode = commonpb.ErrorCode_InsufficientMemoryToLoad
 				return &querypb.ShowCollectionsResponse{
 					Status: status,
 				}, nil
 			}
-			err := fmt.Errorf("collection %d has not been loaded to memory or load failed", collectionID)
+
+			err = fmt.Errorf("collection %d has not been loaded to memory or load failed", collectionID)
 			log.Warn("show collection failed", zap.Error(err))
 			return &querypb.ShowCollectionsResponse{
-				Status: utils.WrapStatus(commonpb.ErrorCode_UnexpectedError, err.Error()),
+				Status: merr.Status(err),
 			}, nil
 		}
 		resp.CollectionIDs = append(resp.CollectionIDs, collectionID)
@@ -184,9 +187,10 @@ func (s *Server) ShowPartitions(ctx context.Context, req *querypb.ShowPartitions
 	}
 
 	if isReleased {
-		status := meta.GlobalFailedLoadCache.Get(req.GetCollectionID())
-		if status.ErrorCode != commonpb.ErrorCode_Success {
-			log.Warn("show collection failed", zap.String("errCode", status.GetErrorCode().String()), zap.String("reason", status.GetReason()))
+		err := meta.GlobalFailedLoadCache.Get(req.GetCollectionID())
+		if err != nil {
+			status := merr.Status(err)
+			status.ErrorCode = commonpb.ErrorCode_InsufficientMemoryToLoad
 			return &querypb.ShowPartitionsResponse{
 				Status: status,
 			}, nil
@@ -199,7 +203,7 @@ func (s *Server) ShowPartitions(ctx context.Context, req *querypb.ShowPartitions
 	}
 
 	return &querypb.ShowPartitionsResponse{
-		Status:              successStatus,
+		Status:              merr.Status(nil),
 		PartitionIDs:        partitions,
 		InMemoryPercentages: percentages,
 	}, nil
@@ -256,7 +260,7 @@ func (s *Server) LoadCollection(ctx context.Context, req *querypb.LoadCollection
 	}
 
 	metrics.QueryCoordLoadCount.WithLabelValues(metrics.SuccessLabel).Inc()
-	return successStatus, nil
+	return merr.Status(nil), nil
 }
 
 func (s *Server) ReleaseCollection(ctx context.Context, req *querypb.ReleaseCollectionRequest) (*commonpb.Status, error) {
@@ -296,7 +300,7 @@ func (s *Server) ReleaseCollection(ctx context.Context, req *querypb.ReleaseColl
 	metrics.QueryCoordReleaseLatency.WithLabelValues().Observe(float64(tr.ElapseSpan().Milliseconds()))
 	meta.GlobalFailedLoadCache.Remove(req.GetCollectionID())
 
-	return successStatus, nil
+	return merr.Status(nil), nil
 }
 
 func (s *Server) LoadPartitions(ctx context.Context, req *querypb.LoadPartitionsRequest) (*commonpb.Status, error) {
@@ -350,7 +354,7 @@ func (s *Server) LoadPartitions(ctx context.Context, req *querypb.LoadPartitions
 	}
 
 	metrics.QueryCoordLoadCount.WithLabelValues(metrics.SuccessLabel).Inc()
-	return successStatus, nil
+	return merr.Status(nil), nil
 }
 
 func (s *Server) checkResourceGroup(collectionID int64, resourceGroups []string) error {
@@ -413,7 +417,7 @@ func (s *Server) ReleasePartitions(ctx context.Context, req *querypb.ReleasePart
 	metrics.QueryCoordReleaseLatency.WithLabelValues().Observe(float64(tr.ElapseSpan().Milliseconds()))
 
 	meta.GlobalFailedLoadCache.Remove(req.GetCollectionID())
-	return successStatus, nil
+	return merr.Status(nil), nil
 }
 
 func (s *Server) GetPartitionStates(ctx context.Context, req *querypb.GetPartitionStatesRequest) (*querypb.GetPartitionStatesResponse, error) {
@@ -479,7 +483,7 @@ func (s *Server) GetPartitionStates(ctx context.Context, req *querypb.GetPartiti
 	}
 
 	return &querypb.GetPartitionStatesResponse{
-		Status:                successStatus,
+		Status:                merr.Status(nil),
 		PartitionDescriptions: states,
 	}, nil
 }
@@ -519,7 +523,7 @@ func (s *Server) GetSegmentInfo(ctx context.Context, req *querypb.GetSegmentInfo
 	}
 
 	return &querypb.GetSegmentInfoResponse{
-		Status: successStatus,
+		Status: merr.Status(nil),
 		Infos:  infos,
 	}, nil
 }
@@ -701,7 +705,7 @@ func (s *Server) LoadBalance(ctx context.Context, req *querypb.LoadBalanceReques
 		log.Warn(msg, zap.Error(err))
 		return utils.WrapStatus(commonpb.ErrorCode_UnexpectedError, msg, err), nil
 	}
-	return successStatus, nil
+	return merr.Status(nil), nil
 }
 
 func (s *Server) ShowConfigurations(ctx context.Context, req *internalpb.ShowConfigurationsRequest) (*internalpb.ShowConfigurationsResponse, error) {
@@ -749,7 +753,7 @@ func (s *Server) GetMetrics(ctx context.Context, req *milvuspb.GetMetricsRequest
 	}
 
 	resp := &milvuspb.GetMetricsResponse{
-		Status: successStatus,
+		Status: merr.Status(nil),
 		ComponentName: metricsinfo.ConstructComponentName(typeutil.QueryCoordRole,
 			paramtable.GetNodeID()),
 	}
@@ -797,7 +801,7 @@ func (s *Server) GetReplicas(ctx context.Context, req *milvuspb.GetReplicasReque
 	}
 
 	resp := &milvuspb.GetReplicasResponse{
-		Status:   successStatus,
+		Status:   merr.Status(nil),
 		Replicas: make([]*milvuspb.ReplicaInfo, 0),
 	}
 
@@ -838,7 +842,7 @@ func (s *Server) GetShardLeaders(ctx context.Context, req *querypb.GetShardLeade
 	}
 
 	resp := &querypb.GetShardLeadersResponse{
-		Status: successStatus,
+		Status: merr.Status(nil),
 	}
 
 	if s.meta.CollectionManager.GetLoadPercentage(req.GetCollectionID()) < 100 {
@@ -851,8 +855,9 @@ func (s *Server) GetShardLeaders(ctx context.Context, req *querypb.GetShardLeade
 	channels := s.targetMgr.GetDmChannelsByCollection(req.GetCollectionID(), meta.CurrentTarget)
 	if len(channels) == 0 {
 		msg := "failed to get channels"
-		log.Warn(msg, zap.Error(meta.ErrCollectionNotFound))
-		resp.Status = utils.WrapStatus(commonpb.ErrorCode_MetaFailed, msg, meta.ErrCollectionNotFound)
+		err := merr.WrapErrCollectionNotFound(req.GetCollectionID())
+		log.Warn(msg, zap.Error(err))
+		resp.Status = utils.WrapStatus(commonpb.ErrorCode_MetaFailed, msg, err)
 		return resp, nil
 	}
 
@@ -942,7 +947,7 @@ func (s *Server) GetShardLeaders(ctx context.Context, req *querypb.GetShardLeade
 
 func (s *Server) CheckHealth(ctx context.Context, req *milvuspb.CheckHealthRequest) (*milvuspb.CheckHealthResponse, error) {
 	if s.status.Load() != commonpb.StateCode_Healthy {
-		reason := errorutil.UnHealthReason("querycoord", s.session.ServerID, "querycoord is unhealthy")
+		reason := errorutil.UnHealthReason("querycoord", paramtable.GetNodeID(), "querycoord is unhealthy")
 		return &milvuspb.CheckHealthResponse{IsHealthy: false, Reasons: []string{reason}}, nil
 	}
 
@@ -988,7 +993,7 @@ func (s *Server) CreateResourceGroup(ctx context.Context, req *milvuspb.CreateRe
 		log.Warn(ErrCreateResourceGroupFailed.Error(), zap.Error(err))
 		return utils.WrapStatus(commonpb.ErrorCode_UnexpectedError, ErrCreateResourceGroupFailed.Error(), err), nil
 	}
-	return successStatus, nil
+	return merr.Status(nil), nil
 }
 
 func (s *Server) DropResourceGroup(ctx context.Context, req *milvuspb.DropResourceGroupRequest) (*commonpb.Status, error) {
@@ -1013,7 +1018,7 @@ func (s *Server) DropResourceGroup(ctx context.Context, req *milvuspb.DropResour
 		log.Warn(ErrDropResourceGroupFailed.Error(), zap.Error(err))
 		return utils.WrapStatus(commonpb.ErrorCode_UnexpectedError, ErrDropResourceGroupFailed.Error(), err), nil
 	}
-	return successStatus, nil
+	return merr.Status(nil), nil
 }
 
 func (s *Server) TransferNode(ctx context.Context, req *milvuspb.TransferNodeRequest) (*commonpb.Status, error) {
@@ -1068,7 +1073,7 @@ func (s *Server) TransferNode(ctx context.Context, req *milvuspb.TransferNodeReq
 
 	utils.AddNodesToCollectionsInRG(s.meta, req.GetTargetResourceGroup(), nodes...)
 
-	return successStatus, nil
+	return merr.Status(nil), nil
 }
 
 func (s *Server) TransferReplica(ctx context.Context, req *querypb.TransferReplicaRequest) (*commonpb.Status, error) {
@@ -1094,24 +1099,30 @@ func (s *Server) TransferReplica(ctx context.Context, req *querypb.TransferRepli
 			fmt.Sprintf("the target resource group[%s] doesn't exist", req.GetTargetResourceGroup()), meta.ErrRGNotExist), nil
 	}
 
-	replicas := s.meta.ReplicaManager.GetByCollectionAndRG(req.GetCollectionID(), req.GetTargetResourceGroup())
+	if req.GetNumReplica() <= 0 {
+		return utils.WrapStatus(commonpb.ErrorCode_IllegalArgument,
+			fmt.Sprintf("transfer replica num can't be [%d]", req.GetNumReplica()), nil), nil
+	}
+
+	replicas := s.meta.ReplicaManager.GetByCollectionAndRG(req.GetCollectionID(), req.GetSourceResourceGroup())
+	if len(replicas) < int(req.GetNumReplica()) {
+		return utils.WrapStatus(commonpb.ErrorCode_IllegalArgument,
+			fmt.Sprintf("only found [%d] replicas in source resource group[%s]",
+				len(replicas), req.GetSourceResourceGroup())), nil
+	}
+
+	replicas = s.meta.ReplicaManager.GetByCollectionAndRG(req.GetCollectionID(), req.GetTargetResourceGroup())
 	if len(replicas) > 0 {
 		return utils.WrapStatus(commonpb.ErrorCode_IllegalArgument,
 			fmt.Sprintf("found [%d] replicas of same collection in target resource group[%s], dynamically increase replica num is unsupported",
 				len(replicas), req.GetTargetResourceGroup())), nil
 	}
 
-	if req.GetNumReplica() <= 0 {
+	replicas = s.meta.ReplicaManager.GetByCollection(req.GetCollectionID())
+	if (req.GetSourceResourceGroup() == meta.DefaultResourceGroupName || req.GetTargetResourceGroup() == meta.DefaultResourceGroupName) &&
+		len(replicas) != int(req.GetNumReplica()) {
 		return utils.WrapStatus(commonpb.ErrorCode_IllegalArgument,
-			fmt.Sprintf("transfer replica num can't be [%d]", req.GetNumReplica()), nil), nil
-	}
-
-	// for now, we don't support to transfer replica of same collection to same resource group
-	replicas = s.meta.ReplicaManager.GetByCollectionAndRG(req.GetCollectionID(), req.GetSourceResourceGroup())
-	if len(replicas) < int(req.GetNumReplica()) {
-		return utils.WrapStatus(commonpb.ErrorCode_IllegalArgument,
-			fmt.Sprintf("only found [%d] replicas in source resource group[%s]",
-				len(replicas), req.GetSourceResourceGroup())), nil
+			"transfer replica will cause replica loaded in both default rg and other rg", nil), nil
 	}
 
 	err := s.transferReplica(req.GetTargetResourceGroup(), replicas[:req.GetNumReplica()])
@@ -1119,7 +1130,7 @@ func (s *Server) TransferReplica(ctx context.Context, req *querypb.TransferRepli
 		return utils.WrapStatus(commonpb.ErrorCode_IllegalArgument, ErrTransferReplicaFailed.Error(), err), nil
 	}
 
-	return successStatus, nil
+	return merr.Status(nil), nil
 }
 
 func (s *Server) transferReplica(targetRG string, replicas []*meta.Replica) error {
@@ -1143,7 +1154,7 @@ func (s *Server) ListResourceGroups(ctx context.Context, req *milvuspb.ListResou
 
 	log.Info("list resource group request received")
 	resp := &milvuspb.ListResourceGroupsResponse{
-		Status: successStatus,
+		Status: merr.Status(nil),
 	}
 	if s.status.Load() != commonpb.StateCode_Healthy {
 		log.Warn(ErrListResourceGroupsFailed.Error(), zap.Error(ErrNotHealthy))
@@ -1162,7 +1173,7 @@ func (s *Server) DescribeResourceGroup(ctx context.Context, req *querypb.Describ
 
 	log.Info("describe resource group request received")
 	resp := &querypb.DescribeResourceGroupResponse{
-		Status: successStatus,
+		Status: merr.Status(nil),
 	}
 	if s.status.Load() != commonpb.StateCode_Healthy {
 		log.Warn(ErrDescribeResourceGroupFailed.Error(), zap.Error(ErrNotHealthy))

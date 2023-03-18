@@ -19,9 +19,10 @@ package proxy
 import (
 	"container/list"
 	"context"
-	"errors"
 	"fmt"
 	"sync"
+
+	"github.com/cockroachdb/errors"
 
 	"go.opentelemetry.io/otel"
 	"go.uber.org/zap"
@@ -168,7 +169,7 @@ func (queue *baseTaskQueue) Enqueue(t task) error {
 		return err
 	}
 
-	ts, err := queue.tsoAllocatorIns.AllocOne()
+	ts, err := queue.tsoAllocatorIns.AllocOne(t.TraceCtx())
 	if err != nil {
 		return err
 	}
@@ -218,25 +219,33 @@ type pChanStatInfo struct {
 
 type dmTaskQueue struct {
 	*baseTaskQueue
-	lock sync.Mutex
 
 	statsLock            sync.RWMutex
 	pChanStatisticsInfos map[pChan]*pChanStatInfo
 }
 
 func (queue *dmTaskQueue) Enqueue(t task) error {
+	// This statsLock has two functions:
+	//	1) Protect member pChanStatisticsInfos
+	//	2) Serialize the timestamp allocation for dml tasks
 	queue.statsLock.Lock()
 	defer queue.statsLock.Unlock()
-	err := queue.addPChanStats(t)
+	//1. preAdd will check whether provided task is valid or addable
+	//and get the current pChannels for this dmTask
+	pChannels, dmt, err := queue.preAddPChanStats(t)
 	if err != nil {
 		return err
 	}
+	//2. enqueue dml task
 	err = queue.baseTaskQueue.Enqueue(t)
 	if err != nil {
-		queue.popPChanStats(t)
 		return err
 	}
-
+	//3. if preAdd succeed, commit will use pChannels got previously when preAdding and will definitely succeed
+	queue.commitPChanStats(dmt, pChannels)
+	//there's indeed a possibility that the collection info cache was expired after preAddPChanStats
+	//but considering root coord knows everything about meta modification, invalid stats appended after the meta changed
+	//will be discarded by root coord and will not lead to inconsistent state
 	return nil
 }
 
@@ -257,38 +266,51 @@ func (queue *dmTaskQueue) PopActiveTask(taskID UniqueID) task {
 	return t
 }
 
-func (queue *dmTaskQueue) addPChanStats(t task) error {
+func (queue *dmTaskQueue) preAddPChanStats(t task) ([]pChan, dmlTask, error) {
 	if dmT, ok := t.(dmlTask); ok {
-		stats, err := dmT.getPChanStats()
+		channels, err := dmT.getChannels()
 		if err != nil {
-			log.Warn("Proxy dmTaskQueue addPChanStats", zap.Any("tID", t.ID()),
-				zap.Any("stats", stats), zap.Error(err))
-			return err
+			log.Warn("Proxy dmTaskQueue preAddPChanStats getChannels failed", zap.Any("tID", t.ID()),
+				zap.Error(err))
+			return nil, nil, err
 		}
-		for cName, stat := range stats {
-			info, ok := queue.pChanStatisticsInfos[cName]
-			if !ok {
-				info = &pChanStatInfo{
-					pChanStatistics: stat,
-					tsSet: map[Timestamp]struct{}{
-						stat.minTs: {},
-					},
-				}
-				queue.pChanStatisticsInfos[cName] = info
-			} else {
-				if info.minTs > stat.minTs {
-					queue.pChanStatisticsInfos[cName].minTs = stat.minTs
-				}
-				if info.maxTs < stat.maxTs {
-					queue.pChanStatisticsInfos[cName].maxTs = stat.maxTs
-				}
-				queue.pChanStatisticsInfos[cName].tsSet[info.minTs] = struct{}{}
-			}
-		}
-	} else {
-		return fmt.Errorf("proxy addUnissuedTask reflect to dmlTask failed, tID:%v", t.ID())
+		return channels, dmT, nil
 	}
-	return nil
+	return nil, nil, fmt.Errorf("proxy preAddPChanStats reflect to dmlTask failed, tID:%v", t.ID())
+}
+
+func (queue *dmTaskQueue) commitPChanStats(dmt dmlTask, pChannels []pChan) {
+	//1. prepare new stat for all pChannels
+	newStats := make(map[pChan]pChanStatistics)
+	beginTs := dmt.BeginTs()
+	endTs := dmt.EndTs()
+	for _, channel := range pChannels {
+		newStats[channel] = pChanStatistics{
+			minTs: beginTs,
+			maxTs: endTs,
+		}
+	}
+	//2. update stats for all pChannels
+	for cName, newStat := range newStats {
+		currentStat, ok := queue.pChanStatisticsInfos[cName]
+		if !ok {
+			currentStat = &pChanStatInfo{
+				pChanStatistics: newStat,
+				tsSet: map[Timestamp]struct{}{
+					newStat.minTs: {},
+				},
+			}
+			queue.pChanStatisticsInfos[cName] = currentStat
+		} else {
+			if currentStat.minTs > newStat.minTs {
+				currentStat.minTs = newStat.minTs
+			}
+			if currentStat.maxTs < newStat.maxTs {
+				currentStat.maxTs = newStat.maxTs
+			}
+			currentStat.tsSet[newStat.minTs] = struct{}{}
+		}
+	}
 }
 
 func (queue *dmTaskQueue) popPChanStats(t task) error {
@@ -297,20 +319,21 @@ func (queue *dmTaskQueue) popPChanStats(t task) error {
 		if err != nil {
 			return err
 		}
+		taskTs := t.BeginTs()
 		for _, cName := range channels {
 			info, ok := queue.pChanStatisticsInfos[cName]
 			if ok {
-				delete(queue.pChanStatisticsInfos[cName].tsSet, info.minTs)
-				if len(queue.pChanStatisticsInfos[cName].tsSet) <= 0 {
+				delete(info.tsSet, taskTs)
+				if len(info.tsSet) <= 0 {
 					delete(queue.pChanStatisticsInfos, cName)
-				} else if queue.pChanStatisticsInfos[cName].minTs == info.minTs {
-					minTs := info.maxTs
-					for ts := range queue.pChanStatisticsInfos[cName].tsSet {
-						if ts < minTs {
-							minTs = ts
+				} else {
+					newMinTs := info.maxTs
+					for ts := range info.tsSet {
+						if newMinTs > ts {
+							newMinTs = ts
 						}
 					}
-					queue.pChanStatisticsInfos[cName].minTs = minTs
+					info.minTs = newMinTs
 				}
 			}
 		}

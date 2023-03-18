@@ -18,9 +18,10 @@ package proxy
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
+
+	"github.com/cockroachdb/errors"
 
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
 
@@ -105,7 +106,6 @@ type task interface {
 type dmlTask interface {
 	task
 	getChannels() ([]pChan, error)
-	getPChanStats() (map[pChan]pChanStatistics, error)
 }
 
 type BaseInsertTask = msgstream.InsertMsg
@@ -1477,7 +1477,7 @@ func (rct *releaseCollectionTask) Execute(ctx context.Context) (err error) {
 }
 
 func (rct *releaseCollectionTask) PostExecute(ctx context.Context) error {
-	globalMetaCache.ClearShards(rct.CollectionName)
+	globalMetaCache.DeprecateShardCache(rct.CollectionName)
 	return nil
 }
 
@@ -1697,7 +1697,7 @@ func (rpt *releasePartitionsTask) Execute(ctx context.Context) (err error) {
 }
 
 func (rpt *releasePartitionsTask) PostExecute(ctx context.Context) error {
-	globalMetaCache.ClearShards(rpt.CollectionName)
+	globalMetaCache.DeprecateShardCache(rpt.CollectionName)
 	return nil
 }
 
