@@ -11,7 +11,7 @@ LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 DATE_FORMAT = "%m/%d/%Y %H:%M:%S %p"
 
 
-def search(collection, field_name, search_params, nq, topk, threads_num, timeout):
+def search(collection, field_name, search_params, nq, topk, threads_num, timeout, ignore_growing):
     threads_num = int(threads_num)
     interval_count = 1000
 
@@ -25,7 +25,8 @@ def search(collection, field_name, search_params, nq, topk, threads_num, timeout
             t1 = time.time()
             try:
                 col.search(data=search_vectors, anns_field=field_name,
-                           param=search_params, limit=topk)
+                           param=search_params, limit=topk,
+                           ignore_growing=ignore_growing)
             except Exception as e:
                 logging.error(e)
             t2 = round(time.time() - t1, 4)
@@ -58,7 +59,8 @@ def search(collection, field_name, search_params, nq, topk, threads_num, timeout
             try:
                 collection.search(data=search_vectors, anns_field=field_name,
                                   # output_fields="",
-                                  param=search_params, limit=topk)
+                                  param=search_params, limit=topk,
+                                  ignore_growing=ignore_growing)
 
             except Exception as e:
                 logging.error(e)
@@ -79,6 +81,7 @@ if __name__ == '__main__':
     name = sys.argv[2]                  # collection mame/alias
     th = int(sys.argv[3])               # search thread num
     timeout = int(sys.argv[4])          # search timeout, permanently if 0
+    ignore_growing = bool(sys.argv[4])  # ignore_growing, default False
     port = 19530
 
     file_handler = logging.FileHandler(filename=f"/tmp/search_{name}.log")
@@ -140,7 +143,7 @@ if __name__ == '__main__':
     t2 = round(time.time() - t1, 3)
     logging.info(f"assert load {name}: {t2}")
 
-    logging.info(f"search start: nq{nq}_top{topk}_threads{th}")
-    search(collection, vector_field_name, search_params, nq, topk, th, timeout)
+    logging.info(f"search start with growing_{ignore_growing}: nq{nq}_top{topk}_threads{th}")
+    search(collection, vector_field_name, search_params, nq, topk, th, timeout, ignore_growing)
     logging.info(f"search completed ")
 
