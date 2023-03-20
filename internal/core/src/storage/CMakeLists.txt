@@ -27,9 +27,11 @@ set(STORAGE_FILES
     PayloadStream.cpp
     DataCodec.cpp
     Util.cpp
+    FieldData.cpp
     PayloadReader.cpp
     PayloadWriter.cpp
-    FieldData.cpp
+    BinlogReader.cpp
+    FieldDataFactory.cpp
     IndexData.cpp
     InsertData.cpp
     Event.cpp
@@ -41,6 +43,8 @@ if(BUILD_DISK_ANN STREQUAL "ON")
         ${STORAGE_FILES}
         LocalChunkManager.cpp
         MinioChunkManager.cpp
+        AliyunSTSClient.cpp
+        AliyunCredentialsProvider.cpp
         DiskFileManagerImpl.cpp)
 endif()
 
