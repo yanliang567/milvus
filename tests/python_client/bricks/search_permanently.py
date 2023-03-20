@@ -11,7 +11,7 @@ LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 DATE_FORMAT = "%m/%d/%Y %H:%M:%S %p"
 
 
-def search(collection, field_name, search_params, nq, topk, threads_num, timeout, ignore_growing):
+def search(collection, field_name, search_params, nq, topk, threads_num, timeout):
     threads_num = int(threads_num)
     interval_count = 1000
 
@@ -25,8 +25,8 @@ def search(collection, field_name, search_params, nq, topk, threads_num, timeout
             t1 = time.time()
             try:
                 col.search(data=search_vectors, anns_field=field_name,
-                           param=search_params, limit=topk,
-                           ignore_growing=ignore_growing)
+                           param=search_params, limit=topk
+                           )
             except Exception as e:
                 logging.error(e)
             t2 = round(time.time() - t1, 4)
@@ -57,10 +57,11 @@ def search(collection, field_name, search_params, nq, topk, threads_num, timeout
             search_vectors = [[random.random() for _ in range(dim)] for _ in range(nq)]
             t1 = time.time()
             try:
+                # logging.info(f"ignore_growing: {ignore_growing}")
                 collection.search(data=search_vectors, anns_field=field_name,
                                   # output_fields="",
-                                  param=search_params, limit=topk,
-                                  ignore_growing=ignore_growing)
+                                  param=search_params, limit=topk
+                                  )
 
             except Exception as e:
                 logging.error(e)
@@ -117,11 +118,11 @@ if __name__ == '__main__':
     metric_type = idx.params.get("metric_type")
     index_type = idx.params.get("index_type")
     if index_type == "HNSW":
-        search_params = {"metric_type": metric_type, "params": {"ef": ef}}
+        search_params = {"metric_type": metric_type, "params": {"ef": ef}, "ignore_growing": ignore_growing}
     elif index_type in ["IVF_SQ8", "IVF_FLAT"]:
-        search_params = {"metric_type": metric_type, "params": {"nprobe": nprobe}}
+        search_params = {"metric_type": metric_type, "params": {"nprobe": nprobe}, "ignore_growing": ignore_growing}
     elif index_type == "DISKANN":
-        search_params = {"metric_type": metric_type, "params": {"search_list": 100}}
+        search_params = {"metric_type": metric_type, "params": {"search_list": 100}, "ignore_growing": ignore_growing}
     else:
         logging.error(f"index: {index_type} does not support yet")
         exit(0)
@@ -143,7 +144,7 @@ if __name__ == '__main__':
     t2 = round(time.time() - t1, 3)
     logging.info(f"assert load {name}: {t2}")
 
-    logging.info(f"search start with growing_{ignore_growing}: nq{nq}_top{topk}_threads{th}")
-    search(collection, vector_field_name, search_params, nq, topk, th, timeout, ignore_growing)
+    logging.info(f"search start: nq{nq}_top{topk}_threads{th}")
+    search(collection, vector_field_name, search_params, nq, topk, th, timeout)
     logging.info(f"search completed ")
 
