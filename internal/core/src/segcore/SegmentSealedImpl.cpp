@@ -182,9 +182,12 @@ SegmentSealedImpl::LoadScalarIndex(const LoadIndexInfo& info) {
 
     set_bit(index_ready_bitset_, field_id, true);
     update_row_count(row_count);
-    // release field column
-    fields_.erase(field_id);
-    set_bit(field_data_ready_bitset_, field_id, false);
+    // release field column if the index contains raw data
+    if (scalar_indexings_[field_id]->HasRawData() &&
+        get_bit(field_data_ready_bitset_, field_id)) {
+        fields_.erase(field_id);
+        set_bit(field_data_ready_bitset_, field_id, false);
+    }
 
     lck.unlock();
 }
@@ -1225,6 +1228,15 @@ SegmentSealedImpl::get_raw_data(FieldId field_id,
                 seg_offsets,
                 count,
                 ret->mutable_vectors()->mutable_float16_vector()->data());
+            break;
+        }
+        case DataType::VECTOR_BFLOAT16: {
+            bulk_subscript_impl(
+                field_meta.get_sizeof(),
+                column->Data(),
+                seg_offsets,
+                count,
+                ret->mutable_vectors()->mutable_bfloat16_vector()->data());
             break;
         }
         case DataType::VECTOR_BINARY: {

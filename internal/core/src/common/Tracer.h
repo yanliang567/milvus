@@ -21,7 +21,7 @@ namespace milvus::tracer {
 
 struct TraceConfig {
     std::string exporter;
-    int sampleFraction;
+    float sampleFraction;
     std::string jaegerURL;
     std::string otlpEndpoint;
     bool oltpSecure;
@@ -43,7 +43,7 @@ std::shared_ptr<trace::Tracer>
 GetTracer();
 
 std::shared_ptr<trace::Span>
-StartSpan(std::string name, TraceContext* ctx = nullptr);
+StartSpan(const std::string& name, TraceContext* ctx = nullptr);
 
 void
 SetRootSpan(std::shared_ptr<trace::Span> span);

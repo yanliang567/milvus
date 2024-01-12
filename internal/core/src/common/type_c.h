@@ -51,6 +51,7 @@ enum CDataType {
     BinaryVector = 100,
     FloatVector = 101,
     Float16Vector = 102,
+    BFloat16Vector = 103,
 };
 typedef enum CDataType CDataType;
 
@@ -92,7 +93,7 @@ typedef struct CStorageConfig {
 
 typedef struct CTraceConfig {
     const char* exporter;
-    int sampleFraction;
+    float sampleFraction;
     const char* jaegerURL;
     const char* otlpEndpoint;
     bool oltpSecure;
