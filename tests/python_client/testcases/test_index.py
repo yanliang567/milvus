@@ -22,7 +22,7 @@ prefix = "index"
 default_schema = cf.gen_default_collection_schema()
 default_field_name = ct.default_float_vec_field_name
 default_index_params = ct.default_index
-default_autoindex_params = {"index_type": "AUTOINDEX", "metric_type": "IP"}
+default_autoindex_params = {"index_type": "AUTOINDEX", "metric_type": "COSINE"}
 
 # copied from pymilvus
 uid = "test_index"
@@ -1305,17 +1305,17 @@ class TestIndexInvalid(TestcaseBase):
         """
         target: test create scalar index on array field
         method: 1.create collection, and create index
-        expected: Raise exception
+        expected: supported create inverted index on array since 2.4.x
         """
         # 1. create a collection
         schema = cf.gen_array_collection_schema()
         collection_w = self.init_collection_wrap(schema=schema)
         # 2. create index
         scalar_index_params = {"index_type": "INVERTED"}
-        collection_w.create_index(ct.default_int32_array_field_name, index_params=scalar_index_params,
-                                  check_task=CheckTasks.err_res,
-                                  check_items={ct.err_code: 1100,
-                                               ct.err_msg: "create index on Array field is not supported"})
+        collection_w.create_index(ct.default_int32_array_field_name, index_params=scalar_index_params)
+        res, _ = self.utility_wrap.index_building_progress(collection_w.name, ct.default_int32_array_field_name)
+        exp_res = {'total_rows': 0, 'indexed_rows': 0, 'pending_index_rows': 0, 'state': 'Finished'}
+        assert res == exp_res
 
     @pytest.mark.tags(CaseLabel.L1)
     def test_create_inverted_index_no_vector_index(self):
